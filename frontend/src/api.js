@@ -15,3 +15,14 @@ export async function fetchTowers(lat, lon, altitude = 0, limit = 20, source = "
   }
   return res.json();
 }
+
+export async function fetchElevation(lat, lon) {
+  const params = new URLSearchParams({
+    lat: String(lat),
+    lon: String(lon),
+  });
+  const res = await fetch(`${API_BASE}/elevation?${params}`);
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data.elevation_m;
+}

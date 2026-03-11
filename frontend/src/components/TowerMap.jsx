@@ -123,6 +123,11 @@ export default function TowerMap({ towers, userLocation, highlighted }) {
               <br />
               <span className="popup-detail">{t.name}</span>
               <br />
+              <span className="popup-detail">
+                {t.latitude}, {t.longitude}
+                {t.altitude_m != null && ` · ${t.altitude_m} m ASL`}
+              </span>
+              <br />
               <span className="popup-freq">{t.frequency_mhz} MHz</span>{" "}
               ({t.band})
               <br />

@@ -1,32 +1,59 @@
+import json
 import math
+import os
 import re
 
 EARTH_RADIUS_KM = 6371.0
 
-# Assumed gain for a small directional Yagi at the receiver
-RX_ANTENNA_GAIN_DBI = 6.0
+# ── Load configurable settings from tower_config.json ────────────────────
+_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "tower_config.json")
 
-SENSITIVITY_DBM = -95.0
 
-# Frequency ranges for broadcast classification (MHz)
-# Covers both North American and Australian broadcast allocations.
-# FM checked first so 87.5-108 is always classified as FM (overlaps VHF low).
-BROADCAST_BANDS = {
-    "FM": [(87.5, 108)],
-    "VHF": [(45, 87.5), (148, 230)],
-    "UHF": [(470, 700)],
-}
+def _load_config() -> dict:
+    with open(_CONFIG_PATH, "r") as f:
+        return json.load(f)
 
-BAND_PRIORITY = {"VHF": 0, "UHF": 1, "FM": 2}
 
-DISTANCE_CLASSES = [
-    ("Too Close", 0, 8),
-    ("Ideal", 8, 30),
-    ("Good", 30, 60),
-    ("Far", 60, float("inf")),
-]
+def reload_config():
+    """Re-read tower_config.json and update module-level settings."""
+    global RX_ANTENNA_GAIN_DBI, SENSITIVITY_DBM
+    global BROADCAST_BANDS, BAND_PRIORITY
+    global DISTANCE_CLASSES, DISTANCE_PRIORITY, SORT_ORDER
+    global DEFAULT_RADIUS_KM, DEFAULT_LIMIT
 
-DISTANCE_PRIORITY = {"Ideal": 0, "Good": 1, "Far": 2, "Too Close": 3}
+    cfg = _load_config()
+
+    rx = cfg.get("receiver", {})
+    RX_ANTENNA_GAIN_DBI = rx.get("rx_antenna_gain_dbi", 6.0)
+    SENSITIVITY_DBM = rx.get("sensitivity_dbm", -95.0)
+
+    BROADCAST_BANDS = {
+        band: [tuple(r) for r in ranges]
+        for band, ranges in cfg.get("broadcast_bands", {}).items()
+    }
+
+    ranking = cfg.get("ranking", {})
+    BAND_PRIORITY = ranking.get("band_priority", {"VHF": 0, "UHF": 1, "FM": 2})
+
+    DISTANCE_CLASSES = []
+    for dc in ranking.get("distance_classes", []):
+        max_km = dc["max_km"] if dc["max_km"] is not None else float("inf")
+        DISTANCE_CLASSES.append((dc["label"], dc["min_km"], max_km))
+
+    DISTANCE_PRIORITY = ranking.get("distance_priority", {})
+    SORT_ORDER = ranking.get("sort_order", [
+        {"field": "band_priority", "ascending": True},
+        {"field": "distance_priority", "ascending": True},
+        {"field": "received_power_dbm", "ascending": False},
+    ])
+
+    search = cfg.get("search", {})
+    DEFAULT_RADIUS_KM = search.get("default_radius_km", 80)
+    DEFAULT_LIMIT = search.get("default_limit", 20)
+
+
+# Initialise on import
+reload_config()
 
 
 def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -252,12 +279,22 @@ def process_and_rank(raw_systems: list, user_lat: float, user_lon: float, limit:
             seen[key] = t
     towers = list(seen.values())
 
-    # Sort: band priority → distance priority → received power desc
-    towers.sort(key=lambda t: (
-        BAND_PRIORITY.get(t["band"], 99),
-        DISTANCE_PRIORITY.get(t["distance_class"], 99),
-        -t["received_power_dbm"],
-    ))
+    # Sort using configurable sort order
+    def _sort_key(t):
+        parts = []
+        for rule in SORT_ORDER:
+            field = rule["field"]
+            asc = rule.get("ascending", True)
+            if field == "band_priority":
+                val = BAND_PRIORITY.get(t["band"], 99)
+            elif field == "distance_priority":
+                val = DISTANCE_PRIORITY.get(t["distance_class"], 99)
+            else:
+                val = t.get(field, 0)
+            parts.append(val if asc else -val)
+        return tuple(parts)
+
+    towers.sort(key=_sort_key)
 
     # Assign ranks
     for i, t in enumerate(towers[:limit], 1):

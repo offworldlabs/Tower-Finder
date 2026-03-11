@@ -1,5 +1,25 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
+import { fetchElevation } from "../api";
 import "./SearchForm.css";
+
+/**
+ * Detect the most likely data source based on lat/lon bounding boxes.
+ * Returns "au", "us", "ca", or null if unknown.
+ */
+function detectSource(lat, lon) {
+  if (lat == null || lon == null || isNaN(lat) || isNaN(lon)) return null;
+  // Australia
+  if (lat >= -45 && lat <= -10 && lon >= 112 && lon <= 155) return "au";
+  // Canada — checked before US to include southern Ontario/Quebec (down to 42°N)
+  if (lat >= 42 && lat <= 84 && lon >= -141 && lon <= -52) return "ca";
+  // United States (continental + Alaska + Hawaii)
+  if (lat >= 24 && lat < 49 && lon >= -125 && lon <= -66) return "us";
+  // Alaska
+  if (lat >= 51 && lat <= 72 && lon >= -180 && lon <= -129) return "us";
+  // Hawaii
+  if (lat >= 18 && lat <= 23 && lon >= -161 && lon <= -154) return "us";
+  return null;
+}
 
 export default function SearchForm({ onSearch, loading }) {
   const [lat, setLat] = useState("");
@@ -7,6 +27,31 @@ export default function SearchForm({ onSearch, loading }) {
   const [altitude, setAltitude] = useState("");
   const [source, setSource] = useState("au");
   const [geoError, setGeoError] = useState(null);
+  const altitudeManual = useRef(false);
+
+  // Auto-detect data source when coordinates change
+  useEffect(() => {
+    const parsedLat = parseFloat(lat);
+    const parsedLon = parseFloat(lon);
+    const detected = detectSource(parsedLat, parsedLon);
+    if (detected) setSource(detected);
+  }, [lat, lon]);
+
+  // Auto-lookup elevation when lat/lon change and altitude hasn't been manually set
+  useEffect(() => {
+    if (altitudeManual.current) return;
+    const parsedLat = parseFloat(lat);
+    const parsedLon = parseFloat(lon);
+    if (isNaN(parsedLat) || isNaN(parsedLon)) return;
+
+    let cancelled = false;
+    fetchElevation(parsedLat, parsedLon).then((elev) => {
+      if (!cancelled && elev != null && !altitudeManual.current) {
+        setAltitude(Math.round(elev).toString());
+      }
+    });
+    return () => { cancelled = true; };
+  }, [lat, lon]);
 
   function handleSubmit(e) {
     e.preventDefault();
@@ -80,8 +125,12 @@ export default function SearchForm({ onSearch, loading }) {
             step="any"
             min={0}
             value={altitude}
-            onChange={(e) => setAltitude(e.target.value)}
-            placeholder="Optional"
+            onChange={(e) => {
+              setAltitude(e.target.value);
+              if (e.target.value !== "") altitudeManual.current = true;
+              else altitudeManual.current = false;
+            }}
+            placeholder="Auto-detected"
           />
         </label>
         <label>

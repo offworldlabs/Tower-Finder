@@ -37,6 +37,10 @@ export default function ResultsTable({ towers, onHover }) {
               <th>#</th>
               <th>Callsign</th>
               <th>Location</th>
+              <th>Lat</th>
+              <th>Long</th>
+              <th>Altitude (m)</th>
+              <th>Ant. Height (m)</th>
               <th>Freq (MHz)</th>
               <th>Band</th>
               <th>EIRP</th>
@@ -59,6 +63,10 @@ export default function ResultsTable({ towers, onHover }) {
                   {t.name}
                   {t.state ? `, ${t.state}` : ""}
                 </td>
+                <td className="mono">{t.latitude}</td>
+                <td className="mono">{t.longitude}</td>
+                <td className="mono">{t.altitude_m != null ? t.altitude_m : "—"}</td>
+                <td className="mono">{t.antenna_height_m != null ? t.antenna_height_m : "—"}</td>
                 <td className="mono">{t.frequency_mhz}</td>
                 <td>
                   <span
