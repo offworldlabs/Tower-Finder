@@ -3,6 +3,9 @@ services:
     build: .
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      - /etc/ssl/cloudflare:/etc/ssl/cloudflare:ro
     env_file:
       - backend/.env
     restart: unless-stopped
