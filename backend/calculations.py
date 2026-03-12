@@ -4,6 +4,7 @@ import os
 import re
 
 EARTH_RADIUS_KM = 6371.0
+FREQUENCY_MATCH_TOLERANCE_MHZ = 5.0  # ±5 MHz for user-measured frequency matching
 
 # ── Load configurable settings from tower_config.json ────────────────────
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "tower_config.json")
@@ -215,7 +216,27 @@ def _polygon_centroid(wkt: str) -> tuple[float, float] | None:
     return sum(lats) / len(lats), sum(lngs) / len(lngs)
 
 
-def process_and_rank(raw_systems: list, user_lat: float, user_lon: float, limit: int = 20) -> list:
+def parse_user_frequencies(raw: str, max_count: int = 10) -> list[float]:
+    """Parse a comma-separated string of frequencies in MHz. Returns up to max_count valid values."""
+    if not raw or not raw.strip():
+        return []
+    freqs = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            val = float(part)
+            if 0 < val < 10000:  # reasonable MHz range
+                freqs.append(val)
+        except ValueError:
+            continue
+        if len(freqs) >= max_count:
+            break
+    return freqs
+
+
+def process_and_rank(raw_systems: list, user_lat: float, user_lon: float, limit: int = 20, user_frequencies: list[float] | None = None) -> list:
     """
     Takes raw system records from Maprad, filters and ranks them
     for passive radar suitability.
@@ -252,6 +273,14 @@ def process_and_rank(raw_systems: list, user_lat: float, user_lon: float, limit:
             brg = initial_bearing(user_lat, user_lon, tower_lat, tower_lon)
             dist_class = classify_distance(dist)
 
+            # Check if tower frequency matches any user-measured frequency (±5 MHz)
+            freq_matched = False
+            if user_frequencies:
+                for uf in user_frequencies:
+                    if abs(freq_val - uf) <= FREQUENCY_MATCH_TOLERANCE_MHZ:
+                        freq_matched = True
+                        break
+
             towers.append({
                 "callsign": device.get("callsign") or "",
                 "name": loc.get("name") or "",
@@ -269,6 +298,7 @@ def process_and_rank(raw_systems: list, user_lat: float, user_lon: float, limit:
                 "eirp_dbm": round(eirp, 1),
                 "licence_type": licence.get("type") or "",
                 "licence_subtype": licence.get("subtype") or "",
+                "frequency_matched": freq_matched,
             })
 
     # Deduplicate by (callsign, frequency) — keep the strongest
@@ -280,8 +310,14 @@ def process_and_rank(raw_systems: list, user_lat: float, user_lon: float, limit:
     towers = list(seen.values())
 
     # Sort using configurable sort order
+    # If user frequencies provided, frequency-matched towers sort first
+    has_user_freqs = bool(user_frequencies)
+
     def _sort_key(t):
         parts = []
+        # Frequency match is highest priority when user provided frequencies
+        if has_user_freqs:
+            parts.append(0 if t.get("frequency_matched") else 1)
         for rule in SORT_ORDER:
             field = rule["field"]
             asc = rule.get("ascending", True)

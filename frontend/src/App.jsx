@@ -42,14 +42,14 @@ export default function App() {
   const [error, setError] = useState(null);
   const [highlighted, setHighlighted] = useState(null);
 
-  async function handleSearch({ lat, lon, altitude, source }) {
+  async function handleSearch({ lat, lon, altitude, source, frequencies }) {
     setLoading(true);
     setError(null);
     setTowers([]);
     setQuery(null);
 
     try {
-      const data = await fetchTowers(lat, lon, altitude, 20, source);
+      const data = await fetchTowers(lat, lon, altitude, 20, source, frequencies || []);
       setTowers(data.towers);
       setQuery(data.query);
     } catch (err) {

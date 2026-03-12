@@ -1,6 +1,6 @@
 const API_BASE = "/api";
 
-export async function fetchTowers(lat, lon, altitude = 0, limit = 20, source = "us") {
+export async function fetchTowers(lat, lon, altitude = 0, limit = 20, source = "us", frequencies = []) {
   const params = new URLSearchParams({
     lat: String(lat),
     lon: String(lon),
@@ -8,6 +8,9 @@ export async function fetchTowers(lat, lon, altitude = 0, limit = 20, source = "
     limit: String(limit),
     source,
   });
+  if (frequencies.length > 0) {
+    params.set("frequencies", frequencies.join(","));
+  }
   const res = await fetch(`${API_BASE}/towers?${params}`);
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));

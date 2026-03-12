@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from maprad_client import fetch_broadcast_systems
 from calculations import (
     process_and_rank, reload_config, _CONFIG_PATH,
-    DEFAULT_RADIUS_KM, DEFAULT_LIMIT,
+    DEFAULT_RADIUS_KM, DEFAULT_LIMIT, parse_user_frequencies,
 )
 
 load_dotenv()
@@ -91,6 +91,7 @@ async def find_towers(
     radius_km: int = Query(0, ge=0, le=300, description="Search radius in km (0 = use config default)"),
     limit: int = Query(0, ge=0, le=100, description="Max towers to return (0 = use config default)"),
     source: str = Query("auto", description="Data source: us, au, ca, auto"),
+    frequencies: str = Query("", description="Comma-separated measured frequencies in MHz (up to 10)"),
 ):
     """
     Return nearby broadcast towers ranked for passive-radar suitability.
@@ -108,6 +109,9 @@ async def find_towers(
     effective_radius = radius_km if radius_km > 0 else DEFAULT_RADIUS_KM
     effective_limit = limit if limit > 0 else DEFAULT_LIMIT
 
+    # Parse user-measured frequencies (up to 10)
+    user_freqs = parse_user_frequencies(frequencies)
+
     try:
         raw = await fetch_broadcast_systems(
             API_KEY, lat, lon, radius_km=effective_radius, source=source,
@@ -123,7 +127,7 @@ async def find_towers(
         if elev is not None:
             resolved_altitude = elev
 
-    towers = process_and_rank(raw, lat, lon, limit=effective_limit)
+    towers = process_and_rank(raw, lat, lon, limit=effective_limit, user_frequencies=user_freqs)
 
     # Enrich towers with ground elevation and total altitude above sea level
     tower_coords = [(t["latitude"], t["longitude"]) for t in towers]
@@ -147,6 +151,7 @@ async def find_towers(
             "altitude_m": resolved_altitude,
             "radius_km": effective_radius,
             "source": source,
+            "user_frequencies_mhz": user_freqs,
         },
         "count": len(towers),
     }

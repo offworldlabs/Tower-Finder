@@ -25,9 +25,11 @@ export default function SearchForm({ onSearch, loading }) {
   const [lat, setLat] = useState("");
   const [lon, setLon] = useState("");
   const [altitude, setAltitude] = useState("");
-  const [source, setSource] = useState("au");
+  const [source, setSource] = useState("us");
   const [geoError, setGeoError] = useState(null);
   const altitudeManual = useRef(false);
+  const [frequencies, setFrequencies] = useState([""]);
+  const [showFrequencies, setShowFrequencies] = useState(false);
 
   // Auto-detect data source when coordinates change
   useEffect(() => {
@@ -58,11 +60,15 @@ export default function SearchForm({ onSearch, loading }) {
     const parsedLat = parseFloat(lat);
     const parsedLon = parseFloat(lon);
     if (isNaN(parsedLat) || isNaN(parsedLon)) return;
+    const parsedFreqs = frequencies
+      .map((f) => parseFloat(f))
+      .filter((f) => !isNaN(f) && f > 0);
     onSearch({
       lat: parsedLat,
       lon: parsedLon,
       altitude: parseFloat(altitude) || 0,
       source,
+      frequencies: parsedFreqs,
     });
   }
 
@@ -136,12 +142,65 @@ export default function SearchForm({ onSearch, loading }) {
         <label>
           Data Source
           <select value={source} onChange={(e) => setSource(e.target.value)}>
-            <option value="au">Australia (ACMA)</option>
             <option value="us">United States (FCC)</option>
             <option value="ca">Canada (ISED)</option>
+            <option value="au">Australia (ACMA)</option>
           </select>
         </label>
       </div>
+
+      <div className="freq-toggle">
+        <button
+          type="button"
+          className="btn-link"
+          onClick={() => setShowFrequencies(!showFrequencies)}
+        >
+          {showFrequencies ? "Hide" : "Add"} Measured Frequencies
+        </button>
+      </div>
+
+      {showFrequencies && (
+        <div className="freq-section">
+          <label className="freq-label">Measured Frequencies (MHz)</label>
+          <div className="freq-inputs">
+            {frequencies.map((freq, i) => (
+              <div key={i} className="freq-row">
+                <input
+                  type="number"
+                  step="any"
+                  min={0}
+                  value={freq}
+                  onChange={(e) => {
+                    const updated = [...frequencies];
+                    updated[i] = e.target.value;
+                    setFrequencies(updated);
+                  }}
+                  placeholder={`Freq ${i + 1} (MHz)`}
+                />
+                {frequencies.length > 1 && (
+                  <button
+                    type="button"
+                    className="btn-remove-freq"
+                    onClick={() => setFrequencies(frequencies.filter((_, j) => j !== i))}
+                    title="Remove"
+                  >
+                    &times;
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+          {frequencies.length < 10 && (
+            <button
+              type="button"
+              className="btn-add-freq"
+              onClick={() => setFrequencies([...frequencies, ""])}
+            >
+              + Add Frequency
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="form-actions">
         <button type="submit" className="btn-primary" disabled={loading}>

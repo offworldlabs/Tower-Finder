@@ -322,6 +322,78 @@ empty_result = asyncio.run(_batch_lookup_elevations([]))
 check("Empty coords returns empty dict", empty_result == {})
 
 
+# ─── 15. Broadcast band classification (FM/VHF/UHF) ─────────────────────────
+section("15. Broadcast band classification (FM / VHF / UHF)")
+from calculations import classify_band
+check("FM low edge 87.8", classify_band(87.8) == "FM")
+check("FM high edge 108.0", classify_band(108.0) == "FM")
+check("FM mid 95.5", classify_band(95.5) == "FM")
+check("Below FM 87.7 → None", classify_band(87.7) is None)
+check("VHF low edge 174", classify_band(174) == "VHF")
+check("VHF high edge 216", classify_band(216) == "VHF")
+check("VHF mid 195", classify_band(195) == "VHF")
+check("Gap 108.1-173.9 → None", classify_band(140) is None)
+check("UHF low edge 470", classify_band(470) == "UHF")
+check("UHF high edge 608", classify_band(608) == "UHF")
+check("UHF mid 550", classify_band(550) == "UHF")
+check("Above UHF 609 → None", classify_band(609) is None)
+
+
+# ─── 16. User frequency parsing ──────────────────────────────────────────────
+section("16. User frequency parsing")
+from calculations import parse_user_frequencies
+check("Empty string → []", parse_user_frequencies("") == [])
+check("Single freq", parse_user_frequencies("95.5") == [95.5])
+check("Multiple freqs", parse_user_frequencies("95.5, 177.5, 500") == [95.5, 177.5, 500])
+check("Trailing comma", parse_user_frequencies("95.5,") == [95.5])
+check("Invalid values skipped", parse_user_frequencies("abc, 95.5, xyz") == [95.5])
+check("Max 10 enforced", len(parse_user_frequencies(",".join(str(i) for i in range(1, 20)))) == 10)
+check("Zero skipped", parse_user_frequencies("0, 95.5") == [95.5])
+check("Negative skipped", parse_user_frequencies("-5, 95.5") == [95.5])
+
+
+# ─── 17. Frequency match in ranking ──────────────────────────────────────────
+section("17. Frequency match in ranking")
+with open("/Users/admin/Tower-Finder/backend/main.py") as f:
+    main_py_freqs = f.read()
+check("frequencies param in towers endpoint", "frequencies" in main_py_freqs)
+check("parse_user_frequencies imported", "parse_user_frequencies" in main_py_freqs)
+check("user_frequencies passed to process_and_rank", "user_frequencies=user_freqs" in main_py_freqs)
+check("user_frequencies_mhz in response", "user_frequencies_mhz" in main_py_freqs)
+
+with open("/Users/admin/Tower-Finder/backend/calculations.py") as f:
+    calc_py = f.read()
+check("FREQUENCY_MATCH_TOLERANCE_MHZ defined", "FREQUENCY_MATCH_TOLERANCE_MHZ" in calc_py)
+check("frequency_matched field in tower dict", "frequency_matched" in calc_py)
+check("Frequency match sorts first", "frequency_matched" in calc_py)
+
+
+# ─── 18. USA default country ─────────────────────────────────────────────────
+section("18. USA default country in frontend")
+with open("/Users/admin/Tower-Finder/frontend/src/components/SearchForm.jsx") as f:
+    sf_jsx = f.read()
+check("Default source is 'us'", 'useState("us")' in sf_jsx)
+check("US is first dropdown option", sf_jsx.index('value="us"') < sf_jsx.index('value="ca"'))
+check("CA before AU in dropdown", sf_jsx.index('value="ca"') < sf_jsx.index('value="au"'))
+
+
+# ─── 19. Frequency input in frontend ─────────────────────────────────────────
+section("19. Frequency input in frontend")
+check("Frequencies state in SearchForm", "frequencies" in sf_jsx)
+check("showFrequencies toggle", "showFrequencies" in sf_jsx)
+check("Max 10 frequencies enforced in UI", "frequencies.length < 10" in sf_jsx)
+check("Frequency passed to onSearch", "frequencies: parsedFreqs" in sf_jsx)
+
+with open("/Users/admin/Tower-Finder/frontend/src/api.js") as f:
+    api_js = f.read()
+check("frequencies param in fetchTowers", "frequencies" in api_js)
+
+with open("/Users/admin/Tower-Finder/frontend/src/components/ResultsTable.jsx") as f:
+    rt_jsx = f.read()
+check("frequency_matched badge in table", "frequency_matched" in rt_jsx)
+check("freq-match-badge class", "freq-match-badge" in rt_jsx)
+
+
 # ─── Summary ──────────────────────────────────────────────────────────────────
 section("SUMMARY")
 total = 0

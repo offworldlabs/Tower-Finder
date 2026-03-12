@@ -67,7 +67,12 @@ export default function ResultsTable({ towers, onHover }) {
                 <td className="mono">{t.longitude}</td>
                 <td className="mono">{t.altitude_m != null ? t.altitude_m : "—"}</td>
                 <td className="mono">{t.antenna_height_m != null ? t.antenna_height_m : "—"}</td>
-                <td className="mono">{t.frequency_mhz}</td>
+                <td className="mono">
+                  {t.frequency_mhz}
+                  {t.frequency_matched && (
+                    <span className="freq-match-badge" title="Matches measured frequency">&#10003;</span>
+                  )}
+                </td>
                 <td>
                   <span
                     className="badge"

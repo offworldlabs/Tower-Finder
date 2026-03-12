@@ -104,3 +104,11 @@
   font-weight: 600;
   letter-spacing: 0.02em;
 }
+
+.freq-match-badge {
+  display: inline-block;
+  margin-left: 4px;
+  color: #16a34a;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
