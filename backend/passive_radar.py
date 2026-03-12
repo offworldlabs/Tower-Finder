@@ -334,8 +334,7 @@ class PassiveRadarPipeline:
                 "track": round(track.track_angle, 1),
                 "lat": round(track.lat, 6),
                 "lon": round(track.lon, 6),
-                "seen": round((now * 1000 - track.last_update_ms) / 1000, 1)
-                        if track.last_update_ms > 1e12 else 0,
+                "seen": 0,
                 "seen_pos": 0,
                 "messages": track.n_detections,
                 "rssi": -10.0,
