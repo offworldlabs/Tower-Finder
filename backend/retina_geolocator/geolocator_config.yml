@@ -1,0 +1,67 @@
+# Retina Geolocator Configuration
+# ================================
+# Single-node passive radar geolocation parameters
+
+# Solver parameters
+solver:
+  # Antenna configuration
+  beamwidth_deg: 48            # Yagi antenna 3dB beamwidth (degrees)
+                               # 12-element Yagi typical beamwidth: 48°
+
+  # Optimization bounds
+  altitude_bounds: [50, 15000] # Min/max altitude (meters ASL)
+  velocity_bounds: [-400, 400] # Min/max velocity components (m/s)
+
+  # Track filtering
+  min_detections: 3            # Minimum detections required per track
+  max_detections: 20           # Maximum detections to use (for processing speed)
+
+  # Temporal continuity
+  temporal_continuity: true    # Use previous solution as initial guess
+                               # Improves convergence for short tracks
+
+  # Initial guess parameters
+  initial_altitude_m: 1000     # Default altitude for initial guess (meters ASL)
+
+  # ADS-B assisted initial guess (requires retina-tracker with ADS-B integration)
+  # Benefits: 50-70% fewer iterations, better altitude/velocity initialization
+  use_adsb_initial_guess: true        # Enable ADS-B-based initial guess when available
+                                      # Uses position, velocity from ADS-B for starting point
+
+  adsb_fallback_to_geometric: true    # Automatically use geometric guess if ADS-B unavailable/invalid
+                                      # Recommended: true (ensures robustness)
+
+  validate_against_adsb: true         # Add ADS-B comparison fields to output
+                                      # Includes: distance_error_m, altitude_error_m, velocity_error_ms
+                                      # Useful for quality assessment and validation
+
+  # LM solver settings
+  ftol: 1.0e-8                 # Function tolerance
+  xtol: 1.0e-8                 # Parameter tolerance
+  max_iterations: 1000         # Maximum LM iterations
+
+  # Success criteria
+  max_rms_delay_us: 2.0        # Maximum RMS delay error (microseconds)
+  max_rms_doppler_hz: 2.0      # Maximum RMS Doppler error (Hz)
+
+# Radar system configuration paths
+# Priority order: primary → fallback → error
+radar_config:
+  primary: /opt/blah2/config/config.yml      # Production system path
+  fallback: radar_config.yml                 # Local fallback (bundled with geolocator)
+
+  # If both fail, solver will error and instruct user to:
+  # 1. Copy system config.yml to data/config/radar_config.yml, or
+  # 2. Update this path to point to correct location
+
+# Output configuration
+output:
+  format: jsonl                # Output format: jsonl (JSON Lines)
+  directory: data/output       # Output directory
+  verbose: true                # Print processing status
+
+# Plotting configuration (optional)
+plotting:
+  enabled: false               # Generate plots for results
+  output_dir: data/plots       # Plot output directory
+  dpi: 150                     # Plot resolution

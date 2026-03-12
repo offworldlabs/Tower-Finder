@@ -1,9 +1,9 @@
 """
 Passive Radar Detection Pipeline
-Reads .detection files, tracks targets, geolocates on bistatic ellipse,
-and outputs tar1090-compatible aircraft.json.
+Uses retina-tracker (Kalman+GNN) and retina-geolocator (LM solver)
+to process detection data and output tar1090-compatible aircraft.json.
 
-Pipeline: detection data → tracker → geolocator → tar1090 JSON
+Pipeline: detection data → retina-tracker → retina-geolocator → tar1090 JSON
 """
 
 import json
@@ -11,12 +11,31 @@ import math
 import os
 import time
 import glob
+import io
 from pathlib import Path
 from typing import Optional
 
+import yaml
+
+import numpy as np
+
+from retina_tracker.tracker import Tracker as RetinaTracker
+from retina_tracker.output import TrackEventWriter
+
+from retina_geolocator import (
+    Geometry,
+    calculate_baseline_geometry,
+    generate_initial_guess,
+    select_initial_guess,
+    solve_track,
+    load_config as load_radar_config,
+    load_geolocator_config,
+    Detection as GeoDetection,
+    Track as GeoTrack,
+)
+
 # ─── Constants ───────────────────────────────────────────────────────
 C = 299_792_458.0  # speed of light m/s
-EARTH_RADIUS_M = 6_371_000.0
 FT_TO_M = 0.3048
 
 # ─── Node Configuration ─────────────────────────────────────────────
@@ -36,247 +55,225 @@ DEFAULT_NODE_CONFIG = {
 }
 
 
-def haversine(lat1, lon1, lat2, lon2):
-    """Distance in meters between two lat/lon points."""
-    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    return 2 * EARTH_RADIUS_M * math.asin(math.sqrt(a))
+class InMemoryEventWriter:
+    """Captures track events in memory instead of writing to file."""
+
+    def __init__(self):
+        self.events = {}  # track_id → latest event dict
+
+    def write_event(self, track_id, timestamp, length, detections,
+                    adsb_hex=None, adsb_initialized=False,
+                    is_anomalous=False, max_velocity_ms=0.0):
+        self.events[track_id] = {
+            "track_id": track_id,
+            "timestamp": timestamp,
+            "length": length,
+            "detections": detections,
+            "adsb_hex": adsb_hex,
+            "adsb_initialized": adsb_initialized,
+            "is_anomalous": is_anomalous,
+            "max_velocity_ms": max_velocity_ms,
+        }
+
+    def get_events(self):
+        return self.events
 
 
-def bearing(lat1, lon1, lat2, lon2):
-    """Initial bearing from point 1 to point 2, in radians."""
-    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
-    dlon = lon2 - lon1
-    x = math.sin(dlon) * math.cos(lat2)
-    y = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dlon)
-    return math.atan2(x, y)
+def _enu_to_lla(enu_km, rx_lat, rx_lon, rx_alt):
+    """Convert ENU position (km) to LLA coordinates."""
+    enu_m = (enu_km[0] * 1000, enu_km[1] * 1000, enu_km[2] * 1000)
+    ecef = Geometry.enu2ecef(enu_m[0], enu_m[1], enu_m[2], rx_lat, rx_lon, rx_alt)
+    return Geometry.ecef2lla(ecef[0], ecef[1], ecef[2])
 
 
-def dest_point(lat, lon, bearing_rad, distance_m):
-    """Destination point given start, bearing, distance."""
-    lat = math.radians(lat)
-    lon = math.radians(lon)
-    d = distance_m / EARTH_RADIUS_M
-    new_lat = math.asin(
-        math.sin(lat) * math.cos(d) + math.cos(lat) * math.sin(d) * math.cos(bearing_rad)
-    )
-    new_lon = lon + math.atan2(
-        math.sin(bearing_rad) * math.sin(d) * math.cos(lat),
-        math.cos(d) - math.sin(lat) * math.sin(new_lat),
-    )
-    return math.degrees(new_lat), math.degrees(new_lon)
+class GeolocatedTrack:
+    """A track that has been geolocated by the LM solver."""
 
-
-# ─── Bistatic Geometry ──────────────────────────────────────────────
-
-class BistaticGeometry:
-    """Computes positions on a bistatic ellipse defined by TX and RX locations."""
-
-    def __init__(self, config: dict):
-        self.tx_lat = config["tx_lat"]
-        self.tx_lon = config["tx_lon"]
-        self.rx_lat = config["rx_lat"]
-        self.rx_lon = config["rx_lon"]
-        self.Fs = config["Fs"]
-        self.FC = config["FC"]
-        self.baseline_m = haversine(self.tx_lat, self.tx_lon, self.rx_lat, self.rx_lon)
-        self.midpoint_lat = (self.tx_lat + self.rx_lat) / 2
-        self.midpoint_lon = (self.tx_lon + self.rx_lon) / 2
-        self.baseline_bearing = bearing(self.tx_lat, self.tx_lon, self.rx_lat, self.rx_lon)
-
-    def delay_to_bistatic_range(self, delay_bins: float) -> float:
-        """Convert delay bins to bistatic range excess in meters.
-        delay_bins * (c / Fs) gives the extra path length beyond the baseline."""
-        return delay_bins * (C / self.Fs)
-
-    def point_on_ellipse(self, delay_bins: float, theta: float):
-        """Get lat/lon for a point on the bistatic ellipse.
-
-        Args:
-            delay_bins: delay value from detection
-            theta: angle parameter (radians, 0 = perpendicular bisector of baseline)
-
-        Returns:
-            (lat, lon) of the point
-        """
-        range_excess = self.delay_to_bistatic_range(delay_bins)
-        total_path = self.baseline_m + range_excess
-        a = total_path / 2  # semi-major axis
-        c_half = self.baseline_m / 2  # half-focal distance
-
-        if a <= c_half:
-            return self.midpoint_lat, self.midpoint_lon
-
-        b = math.sqrt(a * a - c_half * c_half)  # semi-minor axis
-
-        # Ellipse in local coords (x along baseline, y perpendicular)
-        x_local = a * math.cos(theta)
-        y_local = b * math.sin(theta)
-
-        # Convert to distance/bearing from midpoint
-        dist = math.sqrt(x_local ** 2 + y_local ** 2)
-        local_angle = math.atan2(y_local, x_local)
-        world_bearing = self.baseline_bearing + local_angle
-
-        return dest_point(self.midpoint_lat, self.midpoint_lon, world_bearing, dist)
-
-    def estimate_theta_from_doppler(self, delay_bins: float, doppler_hz: float) -> float:
-        """Estimate the ellipse angle parameter from Doppler shift.
-
-        Uses the Doppler to bias the position. Positive Doppler → approaching
-        (closer to one focus), negative → receding. Maps to theta roughly."""
-        doppler_max = 300.0
-        normalized = max(-1.0, min(1.0, doppler_hz / doppler_max))
-        # Map to theta: 0 is perpendicular, ±π/2 toward foci
-        return normalized * (math.pi / 3)
-
-    def geolocate(self, delay_bins: float, doppler_hz: float):
-        """Geolocate a detection to lat/lon.
-
-        Returns:
-            (lat, lon, speed_estimate_knots)
-        """
-        theta = self.estimate_theta_from_doppler(delay_bins, doppler_hz)
-        lat, lon = self.point_on_ellipse(delay_bins, theta)
-
-        # Estimate ground speed from Doppler
-        wavelength = C / self.FC
-        # Bistatic doppler ≈ fd = v/λ * (cos α + cos β)
-        # For approximate speed, assume cos factors ≈ 1.2 average
-        speed_ms = abs(doppler_hz) * wavelength / 1.2
-        speed_knots = speed_ms * 1.94384
-
-        return lat, lon, speed_knots
-
-
-# ─── Tracker ─────────────────────────────────────────────────────────
-
-class Track:
-    """A tracked target in delay-doppler space."""
-
-    _next_id = 1
-
-    def __init__(self, delay: float, doppler: float, snr: float, timestamp_ms: int):
-        self.track_id = Track._next_id
-        Track._next_id += 1
-        self.hex_id = f"pr{self.track_id:04x}"
-        self.delay = delay
-        self.doppler = doppler
-        self.snr = snr
+    def __init__(self, track_id, lat, lon, alt_m, vel_east, vel_north, vel_up,
+                 rms_delay, rms_doppler, n_detections, timestamp_ms,
+                 adsb_hex=None):
+        self.track_id = track_id
+        self.hex_id = f"pr{abs(hash(track_id)) % 0xFFFF:04x}"
+        self.lat = lat
+        self.lon = lon
+        self.alt_m = alt_m
+        self.vel_east = vel_east    # m/s
+        self.vel_north = vel_north  # m/s
+        self.vel_up = vel_up        # m/s
+        self.rms_delay = rms_delay
+        self.rms_doppler = rms_doppler
+        self.n_detections = n_detections
         self.last_update_ms = timestamp_ms
-        self.first_seen_ms = timestamp_ms
-        self.hit_count = 1
-        self.miss_count = 0
-        self.confirmed = False
-        self.lat: Optional[float] = None
-        self.lon: Optional[float] = None
-        self.speed_knots: Optional[float] = None
-        self.track_angle: Optional[float] = None
-
-    def distance_to(self, delay: float, doppler: float) -> float:
-        """Gate distance in normalized delay-doppler space."""
-        dd = (self.delay - delay) / 5.0       # normalize delay (range ~60)
-        df = (self.doppler - doppler) / 50.0   # normalize doppler (range ~600)
-        return math.sqrt(dd * dd + df * df)
-
-    def update(self, delay: float, doppler: float, snr: float, timestamp_ms: int):
-        """Update track with new detection."""
-        alpha = 0.3  # smoothing factor
-        self.delay = self.delay * (1 - alpha) + delay * alpha
-        self.doppler = self.doppler * (1 - alpha) + doppler * alpha
-        self.snr = snr
-        self.last_update_ms = timestamp_ms
-        self.hit_count += 1
-        self.miss_count = 0
-        if self.hit_count >= 3:
-            self.confirmed = True
-
-    def predict(self, timestamp_ms: int):
-        """Coast the track (no update this frame)."""
-        self.miss_count += 1
+        self.adsb_hex = adsb_hex
 
     @property
-    def is_dead(self) -> bool:
-        return self.miss_count > 10
+    def speed_knots(self):
+        speed_ms = math.sqrt(self.vel_east ** 2 + self.vel_north ** 2)
+        return speed_ms * 1.94384
 
     @property
-    def age_seconds(self) -> float:
-        return (self.last_update_ms - self.first_seen_ms) / 1000.0
+    def track_angle(self):
+        angle = math.degrees(math.atan2(self.vel_east, self.vel_north))
+        return angle % 360
+
+    @property
+    def alt_ft(self):
+        return self.alt_m / FT_TO_M
 
 
-class Tracker:
-    """Simple nearest-neighbor tracker in delay-doppler space."""
-
-    GATE_THRESHOLD = 2.0  # normalized distance threshold
-
-    def __init__(self, snr_threshold: float = 6.0, min_doppler: float = 15.0):
-        self.tracks: list[Track] = []
-        self.snr_threshold = snr_threshold
-        self.min_doppler = min_doppler
-
-    def update(self, detections: list[dict], timestamp_ms: int):
-        """Process one frame of detections.
-
-        Args:
-            detections: list of {"delay": float, "doppler": float, "snr": float}
-            timestamp_ms: frame timestamp
-        """
-        # Filter by SNR and min doppler (remove zero-doppler clutter)
-        valid = [
-            d for d in detections
-            if d["snr"] >= self.snr_threshold and abs(d["doppler"]) >= self.min_doppler
-        ]
-
-        used = set()
-        for det in valid:
-            best_track = None
-            best_dist = self.GATE_THRESHOLD
-
-            for i, track in enumerate(self.tracks):
-                if i in used:
-                    continue
-                dist = track.distance_to(det["delay"], det["doppler"])
-                if dist < best_dist:
-                    best_dist = dist
-                    best_track = track
-
-            if best_track is not None:
-                best_track.update(det["delay"], det["doppler"], det["snr"], timestamp_ms)
-                used.add(self.tracks.index(best_track))
-            else:
-                # Start new track
-                self.tracks.append(
-                    Track(det["delay"], det["doppler"], det["snr"], timestamp_ms)
-                )
-
-        # Coast unmatched tracks
-        for i, track in enumerate(self.tracks):
-            if i not in used:
-                track.predict(timestamp_ms)
-
-        # Remove dead tracks
-        self.tracks = [t for t in self.tracks if not t.is_dead]
-
-    def get_confirmed_tracks(self) -> list[Track]:
-        return [t for t in self.tracks if t.confirmed]
-
-
-# ─── Pipeline: Detection → Track → Geolocate → tar1090 JSON ────────
+# ─── Pipeline: Detection → retina-tracker → retina-geolocator → tar1090 ────
 
 class PassiveRadarPipeline:
-    """Full pipeline from detection files to tar1090 aircraft.json."""
+    """Full pipeline using retina-tracker and retina-geolocator."""
 
     def __init__(self, node_config: dict = None):
         config = node_config or DEFAULT_NODE_CONFIG
         self.config = config
-        self.geometry = BistaticGeometry(config)
-        self.tracker = Tracker(
-            snr_threshold=6.0,
-            min_doppler=config.get("min_doppler", 15.0),
-        )
         self.node_id = config.get("node_id", "net13")
+
+        # Set up retina-tracker with in-memory event writer
+        self.event_writer = InMemoryEventWriter()
+
+        # Load tracker config
+        tracker_config_path = os.path.join(
+            os.path.dirname(__file__), "retina_tracker", "config.yaml"
+        )
+        tracker_config = {}
+        if os.path.exists(tracker_config_path):
+            with open(tracker_config_path, "r") as f:
+                tracker_config = yaml.safe_load(f)
+
+        self.tracker = RetinaTracker(
+            event_writer=self.event_writer,
+            detection_window=tracker_config.get("tracker", {}).get("detection_window", 20),
+            config=tracker_config,
+        )
+
+        # Set up geolocator
+        self._init_geolocator(config)
+
+        # Store geolocated tracks
+        self.geolocated_tracks = {}  # track_id → GeolocatedTrack
+        self._previous_solutions = {}  # track_id → state vector
+
+    def _init_geolocator(self, config):
+        """Initialize geolocator geometry and config."""
+        rx_alt_m = config["rx_alt_ft"] * FT_TO_M
+        tx_alt_m = config["tx_alt_ft"] * FT_TO_M
+
+        self.rx_lla = (config["rx_lat"], config["rx_lon"], rx_alt_m)
+        self.tx_lla = (config["tx_lat"], config["tx_lon"], tx_alt_m)
+        self.frequency = config["FC"]
+
+        # Calculate baseline geometry (antenna boresight, baseline distance, etc.)
+        self.geometry = calculate_baseline_geometry(self.rx_lla, self.tx_lla)
+
+        # Compute TX position in ENU (km) relative to RX
+        tx_ecef = Geometry.lla2ecef(self.tx_lla[0], self.tx_lla[1], self.tx_lla[2])
+        tx_enu_m = Geometry.ecef2enu(
+            tx_ecef[0], tx_ecef[1], tx_ecef[2],
+            self.rx_lla[0], self.rx_lla[1], self.rx_lla[2],
+        )
+        self.tx_enu = (tx_enu_m[0] / 1000, tx_enu_m[1] / 1000, tx_enu_m[2] / 1000)
+        self.rx_enu = (0, 0, 0)
+
+        # Load geolocator config
+        geo_config_path = os.path.join(
+            os.path.dirname(__file__), "retina_geolocator", "geolocator_config.yml"
+        )
+        if os.path.exists(geo_config_path):
+            self.geo_config = load_geolocator_config(geo_config_path)
+        else:
+            self.geo_config = None
+
+    def _geolocate_track_event(self, track_id, event):
+        """Run LM solver on a track event to get lat/lon/alt/velocity."""
+        detections_data = event.get("detections", [])
+
+        min_det = 3
+        if self.geo_config:
+            min_det = self.geo_config.min_detections
+
+        if len(detections_data) < min_det:
+            return None
+
+        # Build geolocator Detection objects
+        geo_detections = []
+        for d in detections_data:
+            geo_detections.append(GeoDetection(
+                timestamp=d["timestamp"],
+                delay=d["delay"],
+                doppler=d["doppler"],
+                snr=d.get("snr", 0),
+                adsb=d.get("adsb"),
+            ))
+
+        # Build geolocator Track object
+        geo_track = GeoTrack(track_id, geo_detections, event)
+
+        # Generate initial guess
+        if (self.geo_config and self.geo_config.temporal_continuity
+                and track_id in self._previous_solutions):
+            initial_guess = self._previous_solutions[track_id]
+        else:
+            if self.geo_config:
+                initial_guess, _ = select_initial_guess(
+                    geo_track,
+                    self.tx_enu,
+                    self.geometry["antenna_boresight_vector"],
+                    self.frequency,
+                    self.geo_config,
+                    self.rx_lla,
+                )
+            else:
+                initial_guess = generate_initial_guess(
+                    geo_track, self.tx_enu,
+                    self.geometry["antenna_boresight_vector"],
+                    self.frequency,
+                )
+
+        # Solve
+        result = solve_track(
+            geo_track,
+            initial_guess,
+            self.tx_enu,
+            self.rx_enu,
+            self.frequency,
+            self.geometry["antenna_boresight"],
+            self.rx_lla[2],  # rx_alt_m
+        )
+
+        if not result["success"]:
+            return None
+
+        # Store solution for temporal continuity
+        self._previous_solutions[track_id] = result["state"]
+
+        # Convert ENU (km) → LLA
+        final_enu_km = result["state"][:3]
+        lat, lon, alt = _enu_to_lla(final_enu_km, *self.rx_lla)
+
+        return GeolocatedTrack(
+            track_id=track_id,
+            lat=lat,
+            lon=lon,
+            alt_m=alt,
+            vel_east=result["state"][3],
+            vel_north=result["state"][4],
+            vel_up=result["state"][5],
+            rms_delay=result["rms_delay"],
+            rms_doppler=result["rms_doppler"],
+            n_detections=len(geo_detections),
+            timestamp_ms=event["timestamp"],
+            adsb_hex=event.get("adsb_hex"),
+        )
+
+    def _run_geolocation(self):
+        """Run geolocation on all track events from the event writer."""
+        for track_id, event in self.event_writer.get_events().items():
+            result = self._geolocate_track_event(track_id, event)
+            if result is not None:
+                self.geolocated_tracks[track_id] = result
 
     def process_frame(self, frame: dict):
         """Process a single detection frame {timestamp, delay[], doppler[], snr[]}."""
@@ -290,25 +287,16 @@ class PassiveRadarPipeline:
             for d, f, s in zip(delays, dopplers, snrs)
         ]
 
-        self.tracker.update(detections, ts)
+        # Feed to retina-tracker (Kalman + GNN)
+        self.tracker.process_frame(detections, ts)
 
-        # Geolocate confirmed tracks
-        for track in self.tracker.get_confirmed_tracks():
-            lat, lon, speed = self.geometry.geolocate(track.delay, track.doppler)
-            track.lat = lat
-            track.lon = lon
-            track.speed_knots = speed
-            # Estimate track angle from Doppler sign
-            if track.doppler > 0:
-                track.track_angle = (math.degrees(self.geometry.baseline_bearing) + 90) % 360
-            else:
-                track.track_angle = (math.degrees(self.geometry.baseline_bearing) - 90) % 360
+        # Run geolocation on updated track events
+        self._run_geolocation()
 
-    def process_file(self, filepath: str) -> list[Track]:
-        """Process an entire .detection file. Returns confirmed tracks after processing."""
+    def process_file(self, filepath: str) -> list:
+        """Process an entire .detection file. Returns geolocated tracks."""
         with open(filepath, "r") as f:
             content = f.read().strip()
-            # Detection files are JSON arrays (may lack outer brackets)
             if not content.startswith("["):
                 content = "[" + content + "]"
             frames = json.loads(content)
@@ -316,38 +304,38 @@ class PassiveRadarPipeline:
         for frame in frames:
             self.process_frame(frame)
 
-        return self.tracker.get_confirmed_tracks()
+        return list(self.geolocated_tracks.values())
 
     def generate_aircraft_json(self) -> dict:
-        """Generate tar1090-compatible aircraft.json from current tracked targets."""
+        """Generate tar1090-compatible aircraft.json from geolocated tracks."""
         now = time.time()
         aircraft = []
 
-        for track in self.tracker.get_confirmed_tracks():
-            if track.lat is None:
-                continue
-
+        for track in self.geolocated_tracks.values():
             ac = {
                 "hex": track.hex_id,
                 "type": "tisb_other",
-                "flight": f"PR{track.track_id:04d} ",  # 8 chars padded
-                "alt_baro": 10000,  # estimated altitude (passive radar can't determine)
-                "alt_geom": 10000,
-                "gs": round(track.speed_knots, 1) if track.speed_knots else 0,
-                "track": round(track.track_angle, 1) if track.track_angle else 0,
+                "flight": f"PR{abs(hash(track.track_id)) % 10000:04d} ",
+                "alt_baro": round(track.alt_ft),
+                "alt_geom": round(track.alt_ft),
+                "gs": round(track.speed_knots, 1),
+                "track": round(track.track_angle, 1),
                 "lat": round(track.lat, 6),
                 "lon": round(track.lon, 6),
-                "seen": 0,
+                "seen": round((now * 1000 - track.last_update_ms) / 1000, 1)
+                        if track.last_update_ms > 1e12 else 0,
                 "seen_pos": 0,
-                "messages": track.hit_count,
-                "rssi": -round(50 - track.snr, 1),
+                "messages": track.n_detections,
+                "rssi": -10.0,
                 "category": "A3",
             }
+            if track.adsb_hex:
+                ac["hex"] = track.adsb_hex
             aircraft.append(ac)
 
         return {
             "now": now,
-            "messages": sum(t.hit_count for t in self.tracker.tracks),
+            "messages": sum(t.n_detections for t in self.geolocated_tracks.values()),
             "aircraft": aircraft,
         }
 
@@ -363,13 +351,7 @@ class PassiveRadarPipeline:
 
 
 def process_detection_folder(folder: str, output_dir: str, node_config: dict = None):
-    """Process all .detection files in a folder and write tar1090 JSON to output_dir.
-
-    Args:
-        folder: path to folder containing .detection files
-        output_dir: path for tar1090 data/ output (aircraft.json, receiver.json)
-        node_config: optional node configuration dict
-    """
+    """Process all .detection files in a folder and write tar1090 JSON to output_dir."""
     pipeline = PassiveRadarPipeline(node_config)
 
     detection_files = sorted(glob.glob(os.path.join(folder, "*.detection")))
@@ -379,22 +361,19 @@ def process_detection_folder(folder: str, output_dir: str, node_config: dict = N
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Write receiver.json once
     receiver = pipeline.generate_receiver_json()
     with open(os.path.join(output_dir, "receiver.json"), "w") as f:
         json.dump(receiver, f)
 
-    # Process each detection file
     for filepath in detection_files:
         print(f"Processing: {os.path.basename(filepath)}")
         pipeline.process_file(filepath)
 
-    # Write final aircraft.json
     aircraft_data = pipeline.generate_aircraft_json()
     with open(os.path.join(output_dir, "aircraft.json"), "w") as f:
         json.dump(aircraft_data, f)
 
-    print(f"Output: {len(aircraft_data['aircraft'])} tracked targets")
+    print(f"Output: {len(aircraft_data['aircraft'])} geolocated targets")
     return aircraft_data
 
 

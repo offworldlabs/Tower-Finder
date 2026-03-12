@@ -341,11 +341,11 @@ async def load_detection_file(body: dict = Body(...)):
 @app.get("/api/radar/status")
 async def radar_status():
     """Return current passive radar pipeline status."""
-    confirmed = _radar_pipeline.tracker.get_confirmed_tracks()
     return {
         "node_id": _radar_pipeline.node_id,
         "total_tracks": len(_radar_pipeline.tracker.tracks),
-        "confirmed_tracks": len(confirmed),
+        "geolocated_tracks": len(_radar_pipeline.geolocated_tracks),
+        "track_events": len(_radar_pipeline.event_writer.get_events()),
         "config": {
             "rx_lat": _radar_pipeline.config["rx_lat"],
             "rx_lon": _radar_pipeline.config["rx_lon"],
