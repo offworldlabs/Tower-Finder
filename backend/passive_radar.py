@@ -301,8 +301,20 @@ class PassiveRadarPipeline:
                 content = "[" + content + "]"
             frames = json.loads(content)
 
+        # Feed all frames to tracker only (skip per-frame geolocation for batch)
         for frame in frames:
-            self.process_frame(frame)
+            ts = frame["timestamp"]
+            delays = frame.get("delay", [])
+            dopplers = frame.get("doppler", [])
+            snrs = frame.get("snr", [])
+            detections = [
+                {"delay": d, "doppler": f, "snr": s}
+                for d, f, s in zip(delays, dopplers, snrs)
+            ]
+            self.tracker.process_frame(detections, ts)
+
+        # Run geolocation once after all frames are processed
+        self._run_geolocation()
 
         return list(self.geolocated_tracks.values())
 
