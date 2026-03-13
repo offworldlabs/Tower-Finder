@@ -1,6 +1,8 @@
+import asyncio
 import json
 import os
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import httpx
@@ -19,7 +21,60 @@ from passive_radar import PassiveRadarPipeline, DEFAULT_NODE_CONFIG
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
-app = FastAPI(title="Tower Finder API")
+TCP_PORT = int(os.getenv("RADAR_TCP_PORT", "3012"))
+
+
+async def _handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    """Handle a single TCP connection from a synthetic or real radar node.
+
+    Reads newline-delimited JSON detection frames and feeds them to the
+    radar pipeline. Each line must be a valid JSON object.
+    """
+    peer = writer.get_extra_info("peername")
+    logging.info("Radar TCP: new connection from %s", peer)
+    buf = b""
+    try:
+        while True:
+            chunk = await reader.read(4096)
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    frame = json.loads(line)
+                except json.JSONDecodeError:
+                    logging.debug("Radar TCP: malformed JSON from %s", peer)
+                    continue
+                if "timestamp" not in frame:
+                    continue
+                _radar_pipeline.process_frame(frame)
+                aircraft_data = _radar_pipeline.generate_aircraft_json()
+                aircraft_path = os.path.join(_TAR1090_DATA_DIR, "aircraft.json")
+                with open(aircraft_path, "w") as f:
+                    json.dump(aircraft_data, f)
+    except (asyncio.IncompleteReadError, ConnectionResetError):
+        pass
+    finally:
+        logging.info("Radar TCP: connection closed from %s", peer)
+        writer.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    server = await asyncio.start_server(_handle_tcp_client, "0.0.0.0", TCP_PORT)
+    addrs = ", ".join(str(s.getsockname()) for s in server.sockets)
+    logging.info("Radar TCP server listening on %s", addrs)
+    async with server:
+        server_task = asyncio.create_task(server.serve_forever())
+        yield
+        server_task.cancel()
+
+
+app = FastAPI(title="Tower Finder API", lifespan=lifespan)
 
 _CORS_ORIGINS = os.getenv(
     "CORS_ORIGINS",

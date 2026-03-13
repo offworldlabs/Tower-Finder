@@ -4,6 +4,7 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      - "3012:3012"
     volumes:
       - /etc/ssl/cloudflare:/etc/ssl/cloudflare:ro
     env_file:
