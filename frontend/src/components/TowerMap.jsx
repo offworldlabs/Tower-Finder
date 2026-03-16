@@ -74,7 +74,7 @@ function FitBounds({ towers, userLocation }) {
 export default function TowerMap({ towers, userLocation, highlighted }) {
   const center = userLocation
     ? [userLocation.latitude, userLocation.longitude]
-    : [-25.3, 134.4]; // center of Australia (default source)
+    : [39.8, -98.6]; // center of USA (default)
 
   return (
     <div className="map-wrap">
