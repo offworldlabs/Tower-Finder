@@ -236,11 +236,18 @@ def parse_user_frequencies(raw: str, max_count: int = 10) -> list[float]:
     return freqs
 
 
-def process_and_rank(raw_systems: list, user_lat: float, user_lon: float, limit: int = 20, user_frequencies: list[float] | None = None) -> list:
+def process_and_rank(raw_systems: list, user_lat: float, user_lon: float, limit: int = 0, user_frequencies: list[float] | None = None, radius_km: float = 0) -> list:
     """
     Takes raw system records from Maprad, filters and ranks them
     for passive radar suitability.
+
+    Args:
+        limit: Max towers to return. 0 means use DEFAULT_LIMIT from config.
+        radius_km: Search radius in km. Towers beyond this are excluded.
+                   0 means use DEFAULT_RADIUS_KM.
     """
+    effective_radius = radius_km if radius_km > 0 else DEFAULT_RADIUS_KM
+    effective_limit = limit if limit > 0 else DEFAULT_LIMIT
     towers = []
 
     for system in raw_systems:
@@ -261,6 +268,11 @@ def process_and_rank(raw_systems: list, user_lat: float, user_lon: float, limit:
 
             tower_lat, tower_lon = coords
             dist = haversine(user_lat, user_lon, tower_lat, tower_lon)
+
+            # Filter by search radius
+            if dist > effective_radius:
+                continue
+
             eirp = eirp_dbm_from_device(device)
             if eirp is None:
                 # Reasonable default for a broadcast tower
@@ -333,7 +345,7 @@ def process_and_rank(raw_systems: list, user_lat: float, user_lon: float, limit:
     towers.sort(key=_sort_key)
 
     # Assign ranks
-    for i, t in enumerate(towers[:limit], 1):
+    for i, t in enumerate(towers[:effective_limit], 1):
         t["rank"] = i
 
-    return towers[:limit]
+    return towers[:effective_limit]

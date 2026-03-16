@@ -74,6 +74,6 @@
   },
   "search": {
     "default_radius_km": 80,
-    "default_limit": 50
+    "default_limit": 100
   }
 }
