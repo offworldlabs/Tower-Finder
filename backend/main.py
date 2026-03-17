@@ -1,12 +1,14 @@
 import asyncio
 import json
 import os
+import time
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from collections import defaultdict
 
 import httpx
-from fastapi import FastAPI, Query, HTTPException, Body, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, HTTPException, Body, WebSocket, WebSocketDisconnect, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
@@ -418,6 +420,21 @@ app.add_middleware(
 )
 
 API_KEY = os.getenv("MAPRAD_API_KEY", "")
+RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")  # required for POST /api/radar/detections when set
+
+# ── Rate limiter: max 60 requests per 60s per IP ───────────────────────────────
+_rate_buckets: dict[str, list] = defaultdict(list)
+_RATE_LIMIT = int(os.getenv("RADAR_RATE_LIMIT", "60"))  # requests
+_RATE_WINDOW = int(os.getenv("RADAR_RATE_WINDOW", "60"))  # seconds
+
+def _check_rate_limit(ip: str) -> None:
+    now = time.monotonic()
+    bucket = _rate_buckets[ip]
+    # Remove timestamps outside the window
+    _rate_buckets[ip] = [t for t in bucket if now - t < _RATE_WINDOW]
+    if len(_rate_buckets[ip]) >= _RATE_LIMIT:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded — slow down")
+    _rate_buckets[ip].append(now)
 
 
 def _detect_source(lat: float, lon: float) -> str:
@@ -727,7 +744,17 @@ async def tar1090_aircraft():
 
 
 @app.post("/api/radar/detections")
-async def ingest_detections(body: dict = Body(...)):
+async def ingest_detections(
+    request: Request,
+    body: dict = Body(...),
+    x_api_key: str = Header(default="", alias="X-API-Key"),
+):
+    # ── API key check (if RADAR_API_KEY is configured) ────────────────────────
+    if RADAR_API_KEY and x_api_key != RADAR_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
+    # ── Rate limit by client IP ────────────────────────────────────────────────
+    client_ip = request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (request.client.host if request.client else "unknown")
+    _check_rate_limit(client_ip)
     """Ingest a detection frame from a passive radar node.
 
     Expected body: {"timestamp": int, "delay": [...], "doppler": [...], "snr": [...]}
