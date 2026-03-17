@@ -86,7 +86,15 @@ export default function SearchForm({ onSearch, loading }) {
           setAltitude(Math.round(pos.coords.altitude).toString());
         }
       },
-      (err) => setGeoError(err.message)
+      (err) => {
+        const msgs = {
+          1: "Location access denied — please allow location in browser settings",
+          2: "Location unavailable",
+          3: "Location request timed out",
+        };
+        setGeoError(msgs[err.code] || err.message);
+      },
+      { timeout: 10000, maximumAge: 60000, enableHighAccuracy: false }
     );
   }
 
