@@ -27,6 +27,7 @@ export default function SearchForm({ onSearch, loading }) {
   const [altitude, setAltitude] = useState("");
   const [source, setSource] = useState("us");
   const [geoError, setGeoError] = useState(null);
+  const [geoLoading, setGeoLoading] = useState(false);
   const altitudeManual = useRef(false);
   const [frequencies, setFrequencies] = useState([""]);
   const [showFrequencies, setShowFrequencies] = useState(false);
@@ -78,8 +79,10 @@ export default function SearchForm({ onSearch, loading }) {
       return;
     }
     setGeoError(null);
+    setGeoLoading(true);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
+        setGeoLoading(false);
         setLat(pos.coords.latitude.toFixed(6));
         setLon(pos.coords.longitude.toFixed(6));
         if (pos.coords.altitude != null) {
@@ -87,6 +90,7 @@ export default function SearchForm({ onSearch, loading }) {
         }
       },
       (err) => {
+        setGeoLoading(false);
         const msgs = {
           1: "Location access denied — please allow location in browser settings",
           2: "Location unavailable",
@@ -218,9 +222,9 @@ export default function SearchForm({ onSearch, loading }) {
           type="button"
           className="btn-secondary"
           onClick={useMyLocation}
-          disabled={loading}
+          disabled={loading || geoLoading}
         >
-          Use My Location
+          {geoLoading ? "Getting location…" : "Use My Location"}
         </button>
       </div>
 
