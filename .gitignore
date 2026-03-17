@@ -11,4 +11,6 @@ venv/
 digital_ocean
 digital_ocean.pub
 tar1090/
+tar1090_data/
+coverage_data/
 other/

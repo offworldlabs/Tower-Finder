@@ -2,6 +2,7 @@ import { useState } from "react";
 import SearchForm from "./components/SearchForm";
 import ResultsTable from "./components/ResultsTable";
 import TowerMap from "./components/TowerMap";
+import LiveAircraftMap from "./components/LiveAircraftMap";
 import { fetchTowers } from "./api";
 
 function SummaryStrip({ towers }) {
@@ -41,6 +42,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [highlighted, setHighlighted] = useState(null);
+  const [activeTab, setActiveTab] = useState("towers");
 
   async function handleSearch({ lat, lon, altitude, source, frequencies }) {
     setLoading(true);
@@ -65,46 +67,66 @@ export default function App() {
         <span className="header-icon">&#9041;</span>
         <h1>Tower Finder</h1>
         <span className="subtitle">Passive Radar Illuminator Search</span>
+        <nav className="header-tabs">
+          <button
+            className={`tab-btn ${activeTab === "towers" ? "active" : ""}`}
+            onClick={() => setActiveTab("towers")}
+          >
+            Tower Search
+          </button>
+          <button
+            className={`tab-btn ${activeTab === "live" ? "active" : ""}`}
+            onClick={() => setActiveTab("live")}
+          >
+            Live Radar
+          </button>
+        </nav>
       </header>
 
       <main className="app-body">
-        <div className="top-section">
-          <SearchForm onSearch={handleSearch} loading={loading} />
-          <TowerMap
-            towers={towers}
-            userLocation={query}
-            highlighted={highlighted}
-          />
-        </div>
-
-        {error && <div className="error-banner">{error}</div>}
-
-        {loading && (
-          <div className="loading-section">
-            <div className="spinner" />
-            <div className="loading-bar">
-              <div className="loading-bar-inner" />
+        {activeTab === "towers" && (
+          <>
+            <div className="top-section">
+              <SearchForm onSearch={handleSearch} loading={loading} />
+              <TowerMap
+                towers={towers}
+                userLocation={query}
+                highlighted={highlighted}
+              />
             </div>
-            <p className="loading-text">
-              Querying broadcast licence database — this may take up to a minute…
-            </p>
-          </div>
+
+            {error && <div className="error-banner">{error}</div>}
+
+            {loading && (
+              <div className="loading-section">
+                <div className="spinner" />
+                <div className="loading-bar">
+                  <div className="loading-bar-inner" />
+                </div>
+                <p className="loading-text">
+                  Querying broadcast licence database — this may take up to a minute…
+                </p>
+              </div>
+            )}
+
+            <SummaryStrip towers={towers} />
+
+            {towers.length > 0 && (
+              <ResultsTable
+                towers={towers}
+                onHover={setHighlighted}
+              />
+            )}
+
+            {!loading && query && towers.length === 0 && (
+              <p className="no-results">
+                No suitable broadcast towers found within 80 km.
+              </p>
+            )}
+          </>
         )}
 
-        <SummaryStrip towers={towers} />
-
-        {towers.length > 0 && (
-          <ResultsTable
-            towers={towers}
-            onHover={setHighlighted}
-          />
-        )}
-
-        {!loading && query && towers.length === 0 && (
-          <p className="no-results">
-            No suitable broadcast towers found within 80 km.
-          </p>
-        )}
+        {activeTab === "live" && <LiveAircraftMap />}
       </main>
     </div>
   );

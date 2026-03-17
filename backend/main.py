@@ -6,8 +6,9 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import FastAPI, Query, HTTPException, Body
+from fastapi import FastAPI, Query, HTTPException, Body, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 
 from maprad_client import fetch_broadcast_systems
@@ -17,22 +18,185 @@ from calculations import (
     DEFAULT_RADIUS_KM, DEFAULT_LIMIT, parse_user_frequencies,
 )
 from passive_radar import PassiveRadarPipeline, DEFAULT_NODE_CONFIG
+from node_analytics import NodeAnalyticsManager, AdsReportEntry
+from inter_node_association import InterNodeAssociator
+from retina_geolocator.multinode_solver import solve_multinode
+from storage import archive_detections, list_archived_files, read_archived_file
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 TCP_PORT = int(os.getenv("RADAR_TCP_PORT", "3012"))
 
+# ── Connected node state tracking ─────────────────────────────────────────────
+_connected_nodes: dict[str, dict] = {}  # node_id → {config_hash, config, status, last_heartbeat, peer, is_synthetic, capabilities}
+_COVERAGE_STORAGE_DIR = os.path.join(os.path.dirname(__file__), "coverage_data")
+_node_analytics = NodeAnalyticsManager(storage_dir=_COVERAGE_STORAGE_DIR)
+_node_associator = InterNodeAssociator()
+_multinode_tracks: dict[str, dict] = {}  # key → solver result for multi-node geolocations
+
+# External ADS-B truth source (OpenSky Network)
+# Cached positions: {icao_hex: {lat, lon, alt_m, timestamp}}
+_external_adsb_cache: dict[str, dict] = {}
+
+# ── WebSocket broadcast infrastructure ────────────────────────────────────────
+_ws_clients: set[WebSocket] = set()
+_latest_aircraft_json: dict = {"now": 0, "aircraft": [], "messages": 0}
+
+
+async def _fetch_external_adsb():
+    """Fetch aircraft positions from OpenSky Network as independent truth source.
+
+    Queries for aircraft in the bounding box covering all connected nodes,
+    then cross-references with node-reported ADS-B data to validate trust.
+    """
+    global _external_adsb_cache
+
+    # Compute bounding box from all connected nodes
+    active_nodes = [
+        info for info in _connected_nodes.values()
+        if info.get("status") != "disconnected" and info.get("config")
+    ]
+    if not active_nodes:
+        return
+
+    lats = [n["config"].get("rx_lat", 0) for n in active_nodes]
+    lons = [n["config"].get("rx_lon", 0) for n in active_nodes]
+    if not lats or all(l == 0 for l in lats):
+        return
+
+    # Expand bounding box by 1° (~111 km) around the node cluster
+    lamin = min(lats) - 1.0
+    lamax = max(lats) + 1.0
+    lomin = min(lons) - 1.0
+    lomax = max(lons) + 1.0
+
+    url = "https://opensky-network.org/api/states/all"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, params={
+                "lamin": lamin, "lamax": lamax,
+                "lomin": lomin, "lomax": lomax,
+            })
+            if resp.status_code != 200:
+                return
+            data = resp.json()
+    except Exception:
+        return
+
+    states = data.get("states", [])
+    if not states:
+        return
+
+    now_cache = {}
+    for s in states:
+        # OpenSky state vector fields:
+        # [0]=icao24, [5]=lon, [6]=lat, [7]=baro_alt, [13]=velocity, [10]=heading
+        icao = s[0] if s[0] else None
+        lon_val = s[5]
+        lat_val = s[6]
+        alt_val = s[7]  # meters (barometric)
+        if icao and lat_val is not None and lon_val is not None:
+            now_cache[icao] = {
+                "lat": lat_val,
+                "lon": lon_val,
+                "alt_m": alt_val or 0,
+                "velocity": s[9] if len(s) > 9 else None,
+                "heading": s[10] if len(s) > 10 else None,
+            }
+
+    _external_adsb_cache = now_cache
+    logging.debug("External ADS-B: cached %d aircraft positions", len(now_cache))
+
+    # Cross-validate any node-reported ADS-B correlations against external truth
+    _cross_validate_adsb_reports()
+
+
+def _cross_validate_adsb_reports():
+    """Compare node-reported ADS-B data against external OpenSky positions.
+
+    If a node claims to see aircraft X at position P, but OpenSky says
+    aircraft X is actually at position Q (far from P), the node's trust
+    score is penalised.
+    """
+    import math
+    if not _external_adsb_cache:
+        return
+
+    for node_id, ts_state in _node_analytics.trust_scores.items():
+        if not ts_state.samples:
+            continue
+        # Check the most recent samples
+        for sample in ts_state.samples[-10:]:
+            if not sample.adsb_hex:
+                continue
+            ext = _external_adsb_cache.get(sample.adsb_hex.lower())
+            if ext is None:
+                continue
+            # Compare reported position vs external truth
+            dlat = sample.adsb_lat - ext["lat"]
+            dlon = sample.adsb_lon - ext["lon"]
+            dist_km = math.sqrt(dlat ** 2 + dlon ** 2) * 111.0
+            if dist_km > 10.0:
+                # Node-reported ADS-B position diverges from external truth
+                rep = _node_analytics.reputations.get(node_id)
+                if rep:
+                    rep.apply_penalty(
+                        0.1,
+                        f"ADS-B position mismatch: {sample.adsb_hex} "
+                        f"reported {dist_km:.1f}km from external truth"
+                    )
+                    logging.warning(
+                        "Node %s ADS-B mismatch for %s: %.1f km off",
+                        node_id, sample.adsb_hex, dist_km,
+                    )
+
+
+def _get_node_configs() -> dict[str, dict]:
+    """Collect config dicts for all connected nodes (for the multi-node solver)."""
+    configs = {}
+    for nid, info in _connected_nodes.items():
+        cfg = info.get("config")
+        if cfg:
+            configs[nid] = cfg
+    return configs
+
+RETINA_PROTOCOL_VERSION = "1.0"
+SERVER_CAPABILITIES = {
+    "config_request": True,
+    "adsb_report": True,
+    "association": True,
+    "analytics": True,
+    "coverage_map": True,
+}
+
+
+def _is_synthetic_node(node_id: str) -> bool:
+    """Detect synthetic nodes by their 'synth-' ID prefix."""
+    return node_id.startswith("synth-")
+
+
+async def _send_msg(writer: asyncio.StreamWriter, msg: dict):
+    """Send a newline-delimited JSON message to a node."""
+    writer.write(json.dumps(msg).encode("utf-8") + b"\n")
+    await writer.drain()
+
 
 async def _handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     """Handle a single TCP connection from a synthetic or real radar node.
 
-    Reads newline-delimited JSON detection frames and feeds them to the
-    radar pipeline. Each line must be a valid JSON object.
+    Implements the RETINA node protocol:
+      1. Node sends HELLO → server validates version
+      2. Node sends CONFIG → server stores config, replies CONFIG_ACK
+      3. Steady state: node sends HEARTBEAT + DETECTION messages
+      4. Server sends CONFIG_REQUEST if heartbeat config hash mismatches
     """
     peer = writer.get_extra_info("peername")
     logging.info("Radar TCP: new connection from %s", peer)
     buf = b""
+    node_id = None
+    handshake_complete = False
+
     try:
         while True:
             chunk = await reader.read(4096)
@@ -45,22 +209,180 @@ async def _handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Strea
                 if not line:
                     continue
                 try:
-                    frame = json.loads(line)
+                    msg = json.loads(line)
                 except json.JSONDecodeError:
                     logging.debug("Radar TCP: malformed JSON from %s", peer)
                     continue
-                if "timestamp" not in frame:
+
+                msg_type = msg.get("type")
+
+                # ── HELLO ──────────────────────────────────────────────
+                if msg_type == "HELLO":
+                    node_id = msg.get("node_id", f"unknown-{peer}")
+                    version = msg.get("version", "0.0")
+                    is_synthetic = msg.get("is_synthetic", _is_synthetic_node(node_id))
+                    node_capabilities = msg.get("capabilities", {})
+                    logging.info("Radar TCP: HELLO from %s (version %s, synthetic=%s, caps=%s)",
+                                 node_id, version, is_synthetic, list(node_capabilities.keys()))
                     continue
-                _radar_pipeline.process_frame(frame)
-                aircraft_data = _radar_pipeline.generate_aircraft_json()
-                aircraft_path = os.path.join(_TAR1090_DATA_DIR, "aircraft.json")
-                with open(aircraft_path, "w") as f:
-                    json.dump(aircraft_data, f)
+
+                # ── CONFIG ─────────────────────────────────────────────
+                if msg_type == "CONFIG":
+                    if node_id is None:
+                        node_id = msg.get("node_id", f"unknown-{peer}")
+                    config_hash = msg.get("config_hash", "")
+                    config_payload = msg.get("config", {})
+                    is_synthetic = msg.get("is_synthetic", _is_synthetic_node(node_id))
+                    _connected_nodes[node_id] = {
+                        "config_hash": config_hash,
+                        "config": config_payload,
+                        "status": "active",
+                        "last_heartbeat": datetime.now(timezone.utc).isoformat(),
+                        "peer": str(peer),
+                        "is_synthetic": is_synthetic,
+                        "capabilities": msg.get("capabilities", {}),
+                    }
+                    logging.info("Radar TCP: CONFIG from %s (hash=%s, synthetic=%s)", node_id, config_hash, is_synthetic)
+                    await _send_msg(writer, {
+                        "type": "CONFIG_ACK",
+                        "config_hash": config_hash,
+                        "server_version": RETINA_PROTOCOL_VERSION,
+                        "server_capabilities": SERVER_CAPABILITIES,
+                    })
+                    # Register with analytics and association
+                    _node_analytics.register_node(node_id, config_payload)
+                    _node_associator.register_node(node_id, config_payload)
+                    handshake_complete = True
+                    continue
+
+                # ── HEARTBEAT ──────────────────────────────────────────
+                if msg_type == "HEARTBEAT":
+                    hb_node_id = msg.get("node_id", node_id)
+                    hb_hash = msg.get("config_hash", "")
+                    hb_status = msg.get("status", "active")
+                    if hb_node_id and hb_node_id in _connected_nodes:
+                        _connected_nodes[hb_node_id]["last_heartbeat"] = msg.get("timestamp") or datetime.now(timezone.utc).isoformat()
+                        _connected_nodes[hb_node_id]["status"] = hb_status
+                        _node_analytics.record_heartbeat(hb_node_id)
+                        stored_hash = _connected_nodes[hb_node_id].get("config_hash", "")
+                        if stored_hash and hb_hash != stored_hash:
+                            logging.warning("Radar TCP: config drift for %s (expected=%s got=%s)", hb_node_id, stored_hash, hb_hash)
+                            await _send_msg(writer, {
+                                "type": "CONFIG_REQUEST",
+                                "node_id": hb_node_id,
+                            })
+                    continue
+
+                # ── DETECTION ──────────────────────────────────────────
+                if msg_type == "DETECTION":
+                    frame = msg.get("data", msg)
+                    if "timestamp" not in frame:
+                        continue
+                    # Tag with node_id for multi-node tracking
+                    if node_id:
+                        frame["_node_id"] = node_id
+                    # Analytics
+                    if node_id:
+                        _node_analytics.record_detection_frame(node_id, frame)
+                        assoc = _node_associator.submit_frame(
+                            node_id, frame, frame.get("timestamp", 0),
+                        )
+                        if assoc:
+                            solver_inputs = _node_associator.format_candidates_for_solver(assoc)
+                            node_cfgs = _get_node_configs()
+                            for s_in in solver_inputs:
+                                if s_in["n_nodes"] < 2:
+                                    continue
+                                try:
+                                    result = solve_multinode(s_in, node_cfgs)
+                                except Exception:
+                                    logging.debug("Multi-node solver exception", exc_info=True)
+                                    result = None
+                                if result and result.get("success"):
+                                    key = f"mn-{result['timestamp_ms']}-{result['lat']:.3f}"
+                                    _multinode_tracks[key] = result
+                                    logging.info(
+                                        "Multi-node solve: (%.4f,%.4f) alt=%.0fm "
+                                        "v=(%.1f,%.1f) rms_d=%.2fμs rms_f=%.1fHz nodes=%d",
+                                        result["lat"], result["lon"], result["alt_m"],
+                                        result["vel_east"], result["vel_north"],
+                                        result["rms_delay"], result["rms_doppler"],
+                                        result["n_nodes"],
+                                    )
+                    _radar_pipeline.process_frame(frame)
+                    aircraft_data = _radar_pipeline.generate_aircraft_json()
+                    aircraft_path = os.path.join(_TAR1090_DATA_DIR, "aircraft.json")
+                    with open(aircraft_path, "w") as f:
+                        json.dump(aircraft_data, f)
+                    await _broadcast_aircraft(aircraft_data)
+                    _node_analytics.maybe_auto_save()
+                    # Archive detection batch to local / B2
+                    try:
+                        archive_detections(node_id or "unknown", [frame])
+                    except Exception:
+                        logging.debug("Archive write failed", exc_info=True)
+                    continue
+
+                # ── Legacy: bare detection frame (no type field) ───────
+                if "timestamp" in msg and msg_type is None:
+                    if node_id:
+                        msg["_node_id"] = node_id
+                        _node_analytics.record_detection_frame(node_id, msg)
+                    _radar_pipeline.process_frame(msg)
+                    aircraft_data = _radar_pipeline.generate_aircraft_json()
+                    aircraft_path = os.path.join(_TAR1090_DATA_DIR, "aircraft.json")
+                    with open(aircraft_path, "w") as f:
+                        json.dump(aircraft_data, f)
+                    await _broadcast_aircraft(aircraft_data)
+                    continue
+
     except (asyncio.IncompleteReadError, ConnectionResetError):
         pass
     finally:
-        logging.info("Radar TCP: connection closed from %s", peer)
+        if node_id and node_id in _connected_nodes:
+            _connected_nodes[node_id]["status"] = "disconnected"
+        logging.info("Radar TCP: connection closed from %s (node=%s)", peer, node_id)
         writer.close()
+
+
+async def _broadcast_aircraft(aircraft_data: dict):
+    """Push updated aircraft data to all connected WebSocket clients."""
+    global _latest_aircraft_json
+    _latest_aircraft_json = aircraft_data
+    if not _ws_clients:
+        return
+    payload = json.dumps(aircraft_data)
+    stale = set()
+    for ws in _ws_clients:
+        try:
+            await ws.send_text(payload)
+        except Exception:
+            stale.add(ws)
+    _ws_clients.difference_update(stale)
+
+
+async def _reputation_evaluator():
+    """Periodically evaluate node reputations (every 60s)."""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            _node_analytics.evaluate_reputations()
+        except Exception:
+            logging.exception("Reputation evaluation failed")
+
+
+async def _adsb_truth_fetcher():
+    """Periodically fetch external ADS-B positions from OpenSky Network (every 30s).
+
+    Provides an independent truth source for trust scoring, preventing
+    nodes from self-validating with fabricated ADS-B data.
+    """
+    while True:
+        await asyncio.sleep(30)
+        try:
+            await _fetch_external_adsb()
+        except Exception:
+            logging.debug("External ADS-B fetch skipped: %s", "no connected nodes or API error")
 
 
 @asynccontextmanager
@@ -70,8 +392,15 @@ async def lifespan(app: FastAPI):
     logging.info("Radar TCP server listening on %s", addrs)
     async with server:
         server_task = asyncio.create_task(server.serve_forever())
+        reputation_task = asyncio.create_task(_reputation_evaluator())
+        adsb_truth_task = asyncio.create_task(_adsb_truth_fetcher())
         yield
         server_task.cancel()
+        reputation_task.cancel()
+        adsb_truth_task.cancel()
+        # Persist coverage maps on graceful shutdown
+        _node_analytics.save_coverage_maps()
+        logging.info("Coverage maps saved to %s", _COVERAGE_STORAGE_DIR)
 
 
 app = FastAPI(title="Tower Finder API", lifespan=lifespan)
@@ -146,7 +475,7 @@ async def find_towers(
     lon: float = Query(..., ge=-180, le=180, description="Longitude"),
     altitude: float = Query(0, ge=0, description="Receiver altitude in metres"),
     radius_km: int = Query(0, ge=0, le=300, description="Search radius in km (0 = use config default)"),
-    limit: int = Query(0, ge=0, le=100, description="Max towers to return (0 = use config default)"),
+    limit: int = Query(0, ge=0, le=200, description="Max towers to return (0 = use config default)"),
     source: str = Query("auto", description="Data source: us, au, ca, auto"),
     frequencies: str = Query("", description="Comma-separated measured frequencies in MHz (up to 10)"),
 ):
@@ -198,7 +527,7 @@ async def find_towers(
         if elev is not None:
             resolved_altitude = elev
 
-    towers = process_and_rank(raw, lat, lon, limit=effective_limit, user_frequencies=user_freqs)
+    towers = process_and_rank(raw, lat, lon, limit=effective_limit, user_frequencies=user_freqs, radius_km=effective_radius)
 
     # Enrich towers with ground elevation and total altitude above sea level
     tower_coords = [(t["latitude"], t["longitude"]) for t in towers]
@@ -345,6 +674,33 @@ with open(os.path.join(_TAR1090_DATA_DIR, "receiver.json"), "w") as _f:
     json.dump(_receiver_json, _f)
 
 
+import math as _math
+
+
+def _multinode_to_aircraft(key: str, r: dict) -> dict:
+    """Convert a multi-node solver result to tar1090-compatible aircraft dict."""
+    speed_ms = _math.sqrt(r["vel_east"] ** 2 + r["vel_north"] ** 2)
+    heading = _math.degrees(_math.atan2(r["vel_east"], r["vel_north"])) % 360
+    return {
+        "hex": f"mn{abs(hash(key)) % 0xFFFF:04x}",
+        "type": "multinode_solve",
+        "flight": f"MN{r['n_nodes']}N",
+        "alt_baro": round(r["alt_m"] / 0.3048),
+        "alt_geom": round(r["alt_m"] / 0.3048),
+        "gs": round(speed_ms * 1.94384, 1),
+        "track": round(heading, 1),
+        "lat": round(r["lat"], 5),
+        "lon": round(r["lon"], 5),
+        "seen": 0,
+        "messages": r["n_measurements"],
+        "rssi": -round(1.0 / max(r.get("rms_delay", 1), 0.01), 1),
+        "multinode": True,
+        "n_nodes": r["n_nodes"],
+        "rms_delay": round(r["rms_delay"], 3),
+        "rms_doppler": round(r["rms_doppler"], 2),
+    }
+
+
 @app.get("/api/radar/data/receiver.json")
 async def tar1090_receiver():
     """Serve tar1090 receiver.json for the passive radar site."""
@@ -353,8 +709,21 @@ async def tar1090_receiver():
 
 @app.get("/api/radar/data/aircraft.json")
 async def tar1090_aircraft():
-    """Serve tar1090 aircraft.json with current tracked targets."""
-    return _radar_pipeline.generate_aircraft_json()
+    """Serve tar1090 aircraft.json with current tracked targets including multi-node."""
+    data = _radar_pipeline.generate_aircraft_json()
+    # Merge multi-node solver results
+    import time as _time
+    now = _time.time()
+    stale_keys = []
+    for key, r in _multinode_tracks.items():
+        age_s = now - r.get("timestamp_ms", 0) / 1000
+        if age_s > 60:
+            stale_keys.append(key)
+            continue
+        data["aircraft"].append(_multinode_to_aircraft(key, r))
+    for k in stale_keys:
+        _multinode_tracks.pop(k, None)
+    return data
 
 
 @app.post("/api/radar/detections")
@@ -376,6 +745,7 @@ async def ingest_detections(body: dict = Body(...)):
     aircraft_data = _radar_pipeline.generate_aircraft_json()
     with open(os.path.join(_TAR1090_DATA_DIR, "aircraft.json"), "w") as f:
         json.dump(aircraft_data, f)
+    await _broadcast_aircraft(aircraft_data)
 
     return {
         "status": "ok",
@@ -415,7 +785,9 @@ async def radar_status():
         "node_id": _radar_pipeline.node_id,
         "total_tracks": len(_radar_pipeline.tracker.tracks),
         "geolocated_tracks": len(_radar_pipeline.geolocated_tracks),
+        "multinode_tracks": len(_multinode_tracks),
         "track_events": len(_radar_pipeline.event_writer.get_events()),
+        "external_adsb_cached": len(_external_adsb_cache),
         "config": {
             "rx_lat": _radar_pipeline.config["rx_lat"],
             "rx_lon": _radar_pipeline.config["rx_lon"],
@@ -425,3 +797,181 @@ async def radar_status():
             "Fs": _radar_pipeline.config["Fs"],
         },
     }
+
+
+@app.get("/api/radar/nodes")
+async def radar_nodes():
+    """Return status of all connected radar nodes."""
+    return {
+        "nodes": {
+            nid: {
+                "status": info.get("status"),
+                "config_hash": info.get("config_hash"),
+                "last_heartbeat": info.get("last_heartbeat"),
+                "peer": info.get("peer"),
+                "is_synthetic": info.get("is_synthetic", _is_synthetic_node(nid)),
+                "capabilities": info.get("capabilities", {}),
+            }
+            for nid, info in _connected_nodes.items()
+        },
+        "connected": sum(1 for n in _connected_nodes.values() if n.get("status") not in ("disconnected",)),
+        "total": len(_connected_nodes),
+        "synthetic": sum(1 for n in _connected_nodes.values() if n.get("is_synthetic")),
+    }
+
+
+# ── Node Analytics Endpoints ─────────────────────────────────────────────────
+
+@app.get("/api/radar/analytics")
+async def radar_analytics():
+    """Return analytics summaries for all connected nodes."""
+    return {
+        "nodes": _node_analytics.get_all_summaries(),
+        "cross_node": _node_analytics.get_cross_node_analysis(),
+    }
+
+
+@app.get("/api/radar/analytics/{node_id}")
+async def radar_node_analytics(node_id: str):
+    """Return analytics for a specific node."""
+    summary = _node_analytics.get_node_summary(node_id)
+    if summary.keys() == {"node_id"}:
+        raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+    return summary
+
+
+@app.post("/api/radar/analytics/adsb-report")
+async def submit_adsb_report(body: dict = Body(...)):
+    """Submit an ADS-B correlation report for trust scoring.
+
+    Expected body: {
+        "node_id": "...",
+        "predicted_delay": float, "predicted_doppler": float,
+        "measured_delay": float, "measured_doppler": float,
+        "adsb_hex": "...", "adsb_lat": float, "adsb_lon": float,
+        "timestamp_ms": int
+    }
+    """
+    required = ["node_id", "predicted_delay", "measured_delay"]
+    missing = [k for k in required if k not in body]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing: {missing}")
+
+    entry = AdsReportEntry(
+        timestamp_ms=body.get("timestamp_ms", 0),
+        predicted_delay=body["predicted_delay"],
+        predicted_doppler=body.get("predicted_doppler", 0),
+        measured_delay=body["measured_delay"],
+        measured_doppler=body.get("measured_doppler", 0),
+        adsb_hex=body.get("adsb_hex", ""),
+        adsb_lat=body.get("adsb_lat", 0),
+        adsb_lon=body.get("adsb_lon", 0),
+    )
+    _node_analytics.record_adsb_correlation(body["node_id"], entry)
+    ts = _node_analytics.trust_scores.get(body["node_id"])
+    return {
+        "status": "recorded",
+        "trust_score": round(ts.score, 4) if ts else 0.0,
+        "n_samples": ts.n_samples if ts else 0,
+    }
+
+
+# ── Inter-Node Association Endpoints ─────────────────────────────────────────
+
+@app.get("/api/radar/association/overlaps")
+async def association_overlaps():
+    """Return overlap zone summaries for all node pairs."""
+    return {
+        "overlaps": _node_associator.get_overlap_summary(),
+        "registered_nodes": list(_node_associator.node_geometries.keys()),
+    }
+
+
+@app.get("/api/radar/association/status")
+async def association_status():
+    """Return current state of inter-node association engine."""
+    return {
+        "registered_nodes": len(_node_associator.node_geometries),
+        "overlap_zones": len(_node_associator.overlap_zones),
+        "pending_frames": list(_node_associator._pending_frames.keys()),
+        "overlaps": _node_associator.get_overlap_summary(),
+    }
+
+
+# ── Live Data Streaming ──────────────────────────────────────────────────────
+
+@app.websocket("/ws/aircraft")
+async def websocket_aircraft(ws: WebSocket):
+    """WebSocket endpoint for live aircraft position updates.
+
+    Clients connect and receive JSON pushes every time the pipeline
+    produces new aircraft data.
+    """
+    await ws.accept()
+    _ws_clients.add(ws)
+    logging.info("WebSocket client connected (%d total)", len(_ws_clients))
+    try:
+        # Send current state immediately on connect
+        if _latest_aircraft_json.get("aircraft"):
+            await ws.send_text(json.dumps(_latest_aircraft_json))
+        # Keep connection alive; actual data is pushed via _broadcast_aircraft
+        while True:
+            # Wait for client pings / disconnects
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        _ws_clients.discard(ws)
+        logging.info("WebSocket client disconnected (%d remaining)", len(_ws_clients))
+
+
+@app.get("/api/radar/stream")
+async def sse_aircraft_stream():
+    """Server-Sent Events (SSE) fallback for live aircraft data.
+
+    Pushes the latest aircraft.json every 2 seconds as SSE events.
+    Useful for clients that cannot use WebSocket.
+    """
+    async def _generate():
+        last_hash = ""
+        while True:
+            data = _latest_aircraft_json
+            # Only push when data has changed
+            current_hash = str(data.get("now", 0))
+            if current_hash != last_hash:
+                yield f"data: {json.dumps(data)}\n\n"
+                last_hash = current_hash
+            await asyncio.sleep(2)
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ── Public Data Archive API ───────────────────────────────────────────────────
+
+@app.get("/api/data/archive")
+async def list_archive(
+    date: str = Query(None, description="Date prefix, e.g. 2025/06/21 or 2025/06"),
+    node_id: str = Query(None, description="Filter by node ID"),
+):
+    """List archived detection files with optional date and node filters."""
+    files = list_archived_files(date_prefix=date, node_id=node_id)
+    return {"files": files, "count": len(files)}
+
+
+@app.get("/api/data/archive/{key:path}")
+async def download_archive_file(key: str):
+    """Download a specific archived detection file by its key."""
+    data = read_archived_file(key)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Archive file not found")
+    return data

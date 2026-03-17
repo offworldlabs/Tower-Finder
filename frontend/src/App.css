@@ -52,6 +52,36 @@ body {
   letter-spacing: 0.01em;
 }
 
+/* ---- header tabs ---- */
+.header-tabs {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+
+.tab-btn {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.6);
+  padding: 6px 16px;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.tab-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.tab-btn.active {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
 /* ---- body layout ---- */
 .app-body {
   flex: 1;

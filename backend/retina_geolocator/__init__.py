@@ -14,6 +14,7 @@ from .initial_guess_single import generate_initial_guess, select_initial_guess
 from .initial_guess_2d import generate_initial_guess_2d, generate_initial_guess_2d_from_previous
 from .lm_solver_track import solve_track
 from .lm_solver_track_2d import solve_track_2d, state_to_cartesian_enu, velocities_to_cartesian
+from .multinode_solver import solve_multinode
 
 __all__ = [
     'Geometry',
@@ -37,6 +38,7 @@ __all__ = [
     'solve_track_2d',
     'state_to_cartesian_enu',
     'velocities_to_cartesian',
+    'solve_multinode',
 ]
 
 __version__ = '1.0.0'

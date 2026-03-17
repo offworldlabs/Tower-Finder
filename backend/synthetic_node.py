@@ -2,7 +2,11 @@
 Synthetic Node Microservice for Retina Passive Radar Network.
 
 Generates and streams synthetic detection data over TCP to the
-tracker server for testing. Supports three modes:
+tracker server for testing. Implements the full RETINA node protocol:
+
+  HELLO → CONFIG → (wait CONFIG_ACK) → steady state (HEARTBEAT + DETECTION)
+
+Supports three detection modes:
 
 1. Detection-only: delay/doppler/snr data (simulated aircraft tracks)
 2. With ADS-B: some detections include ADS-B truth data
@@ -21,24 +25,31 @@ node_config.json or CLI arguments.
 """
 
 import argparse
+import hashlib
 import json
 import math
 import os
 import random
 import socket
 import sys
+import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
 from typing import Optional
 
 # Speed of light km/μs
 C_KM_US = 0.299792458
 
+RETINA_VERSION = "1.0"
+HEARTBEAT_INTERVAL_S = 60
+CONFIG_ACK_TIMEOUT_S = 10
+
 
 @dataclass
 class NodeConfig:
     """Passive radar node configuration."""
-    node_id: str = "synthetic-01"
+    node_id: str = "synth-node-01"
     rx_lat: float = 33.939182
     rx_lon: float = -84.651910
     rx_alt_ft: float = 950.0
@@ -50,6 +61,13 @@ class NodeConfig:
     doppler_min: float = -300.0
     doppler_max: float = 300.0
     min_doppler: float = 15.0
+
+
+def _config_hash(config: NodeConfig) -> str:
+    """Compute a short hash of the node configuration."""
+    cfg_dict = asdict(config)
+    cfg_str = json.dumps(cfg_dict, sort_keys=True)
+    return hashlib.sha256(cfg_str.encode()).hexdigest()[:16]
 
 
 @dataclass
@@ -150,7 +168,7 @@ class SyntheticNodeGenerator:
 
     def _spawn_target(self, now: float) -> SyntheticTarget:
         """Create a new synthetic aircraft target."""
-        tid = f"syn-{self._next_target_id:04d}"
+        tid = f"synth-{self._next_target_id:04d}"
         self._next_target_id += 1
 
         # Random position 10-60 km from RX, 3-12 km altitude
@@ -330,16 +348,29 @@ class SyntheticNodeGenerator:
         return frame
 
 
-def _connect_tcp(host: str, port: int, max_retries: int = 0) -> socket.socket:
-    """Connect to the tracker server via TCP with retry logic."""
+# ── TCP connection helpers ────────────────────────────────────────────────────
+
+def _connect_tcp(host: str, port: int, max_retries: int = 0,
+                 cloudflare_host: Optional[str] = None) -> socket.socket:
+    """Connect to the tracker server via TCP with retry logic.
+
+    If cloudflare_host is provided, the connection is made to the Cloudflare
+    frontend (e.g. hub.re) so the server sees it as a real internet node.
+    The actual TCP connection goes to cloudflare_host:port while the protocol
+    identifies the node normally.
+    """
+    connect_host = cloudflare_host if cloudflare_host else host
     attempt = 0
     while True:
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(10.0)
-            sock.connect((host, port))
+            sock.connect((connect_host, port))
             sock.settimeout(None)
-            print(f"Connected to {host}:{port}", file=sys.stderr)
+            label = f"{connect_host}:{port}"
+            if cloudflare_host:
+                label += f" (via Cloudflare → {host})"
+            print(f"Connected to {label}", file=sys.stderr)
             return sock
         except (ConnectionRefusedError, socket.timeout, OSError) as exc:
             attempt += 1
@@ -347,51 +378,223 @@ def _connect_tcp(host: str, port: int, max_retries: int = 0) -> socket.socket:
                 raise
             wait = min(2 ** attempt, 30)
             print(
-                f"Connection to {host}:{port} failed ({exc}), "
+                f"Connection to {connect_host}:{port} failed ({exc}), "
                 f"retrying in {wait}s...",
                 file=sys.stderr,
             )
             time.sleep(wait)
 
 
-def _stream_tcp(generator: SyntheticNodeGenerator, host: str, port: int,
-                interval_ms: int = 500):
-    """Stream detection frames to the tracker server over TCP."""
-    sock = _connect_tcp(host, port)
+def _send_msg(sock: socket.socket, msg: dict):
+    """Send a newline-delimited JSON message."""
+    sock.sendall((json.dumps(msg) + "\n").encode("utf-8"))
 
+
+def _recv_msg(sock: socket.socket, timeout: float = CONFIG_ACK_TIMEOUT_S) -> Optional[dict]:
+    """Receive a single newline-delimited JSON message with timeout."""
+    sock.settimeout(timeout)
+    buf = b""
     try:
-        while True:
-            timestamp_ms = int(time.time() * 1000)
-            frame = generator.generate_frame(timestamp_ms)
+        while b"\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                return None
+            buf += chunk
+        line = buf.split(b"\n", 1)[0]
+        sock.settimeout(None)
+        return json.loads(line)
+    except (socket.timeout, json.JSONDecodeError):
+        sock.settimeout(None)
+        return None
 
-            line = json.dumps(frame) + "\n"
-            try:
-                sock.sendall(line.encode("utf-8"))
-            except (BrokenPipeError, ConnectionResetError):
-                print("Connection lost, reconnecting...", file=sys.stderr)
-                sock.close()
-                sock = _connect_tcp(host, port)
-                sock.sendall(line.encode("utf-8"))
 
-            # Print summary to stderr
-            n_det = len(frame["delay"])
-            n_adsb = sum(
-                1 for a in frame.get("adsb", []) if a is not None
-            ) if "adsb" in frame else 0
-            print(
-                f"\r[{time.strftime('%H:%M:%S')}] "
-                f"Sent frame: {n_det} detections"
-                f"{f', {n_adsb} with ADS-B' if n_adsb else ''}"
-                f" | targets: {len(generator.targets)}",
-                end="", file=sys.stderr,
-            )
+# ── Protocol handshake ────────────────────────────────────────────────────────
 
-            time.sleep(interval_ms / 1000.0)
+def _perform_handshake(sock: socket.socket, config: NodeConfig) -> bool:
+    """Perform the RETINA TCP handshake: HELLO → CONFIG → wait CONFIG_ACK.
 
-    except KeyboardInterrupt:
-        print("\nStopping synthetic node.", file=sys.stderr)
-    finally:
-        sock.close()
+    Returns True if handshake succeeded, False otherwise.
+    """
+    cfg_hash = _config_hash(config)
+    cfg_payload = asdict(config)
+
+    is_synthetic = config.node_id.startswith("synth-")
+
+    # 1. Send HELLO with capabilities
+    _send_msg(sock, {
+        "type": "HELLO",
+        "node_id": config.node_id,
+        "version": RETINA_VERSION,
+        "is_synthetic": is_synthetic,
+        "capabilities": {
+            "detection": True,
+            "adsb_correlation": True,
+            "doppler": True,
+            "config_hash": True,
+            "heartbeat": True,
+        },
+    })
+    print(f"  → HELLO (version={RETINA_VERSION}, synthetic={is_synthetic})", file=sys.stderr)
+
+    # 2. Send CONFIG
+    _send_msg(sock, {
+        "type": "CONFIG",
+        "node_id": config.node_id,
+        "config_hash": cfg_hash,
+        "config": cfg_payload,
+    })
+    print(f"  → CONFIG (hash={cfg_hash})", file=sys.stderr)
+
+    # 3. Wait for CONFIG_ACK
+    for attempt in range(3):
+        ack = _recv_msg(sock, timeout=CONFIG_ACK_TIMEOUT_S)
+        if ack and ack.get("type") == "CONFIG_ACK":
+            ack_hash = ack.get("config_hash", "")
+            if ack_hash == cfg_hash:
+                print(f"  ← CONFIG_ACK (hash={ack_hash}) — handshake complete", file=sys.stderr)
+                return True
+            else:
+                print(f"  ← CONFIG_ACK hash mismatch (expected={cfg_hash} got={ack_hash})", file=sys.stderr)
+        elif ack:
+            print(f"  ← unexpected message: {ack.get('type', '?')}", file=sys.stderr)
+        else:
+            print(f"  ! CONFIG_ACK timeout (attempt {attempt + 1}/3), retransmitting CONFIG...", file=sys.stderr)
+            _send_msg(sock, {
+                "type": "CONFIG",
+                "node_id": config.node_id,
+                "config_hash": cfg_hash,
+                "config": cfg_payload,
+            })
+
+    print("  ! Handshake failed after 3 attempts", file=sys.stderr)
+    return False
+
+
+# ── Heartbeat thread ──────────────────────────────────────────────────────────
+
+def _heartbeat_loop(sock: socket.socket, config: NodeConfig, stop_event: threading.Event):
+    """Send periodic heartbeats on a background thread."""
+    cfg_hash = _config_hash(config)
+    while not stop_event.wait(HEARTBEAT_INTERVAL_S):
+        try:
+            _send_msg(sock, {
+                "type": "HEARTBEAT",
+                "node_id": config.node_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "config_hash": cfg_hash,
+                "status": "active",
+            })
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            break  # main loop will handle reconnection
+
+
+# ── Server message listener ──────────────────────────────────────────────────
+
+def _listener_loop(sock: socket.socket, config: NodeConfig, stop_event: threading.Event):
+    """Listen for server messages (CONFIG_REQUEST, etc.) on a background thread."""
+    sock.settimeout(1.0)
+    while not stop_event.is_set():
+        try:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            for line in chunk.split(b"\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if msg.get("type") == "CONFIG_REQUEST":
+                    print(f"\n  ← CONFIG_REQUEST — resending config", file=sys.stderr)
+                    try:
+                        _send_msg(sock, {
+                            "type": "CONFIG",
+                            "node_id": config.node_id,
+                            "config_hash": _config_hash(config),
+                            "config": asdict(config),
+                        })
+                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        break
+        except socket.timeout:
+            continue
+        except (ConnectionResetError, OSError):
+            break
+
+
+# ── Streaming modes ───────────────────────────────────────────────────────────
+
+def _stream_tcp(generator: SyntheticNodeGenerator, host: str, port: int,
+                interval_ms: int = 500, cloudflare_host: Optional[str] = None):
+    """Stream detection frames to the tracker server over TCP with full protocol."""
+    config = generator.config
+
+    while True:
+        sock = _connect_tcp(host, port, cloudflare_host=cloudflare_host)
+
+        # Perform handshake
+        if not _perform_handshake(sock, config):
+            print("Handshake failed, reconnecting in 5s...", file=sys.stderr)
+            sock.close()
+            time.sleep(5)
+            continue
+
+        # Start heartbeat and listener threads
+        stop_event = threading.Event()
+        hb_thread = threading.Thread(
+            target=_heartbeat_loop, args=(sock, config, stop_event), daemon=True
+        )
+        listener_thread = threading.Thread(
+            target=_listener_loop, args=(sock, config, stop_event), daemon=True
+        )
+        hb_thread.start()
+        listener_thread.start()
+
+        try:
+            while True:
+                timestamp_ms = int(time.time() * 1000)
+                frame = generator.generate_frame(timestamp_ms)
+
+                # Wrap in DETECTION message
+                detection_msg = {
+                    "type": "DETECTION",
+                    "node_id": config.node_id,
+                    "data": frame,
+                }
+
+                try:
+                    _send_msg(sock, detection_msg)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    print("\nConnection lost, reconnecting...", file=sys.stderr)
+                    break
+
+                # Print summary to stderr
+                n_det = len(frame["delay"])
+                n_adsb = sum(
+                    1 for a in frame.get("adsb", []) if a is not None
+                ) if "adsb" in frame else 0
+                print(
+                    f"\r[{time.strftime('%H:%M:%S')}] "
+                    f"Sent DETECTION: {n_det} detections"
+                    f"{f', {n_adsb} with ADS-B' if n_adsb else ''}"
+                    f" | targets: {len(generator.targets)}",
+                    end="", file=sys.stderr,
+                )
+
+                time.sleep(interval_ms / 1000.0)
+
+        except KeyboardInterrupt:
+            print("\nStopping synthetic node.", file=sys.stderr)
+            stop_event.set()
+            sock.close()
+            return
+        finally:
+            stop_event.set()
+            sock.close()
+
+        # Brief pause before reconnection
+        time.sleep(2)
 
 
 def _stream_http(generator: SyntheticNodeGenerator, url: str,
@@ -434,8 +637,9 @@ def _stream_http(generator: SyntheticNodeGenerator, url: str,
         print("\nStopping synthetic node.", file=sys.stderr)
 
 
-def _replay_file(filepath: str, host: str, port: int, speed: float = 1.0):
-    """Replay a .detection file over TCP."""
+def _replay_file(filepath: str, host: str, port: int, config: NodeConfig,
+                 speed: float = 1.0, cloudflare_host: Optional[str] = None):
+    """Replay a .detection file over TCP with full protocol."""
     with open(filepath, "r") as f:
         content = f.read().strip()
         if not content.startswith("["):
@@ -446,7 +650,20 @@ def _replay_file(filepath: str, host: str, port: int, speed: float = 1.0):
         print("No frames in file.", file=sys.stderr)
         return
 
-    sock = _connect_tcp(host, port)
+    sock = _connect_tcp(host, port, cloudflare_host=cloudflare_host)
+
+    # Perform handshake
+    if not _perform_handshake(sock, config):
+        print("Handshake failed.", file=sys.stderr)
+        sock.close()
+        return
+
+    # Start heartbeat thread
+    stop_event = threading.Event()
+    hb_thread = threading.Thread(
+        target=_heartbeat_loop, args=(sock, config, stop_event), daemon=True
+    )
+    hb_thread.start()
 
     try:
         prev_ts = frames[0].get("timestamp", 0)
@@ -458,14 +675,22 @@ def _replay_file(filepath: str, host: str, port: int, speed: float = 1.0):
             if dt > 0 and speed > 0:
                 time.sleep(dt / speed)
 
-            line = json.dumps(frame) + "\n"
+            detection_msg = {
+                "type": "DETECTION",
+                "node_id": config.node_id,
+                "data": frame,
+            }
+
             try:
-                sock.sendall(line.encode("utf-8"))
+                _send_msg(sock, detection_msg)
             except (BrokenPipeError, ConnectionResetError):
                 print("Connection lost, reconnecting...", file=sys.stderr)
                 sock.close()
-                sock = _connect_tcp(host, port)
-                sock.sendall(line.encode("utf-8"))
+                sock = _connect_tcp(host, port, cloudflare_host=cloudflare_host)
+                if not _perform_handshake(sock, config):
+                    print("Handshake failed on reconnect.", file=sys.stderr)
+                    break
+                _send_msg(sock, detection_msg)
 
             n_det = len(frame.get("delay", []))
             print(
@@ -479,7 +704,141 @@ def _replay_file(filepath: str, host: str, port: int, speed: float = 1.0):
     except KeyboardInterrupt:
         print("\nStopping replay.", file=sys.stderr)
     finally:
+        stop_event.set()
         sock.close()
+
+
+def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
+                           mode: str = "detection", interval_ms: int = 500,
+                           cloudflare_host: Optional[str] = None):
+    """Run multiple synthetic nodes from a shared simulation world.
+
+    Each node gets its own TCP connection and protocol handshake.
+    All nodes observe the SAME aircraft objects.
+
+    Args:
+        nodes_config_path: Path to JSON file with list of node configs.
+    """
+    from simulation_world import SimulationWorld, NodeConfig as WorldNodeConfig
+
+    # Load node configs
+    with open(nodes_config_path) as f:
+        nodes_data = json.load(f)
+
+    if isinstance(nodes_data, dict):
+        nodes_data = nodes_data.get("nodes", [])
+
+    # Build simulation world
+    world = SimulationWorld()
+    node_configs = []
+
+    for nd in nodes_data:
+        wc = WorldNodeConfig(
+            node_id=nd.get("node_id", f"synth-node-{len(node_configs)+1:02d}"),
+            rx_lat=nd.get("rx_lat", 33.939182),
+            rx_lon=nd.get("rx_lon", -84.651910),
+            rx_alt_ft=nd.get("rx_alt_ft", 950.0),
+            tx_lat=nd.get("tx_lat", 33.75667),
+            tx_lon=nd.get("tx_lon", -84.331844),
+            tx_alt_ft=nd.get("tx_alt_ft", 1600.0),
+            fc_hz=nd.get("fc_hz", 195_000_000.0),
+            fs_hz=nd.get("fs_hz", 2_000_000.0),
+            beam_width_deg=nd.get("beam_width_deg", 41.0),
+            max_range_km=nd.get("max_range_km", 50.0),
+        )
+        world.add_node(wc)
+        node_configs.append(wc)
+
+    # Set world center to average of all node RX positions
+    if node_configs:
+        world.center_lat = sum(nc.rx_lat for nc in node_configs) / len(node_configs)
+        world.center_lon = sum(nc.rx_lon for nc in node_configs) / len(node_configs)
+
+    print(f"Multi-node simulation: {len(node_configs)} nodes", file=sys.stderr)
+    for nc in node_configs:
+        print(f"  {nc.node_id}: RX=({nc.rx_lat:.4f}, {nc.rx_lon:.4f}) beam={nc.beam_azimuth_deg:.0f}°", file=sys.stderr)
+
+    # Connect each node
+    node_sockets: dict[str, socket.socket] = {}
+    node_local_configs: dict[str, NodeConfig] = {}
+
+    for wc in node_configs:
+        local_cfg = NodeConfig(
+            node_id=wc.node_id,
+            rx_lat=wc.rx_lat, rx_lon=wc.rx_lon, rx_alt_ft=wc.rx_alt_ft,
+            tx_lat=wc.tx_lat, tx_lon=wc.tx_lon, tx_alt_ft=wc.tx_alt_ft,
+            fc_hz=wc.fc_hz, fs_hz=wc.fs_hz,
+        )
+        node_local_configs[wc.node_id] = local_cfg
+
+        sock = _connect_tcp(host, port, cloudflare_host=cloudflare_host)
+        if not _perform_handshake(sock, local_cfg):
+            print(f"Handshake failed for {wc.node_id}", file=sys.stderr)
+            sock.close()
+            continue
+        node_sockets[wc.node_id] = sock
+
+    if not node_sockets:
+        print("No nodes connected, exiting.", file=sys.stderr)
+        return
+
+    # Start heartbeat threads for all nodes
+    stop_event = threading.Event()
+    for nid, sock in node_sockets.items():
+        t = threading.Thread(
+            target=_heartbeat_loop, args=(sock, node_local_configs[nid], stop_event),
+            daemon=True,
+        )
+        t.start()
+
+    # Main simulation loop
+    try:
+        while True:
+            dt = interval_ms / 1000.0
+            world.step(dt, mode=mode)
+            timestamp_ms = int(time.time() * 1000)
+            all_frames = world.generate_all_frames(timestamp_ms)
+
+            total_det = 0
+            for nid, frame in all_frames.items():
+                if nid not in node_sockets:
+                    continue
+                n_det = len(frame["delay"])
+                total_det += n_det
+
+                detection_msg = {
+                    "type": "DETECTION",
+                    "node_id": nid,
+                    "data": frame,
+                }
+                try:
+                    _send_msg(node_sockets[nid], detection_msg)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    print(f"\nLost connection for {nid}", file=sys.stderr)
+                    node_sockets.pop(nid, None)
+
+            n_aircraft = len(world.aircraft)
+            n_adsb = sum(1 for ac in world.aircraft if ac.has_adsb)
+            n_anom = sum(1 for ac in world.aircraft if ac.is_anomalous)
+            print(
+                f"\r[{time.strftime('%H:%M:%S')}] "
+                f"aircraft={n_aircraft} (adsb={n_adsb} anom={n_anom}) "
+                f"nodes={len(node_sockets)} det_total={total_det}",
+                end="", file=sys.stderr,
+            )
+
+            if not node_sockets:
+                print("\nAll nodes disconnected, exiting.", file=sys.stderr)
+                break
+
+            time.sleep(dt)
+
+    except KeyboardInterrupt:
+        print("\nStopping multi-node simulation.", file=sys.stderr)
+    finally:
+        stop_event.set()
+        for sock in node_sockets.values():
+            sock.close()
 
 
 def main():
@@ -516,12 +875,29 @@ def main():
         help="Stream via HTTP POST to this URL instead of TCP",
     )
     parser.add_argument(
-        "--config",
-        help="Path to node_config.json",
+        "--cloudflare-host",
+        help="Route TCP through Cloudflare frontend (e.g. hub.re) so the "
+             "server sees the node as a real internet client",
     )
     parser.add_argument(
-        "--node-id", default="synthetic-01",
-        help="Node identifier (default: synthetic-01)",
+        "--config",
+        help="Path to node_config.json (single node)",
+    )
+    parser.add_argument(
+        "--nodes-config",
+        help="Path to multi-node config JSON for shared-world simulation",
+    )
+    parser.add_argument(
+        "--export-training",
+        help="Export ML training data to this NDJSON file path (no server needed)",
+    )
+    parser.add_argument(
+        "--export-frames", type=int, default=10000,
+        help="Number of frames to export (default: 10000)",
+    )
+    parser.add_argument(
+        "--node-id", default="synth-node-01",
+        help="Node identifier — 'synth-' prefix marks synthetic nodes (default: synth-node-01)",
     )
     # Node geometry overrides
     parser.add_argument("--rx-lat", type=float)
@@ -552,8 +928,11 @@ def main():
     if args.fc is not None:
         node_config.fc_hz = args.fc
 
+    cfg_hash = _config_hash(node_config)
+
     print(f"Synthetic Node: {node_config.node_id}", file=sys.stderr)
     print(f"  Mode: {args.mode}", file=sys.stderr)
+    print(f"  Config hash: {cfg_hash}", file=sys.stderr)
     print(
         f"  RX: ({node_config.rx_lat:.6f}, {node_config.rx_lon:.6f}) "
         f"@ {node_config.rx_alt_ft:.0f} ft",
@@ -566,9 +945,25 @@ def main():
     )
     print(f"  FC: {node_config.fc_hz/1e6:.1f} MHz", file=sys.stderr)
 
+    cf_host = args.cloudflare_host
+    if cf_host:
+        print(f"  Cloudflare frontend: {cf_host}", file=sys.stderr)
+
+    # ── Multi-node shared-world mode ──────────────────────────────
+    if args.nodes_config:
+        print(f"  Multi-node config: {args.nodes_config}", file=sys.stderr)
+        _stream_multi_node_tcp(
+            args.nodes_config, args.host, args.port,
+            mode=args.mode, interval_ms=args.interval,
+            cloudflare_host=cf_host,
+        )
+        return
+
+    # ── Single-node modes ──────────────────────────────────────────
     if args.file:
         print(f"  Replaying: {args.file} @ {args.speed}x speed", file=sys.stderr)
-        _replay_file(args.file, args.host, args.port, args.speed)
+        _replay_file(args.file, args.host, args.port, node_config, args.speed,
+                     cloudflare_host=cf_host)
     else:
         generator = SyntheticNodeGenerator(node_config, mode=args.mode)
 
@@ -580,7 +975,8 @@ def main():
                 f"  Streaming to: {args.host}:{args.port} (TCP)",
                 file=sys.stderr,
             )
-            _stream_tcp(generator, args.host, args.port, args.interval)
+            _stream_tcp(generator, args.host, args.port, args.interval,
+                        cloudflare_host=cf_host)
 
 
 if __name__ == "__main__":

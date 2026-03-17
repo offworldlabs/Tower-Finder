@@ -1,0 +1,43 @@
+{
+  "nodes": [
+    {
+      "node_id": "synth-atl-01",
+      "rx_lat": 33.939182,
+      "rx_lon": -84.651910,
+      "rx_alt_ft": 950,
+      "tx_lat": 33.75667,
+      "tx_lon": -84.331844,
+      "tx_alt_ft": 1600,
+      "fc_hz": 195000000,
+      "fs_hz": 2000000,
+      "beam_width_deg": 48,
+      "max_range_km": 50
+    },
+    {
+      "node_id": "synth-atl-02",
+      "rx_lat": 33.80,
+      "rx_lon": -84.40,
+      "rx_alt_ft": 1050,
+      "tx_lat": 33.75667,
+      "tx_lon": -84.331844,
+      "tx_alt_ft": 1600,
+      "fc_hz": 195000000,
+      "fs_hz": 2000000,
+      "beam_width_deg": 48,
+      "max_range_km": 50
+    },
+    {
+      "node_id": "synth-atl-03",
+      "rx_lat": 33.95,
+      "rx_lon": -84.35,
+      "rx_alt_ft": 900,
+      "tx_lat": 33.75667,
+      "tx_lon": -84.331844,
+      "tx_alt_ft": 1600,
+      "fc_hz": 195000000,
+      "fs_hz": 2000000,
+      "beam_width_deg": 48,
+      "max_range_km": 50
+    }
+  ]
+}
