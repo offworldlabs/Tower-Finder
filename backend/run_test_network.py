@@ -36,6 +36,10 @@ import time
 
 import httpx
 
+# Force line-buffered output so progress is visible even when redirected to a file
+# (Python defaults to block-buffering when stdout is not a tty)
+sys.stdout.reconfigure(line_buffering=True)
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 from simulation_world import SimulationWorld, NodeConfig
