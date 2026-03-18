@@ -47,6 +47,14 @@ STEP_INTERVAL_S = 3.0
 # Set via --rate CLI flag; 0 = unlimited (legacy behaviour).
 _DEFAULT_RATE = 30
 
+# Clutter detections are generated with SNR in [4, 7]; real targets are > 8.
+_CLUTTER_SNR_MAX = 8.0
+
+
+def _has_real_detections(frame: dict) -> bool:
+    """True if the frame contains at least one detection above clutter threshold."""
+    return any(s > _CLUTTER_SNR_MAX for s in frame.get("snr", []))
+
 
 # ── Per-node posting ──────────────────────────────────────────────────────────
 
@@ -143,7 +151,7 @@ async def run(
     print("=" * 66)
     print(
         f"  {'step':>4}  {'sim-aircraft':>12}  "
-        f"{'nodes-active':>12}  {'step-tracks':>11}  {'errors':>7}"
+        f"{'posting':>9}  {'step-tracks':>11}  {'errors':>7}"
     )
     print("  " + "-" * 60)
 
@@ -161,9 +169,20 @@ async def run(
             world.step(STEP_INTERVAL_S, mode=mode)
             all_frames = world.generate_all_frames(ts_ms)
 
-            # Fire all posts concurrently, rate-limited to avoid overwhelming
-            # a single-worker uvicorn. Each semaphore slot sleeps CONCURRENCY/rate
-            # seconds so aggregate throughput ≈ rate req/s.
+            # Step 0: POST all frames to register every node on the server.
+            # Step 1+: only POST frames with real aircraft detections.
+            # Mirrors real-world behaviour — idle nodes don't send data.
+            if step == 0:
+                to_send = all_frames
+            else:
+                to_send = {
+                    nid: f for nid, f in all_frames.items()
+                    if _has_real_detections(f)
+                }
+            step_sending = len(to_send)
+
+            # Rate-limit to avoid overwhelming the server on the registration
+            # burst (step 0 = up to 1000 POSTs).
             token_interval = (CONCURRENCY / rate) if rate > 0 else 0.0
             async def _limited(nid, frame):
                 async with sem:
@@ -173,7 +192,7 @@ async def run(
                     return result
 
             results = await asyncio.gather(
-                *[asyncio.create_task(_limited(nid, frame)) for nid, frame in all_frames.items()],
+                *[asyncio.create_task(_limited(nid, frame)) for nid, frame in to_send.items()],
                 return_exceptions=True,
             )
 
@@ -198,13 +217,18 @@ async def run(
 
             print(
                 f"  {step+1:>4}  {len(world.aircraft):>12}  "
-                f"{step_ok:>12}  {step_tracks:>11}  {step_err:>7}"
+                f"{step_sending:>9}  {step_tracks:>11}  {step_err:>7}"
             )
 
             if step < n_steps - 1:
                 await asyncio.sleep(max(0, STEP_INTERVAL_S - 0.2))
 
     elapsed = time.monotonic() - stats["start"]
+
+    # Give the server time to drain its processing queue before validation
+    print()
+    print("  Waiting for server to process remaining frames...")
+    await asyncio.sleep(8)
 
     # ── Validation: query all subsystems ─────────────────────────────────────
     print()

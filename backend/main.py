@@ -46,6 +46,7 @@ _external_adsb_cache: dict[str, dict] = {}
 _ws_clients: set[WebSocket] = set()
 _latest_aircraft_json: dict = {"now": 0, "aircraft": [], "messages": 0}
 _aircraft_dirty: bool = False   # set True when new frames are processed; flushed every 2s
+_frame_queue: asyncio.Queue = asyncio.Queue(maxsize=5000)  # frames queued for async processing
 
 
 async def _fetch_external_adsb():
@@ -382,6 +383,46 @@ async def _adsb_truth_fetcher():
             logging.debug("External ADS-B fetch skipped: %s", "no connected nodes or API error")
 
 
+async def _frame_processor():
+    """Process queued detection frames sequentially.
+
+    Keeps process_frame() and the LM solver off the HTTP request path so
+    the endpoint returns instantly even under heavy load (1000 nodes/step).
+    """
+    global _aircraft_dirty
+    while True:
+        node_id, frame = await _frame_queue.get()
+        try:
+            _node_analytics.record_detection_frame(node_id, frame)
+            assoc = _node_associator.submit_frame(
+                node_id, frame, frame.get("timestamp", 0),
+            )
+            if assoc:
+                solver_inputs = _node_associator.format_candidates_for_solver(assoc)
+                node_cfgs = _get_node_configs()
+                for s_in in solver_inputs:
+                    if s_in["n_nodes"] < 2:
+                        continue
+                    try:
+                        result = solve_multinode(s_in, node_cfgs)
+                    except Exception:
+                        result = None
+                    if result and result.get("success"):
+                        key = f"mn-{result['timestamp_ms']}-{result['lat']:.3f}"
+                        _multinode_tracks[key] = result
+            _radar_pipeline.process_frame(frame)
+            _aircraft_dirty = True
+            _node_analytics.maybe_auto_save()
+            try:
+                archive_detections(node_id, [frame])
+            except Exception:
+                pass
+        except Exception:
+            logging.debug("Frame processing failed", exc_info=True)
+        finally:
+            _frame_queue.task_done()
+
+
 async def _aircraft_flush_task():
     """Write aircraft.json to disk and broadcast via WebSocket at most every 2 s.
 
@@ -413,11 +454,13 @@ async def lifespan(app: FastAPI):
         reputation_task = asyncio.create_task(_reputation_evaluator())
         adsb_truth_task = asyncio.create_task(_adsb_truth_fetcher())
         flush_task = asyncio.create_task(_aircraft_flush_task())
+        frame_proc_task = asyncio.create_task(_frame_processor())
         yield
         server_task.cancel()
         reputation_task.cancel()
         adsb_truth_task.cancel()
         flush_task.cancel()
+        frame_proc_task.cancel()
         # Persist coverage maps on graceful shutdown
         _node_analytics.save_coverage_maps()
         logging.info("Coverage maps saved to %s", _COVERAGE_STORAGE_DIR)
@@ -799,22 +842,20 @@ async def ingest_detections(
         _connected_nodes[node_id]["status"] = "active"
         _connected_nodes[node_id]["last_heartbeat"] = datetime.now(timezone.utc).isoformat()
 
-    global _aircraft_dirty
     processed = 0
     for frame in frames:
         if "timestamp" not in frame:
             continue
         frame["_node_id"] = node_id
-        _node_analytics.record_detection_frame(node_id, frame)
-        _radar_pipeline.process_frame(frame)
-        processed += 1
-
-    if processed:
-        _aircraft_dirty = True
+        try:
+            _frame_queue.put_nowait((node_id, frame))
+            processed += 1
+        except asyncio.QueueFull:
+            logging.warning("Frame queue full, dropping frame from %s", node_id)
 
     return {
         "status": "ok",
-        "frames_processed": processed,
+        "frames_queued": processed,
         "tracks": len(_latest_aircraft_json.get("aircraft", [])),
     }
 
