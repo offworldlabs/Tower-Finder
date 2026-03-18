@@ -405,7 +405,7 @@ def _process_one_frame_sync(node_id: str, frame: dict):
     # Extract ADS-B positions embedded in detection frames
     adsb_list = frame.get("adsb")
     if adsb_list:
-        ts_ms = frame.get("timestamp", 0)
+        ts_ms = int(time.time() * 1000)  # use real wall-clock time (frame timestamps are sim-relative)
         for entry in adsb_list:
             if not isinstance(entry, dict):
                 continue
