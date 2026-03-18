@@ -190,15 +190,17 @@ async def run(
             items = list(to_send.items())
 
             if step == 0:
-                # ── Bulk registration: single HTTP request for all nodes ──
-                BULK_CHUNK = 500  # nodes per bulk request (keeps payload < 1 MB)
+                # ── Bulk registration: register nodes without sending frames.
+                # This avoids flooding the server's frame queue on step 0.
+                # Detection frames start from step 1 (only real detections).
+                BULK_CHUNK = 1000  # all nodes in one request (~30 KB for IDs only)
                 step_ok = step_err = step_tracks = 0
                 for chunk_start in range(0, len(items), BULK_CHUNK):
                     chunk = items[chunk_start:chunk_start + BULK_CHUNK]
                     payload = {
                         "nodes": [
-                            {"node_id": nid, "frames": [frame]}
-                            for nid, frame in chunk
+                            {"node_id": nid, "frames": []}
+                            for nid, _frame in chunk
                         ]
                     }
                     headers = {"Content-Type": "application/json"}
@@ -212,15 +214,15 @@ async def run(
                             data = resp.json()
                             step_ok += len(chunk)
                             print(f"  [reg] bulk {chunk_start//BULK_CHUNK+1}: "
-                                  f"{data.get('nodes_registered', '?')} registered, "
-                                  f"{data.get('frames_queued', '?')} queued")
+                                  f"{data.get('nodes_registered', '?')} registered")
                         else:
                             step_err += len(chunk)
                             print(f"  [reg] bulk {chunk_start//BULK_CHUNK+1}: "
-                                  f"HTTP {resp.status_code}")
+                                  f"HTTP {resp.status_code} {resp.text[:200]}")
                     except Exception as exc:
                         step_err += len(chunk)
-                        print(f"  [reg] bulk {chunk_start//BULK_CHUNK+1}: {exc}")
+                        print(f"  [reg] bulk {chunk_start//BULK_CHUNK+1}: "
+                              f"{type(exc).__name__}: {exc!r}")
                 results = None  # skip normal result processing
             else:
                 results = await asyncio.gather(

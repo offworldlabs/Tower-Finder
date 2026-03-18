@@ -869,7 +869,10 @@ async def ingest_detections_bulk(
                 "capabilities": {},
             }
             _node_analytics.register_node(node_id, entry.get("config", {"node_id": node_id}))
-            _node_associator.register_node(node_id, entry.get("config", {"node_id": node_id}))
+            # Skip _node_associator.register_node() here — it pre-computes
+            # overlap zones with every existing node (O(n²) grid search).
+            # Nodes that send actual detections will register with the
+            # associator through the normal POST endpoint instead.
             registered += 1
         else:
             _connected_nodes[node_id]["status"] = "active"
