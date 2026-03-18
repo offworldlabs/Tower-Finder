@@ -45,6 +45,7 @@ _external_adsb_cache: dict[str, dict] = {}
 # ── WebSocket broadcast infrastructure ────────────────────────────────────────
 _ws_clients: set[WebSocket] = set()
 _latest_aircraft_json: dict = {"now": 0, "aircraft": [], "messages": 0}
+_aircraft_dirty: bool = False   # set True when new frames are processed; flushed every 2s
 
 
 async def _fetch_external_adsb():
@@ -313,11 +314,8 @@ async def _handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Strea
                                         result["n_nodes"],
                                     )
                     _radar_pipeline.process_frame(frame)
-                    aircraft_data = _radar_pipeline.generate_aircraft_json()
-                    aircraft_path = os.path.join(_TAR1090_DATA_DIR, "aircraft.json")
-                    with open(aircraft_path, "w") as f:
-                        json.dump(aircraft_data, f)
-                    await _broadcast_aircraft(aircraft_data)
+                    global _aircraft_dirty
+                    _aircraft_dirty = True
                     _node_analytics.maybe_auto_save()
                     # Archive detection batch to local / B2
                     try:
@@ -332,11 +330,7 @@ async def _handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Strea
                         msg["_node_id"] = node_id
                         _node_analytics.record_detection_frame(node_id, msg)
                     _radar_pipeline.process_frame(msg)
-                    aircraft_data = _radar_pipeline.generate_aircraft_json()
-                    aircraft_path = os.path.join(_TAR1090_DATA_DIR, "aircraft.json")
-                    with open(aircraft_path, "w") as f:
-                        json.dump(aircraft_data, f)
-                    await _broadcast_aircraft(aircraft_data)
+                    _aircraft_dirty = True
                     continue
 
     except (asyncio.IncompleteReadError, ConnectionResetError):
@@ -388,6 +382,27 @@ async def _adsb_truth_fetcher():
             logging.debug("External ADS-B fetch skipped: %s", "no connected nodes or API error")
 
 
+async def _aircraft_flush_task():
+    """Write aircraft.json to disk and broadcast via WebSocket at most every 2 s.
+
+    This prevents per-request I/O flooding when hundreds of nodes post simultaneously.
+    """
+    global _aircraft_dirty
+    while True:
+        await asyncio.sleep(2)
+        if not _aircraft_dirty:
+            continue
+        _aircraft_dirty = False
+        try:
+            aircraft_data = _radar_pipeline.generate_aircraft_json()
+            aircraft_path = os.path.join(_TAR1090_DATA_DIR, "aircraft.json")
+            with open(aircraft_path, "w") as f:
+                json.dump(aircraft_data, f)
+            await _broadcast_aircraft(aircraft_data)
+        except Exception:
+            logging.debug("Aircraft flush failed", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     server = await asyncio.start_server(_handle_tcp_client, "0.0.0.0", TCP_PORT)
@@ -397,10 +412,12 @@ async def lifespan(app: FastAPI):
         server_task = asyncio.create_task(server.serve_forever())
         reputation_task = asyncio.create_task(_reputation_evaluator())
         adsb_truth_task = asyncio.create_task(_adsb_truth_fetcher())
+        flush_task = asyncio.create_task(_aircraft_flush_task())
         yield
         server_task.cancel()
         reputation_task.cancel()
         adsb_truth_task.cancel()
+        flush_task.cancel()
         # Persist coverage maps on graceful shutdown
         _node_analytics.save_coverage_maps()
         logging.info("Coverage maps saved to %s", _COVERAGE_STORAGE_DIR)
@@ -782,6 +799,7 @@ async def ingest_detections(
         _connected_nodes[node_id]["status"] = "active"
         _connected_nodes[node_id]["last_heartbeat"] = datetime.now(timezone.utc).isoformat()
 
+    global _aircraft_dirty
     processed = 0
     for frame in frames:
         if "timestamp" not in frame:
@@ -791,16 +809,13 @@ async def ingest_detections(
         _radar_pipeline.process_frame(frame)
         processed += 1
 
-    # Persist latest aircraft.json to disk
-    aircraft_data = _radar_pipeline.generate_aircraft_json()
-    with open(os.path.join(_TAR1090_DATA_DIR, "aircraft.json"), "w") as f:
-        json.dump(aircraft_data, f)
-    await _broadcast_aircraft(aircraft_data)
+    if processed:
+        _aircraft_dirty = True
 
     return {
         "status": "ok",
         "frames_processed": processed,
-        "tracks": len(aircraft_data["aircraft"]),
+        "tracks": len(_latest_aircraft_json.get("aircraft", [])),
     }
 
 
