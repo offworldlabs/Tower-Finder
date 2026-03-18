@@ -1,0 +1,19 @@
+# Fleet simulator container
+FROM python:3.12-slim
+WORKDIR /app
+
+# Install deps
+COPY backend/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy backend code (fleet orchestrator + simulation world + fleet generator)
+COPY backend/ ./backend/
+
+# Data directory for ground truth output
+RUN mkdir -p /app/data
+
+# Entry script reads env vars and launches fleet orchestrator
+COPY deploy/fleet-entrypoint.sh /app/fleet-entrypoint.sh
+RUN chmod +x /app/fleet-entrypoint.sh
+
+CMD ["/app/fleet-entrypoint.sh"]

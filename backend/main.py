@@ -835,6 +835,63 @@ async def ingest_detections(
     }
 
 
+@app.post("/api/radar/detections/bulk")
+async def ingest_detections_bulk(
+    request: Request,
+    body: dict = Body(...),
+    x_api_key: str = Header(default="", alias="X-API-Key"),
+):
+    """Bulk-ingest detection frames from many nodes in a single request.
+
+    Expected body: {"nodes": [{"node_id": "...", "frames": [{...}, ...]}, ...]}
+    """
+    if RADAR_API_KEY and x_api_key != RADAR_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
+
+    nodes_list = body.get("nodes", [])
+    if not isinstance(nodes_list, list):
+        raise HTTPException(status_code=400, detail="'nodes' must be an array")
+
+    registered = 0
+    queued = 0
+    for entry in nodes_list:
+        node_id = entry.get("node_id", "http-node")
+        frames = entry.get("frames", [])
+
+        if node_id not in _connected_nodes:
+            _connected_nodes[node_id] = {
+                "config_hash": "",
+                "config": entry.get("config", {"node_id": node_id}),
+                "status": "active",
+                "last_heartbeat": datetime.now(timezone.utc).isoformat(),
+                "peer": "http-bulk",
+                "is_synthetic": _is_synthetic_node(node_id),
+                "capabilities": {},
+            }
+            _node_analytics.register_node(node_id, entry.get("config", {"node_id": node_id}))
+            _node_associator.register_node(node_id, entry.get("config", {"node_id": node_id}))
+            registered += 1
+        else:
+            _connected_nodes[node_id]["status"] = "active"
+            _connected_nodes[node_id]["last_heartbeat"] = datetime.now(timezone.utc).isoformat()
+
+        for frame in frames:
+            if "timestamp" not in frame:
+                continue
+            frame["_node_id"] = node_id
+            try:
+                _frame_queue.put_nowait((node_id, frame))
+                queued += 1
+            except asyncio.QueueFull:
+                break
+
+    return {
+        "status": "ok",
+        "nodes_registered": registered,
+        "frames_queued": queued,
+    }
+
+
 @app.post("/api/radar/load-file")
 async def load_detection_file(body: dict = Body(...)):
     """Load a .detection file from a path on the server.

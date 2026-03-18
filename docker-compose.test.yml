@@ -1,0 +1,96 @@
+# ── Test Network Deployment ──────────────────────────────────────────────────
+# Deploys testmap.retina.fm + testapi.retina.fm with fleet simulator
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml up -d --build
+#   docker compose -f docker-compose.test.yml logs -f fleet
+#   docker compose -f docker-compose.test.yml down
+#
+# Endpoints:
+#   testapi.retina.fm  → API + WebSocket + TCP (port 3012)
+#   testmap.retina.fm  → tar1090 live aircraft map
+
+services:
+  # ── Main server: API + TCP + Map ──────────────────────────────────────────
+  tower-finder-test:
+    build: .
+    container_name: retina-test-server
+    ports:
+      - "80:80"
+      - "443:443"
+      - "3012:3012"
+    volumes:
+      - /etc/ssl/cloudflare:/etc/ssl/cloudflare:ro
+      - test-coverage-data:/app/backend/coverage_data
+      - test-archive-data:/app/backend/coverage_data/archive
+    env_file:
+      - backend/.env
+    environment:
+      - RETINA_ENV=test
+      - CORS_ORIGINS=https://retina.fm,https://testapi.retina.fm,https://testmap.retina.fm,http://localhost:5173
+      - RADAR_TCP_PORT=3012
+      # Increase rate limits for fleet simulator
+      - RADAR_RATE_LIMIT=10000
+      - RADAR_RATE_WINDOW=60
+    # Override CMD to use test startup (auto-selects nginx-test.conf)
+    command: ["/bin/sh", "/app/deploy/start-test.sh"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 4G
+        reservations:
+          cpus: "2"
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # ── Fleet simulator: runs 100-1000 synthetic nodes ────────────────────────
+  fleet-simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile.fleet
+    container_name: retina-fleet-sim
+    depends_on:
+      tower-finder-test:
+        condition: service_healthy
+    environment:
+      - FLEET_NODES=200
+      - FLEET_REGIONS=us
+      - FLEET_MODE=adsb
+      - FLEET_INTERVAL=0.5
+      - FLEET_HOST=tower-finder-test
+      - FLEET_PORT=3012
+      - FLEET_VALIDATE=true
+      - FLEET_VALIDATION_URL=http://tower-finder-test:8000
+      - FLEET_SEED=42
+    volumes:
+      - fleet-data:/app/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "1"
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  test-coverage-data:
+  test-archive-data:
+  fleet-data:

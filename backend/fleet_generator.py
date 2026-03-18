@@ -1,0 +1,274 @@
+"""
+Fleet Generator — Generates 100-1000 realistic synthetic node configurations
+spread across multiple geographic regions, each paired with a real broadcast
+transmitter tower.
+
+Usage:
+    python fleet_generator.py --nodes 200 --output fleet_config.json
+    python fleet_generator.py --nodes 1000 --regions us,eu,au
+"""
+
+import argparse
+import json
+import math
+import random
+import sys
+from dataclasses import dataclass, asdict
+from typing import Optional
+
+# ── Broadcast tower databases by region ──────────────────────────────────────
+# Each tower: (lat, lon, alt_ft, freq_hz, callsign)
+# Modeled after real VHF/UHF broadcast transmitters suitable for passive radar
+
+_TOWERS_US = [
+    # East Coast
+    (33.75667, -84.33184, 1600, 195_000_000, "WSB-TV"),    # Atlanta
+    (35.23064, -80.84313, 1540, 575_000_000, "WBTV"),       # Charlotte
+    (38.93460, -77.07920, 1380, 585_000_000, "WRC-TV"),     # Washington DC
+    (40.74843, -73.98566, 1776, 191_000_000, "WCBS-TV"),    # New York
+    (42.35370, -71.06010, 1200, 575_000_000, "WBZ-TV"),     # Boston
+    (39.95233, -75.16379, 1600, 563_000_000, "KYW-TV"),     # Philadelphia
+    (25.79590, -80.28700, 1000, 191_000_000, "WTVJ"),       # Miami
+    (28.54082, -81.37916, 1350, 551_000_000, "WESH"),       # Orlando
+    (27.97450, -82.45720, 1400, 539_000_000, "WFLA"),       # Tampa
+    (30.33270, -81.65560, 1200, 575_000_000, "WJXT"),       # Jacksonville
+    (36.85260, -75.97820, 1300, 539_000_000, "WAVY"),       # Norfolk
+    (35.78700, -78.78170, 1500, 563_000_000, "WRAL"),       # Raleigh
+    # Midwest
+    (41.87150, -87.62440, 1650, 191_000_000, "WBBM-TV"),   # Chicago
+    (42.33140, -83.04580, 1200, 551_000_000, "WXYZ-TV"),   # Detroit
+    (39.96110, -82.99880, 1400, 563_000_000, "WCMH"),      # Columbus
+    (39.76910, -86.15800, 1350, 575_000_000, "WISH-TV"),   # Indianapolis
+    (44.97750, -93.26490, 1500, 585_000_000, "WCCO-TV"),   # Minneapolis
+    (38.62720, -90.19780, 1300, 551_000_000, "KMOV"),       # St Louis
+    (39.09970, -94.57860, 1450, 539_000_000, "KCTV"),       # Kansas City
+    (41.25220, -95.99780, 1350, 575_000_000, "KETV"),       # Omaha
+    # South
+    (29.76330, -95.36320, 1300, 191_000_000, "KHOU"),       # Houston
+    (32.78060, -96.80060, 1600, 575_000_000, "WFAA"),       # Dallas
+    (29.42410, -98.49360, 1200, 563_000_000, "KENS"),       # San Antonio
+    (30.26710, -97.74310, 1400, 551_000_000, "KVUE"),       # Austin
+    (36.16270, -86.78160, 1350, 539_000_000, "WSMV"),       # Nashville
+    (35.14950, -90.04890, 1200, 575_000_000, "WMC-TV"),    # Memphis
+    (32.29560, -90.18480, 1100, 563_000_000, "WLBT"),      # Jackson MS
+    (30.45080, -91.18720, 1150, 551_000_000, "WAFB"),      # Baton Rouge
+    # West
+    (34.05220, -118.24370, 1600, 191_000_000, "KABC-TV"),  # Los Angeles
+    (37.77490, -122.41940, 1500, 575_000_000, "KGO-TV"),   # San Francisco
+    (47.60620, -122.33210, 1400, 585_000_000, "KOMO-TV"),  # Seattle
+    (45.52350, -122.67620, 1300, 551_000_000, "KGW"),       # Portland
+    (33.44840, -112.07400, 1200, 563_000_000, "KPHO-TV"),  # Phoenix
+    (36.17490, -115.13740, 1150, 539_000_000, "KLAS-TV"),  # Las Vegas
+    (39.73920, -104.99030, 1400, 575_000_000, "KCNC-TV"),  # Denver
+    (40.76080, -111.89100, 1300, 563_000_000, "KSL-TV"),   # Salt Lake City
+    (32.71570, -117.16110, 1100, 551_000_000, "KFMB-TV"),  # San Diego
+    (36.74770, -119.77260, 1200, 539_000_000, "KFSN-TV"),  # Fresno
+]
+
+_TOWERS_EU = [
+    # UK
+    (51.50740, -0.12780, 1000, 690_000_000, "Crystal Palace"),
+    (53.47620, -2.22320, 1060, 706_000_000, "Winter Hill"),
+    (52.68660, -2.43120, 1140, 730_000_000, "Sutton Coldfield"),
+    (55.95320, -3.18830, 980, 674_000_000, "Black Hill"),
+    (51.45150, -2.59270, 920, 698_000_000, "Mendip"),
+    # Germany
+    (52.52060, 13.40490, 1200, 482_000_000, "Berlin Alexanderplatz"),
+    (48.13510, 11.58200, 960, 514_000_000, "München Olympiaturm"),
+    (50.11090, 8.68210, 1100, 498_000_000, "Frankfurt Europaturm"),
+    (53.55110, 9.99370, 1040, 530_000_000, "Hamburg Heinrich-Hertz"),
+    (51.22770, 6.77350, 980, 546_000_000, "Düsseldorf Rheinturm"),
+    # France
+    (48.85830, 2.29450, 1050, 474_000_000, "Tour Eiffel"),
+    (43.29650, 5.36980, 900, 490_000_000, "Marseille Grande Étoile"),
+    (45.76400, 4.83570, 950, 506_000_000, "Lyon Fourvière"),
+    (44.83780, -0.57950, 880, 522_000_000, "Bordeaux Bouliac"),
+    # Spain / Italy
+    (40.41680, -3.70380, 950, 538_000_000, "Madrid Torrespaña"),
+    (41.38790, 2.16990, 1000, 554_000_000, "Barcelona Collserola"),
+    (41.90270, 12.49630, 920, 570_000_000, "Roma Monte Mario"),
+    (45.46430, 9.18950, 980, 586_000_000, "Milano Valassina"),
+    # Scandinavia
+    (59.33260, 18.06490, 1100, 602_000_000, "Stockholm Kaknäs"),
+    (60.17100, 24.93750, 860, 618_000_000, "Helsinki Pasila"),
+]
+
+_TOWERS_AU = [
+    (33.86880, 151.20930, 1200, 226_500_000, "Sydney TCN-9"),
+    (-37.81360, 144.96310, 1100, 182_250_000, "Melbourne GTV-9"),
+    (-27.46980, 153.02510, 1000, 191_625_000, "Brisbane QTQ-9"),
+    (-34.92850, 138.60070, 950, 209_250_000, "Adelaide NWS-9"),
+    (-31.95050, 115.86040, 900, 196_250_000, "Perth STW-9"),
+    (-42.88260, 147.32710, 850, 182_250_000, "Hobart TVT-6"),
+    (-35.28100, 149.13000, 920, 226_500_000, "Canberra CTC-10"),
+    (-19.25900, 146.81690, 800, 196_250_000, "Townsville TNQ-7"),
+    (-12.46340, 130.84560, 780, 191_625_000, "Darwin DTQ-8"),
+    (-33.42990, 149.10050, 860, 209_250_000, "Orange CBN-8"),
+]
+
+
+@dataclass
+class GeneratedNodeConfig:
+    """A generated node in the fleet."""
+    node_id: str
+    rx_lat: float
+    rx_lon: float
+    rx_alt_ft: float
+    tx_lat: float
+    tx_lon: float
+    tx_alt_ft: float
+    fc_hz: float
+    fs_hz: float = 2_000_000.0
+    beam_width_deg: float = 45.0
+    max_range_km: float = 50.0
+    region: str = "us"
+    tx_callsign: str = ""
+
+
+def _jitter(val: float, sigma: float) -> float:
+    """Add Gaussian jitter to a value."""
+    return val + random.gauss(0, sigma)
+
+
+def generate_fleet(
+    n_nodes: int = 200,
+    regions: Optional[list[str]] = None,
+    seed: int = 42,
+) -> list[dict]:
+    """Generate a fleet of synthetic node configurations.
+
+    Nodes are distributed across the requested regions, each associated
+    with a nearby broadcast tower as its illumination source. Receivers
+    are placed 5-40 km from the tower (realistic for passive radar).
+
+    Args:
+        n_nodes: Total nodes to generate (100-1000).
+        regions: List of regions to distribute across ["us", "eu", "au"].
+        seed: Random seed for reproducibility.
+
+    Returns:
+        List of node config dicts ready for fleet_config.json.
+    """
+    if regions is None:
+        regions = ["us"]
+
+    random.seed(seed)
+
+    tower_db = {
+        "us": _TOWERS_US,
+        "eu": _TOWERS_EU,
+        "au": _TOWERS_AU,
+    }
+
+    # Distribute nodes across regions proportionally to tower count
+    available_towers = []
+    for region in regions:
+        towers = tower_db.get(region, [])
+        for t in towers:
+            available_towers.append((region, t))
+
+    if not available_towers:
+        raise ValueError(f"No towers available for regions: {regions}")
+
+    nodes = []
+    for i in range(n_nodes):
+        # Pick a random tower (weighted toward having multiple nodes per tower)
+        region, tower = random.choice(available_towers)
+        tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign = tower
+
+        # Place receiver 5-40 km from tower at random bearing
+        distance_km = random.uniform(5, 40)
+        bearing_rad = random.uniform(0, 2 * math.pi)
+
+        # Convert distance and bearing to lat/lon offset
+        R = 6371.0
+        dlat = (distance_km * math.cos(bearing_rad)) / R
+        dlon = (distance_km * math.sin(bearing_rad)) / (
+            R * math.cos(math.radians(tx_lat))
+        )
+
+        rx_lat = tx_lat + math.degrees(dlat)
+        rx_lon = tx_lon + math.degrees(dlon)
+        # Receiver altitude: ground level with some variation (100-2000 ft)
+        rx_alt_ft = random.uniform(100, 2000)
+
+        # Some frequency variation (+/- 500 kHz jitter to model different channels)
+        node_fc = fc_hz + random.choice([-500000, 0, 0, 0, 500000])
+
+        # Beam width varies by antenna type (30-60 deg for Yagi)
+        beam_width = random.uniform(30, 60)
+        max_range = random.uniform(30, 70)
+
+        region_prefix = region.upper()
+        node_id = f"synth-{region_prefix}-{i + 1:04d}"
+
+        node = GeneratedNodeConfig(
+            node_id=node_id,
+            rx_lat=round(rx_lat, 6),
+            rx_lon=round(rx_lon, 6),
+            rx_alt_ft=round(rx_alt_ft, 1),
+            tx_lat=tx_lat,
+            tx_lon=tx_lon,
+            tx_alt_ft=tx_alt_ft,
+            fc_hz=node_fc,
+            fs_hz=2_000_000,
+            beam_width_deg=round(beam_width, 1),
+            max_range_km=round(max_range, 1),
+            region=region,
+            tx_callsign=callsign,
+        )
+        nodes.append(asdict(node))
+
+    return nodes
+
+
+def fleet_summary(nodes: list[dict]) -> dict:
+    """Compute a summary of the fleet configuration."""
+    from collections import Counter
+    regions = Counter(n["region"] for n in nodes)
+    towers = Counter(n["tx_callsign"] for n in nodes)
+    return {
+        "total_nodes": len(nodes),
+        "regions": dict(regions),
+        "unique_towers": len(towers),
+        "towers_by_usage": dict(towers.most_common(20)),
+        "lat_range": (
+            round(min(n["rx_lat"] for n in nodes), 4),
+            round(max(n["rx_lat"] for n in nodes), 4),
+        ),
+        "lon_range": (
+            round(min(n["rx_lon"] for n in nodes), 4),
+            round(max(n["rx_lon"] for n in nodes), 4),
+        ),
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate fleet of synthetic node configs")
+    parser.add_argument("--nodes", type=int, default=200, help="Number of nodes (100-1000)")
+    parser.add_argument("--regions", type=str, default="us", help="Comma-separated regions: us,eu,au")
+    parser.add_argument("--output", type=str, default="fleet_config.json", help="Output file path")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    args = parser.parse_args()
+
+    regions = [r.strip().lower() for r in args.regions.split(",")]
+    nodes = generate_fleet(n_nodes=args.nodes, regions=regions, seed=args.seed)
+    summary = fleet_summary(nodes)
+
+    config = {
+        "fleet": {
+            "generated_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+            "summary": summary,
+        },
+        "nodes": nodes,
+    }
+
+    with open(args.output, "w") as f:
+        json.dump(config, f, indent=2)
+
+    print(f"Generated {len(nodes)} nodes → {args.output}", file=sys.stderr)
+    print(json.dumps(summary, indent=2))
+
+
+if __name__ == "__main__":
+    main()

@@ -27,12 +27,13 @@ COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
 # tar1090 static files
 COPY tar1090/html /app/tar1090/html
 
-# Nginx config
+# Nginx config (default: production domains)
 COPY deploy/nginx.conf /etc/nginx/sites-available/default
+
+# Deploy scripts + test nginx config (used when RETINA_ENV=test)
+COPY deploy/ /app/deploy/
+RUN chmod +x /app/deploy/start.sh /app/deploy/start-test.sh
 
 EXPOSE 80
 
-COPY deploy/start.sh /app/start.sh
-RUN chmod +x /app/start.sh
-
-CMD ["/app/start.sh"]
+CMD ["/app/deploy/start.sh"]

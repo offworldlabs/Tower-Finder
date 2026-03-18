@@ -41,7 +41,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from simulation_world import SimulationWorld, NodeConfig
 
 # Max concurrent HTTP posts (avoids overwhelming server / OS fd limits)
-CONCURRENCY = 50
+CONCURRENCY = 20
 STEP_INTERVAL_S = 3.0
 
 # Clutter detections are generated with SNR in [4, 7]; real targets are > 8.
@@ -80,9 +80,13 @@ async def _post_node(
         if resp.status_code == 200:
             data = resp.json()
             return node_id, True, data.get("tracks", 0)
-        return node_id, False, 0
+        return node_id, False, -resp.status_code  # negative = HTTP error code
+    except httpx.ReadTimeout:
+        return node_id, False, -1  # timeout
+    except httpx.ConnectError:
+        return node_id, False, -2  # connection refused/reset
     except Exception:
-        return node_id, False, 0
+        return node_id, False, -9  # other
 
 
 # ── Main orchestration loop ───────────────────────────────────────────────────
@@ -157,6 +161,8 @@ async def run(
     )
     sem = asyncio.Semaphore(CONCURRENCY)
 
+    bulk_url = f"{server.rstrip('/')}/api/radar/detections/bulk"
+
     async with httpx.AsyncClient(limits=limits) as client:
         for step in range(n_steps):
             ts_ms = int(time.time() * 1000)
@@ -177,54 +183,68 @@ async def run(
                 }
             step_sending = len(to_send)
 
-            # For the registration burst (step 0, potentially 1000 POSTs),
-            # split into batches of REG_BATCH to avoid overwhelming
-            # Cloudflare / nginx with simultaneous TLS connections.
-            REG_BATCH = 100
-            REG_COOLDOWN = 2.0  # seconds between batches
-
             async def _post_one(nid, frame):
                 async with sem:
                     return await _post_node(client, detections_url, api_key, nid, frame)
 
             items = list(to_send.items())
 
-            if step == 0 and len(items) > REG_BATCH:
-                # Batched registration
-                all_results = []
-                for batch_start in range(0, len(items), REG_BATCH):
-                    batch = items[batch_start:batch_start + REG_BATCH]
-                    batch_results = await asyncio.gather(
-                        *[asyncio.create_task(_post_one(nid, frame)) for nid, frame in batch],
-                        return_exceptions=True,
-                    )
-                    all_results.extend(batch_results)
-                    registered_so_far = batch_start + len(batch)
-                    ok_so_far = sum(1 for r in all_results if not isinstance(r, Exception) and r[1])
-                    print(f"  [reg] batch {batch_start//REG_BATCH+1}: "
-                          f"{registered_so_far}/{len(items)} sent, {ok_so_far} ok")
-                    if batch_start + REG_BATCH < len(items):
-                        await asyncio.sleep(REG_COOLDOWN)
-                results = all_results
+            if step == 0:
+                # ── Bulk registration: single HTTP request for all nodes ──
+                BULK_CHUNK = 500  # nodes per bulk request (keeps payload < 1 MB)
+                step_ok = step_err = step_tracks = 0
+                for chunk_start in range(0, len(items), BULK_CHUNK):
+                    chunk = items[chunk_start:chunk_start + BULK_CHUNK]
+                    payload = {
+                        "nodes": [
+                            {"node_id": nid, "frames": [frame]}
+                            for nid, frame in chunk
+                        ]
+                    }
+                    headers = {"Content-Type": "application/json"}
+                    if api_key:
+                        headers["X-API-Key"] = api_key
+                    try:
+                        resp = await client.post(
+                            bulk_url, json=payload, headers=headers, timeout=60.0,
+                        )
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            step_ok += len(chunk)
+                            print(f"  [reg] bulk {chunk_start//BULK_CHUNK+1}: "
+                                  f"{data.get('nodes_registered', '?')} registered, "
+                                  f"{data.get('frames_queued', '?')} queued")
+                        else:
+                            step_err += len(chunk)
+                            print(f"  [reg] bulk {chunk_start//BULK_CHUNK+1}: "
+                                  f"HTTP {resp.status_code}")
+                    except Exception as exc:
+                        step_err += len(chunk)
+                        print(f"  [reg] bulk {chunk_start//BULK_CHUNK+1}: {exc}")
+                results = None  # skip normal result processing
             else:
                 results = await asyncio.gather(
                     *[asyncio.create_task(_post_one(nid, frame)) for nid, frame in items],
                     return_exceptions=True,
                 )
 
-            step_ok = step_err = step_tracks = 0
-            for r in results:
-                if isinstance(r, Exception):
-                    step_err += 1
-                    continue
-                nid, ok, tracks = r
-                if ok:
-                    step_ok += 1
-                    step_tracks += tracks
-                else:
-                    step_err += 1
-                    if verbose:
-                        print(f"  [err] {nid}")
+            if results is not None:
+                step_ok = step_err = step_tracks = 0
+                err_codes = {}
+                for r in results:
+                    if isinstance(r, Exception):
+                        step_err += 1
+                        continue
+                    nid, ok, tracks = r
+                    if ok:
+                        step_ok += 1
+                        step_tracks += tracks
+                    else:
+                        step_err += 1
+                        err_codes[tracks] = err_codes.get(tracks, 0) + 1
+            else:
+                err_codes = {}
+                step_tracks = 0
 
             stats["steps"] += 1
             stats["posts_ok"] += step_ok
@@ -234,6 +254,7 @@ async def run(
             print(
                 f"  {step+1:>4}  {len(world.aircraft):>12}  "
                 f"{step_sending:>9}  {step_tracks:>11}  {step_err:>7}"
+                + (f"  {dict(err_codes)}" if err_codes else "")
             )
 
             if step < n_steps - 1:
