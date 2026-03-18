@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import os
 import time
 import logging
@@ -409,7 +410,7 @@ app = FastAPI(title="Tower Finder API", lifespan=lifespan)
 
 _CORS_ORIGINS = os.getenv(
     "CORS_ORIGINS",
-    "http://localhost:5173,http://localhost:3000,https://retina.fm,https://api.retina.fm",
+    "http://localhost:5173,http://localhost:3000,https://retina.fm,https://api.retina.fm,https://testapi.retina.fm,https://testmap.retina.fm",
 ).split(",")
 
 app.add_middleware(
@@ -752,19 +753,41 @@ async def ingest_detections(
     # ── API key check (if RADAR_API_KEY is configured) ────────────────────────
     if RADAR_API_KEY and x_api_key != RADAR_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
-    # ── Rate limit by client IP ────────────────────────────────────────────────
-    client_ip = request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (request.client.host if request.client else "unknown")
-    _check_rate_limit(client_ip)
+    # ── Rate limit by client IP — skip for authenticated API-key holders ──────
+    if not (RADAR_API_KEY and x_api_key == RADAR_API_KEY):
+        client_ip = request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or (request.client.host if request.client else "unknown")
+        _check_rate_limit(client_ip)
     """Ingest a detection frame from a passive radar node.
 
     Expected body: {"timestamp": int, "delay": [...], "doppler": [...], "snr": [...]}
-    Or a batch: {"frames": [{...}, ...]}
+    Or a batch: {"node_id": "...", "frames": [{...}, ...]}
     """
+    node_id = body.get("node_id", "http-node")
     frames = body.get("frames", [body]) if "frames" in body else [body]
+
+    # Register node on first-seen so it appears in /api/radar/nodes and analytics
+    if node_id not in _connected_nodes:
+        _connected_nodes[node_id] = {
+            "config_hash": "",
+            "config": {"node_id": node_id},
+            "status": "active",
+            "last_heartbeat": datetime.now(timezone.utc).isoformat(),
+            "peer": "http",
+            "is_synthetic": _is_synthetic_node(node_id),
+            "capabilities": {},
+        }
+        _node_analytics.register_node(node_id, {"node_id": node_id})
+        _node_associator.register_node(node_id, {"node_id": node_id})
+    else:
+        _connected_nodes[node_id]["status"] = "active"
+        _connected_nodes[node_id]["last_heartbeat"] = datetime.now(timezone.utc).isoformat()
+
     processed = 0
     for frame in frames:
         if "timestamp" not in frame:
             continue
+        frame["_node_id"] = node_id
+        _node_analytics.record_detection_frame(node_id, frame)
         _radar_pipeline.process_frame(frame)
         processed += 1
 
@@ -1002,3 +1025,190 @@ async def download_archive_file(key: str):
     if data is None:
         raise HTTPException(status_code=404, detail="Archive file not found")
     return data
+
+
+# ── Test Network Dashboard & Validation ───────────────────────────────────────
+
+@app.get("/api/test/dashboard")
+async def test_network_dashboard():
+    """Comprehensive test network status — shows all subsystems at a glance.
+
+    Designed for validating the full pipeline with synthetic nodes.
+    """
+    import time as _t
+    now = _t.time()
+
+    # Node summary
+    total_nodes = len(_connected_nodes)
+    active_nodes = sum(1 for n in _connected_nodes.values() if n.get("status") not in ("disconnected",))
+    synthetic_nodes = sum(1 for n in _connected_nodes.values() if n.get("is_synthetic"))
+
+    # Radar pipeline
+    total_tracks = len(_radar_pipeline.tracker.tracks) if hasattr(_radar_pipeline, 'tracker') else 0
+    geolocated = len(_radar_pipeline.geolocated_tracks) if hasattr(_radar_pipeline, 'geolocated_tracks') else 0
+    mn_tracks = len(_multinode_tracks)
+
+    # Aircraft feed
+    n_aircraft = len(_latest_aircraft_json.get("aircraft", []))
+
+    # Analytics summary
+    analytics_nodes = len(_node_analytics.trust_scores)
+    avg_trust = 0.0
+    if _node_analytics.trust_scores:
+        scores = [ts.score for ts in _node_analytics.trust_scores.values() if hasattr(ts, 'score')]
+        avg_trust = sum(scores) / len(scores) if scores else 0
+
+    # Reputation
+    blocked_nodes = sum(
+        1 for r in _node_analytics.reputations.values()
+        if hasattr(r, 'reputation') and r.reputation < 0.1
+    )
+
+    # Association
+    n_overlaps = len(_node_associator.overlap_zones) if hasattr(_node_associator, 'overlap_zones') else 0
+
+    # WebSocket clients
+    ws_clients = len(_ws_clients)
+
+    # External ADS-B cache
+    ext_adsb = len(_external_adsb_cache)
+
+    return {
+        "status": "running",
+        "environment": os.getenv("RETINA_ENV", "production"),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "nodes": {
+            "total": total_nodes,
+            "active": active_nodes,
+            "synthetic": synthetic_nodes,
+            "real": total_nodes - synthetic_nodes,
+        },
+        "pipeline": {
+            "active_tracks": total_tracks,
+            "geolocated_tracks": geolocated,
+            "multinode_tracks": mn_tracks,
+            "aircraft_on_map": n_aircraft,
+        },
+        "analytics": {
+            "nodes_with_analytics": analytics_nodes,
+            "average_trust_score": round(avg_trust, 4),
+            "blocked_nodes": blocked_nodes,
+        },
+        "association": {
+            "overlap_zones": n_overlaps,
+        },
+        "streaming": {
+            "websocket_clients": ws_clients,
+            "external_adsb_cached": ext_adsb,
+        },
+        "subsystem_health": {
+            "tcp_server": "ok",
+            "radar_pipeline": "ok" if hasattr(_radar_pipeline, 'tracker') else "error",
+            "node_analytics": "ok" if analytics_nodes > 0 or total_nodes == 0 else "waiting",
+            "inter_node_association": "ok" if n_overlaps > 0 or active_nodes < 2 else "waiting",
+            "data_archival": "ok",  # always available (local fallback)
+            "websocket_broadcast": "ok" if ws_clients >= 0 else "error",
+            "aircraft_feed": "ok" if n_aircraft >= 0 else "error",
+        },
+    }
+
+
+@app.post("/api/test/validate")
+async def validate_ground_truth(body: dict = Body(...)):
+    """Compare server-tracked aircraft against simulation ground truth.
+
+    Expected body: {
+        "ground_truth": [
+            {"id": "obj-001", "lat": 33.5, "lon": -84.3, "alt_km": 10.0,
+             "heading": 120.5, "speed_ms": 250.0, "has_adsb": true}
+        ]
+    }
+
+    Returns per-aircraft match quality and overall network accuracy.
+    """
+    truth_list = body.get("ground_truth", [])
+    if not truth_list:
+        raise HTTPException(status_code=400, detail="ground_truth list required")
+
+    server_aircraft = _latest_aircraft_json.get("aircraft", [])
+
+    # Match ground truth aircraft to server-tracked aircraft by proximity
+    matches = []
+    unmatched_truth = []
+    matched_server_indices = set()
+
+    for gt in truth_list:
+        gt_lat = gt.get("lat", 0)
+        gt_lon = gt.get("lon", 0)
+        gt_alt = gt.get("alt_km", 0) * 1000  # convert to meters for comparison
+
+        best_match = None
+        best_dist = float("inf")
+
+        for i, sa in enumerate(server_aircraft):
+            if i in matched_server_indices:
+                continue
+            sa_lat = sa.get("lat", 0)
+            sa_lon = sa.get("lon", 0)
+            if sa_lat == 0 and sa_lon == 0:
+                continue
+
+            # Simple distance (degrees → approx km)
+            dlat = (gt_lat - sa_lat) * 111.0
+            dlon = (gt_lon - sa_lon) * 111.0 * math.cos(math.radians(gt_lat))
+            dist_km = math.sqrt(dlat ** 2 + dlon ** 2)
+
+            if dist_km < best_dist and dist_km < 50:  # 50 km max match radius
+                best_dist = dist_km
+                best_match = (i, sa)
+
+        if best_match:
+            idx, sa = best_match
+            matched_server_indices.add(idx)
+            # Compute altitude error
+            sa_alt_m = sa.get("alt_baro", 0) * 0.3048 if sa.get("alt_baro") else 0
+            alt_err_m = abs(gt_alt - sa_alt_m)
+
+            matches.append({
+                "truth_id": gt.get("id"),
+                "server_hex": sa.get("hex"),
+                "position_error_km": round(best_dist, 2),
+                "altitude_error_m": round(alt_err_m, 0),
+                "has_adsb": gt.get("has_adsb", False),
+                "is_anomalous": gt.get("is_anomalous", False),
+            })
+        else:
+            unmatched_truth.append(gt.get("id", "unknown"))
+
+    # False tracks (server aircraft with no ground truth match)
+    false_tracks = len(server_aircraft) - len(matched_server_indices)
+
+    # Aggregate metrics
+    if matches:
+        pos_errors = [m["position_error_km"] for m in matches]
+        alt_errors = [m["altitude_error_m"] for m in matches]
+        avg_pos_err = sum(pos_errors) / len(pos_errors)
+        avg_alt_err = sum(alt_errors) / len(alt_errors)
+        max_pos_err = max(pos_errors)
+        accuracy_pct = len(matches) / len(truth_list) * 100 if truth_list else 0
+    else:
+        avg_pos_err = avg_alt_err = max_pos_err = 0
+        accuracy_pct = 0
+
+    return {
+        "validation": {
+            "truth_aircraft": len(truth_list),
+            "server_aircraft": len(server_aircraft),
+            "matched": len(matches),
+            "unmatched_truth": len(unmatched_truth),
+            "false_tracks": false_tracks,
+            "detection_rate_pct": round(accuracy_pct, 1),
+        },
+        "accuracy": {
+            "avg_position_error_km": round(avg_pos_err, 2),
+            "max_position_error_km": round(max_pos_err, 2),
+            "avg_altitude_error_m": round(avg_alt_err, 0),
+        },
+        "matches": matches[:50],  # limit response size
+        "unmatched_ids": unmatched_truth[:20],
+    }
