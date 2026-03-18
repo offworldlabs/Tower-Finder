@@ -283,55 +283,22 @@ async def _handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Strea
                     frame = msg.get("data", msg)
                     if "timestamp" not in frame:
                         continue
-                    # Tag with node_id for multi-node tracking
                     if node_id:
                         frame["_node_id"] = node_id
-                    # Analytics
-                    if node_id:
-                        _node_analytics.record_detection_frame(node_id, frame)
-                        assoc = _node_associator.submit_frame(
-                            node_id, frame, frame.get("timestamp", 0),
-                        )
-                        if assoc:
-                            solver_inputs = _node_associator.format_candidates_for_solver(assoc)
-                            node_cfgs = _get_node_configs()
-                            for s_in in solver_inputs:
-                                if s_in["n_nodes"] < 2:
-                                    continue
-                                try:
-                                    result = solve_multinode(s_in, node_cfgs)
-                                except Exception:
-                                    logging.debug("Multi-node solver exception", exc_info=True)
-                                    result = None
-                                if result and result.get("success"):
-                                    key = f"mn-{result['timestamp_ms']}-{result['lat']:.3f}"
-                                    _multinode_tracks[key] = result
-                                    logging.info(
-                                        "Multi-node solve: (%.4f,%.4f) alt=%.0fm "
-                                        "v=(%.1f,%.1f) rms_d=%.2fμs rms_f=%.1fHz nodes=%d",
-                                        result["lat"], result["lon"], result["alt_m"],
-                                        result["vel_east"], result["vel_north"],
-                                        result["rms_delay"], result["rms_doppler"],
-                                        result["n_nodes"],
-                                    )
-                    _radar_pipeline.process_frame(frame)
-                    global _aircraft_dirty
-                    _aircraft_dirty = True
-                    _node_analytics.maybe_auto_save()
-                    # Archive detection batch to local / B2
                     try:
-                        archive_detections(node_id or "unknown", [frame])
-                    except Exception:
-                        logging.debug("Archive write failed", exc_info=True)
+                        _frame_queue.put_nowait((node_id or "tcp-unknown", frame))
+                    except asyncio.QueueFull:
+                        logging.warning("Frame queue full, dropping TCP frame from %s", node_id)
                     continue
 
                 # ── Legacy: bare detection frame (no type field) ───────
                 if "timestamp" in msg and msg_type is None:
                     if node_id:
                         msg["_node_id"] = node_id
-                        _node_analytics.record_detection_frame(node_id, msg)
-                    _radar_pipeline.process_frame(msg)
-                    _aircraft_dirty = True
+                    try:
+                        _frame_queue.put_nowait((node_id or "tcp-unknown", msg))
+                    except asyncio.QueueFull:
+                        pass
                     continue
 
     except (asyncio.IncompleteReadError, ConnectionResetError):
@@ -383,40 +350,48 @@ async def _adsb_truth_fetcher():
             logging.debug("External ADS-B fetch skipped: %s", "no connected nodes or API error")
 
 
-async def _frame_processor():
-    """Process queued detection frames sequentially.
+def _process_one_frame_sync(node_id: str, frame: dict):
+    """CPU-heavy frame processing — runs in thread pool, never on the event loop."""
+    _node_analytics.record_detection_frame(node_id, frame)
+    assoc = _node_associator.submit_frame(
+        node_id, frame, frame.get("timestamp", 0),
+    )
+    if assoc:
+        solver_inputs = _node_associator.format_candidates_for_solver(assoc)
+        node_cfgs = _get_node_configs()
+        for s_in in solver_inputs:
+            if s_in["n_nodes"] < 2:
+                continue
+            try:
+                result = solve_multinode(s_in, node_cfgs)
+            except Exception:
+                result = None
+            if result and result.get("success"):
+                key = f"mn-{result['timestamp_ms']}-{result['lat']:.3f}"
+                _multinode_tracks[key] = result
+    _radar_pipeline.process_frame(frame)
+    _node_analytics.maybe_auto_save()
+    try:
+        archive_detections(node_id, [frame])
+    except Exception:
+        pass
 
-    Keeps process_frame() and the LM solver off the HTTP request path so
-    the endpoint returns instantly even under heavy load (1000 nodes/step).
+
+async def _frame_processor():
+    """Process queued detection frames sequentially in a thread pool.
+
+    Keeps process_frame() and the LM solver off the event loop thread so
+    HTTP requests return instantly even under heavy load (1000 nodes/step).
     """
     global _aircraft_dirty
+    loop = asyncio.get_event_loop()
     while True:
         node_id, frame = await _frame_queue.get()
         try:
-            _node_analytics.record_detection_frame(node_id, frame)
-            assoc = _node_associator.submit_frame(
-                node_id, frame, frame.get("timestamp", 0),
+            await loop.run_in_executor(
+                None, _process_one_frame_sync, node_id, frame
             )
-            if assoc:
-                solver_inputs = _node_associator.format_candidates_for_solver(assoc)
-                node_cfgs = _get_node_configs()
-                for s_in in solver_inputs:
-                    if s_in["n_nodes"] < 2:
-                        continue
-                    try:
-                        result = solve_multinode(s_in, node_cfgs)
-                    except Exception:
-                        result = None
-                    if result and result.get("success"):
-                        key = f"mn-{result['timestamp_ms']}-{result['lat']:.3f}"
-                        _multinode_tracks[key] = result
-            _radar_pipeline.process_frame(frame)
             _aircraft_dirty = True
-            _node_analytics.maybe_auto_save()
-            try:
-                archive_detections(node_id, [frame])
-            except Exception:
-                pass
         except Exception:
             logging.debug("Frame processing failed", exc_info=True)
         finally:

@@ -182,13 +182,16 @@ async def run(
             step_sending = len(to_send)
 
             # Rate-limit to avoid overwhelming the server on the registration
-            # burst (step 0 = up to 1000 POSTs).
+            # burst (step 0 = up to 1000 POSTs).  Server queues frames so
+            # responses are fast; sleep only a short interval.
             token_interval = (CONCURRENCY / rate) if rate > 0 else 0.0
-            async def _limited(nid, frame):
+            # Registration step can go faster since server just enqueues.
+            effective_interval = token_interval * 0.3 if step == 0 else token_interval
+            async def _limited(nid, frame, _interval=effective_interval):
                 async with sem:
                     result = await _post_node(client, detections_url, api_key, nid, frame)
-                    if token_interval:
-                        await asyncio.sleep(token_interval)
+                    if _interval:
+                        await asyncio.sleep(_interval)
                     return result
 
             results = await asyncio.gather(
