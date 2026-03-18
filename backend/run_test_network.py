@@ -43,6 +43,9 @@ from simulation_world import SimulationWorld, NodeConfig
 # Max concurrent HTTP posts (avoids overwhelming server / OS fd limits)
 CONCURRENCY = 50
 STEP_INTERVAL_S = 3.0
+# Default max requests per second — prevents flooding slow servers.
+# Set via --rate CLI flag; 0 = unlimited (legacy behaviour).
+_DEFAULT_RATE = 30
 
 
 # ── Per-node posting ──────────────────────────────────────────────────────────
@@ -87,6 +90,7 @@ async def run(
     config_file: str | None,
     mode: str,
     verbose: bool,
+    rate: int = _DEFAULT_RATE,
 ):
     detections_url = f"{server.rstrip('/')}/api/radar/detections"
 
@@ -157,10 +161,16 @@ async def run(
             world.step(STEP_INTERVAL_S, mode=mode)
             all_frames = world.generate_all_frames(ts_ms)
 
-            # Fire all posts concurrently (throttled by semaphore)
+            # Fire all posts concurrently, rate-limited to avoid overwhelming
+            # a single-worker uvicorn. Each semaphore slot sleeps CONCURRENCY/rate
+            # seconds so aggregate throughput ≈ rate req/s.
+            token_interval = (CONCURRENCY / rate) if rate > 0 else 0.0
             async def _limited(nid, frame):
                 async with sem:
-                    return await _post_node(client, detections_url, api_key, nid, frame)
+                    result = await _post_node(client, detections_url, api_key, nid, frame)
+                    if token_interval:
+                        await asyncio.sleep(token_interval)
+                    return result
 
             results = await asyncio.gather(
                 *[asyncio.create_task(_limited(nid, frame)) for nid, frame in all_frames.items()],
@@ -311,6 +321,10 @@ def main():
         help="Simulation mode (default: adsb)",
     )
     ap.add_argument("--verbose", action="store_true", help="Print per-node errors")
+    ap.add_argument(
+        "--rate", type=int, default=_DEFAULT_RATE,
+        help=f"Max requests per second per semaphore slot (0=unlimited, default: {_DEFAULT_RATE})",
+    )
     args = ap.parse_args()
 
     asyncio.run(run(
@@ -321,6 +335,7 @@ def main():
         config_file=args.config,
         mode=args.mode,
         verbose=args.verbose,
+        rate=args.rate,
     ))
 
 
