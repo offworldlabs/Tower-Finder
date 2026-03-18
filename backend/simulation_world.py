@@ -261,13 +261,28 @@ class SimulationWorld:
         adsb_hex = None
         adsb_callsign = None
 
-        # Pick route waypoints
-        route = _pick_route(self.center_lat, self.center_lon)
-        start_wp = route[0]
+        # Anchor near a random node (if any exist) so aircraft spawn within
+        # detection range of actual nodes.  Fall back to the world centre when
+        # no nodes are registered yet.
+        if self.nodes:
+            anchor = random.choice(list(self.nodes.values()))
+            # Spawn along the RX→TX baseline: the beam points this direction,
+            # so the aircraft is guaranteed to be inside at least the anchor
+            # node's detection cone.
+            frac = random.uniform(0.1, 0.6)   # 10-60% of the way to the TX
+            anchor_lat = anchor.rx_lat + frac * (anchor.tx_lat - anchor.rx_lat)
+            anchor_lon = anchor.rx_lon + frac * (anchor.tx_lon - anchor.rx_lon)
+        else:
+            anchor_lat, anchor_lon = self.center_lat, self.center_lon
 
-        # Start near first waypoint with some offset
-        lat = start_wp[0] + random.gauss(0, 0.1)
-        lon = start_wp[1] + random.gauss(0, 0.1)
+        # Start aircraft very close to the anchor point (within ~3 km)
+        lat = anchor_lat + random.gauss(0, 0.03)
+        lon = anchor_lon + random.gauss(0, 0.03)
+
+        # Route: fly toward a waypoint within 50 km, staying in-region.
+        # Prepend the actual spawn position so the aircraft starts here and
+        # heads toward the nearest regional waypoint.
+        route = [(lat, lon)] + _pick_route(anchor_lat, anchor_lon, max_dist_km=50)
 
         if mode == "anomalous" and random.random() < 0.2:
             is_anomalous = True
