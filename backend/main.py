@@ -37,6 +37,8 @@ _COVERAGE_STORAGE_DIR = os.path.join(os.path.dirname(__file__), "coverage_data")
 _node_analytics = NodeAnalyticsManager(storage_dir=_COVERAGE_STORAGE_DIR)
 _node_associator = InterNodeAssociator()
 _multinode_tracks: dict[str, dict] = {}  # key → solver result for multi-node geolocations
+_adsb_aircraft: dict[str, dict] = {}     # hex → latest ADS-B position from node-reported frames
+_node_pipelines: dict[str, PassiveRadarPipeline] = {}  # node_id → per-node tracker pipeline
 
 # External ADS-B truth source (OpenSky Network)
 # Cached positions: {icao_hex: {lat, lon, alt_m, timestamp}}
@@ -350,6 +352,36 @@ async def _adsb_truth_fetcher():
             logging.debug("External ADS-B fetch skipped: %s", "no connected nodes or API error")
 
 
+def _get_or_create_node_pipeline(node_id: str) -> PassiveRadarPipeline:
+    """Get or lazily create a per-node PassiveRadarPipeline with correct geometry."""
+    pipeline = _node_pipelines.get(node_id)
+    if pipeline is not None:
+        return pipeline
+
+    cfg = _connected_nodes.get(node_id, {}).get("config", {})
+    if cfg.get("rx_lat") and cfg.get("tx_lat"):
+        pipeline_cfg = {
+            "node_id": node_id,
+            "Fs": cfg.get("fs_hz", cfg.get("Fs", 2_000_000)),
+            "FC": cfg.get("fc_hz", cfg.get("FC", 195_000_000)),
+            "rx_lat": cfg["rx_lat"],
+            "rx_lon": cfg["rx_lon"],
+            "rx_alt_ft": cfg.get("rx_alt_ft", 900),
+            "tx_lat": cfg["tx_lat"],
+            "tx_lon": cfg["tx_lon"],
+            "tx_alt_ft": cfg.get("tx_alt_ft", 1200),
+            "doppler_min": cfg.get("doppler_min", -300),
+            "doppler_max": cfg.get("doppler_max", 300),
+            "min_doppler": cfg.get("min_doppler", 15),
+        }
+        pipeline = PassiveRadarPipeline(pipeline_cfg)
+        _node_pipelines[node_id] = pipeline
+        return pipeline
+
+    # No geometry — fall back to default pipeline
+    return _radar_pipeline
+
+
 def _process_one_frame_sync(node_id: str, frame: dict):
     """CPU-heavy frame processing — runs in thread pool, never on the event loop."""
     _node_analytics.record_detection_frame(node_id, frame)
@@ -369,7 +401,32 @@ def _process_one_frame_sync(node_id: str, frame: dict):
             if result and result.get("success"):
                 key = f"mn-{result['timestamp_ms']}-{result['lat']:.3f}"
                 _multinode_tracks[key] = result
-    _radar_pipeline.process_frame(frame)
+
+    # Extract ADS-B positions embedded in detection frames
+    adsb_list = frame.get("adsb")
+    if adsb_list:
+        ts_ms = frame.get("timestamp", 0)
+        for entry in adsb_list:
+            if not isinstance(entry, dict):
+                continue
+            hex_code = entry.get("hex")
+            if not hex_code:
+                continue
+            _adsb_aircraft[hex_code] = {
+                "hex": hex_code,
+                "flight": entry.get("flight", ""),
+                "lat": entry.get("lat", 0),
+                "lon": entry.get("lon", 0),
+                "alt_baro": entry.get("alt_baro", 0),
+                "gs": entry.get("gs", 0),
+                "track": entry.get("track", 0),
+                "last_seen_ms": ts_ms,
+            }
+
+    # Route to per-node pipeline (with correct geometry) or default
+    pipeline = _get_or_create_node_pipeline(node_id)
+    pipeline.process_frame(frame)
+
     _node_analytics.maybe_auto_save()
     try:
         archive_detections(node_id, [frame])
@@ -398,19 +455,124 @@ async def _frame_processor():
             _frame_queue.task_done()
 
 
+def _build_combined_aircraft_json() -> dict:
+    """Build combined aircraft.json from all sources:
+    per-node pipelines, default pipeline, multi-node solver, ADS-B reports.
+    """
+    now = time.time()
+    seen_hex: set[str] = set()
+    aircraft: list[dict] = []
+
+    # 1. Per-node pipeline geolocated tracks (correct per-node geometry)
+    for pipeline in list(_node_pipelines.values()):
+        for track in list(pipeline.geolocated_tracks.values()):
+            ac_hex = track.adsb_hex or track.hex_id
+            if ac_hex in seen_hex:
+                continue
+            seen_hex.add(ac_hex)
+            aircraft.append({
+                "hex": ac_hex,
+                "type": "tisb_other",
+                "flight": (track.adsb_hex or f"PR{abs(hash(track.track_id)) % 10000:04d}").strip(),
+                "alt_baro": round(track.alt_ft),
+                "alt_geom": round(track.alt_ft),
+                "gs": round(track.speed_knots, 1),
+                "track": round(track.track_angle, 1),
+                "lat": round(track.lat, 6),
+                "lon": round(track.lon, 6),
+                "seen": 0,
+                "messages": track.n_detections,
+                "rssi": -10.0,
+                "category": "A3",
+            })
+
+    # 2. Default pipeline (for file-loaded data)
+    for track in list(_radar_pipeline.geolocated_tracks.values()):
+        ac_hex = track.adsb_hex or track.hex_id
+        if ac_hex in seen_hex:
+            continue
+        seen_hex.add(ac_hex)
+        aircraft.append({
+            "hex": ac_hex,
+            "type": "tisb_other",
+            "flight": f"PR{abs(hash(track.track_id)) % 10000:04d} ",
+            "alt_baro": round(track.alt_ft),
+            "alt_geom": round(track.alt_ft),
+            "gs": round(track.speed_knots, 1),
+            "track": round(track.track_angle, 1),
+            "lat": round(track.lat, 6),
+            "lon": round(track.lon, 6),
+            "seen": 0,
+            "messages": track.n_detections,
+            "rssi": -10.0,
+            "category": "A3",
+        })
+
+    # 3. Multi-node solver results
+    stale_mn = []
+    for key, r in list(_multinode_tracks.items()):
+        age_s = now - r.get("timestamp_ms", 0) / 1000
+        if age_s > 60:
+            stale_mn.append(key)
+            continue
+        ac = _multinode_to_aircraft(key, r)
+        if ac["hex"] not in seen_hex:
+            seen_hex.add(ac["hex"])
+            aircraft.append(ac)
+    for k in stale_mn:
+        _multinode_tracks.pop(k, None)
+
+    # 4. ADS-B correlated aircraft from node-reported detection frames
+    stale_adsb = []
+    for hex_code, entry in list(_adsb_aircraft.items()):
+        if hex_code in seen_hex:
+            continue
+        age_s = now - entry.get("last_seen_ms", 0) / 1000
+        if age_s > 60:
+            stale_adsb.append(hex_code)
+            continue
+        lat, lon = entry.get("lat", 0), entry.get("lon", 0)
+        if not lat or not lon:
+            continue
+        seen_hex.add(hex_code)
+        aircraft.append({
+            "hex": hex_code,
+            "type": "adsb_icao",
+            "flight": (entry.get("flight") or hex_code).strip(),
+            "alt_baro": entry.get("alt_baro", 0),
+            "alt_geom": entry.get("alt_baro", 0),
+            "gs": round(entry.get("gs", 0), 1),
+            "track": round(entry.get("track", 0), 1),
+            "lat": round(lat, 5),
+            "lon": round(lon, 5),
+            "seen": 0,
+            "messages": 1,
+            "rssi": -15.0,
+        })
+    for k in stale_adsb:
+        _adsb_aircraft.pop(k, None)
+
+    return {
+        "now": now,
+        "messages": len(aircraft),
+        "aircraft": aircraft,
+    }
+
+
 async def _aircraft_flush_task():
     """Write aircraft.json to disk and broadcast via WebSocket at most every 2 s.
 
     This prevents per-request I/O flooding when hundreds of nodes post simultaneously.
     """
-    global _aircraft_dirty
+    global _aircraft_dirty, _latest_aircraft_json
     while True:
         await asyncio.sleep(2)
         if not _aircraft_dirty:
             continue
         _aircraft_dirty = False
         try:
-            aircraft_data = _radar_pipeline.generate_aircraft_json()
+            aircraft_data = _build_combined_aircraft_json()
+            _latest_aircraft_json = aircraft_data
             aircraft_path = os.path.join(_TAR1090_DATA_DIR, "aircraft.json")
             with open(aircraft_path, "w") as f:
                 json.dump(aircraft_data, f)
@@ -763,20 +925,7 @@ async def tar1090_receiver():
 @app.get("/api/radar/data/aircraft.json")
 async def tar1090_aircraft():
     """Serve tar1090 aircraft.json with current tracked targets including multi-node."""
-    data = _radar_pipeline.generate_aircraft_json()
-    # Merge multi-node solver results
-    import time as _time
-    now = _time.time()
-    stale_keys = []
-    for key, r in _multinode_tracks.items():
-        age_s = now - r.get("timestamp_ms", 0) / 1000
-        if age_s > 60:
-            stale_keys.append(key)
-            continue
-        data["aircraft"].append(_multinode_to_aircraft(key, r))
-    for k in stale_keys:
-        _multinode_tracks.pop(k, None)
-    return data
+    return _latest_aircraft_json
 
 
 @app.post("/api/radar/detections")
@@ -1135,9 +1284,12 @@ async def test_network_dashboard():
     synthetic_nodes = sum(1 for n in _connected_nodes.values() if n.get("is_synthetic"))
 
     # Radar pipeline
-    total_tracks = len(_radar_pipeline.tracker.tracks) if hasattr(_radar_pipeline, 'tracker') else 0
-    geolocated = len(_radar_pipeline.geolocated_tracks) if hasattr(_radar_pipeline, 'geolocated_tracks') else 0
+    total_tracks = sum(len(p.tracker.tracks) for p in _node_pipelines.values()) if _node_pipelines else 0
+    total_tracks += len(_radar_pipeline.tracker.tracks) if hasattr(_radar_pipeline, 'tracker') else 0
+    geolocated = sum(len(p.geolocated_tracks) for p in _node_pipelines.values()) if _node_pipelines else 0
+    geolocated += len(_radar_pipeline.geolocated_tracks) if hasattr(_radar_pipeline, 'geolocated_tracks') else 0
     mn_tracks = len(_multinode_tracks)
+    adsb_tracks = len(_adsb_aircraft)
 
     # Aircraft feed
     n_aircraft = len(_latest_aircraft_json.get("aircraft", []))
@@ -1178,6 +1330,8 @@ async def test_network_dashboard():
             "active_tracks": total_tracks,
             "geolocated_tracks": geolocated,
             "multinode_tracks": mn_tracks,
+            "adsb_aircraft": adsb_tracks,
+            "node_pipelines": len(_node_pipelines),
             "aircraft_on_map": n_aircraft,
         },
         "analytics": {

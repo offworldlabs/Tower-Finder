@@ -120,6 +120,9 @@ async def run(
 
     node_dicts = node_dicts[:n_nodes]
 
+    # Lookup: node_id → full config dict (for bulk registration with geometry)
+    node_cfg_by_id = {nd["node_id"]: nd for nd in node_dicts}
+
     # ── Build SimulationWorld ─────────────────────────────────────────────────
     world = SimulationWorld()
     for nd in node_dicts:
@@ -203,7 +206,11 @@ async def run(
                     chunk = items[chunk_start:chunk_start + BULK_CHUNK]
                     payload = {
                         "nodes": [
-                            {"node_id": nid, "frames": []}
+                            {
+                                "node_id": nid,
+                                "config": node_cfg_by_id.get(nid, {}),
+                                "frames": [],
+                            }
                             for nid, _frame in chunk
                         ]
                     }
