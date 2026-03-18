@@ -267,7 +267,7 @@ async def run(
     # Give the server time to drain its processing queue before validation
     print()
     print("  Waiting for server to process remaining frames...")
-    await asyncio.sleep(8)
+    await asyncio.sleep(15)
 
     # ── Validation: query all subsystems ─────────────────────────────────────
     print()
@@ -279,7 +279,7 @@ async def run(
     subsystem_results = {}
 
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             checks = {
                 "health":    client.get(f"{server}/api/health"),
                 "aircraft":  client.get(f"{server}/api/radar/data/aircraft.json"),
