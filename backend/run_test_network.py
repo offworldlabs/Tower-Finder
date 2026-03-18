@@ -43,9 +43,6 @@ from simulation_world import SimulationWorld, NodeConfig
 # Max concurrent HTTP posts (avoids overwhelming server / OS fd limits)
 CONCURRENCY = 50
 STEP_INTERVAL_S = 3.0
-# Default max requests per second — prevents flooding slow servers.
-# Set via --rate CLI flag; 0 = unlimited (legacy behaviour).
-_DEFAULT_RATE = 30
 
 # Clutter detections are generated with SNR in [4, 7]; real targets are > 8.
 _CLUTTER_SNR_MAX = 8.0
@@ -98,7 +95,6 @@ async def run(
     config_file: str | None,
     mode: str,
     verbose: bool,
-    rate: int = _DEFAULT_RATE,
 ):
     detections_url = f"{server.rstrip('/')}/api/radar/detections"
 
@@ -181,23 +177,40 @@ async def run(
                 }
             step_sending = len(to_send)
 
-            # Rate-limit to avoid overwhelming the server on the registration
-            # burst (step 0 = up to 1000 POSTs).  Server queues frames so
-            # responses are fast; sleep only a short interval.
-            token_interval = (CONCURRENCY / rate) if rate > 0 else 0.0
-            # Registration step can go faster since server just enqueues.
-            effective_interval = token_interval * 0.3 if step == 0 else token_interval
-            async def _limited(nid, frame, _interval=effective_interval):
-                async with sem:
-                    result = await _post_node(client, detections_url, api_key, nid, frame)
-                    if _interval:
-                        await asyncio.sleep(_interval)
-                    return result
+            # For the registration burst (step 0, potentially 1000 POSTs),
+            # split into batches of REG_BATCH to avoid overwhelming
+            # Cloudflare / nginx with simultaneous TLS connections.
+            REG_BATCH = 100
+            REG_COOLDOWN = 2.0  # seconds between batches
 
-            results = await asyncio.gather(
-                *[asyncio.create_task(_limited(nid, frame)) for nid, frame in to_send.items()],
-                return_exceptions=True,
-            )
+            async def _post_one(nid, frame):
+                async with sem:
+                    return await _post_node(client, detections_url, api_key, nid, frame)
+
+            items = list(to_send.items())
+
+            if step == 0 and len(items) > REG_BATCH:
+                # Batched registration
+                all_results = []
+                for batch_start in range(0, len(items), REG_BATCH):
+                    batch = items[batch_start:batch_start + REG_BATCH]
+                    batch_results = await asyncio.gather(
+                        *[asyncio.create_task(_post_one(nid, frame)) for nid, frame in batch],
+                        return_exceptions=True,
+                    )
+                    all_results.extend(batch_results)
+                    registered_so_far = batch_start + len(batch)
+                    ok_so_far = sum(1 for r in all_results if not isinstance(r, Exception) and r[1])
+                    print(f"  [reg] batch {batch_start//REG_BATCH+1}: "
+                          f"{registered_so_far}/{len(items)} sent, {ok_so_far} ok")
+                    if batch_start + REG_BATCH < len(items):
+                        await asyncio.sleep(REG_COOLDOWN)
+                results = all_results
+            else:
+                results = await asyncio.gather(
+                    *[asyncio.create_task(_post_one(nid, frame)) for nid, frame in items],
+                    return_exceptions=True,
+                )
 
             step_ok = step_err = step_tracks = 0
             for r in results:
@@ -348,10 +361,6 @@ def main():
         help="Simulation mode (default: adsb)",
     )
     ap.add_argument("--verbose", action="store_true", help="Print per-node errors")
-    ap.add_argument(
-        "--rate", type=int, default=_DEFAULT_RATE,
-        help=f"Max requests per second per semaphore slot (0=unlimited, default: {_DEFAULT_RATE})",
-    )
     args = ap.parse_args()
 
     asyncio.run(run(
@@ -362,7 +371,6 @@ def main():
         config_file=args.config,
         mode=args.mode,
         verbose=args.verbose,
-        rate=args.rate,
     ))
 
 
