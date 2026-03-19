@@ -30,6 +30,7 @@ import math
 import os
 import random
 import signal
+import ssl
 import sys
 import time
 from dataclasses import dataclass, asdict
@@ -480,6 +481,9 @@ async def _push_ground_truth_live(
     log.info("Ground truth live push started (url=%s, interval=%.1fs)", base_url, interval_s)
     url = f"{base_url}/api/test/ground-truth/push"
     loop = asyncio.get_event_loop()
+    ssl_context = None
+    if "localhost" in base_url or "127.0.0.1" in base_url:
+        ssl_context = ssl._create_unverified_context()
 
     while orchestrator._running:
         await asyncio.sleep(interval_s)
@@ -514,7 +518,10 @@ async def _push_ground_truth_live(
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
-                await loop.run_in_executor(None, lambda r=req: urllib.request.urlopen(r, timeout=4))
+                await loop.run_in_executor(
+                    None,
+                    lambda r=req, ctx=ssl_context: urllib.request.urlopen(r, timeout=4, context=ctx),
+                )
         except Exception as e:
             log.debug("Ground truth push failed: %s", e)
 
@@ -529,9 +536,12 @@ async def _validate_against_server(
 
     log.info("Validation loop started (interval=%.0fs, url=%s)", interval_s, base_url)
     loop = asyncio.get_event_loop()
+    ssl_context = None
+    if "localhost" in base_url or "127.0.0.1" in base_url:
+        ssl_context = ssl._create_unverified_context()
 
     def _get_json(endpoint_url):
-        with urllib.request.urlopen(endpoint_url, timeout=10) as r:
+        with urllib.request.urlopen(endpoint_url, timeout=10, context=ssl_context) as r:
             return json.loads(r.read())
 
     while orchestrator._running:
