@@ -201,6 +201,8 @@ class FleetOrchestrator:
         max_concurrent_connects: int = 50,
         connect_retries: int = 3,
         time_scale: float = 1.0,
+        min_aircraft: int = 0,
+        max_aircraft: int = 0,
     ):
         self.node_configs = node_configs
         self.host = host
@@ -210,6 +212,8 @@ class FleetOrchestrator:
         self.max_concurrent_connects = max_concurrent_connects
         self.connect_retries = max(1, connect_retries)
         self.time_scale = max(0.1, time_scale)
+        self.min_aircraft = max(0, min_aircraft)
+        self.max_aircraft = max(0, max_aircraft)
         self.connections: dict[str, NodeConnection] = {}
         self.world: Optional[SimulationWorld] = None
         self._running = False
@@ -235,8 +239,12 @@ class FleetOrchestrator:
         self.world = SimulationWorld(center_lat=center_lat, center_lon=center_lon)
         # Scale aircraft count with node count
         n = len(self.node_configs)
-        self.world.min_aircraft = max(5, n // 20)
-        self.world.max_aircraft = max(15, n // 10)
+        auto_min_aircraft = max(10, n // 5)
+        auto_max_aircraft = max(18, n // 3)
+        self.world.min_aircraft = self.min_aircraft or auto_min_aircraft
+        self.world.max_aircraft = self.max_aircraft or auto_max_aircraft
+        if self.world.max_aircraft < self.world.min_aircraft:
+            self.world.max_aircraft = self.world.min_aircraft
 
         for cfg in self.node_configs:
             node = NodeConfig(
@@ -619,6 +627,8 @@ async def main_async(args):
         max_concurrent_connects=args.concurrency,
         connect_retries=args.connect_retries,
         time_scale=args.time_scale,
+        min_aircraft=args.min_aircraft,
+        max_aircraft=args.max_aircraft,
     )
 
     # Build shared simulation world
@@ -690,6 +700,10 @@ def main():
                         help="Simulation speed multiplier (for demo visibility)")
     parser.add_argument("--duration", type=float, default=0,
                         help="Run duration in seconds (0 = infinite)")
+    parser.add_argument("--min-aircraft", type=int, default=0,
+                        help="Minimum aircraft to keep alive (0 = auto demo default)")
+    parser.add_argument("--max-aircraft", type=int, default=0,
+                        help="Maximum aircraft in world (0 = auto demo default)")
     parser.add_argument("--concurrency", type=int, default=50,
                         help="Max concurrent TCP connections during setup")
     parser.add_argument("--connect-retries", type=int, default=3,
