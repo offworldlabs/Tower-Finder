@@ -59,6 +59,18 @@
   user-select: none;
 }
 
+button.coverage-toggle {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(30, 41, 59, 0.9);
+  color: #e2e8f0;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+button.coverage-toggle:hover {
+  background: rgba(51, 65, 85, 0.95);
+}
+
 .coverage-toggle input {
   accent-color: #ef4444;
 }

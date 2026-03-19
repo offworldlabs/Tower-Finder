@@ -88,27 +88,53 @@ function beamConePositions(lat, lon, azimuthDeg, beamWidthDeg, rangeKm) {
 
 /* ── Auto-fit map bounds ──────────────────────────────────────── */
 
-function FitBounds({ aircraft, nodes }) {
+function FitBounds({ aircraft, nodes, trails, selectedHex, focusNonce }) {
   const map = useMap();
   const fitted = useRef(false);
+  const lastFocusKey = useRef(null);
 
   useEffect(() => {
-    if (fitted.current) return;
     const pts = [];
-    aircraft.forEach((ac) => {
-      if (ac.lat && ac.lon) pts.push([ac.lat, ac.lon]);
+
+    const trailEntries = Object.entries(trails || {});
+    const activeTrailEntries = selectedHex
+      ? trailEntries.filter(([hex]) => hex === selectedHex)
+      : trailEntries;
+
+    activeTrailEntries.forEach(([, positions]) => {
+      positions.forEach((p) => {
+        if (p[0] && p[1]) pts.push([p[0], p[1]]);
+      });
     });
-    nodes.forEach((n) => {
-      if (n.rx_lat && n.rx_lon) pts.push([n.rx_lat, n.rx_lon]);
-    });
+
+    if (pts.length === 0) {
+      const activeAircraft = selectedHex
+        ? aircraft.filter((ac) => ac.hex === selectedHex)
+        : aircraft;
+      activeAircraft.forEach((ac) => {
+        if (ac.lat && ac.lon) pts.push([ac.lat, ac.lon]);
+      });
+    }
+
+    if (pts.length === 0) {
+      nodes.forEach((n) => {
+        if (n.rx_lat && n.rx_lon) pts.push([n.rx_lat, n.rx_lon]);
+      });
+    }
+
+    const focusKey = `${selectedHex || "all"}:${focusNonce}:${pts.length}`;
+    if (fitted.current && lastFocusKey.current === focusKey) return;
+
     if (pts.length >= 2) {
       map.fitBounds(pts, { padding: [40, 40] });
       fitted.current = true;
+      lastFocusKey.current = focusKey;
     } else if (pts.length === 1) {
       map.setView(pts[0], 10);
       fitted.current = true;
+      lastFocusKey.current = focusKey;
     }
-  }, [aircraft, nodes, map]);
+  }, [aircraft, nodes, trails, selectedHex, focusNonce, map]);
 
   return null;
 }
@@ -118,11 +144,12 @@ function FitBounds({ aircraft, nodes }) {
 export default function LiveAircraftMap() {
   const [aircraft, setAircraft] = useState([]);
   const [nodes, setNodes] = useState([]);
-  const [showCoverage, setShowCoverage] = useState(true);
+  const [showCoverage, setShowCoverage] = useState(false);
   const [showTrails, setShowTrails] = useState(true);
   const [showGroundTruth, setShowGroundTruth] = useState(true);
   const [connected, setConnected] = useState(false);
   const [selectedHex, setSelectedHex] = useState(null);
+  const [focusNonce, setFocusNonce] = useState(0);
 
   // Trails accumulated locally — keyed by hex
   // Each value: [[lat, lon, alt, ts], ...]
@@ -322,6 +349,13 @@ export default function LiveAircraftMap() {
           />
           Ground truth
         </label>
+        <button
+          type="button"
+          className="coverage-toggle"
+          onClick={() => setFocusNonce((n) => n + 1)}
+        >
+          Focus traffic
+        </button>
         {/* Legend */}
         <span className="map-legend">
           <span className="legend-dot" style={{ background: "#f59e0b" }} /> Solved
@@ -340,7 +374,13 @@ export default function LiveAircraftMap() {
           url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
         />
 
-        <FitBounds aircraft={aircraft} nodes={nodes} />
+        <FitBounds
+          aircraft={aircraft}
+          nodes={nodes}
+          trails={trailsRef.current}
+          selectedHex={selectedHex}
+          focusNonce={focusNonce}
+        />
 
         {/* Coverage zones */}
         {showCoverage &&
@@ -384,15 +424,26 @@ export default function LiveAircraftMap() {
             if (pts.length < 2) return null;
             const isSelected = hex === selectedHex;
             return (
-              <Polyline
-                key={`trail-${hex}-${trailTick}`}
-                positions={pts}
-                pathOptions={{
-                  color: isSelected ? "#fbbf24" : "#f59e0b",
-                  weight: isSelected ? 3 : 2,
-                  opacity: isSelected ? 0.9 : 0.65,
-                }}
-              />
+              <>
+                <Polyline
+                  key={`trail-shadow-${hex}-${trailTick}`}
+                  positions={pts}
+                  pathOptions={{
+                    color: "#111827",
+                    weight: isSelected ? 8 : 6,
+                    opacity: 0.55,
+                  }}
+                />
+                <Polyline
+                  key={`trail-${hex}-${trailTick}`}
+                  positions={pts}
+                  pathOptions={{
+                    color: isSelected ? "#fde68a" : "#f59e0b",
+                    weight: isSelected ? 5 : 4,
+                    opacity: isSelected ? 1 : 0.92,
+                  }}
+                />
+              </>
             );
           })}
 
@@ -403,16 +454,28 @@ export default function LiveAircraftMap() {
             const pts = positions.map((p) => [p[0], p[1]]);
             const isSelected = hex === selectedHex;
             return (
-              <Polyline
-                key={`gt-${hex}-${trailTick}`}
-                positions={pts}
-                pathOptions={{
-                  color: "#22d3ee",
-                  weight: isSelected ? 3 : 2,
-                  opacity: isSelected ? 0.9 : 0.5,
-                  dashArray: "6 5",
-                }}
-              />
+              <>
+                <Polyline
+                  key={`gt-shadow-${hex}-${trailTick}`}
+                  positions={pts}
+                  pathOptions={{
+                    color: "#082f49",
+                    weight: isSelected ? 7 : 5,
+                    opacity: 0.45,
+                    dashArray: "6 5",
+                  }}
+                />
+                <Polyline
+                  key={`gt-${hex}-${trailTick}`}
+                  positions={pts}
+                  pathOptions={{
+                    color: "#22d3ee",
+                    weight: isSelected ? 4 : 3,
+                    opacity: isSelected ? 0.95 : 0.8,
+                    dashArray: "6 5",
+                  }}
+                />
+              </>
             );
           })}
 
