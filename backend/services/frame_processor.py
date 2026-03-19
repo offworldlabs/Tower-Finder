@@ -13,7 +13,6 @@ from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
 from retina_geolocator.multinode_solver import solve_multinode
 from services.storage import archive_detections
-from services.tcp_handler import is_synthetic_node
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -109,16 +108,9 @@ def get_or_create_node_pipeline(
 
 def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarPipeline):
     """CPU-heavy frame processing — never runs on the event loop."""
-    # Synthetic nodes bypass analytics — their ground truth is already known
-    # and they generate far too many frames to process meaningfully.
-    if is_synthetic_node(node_id):
-        return
     state.node_analytics.record_detection_frame(node_id, frame)
 
-    # Skip expensive multinode solver for synthetic demo nodes — ground truth
-    # is already known and the solver would consume 100% CPU unnecessarily.
-    if not is_synthetic_node(node_id):
-        assoc = state.node_associator.submit_frame(node_id, frame, frame.get("timestamp", 0))
+    assoc = state.node_associator.submit_frame(node_id, frame, frame.get("timestamp", 0))
         if assoc:
             solver_inputs = state.node_associator.format_candidates_for_solver(assoc)
             node_cfgs = get_node_configs()
@@ -154,18 +146,14 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
                 "last_seen_ms": ts_ms,
             }
 
-    # Skip the CPU-heavy radar pipeline for synthetic nodes — their ADS-B
-    # positions are already captured above from the embedded adsb field.
-    if not is_synthetic_node(node_id):
-        pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
-        pipeline.process_frame(frame)
+    pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
+    pipeline.process_frame(frame)
 
     state.node_analytics.maybe_auto_save()
-    if not is_synthetic_node(node_id):
-        try:
-            archive_detections(node_id, [frame])
-        except Exception:
-            pass
+    try:
+        archive_detections(node_id, [frame])
+    except Exception:
+        pass
 
 
 # ── Multi-node result → tar1090-compatible dict ──────────────────────────────

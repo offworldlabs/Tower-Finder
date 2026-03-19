@@ -98,11 +98,16 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                         "server_version": RETINA_PROTOCOL_VERSION,
                         "server_capabilities": SERVER_CAPABILITIES,
                     })
-                    state.node_analytics.register_node(node_id, config_payload)
-                    # Skip O(n²) overlap-zone computation for synthetic nodes —
-                    # they have known ground truth and don't need inter-node association.
-                    if not is_synth:
-                        state.node_associator.register_node(node_id, config_payload)
+                    # Run registration in thread pool — register_node computes
+                    # O(n²) bistatic overlap zones and must NOT block the event loop.
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(
+                        None,
+                        lambda: (
+                            state.node_analytics.register_node(node_id, config_payload),
+                            state.node_associator.register_node(node_id, config_payload),
+                        ),
+                    )
                     continue
 
                 # ── REGISTER_KEY (chain of custody) ────────────────
@@ -248,12 +253,6 @@ async def _handle_heartbeat(msg: dict, node_id: str | None, writer):
 
 
 def _enqueue_detection(msg: dict, node_id: str | None):
-    # For synthetic demo nodes: extract ADS-B positions directly without
-    # going through the thread-pool queue, which would starve the event loop.
-    if node_id and is_synthetic_node(node_id):
-        _apply_synthetic_adsb(msg, node_id)
-        return
-
     frame = msg.get("data", msg)
     if "signature" in frame and "payload_hash" in frame:
         det_node_id = frame.get("node_id", node_id)
