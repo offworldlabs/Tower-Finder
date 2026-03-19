@@ -6,18 +6,18 @@ HOST="${HOST:-localhost}"
 PORT="${PORT:-3012}"
 VALIDATION_URL="${VALIDATION_URL:-https://localhost}"
 
-# Demo-oriented defaults: enough traffic to feel alive without turning the UI
-# into an unreadable debug wall.
-NODES="${NODES:-80}"
+# Demo-oriented defaults: small enough to keep the single-CPU container
+# responsive while still showing meaningful activity on the map.
+NODES="${NODES:-12}"
 MODE="${MODE:-adsb}"
 INTERVAL="${INTERVAL:-0.5}"
-TIME_SCALE="${TIME_SCALE:-4.0}"
-MIN_AIRCRAFT="${MIN_AIRCRAFT:-48}"
-MAX_AIRCRAFT="${MAX_AIRCRAFT:-72}"
+TIME_SCALE="${TIME_SCALE:-3.0}"
+MIN_AIRCRAFT="${MIN_AIRCRAFT:-8}"
+MAX_AIRCRAFT="${MAX_AIRCRAFT:-12}"
 BEAM_WIDTH_DEG="${BEAM_WIDTH_DEG:-120}"
 MAX_RANGE_KM="${MAX_RANGE_KM:-140}"
-CONCURRENCY="${CONCURRENCY:-20}"
-CONNECT_RETRIES="${CONNECT_RETRIES:-5}"
+CONCURRENCY="${CONCURRENCY:-4}"
+CONNECT_RETRIES="${CONNECT_RETRIES:-8}"
 
 LOG_FILE="${LOG_FILE:-/tmp/fleet.log}"
 PID_FILE="${PID_FILE:-/tmp/fleet.pid}"
