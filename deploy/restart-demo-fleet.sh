@@ -24,10 +24,10 @@ PID_FILE="${PID_FILE:-/tmp/fleet.pid}"
 
 cd "$APP_DIR"
 
-pkill -f "backend/fleet_orchestrator.py" 2>/dev/null || true
+pkill -f "simulation/orchestrator.py" 2>/dev/null || true
 sleep 2
 
-nohup python3 backend/fleet_orchestrator.py \
+nohup python3 backend/simulation/orchestrator.py \
   --nodes "$NODES" \
   --mode "$MODE" \
   --validate \

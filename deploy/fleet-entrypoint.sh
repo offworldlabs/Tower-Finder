@@ -59,7 +59,7 @@ done
 
 # Generate fleet config
 echo "Generating fleet config (${NODES} nodes, regions=${REGIONS})..."
-python3 fleet_generator.py --nodes "${NODES}" --regions "${REGIONS}" --seed "${SEED}" --output /app/data/fleet_config.json
+python3 simulation/generator.py --nodes "${NODES}" --regions "${REGIONS}" --seed "${SEED}" --output /app/data/fleet_config.json
 
 # Build orchestrator args
 ARGS="--config /app/data/fleet_config.json"
@@ -77,4 +77,4 @@ fi
 
 # Launch fleet orchestrator
 echo "Launching fleet orchestrator..."
-exec python3 fleet_orchestrator.py ${ARGS}
+exec python3 simulation/orchestrator.py ${ARGS}
