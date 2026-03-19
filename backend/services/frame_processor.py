@@ -65,7 +65,7 @@ def resolve_ground_truth_hex(
 
 def get_node_configs() -> dict[str, dict]:
     configs = {}
-    for nid, info in state.connected_nodes.items():
+    for nid, info in list(state.connected_nodes.items()):
         cfg = info.get("config")
         if cfg:
             configs[nid] = cfg

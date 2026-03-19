@@ -316,9 +316,14 @@ class InterNodeAssociator:
         self.node_geometries: dict[str, NodeGeometry] = {}
         self.overlap_zones: dict[tuple[str, str], OverlapZone] = {}
         self._pending_frames: dict[str, dict] = {}  # node_id → latest frame
+        self._register_lock = __import__('threading').Lock()
 
     def register_node(self, node_id: str, config: dict):
-        """Register a node and pre-compute overlap zones with all existing nodes."""
+        """Register a node and pre-compute overlap zones with all existing nodes.
+
+        Thread-safe: acquires an internal lock so concurrent registrations
+        (e.g. from multiple run_in_executor calls) cannot corrupt iteration.
+        """
         rx_alt_km = config.get("rx_alt_ft", 0) * 0.3048 / 1000.0
         tx_alt_km = config.get("tx_alt_ft", 0) * 0.3048 / 1000.0
 
@@ -340,19 +345,22 @@ class InterNodeAssociator:
             geo.rx_lat, geo.rx_lon, geo.tx_lat, geo.tx_lon
         )
 
-        # Pre-compute overlap zones with existing nodes
-        for existing_id, existing_geo in self.node_geometries.items():
-            pair_key = tuple(sorted([node_id, existing_id]))
-            zone = compute_overlap_zone(
-                geo if pair_key[0] == node_id else existing_geo,
-                existing_geo if pair_key[0] == node_id else geo,
-                grid_step_km=self.grid_step_km,
-                delay_gate_us=self.delay_gate_us,
-                doppler_gate_hz=self.doppler_gate_hz,
-            )
-            self.overlap_zones[pair_key] = zone
+        # Pre-compute overlap zones with existing nodes (serialised to avoid
+        # RuntimeError: dictionary changed size during iteration when multiple
+        # nodes register concurrently from a thread-pool executor).
+        with self._register_lock:
+            for existing_id, existing_geo in list(self.node_geometries.items()):
+                pair_key = tuple(sorted([node_id, existing_id]))
+                zone = compute_overlap_zone(
+                    geo if pair_key[0] == node_id else existing_geo,
+                    existing_geo if pair_key[0] == node_id else geo,
+                    grid_step_km=self.grid_step_km,
+                    delay_gate_us=self.delay_gate_us,
+                    doppler_gate_hz=self.doppler_gate_hz,
+                )
+                self.overlap_zones[pair_key] = zone
 
-        self.node_geometries[node_id] = geo
+            self.node_geometries[node_id] = geo
 
     def submit_frame(self, node_id: str, frame: dict, timestamp_ms: int) -> list[AssociationCandidate]:
         """Submit a detection frame and find associations with other recent frames.
@@ -362,7 +370,7 @@ class InterNodeAssociator:
         self._pending_frames[node_id] = frame
         all_candidates = []
 
-        for other_id, other_frame in self._pending_frames.items():
+        for other_id, other_frame in list(self._pending_frames.items()):
             if other_id == node_id:
                 continue
 
