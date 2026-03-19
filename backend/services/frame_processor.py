@@ -150,14 +150,18 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
                 "last_seen_ms": ts_ms,
             }
 
-    pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
-    pipeline.process_frame(frame)
+    # Skip the CPU-heavy radar pipeline for synthetic nodes — their ADS-B
+    # positions are already captured above from the embedded adsb field.
+    if not is_synthetic_node(node_id):
+        pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
+        pipeline.process_frame(frame)
 
     state.node_analytics.maybe_auto_save()
-    try:
-        archive_detections(node_id, [frame])
-    except Exception:
-        pass
+    if not is_synthetic_node(node_id):
+        try:
+            archive_detections(node_id, [frame])
+        except Exception:
+            pass
 
 
 # ── Multi-node result → tar1090-compatible dict ──────────────────────────────
