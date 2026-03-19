@@ -220,7 +220,6 @@ export default function LiveAircraftMap() {
 
   function handleSelectAircraft(hex) {
     setSelectedHex((prev) => (prev === hex ? null : hex));
-    setFocusNonce((n) => n + 1);
   }
 
   function computeError(hex, ac) {

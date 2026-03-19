@@ -32,7 +32,7 @@ export function FitBounds({ aircraft, nodes, selectedHex, focusNonce }) {
       lastFocusNonce.current = focusNonce;
       if (isExplicit) userMoved.current = false;
     } else if (pts.length === 1) {
-      map.setView(pts[0], 10, { animate: true, duration: 0.5 });
+      map.setView(pts[0], map.getZoom(), { animate: true, duration: 0.5 });
       initialFitted.current = true;
       lastFocusNonce.current = focusNonce;
       if (isExplicit) userMoved.current = false;
