@@ -106,20 +106,35 @@ function getFocusPoints(aircraft, nodes, selectedHex) {
 function mergeTrailPositions(existing = [], incoming = []) {
   if (!incoming.length) return existing;
 
+  const normalizedIncoming = incoming
+    .filter((point) => Array.isArray(point) && point.length >= 2)
+    .slice()
+    .sort((a, b) => (a[3] || 0) - (b[3] || 0));
+
+  if (!existing.length) return normalizedIncoming;
+
   const merged = [...existing];
   let last = merged[merged.length - 1];
+  let lastTs = last?.[3] || 0;
 
-  for (const point of incoming) {
-    if (!Array.isArray(point) || point.length < 2) continue;
+  for (const point of normalizedIncoming) {
+    const pointTs = point[3] || 0;
+
+    // Server sends the full recent history on every tick. Only append the truly new tail.
+    if (pointTs <= lastTs) continue;
+
     if (
-      !last ||
-      Math.abs(last[0] - point[0]) > 0.00001 ||
-      Math.abs(last[1] - point[1]) > 0.00001 ||
-      Math.abs((last[3] || 0) - (point[3] || 0)) > 0.5
+      last
+      && Math.abs(last[0] - point[0]) < 0.00001
+      && Math.abs(last[1] - point[1]) < 0.00001
     ) {
-      merged.push(point);
-      last = point;
+      lastTs = pointTs;
+      continue;
     }
+
+    merged.push(point);
+    last = point;
+    lastTs = pointTs;
   }
 
   return merged;
