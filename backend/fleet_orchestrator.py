@@ -199,6 +199,7 @@ class FleetOrchestrator:
         frame_interval: float = 0.5,
         max_concurrent_connects: int = 50,
         connect_retries: int = 3,
+        time_scale: float = 1.0,
     ):
         self.node_configs = node_configs
         self.host = host
@@ -207,6 +208,7 @@ class FleetOrchestrator:
         self.frame_interval = frame_interval
         self.max_concurrent_connects = max_concurrent_connects
         self.connect_retries = max(1, connect_retries)
+        self.time_scale = max(0.1, time_scale)
         self.connections: dict[str, NodeConnection] = {}
         self.world: Optional[SimulationWorld] = None
         self._running = False
@@ -369,8 +371,8 @@ class FleetOrchestrator:
         last_report = time.monotonic()
 
         log.info(
-            "Starting simulation loop (dt=%.1fs, mode=%s, duration=%s)",
-            dt, self.mode, f"{duration_s}s" if duration_s else "infinite",
+            "Starting simulation loop (dt=%.1fs, time_scale=%.1fx, mode=%s, duration=%s)",
+            dt, self.time_scale, self.mode, f"{duration_s}s" if duration_s else "infinite",
         )
 
         try:
@@ -378,7 +380,7 @@ class FleetOrchestrator:
                 loop_start = time.monotonic()
 
                 # Step the simulation
-                self.world.step(dt, mode=self.mode)
+                self.world.step(dt * self.time_scale, mode=self.mode)
                 timestamp_ms = int(time.time() * 1000)
 
                 # Record ground truth
@@ -606,6 +608,7 @@ async def main_async(args):
         frame_interval=args.interval,
         max_concurrent_connects=args.concurrency,
         connect_retries=args.connect_retries,
+        time_scale=args.time_scale,
     )
 
     # Build shared simulation world
@@ -673,6 +676,8 @@ def main():
                         help="Detection mode")
     parser.add_argument("--interval", type=float, default=0.5,
                         help="Frame interval in seconds")
+    parser.add_argument("--time-scale", type=float, default=1.0,
+                        help="Simulation speed multiplier (for demo visibility)")
     parser.add_argument("--duration", type=float, default=0,
                         help="Run duration in seconds (0 = infinite)")
     parser.add_argument("--concurrency", type=int, default=50,

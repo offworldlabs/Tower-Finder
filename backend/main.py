@@ -583,6 +583,39 @@ def _append_track_history(hex_code: str, lat: float, lon: float, alt_ft: float, 
     hist.append([round(lat, 6), round(lon, 6), round(alt_ft, 0), round(ts, 1)])
 
 
+def _normalize_hex_key(hex_code: str) -> str:
+    return str(hex_code or "").strip().lower()
+
+
+def _position_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    dlat = (lat1 - lat2) * 111.0
+    dlon = (lon1 - lon2) * 111.0 * math.cos(math.radians((lat1 + lat2) / 2.0))
+    return math.sqrt(dlat ** 2 + dlon ** 2)
+
+
+def _resolve_ground_truth_hex(ac_hex: str, lat: float, lon: float, max_distance_km: float = 8.0) -> str | None:
+    """Resolve the best ground-truth hex for a solved aircraft.
+
+    Prefer exact hex match. If unavailable, fall back to the closest recent
+    truth track so pseudo passive-radar IDs can still compare against truth.
+    """
+    norm_hex = _normalize_hex_key(ac_hex)
+    if norm_hex and norm_hex in _ground_truth_trails and _ground_truth_trails[norm_hex]:
+        return norm_hex
+
+    best_hex = None
+    best_distance = max_distance_km
+    for gt_hex, trail in _ground_truth_trails.items():
+        if not trail:
+            continue
+        last = trail[-1]
+        distance_km = _position_distance_km(lat, lon, last[0], last[1])
+        if distance_km <= best_distance:
+            best_distance = distance_km
+            best_hex = gt_hex
+    return best_hex
+
+
 def _build_combined_aircraft_json() -> dict:
     """Build combined aircraft.json from all sources:
     per-node pipelines, default pipeline, multi-node solver, ADS-B reports.
@@ -601,6 +634,7 @@ def _build_combined_aircraft_json() -> dict:
             _append_track_history(ac_hex, track.lat, track.lon, track.alt_ft, now)
             aircraft.append({
                 "hex": ac_hex,
+                "ground_truth_hex": _resolve_ground_truth_hex(ac_hex, track.lat, track.lon),
                 "type": "tisb_other",
                 "flight": (track.adsb_hex or f"PR{abs(hash(track.track_id)) % 10000:04d}").strip(),
                 "alt_baro": round(track.alt_ft),
@@ -625,6 +659,7 @@ def _build_combined_aircraft_json() -> dict:
         _append_track_history(ac_hex, track.lat, track.lon, track.alt_ft, now)
         aircraft.append({
             "hex": ac_hex,
+            "ground_truth_hex": _resolve_ground_truth_hex(ac_hex, track.lat, track.lon),
             "type": "tisb_other",
             "flight": f"PR{abs(hash(track.track_id)) % 10000:04d} ",
             "alt_baro": round(track.alt_ft),
@@ -652,6 +687,7 @@ def _build_combined_aircraft_json() -> dict:
             seen_hex.add(ac["hex"])
             _append_track_history(ac["hex"], ac["lat"], ac["lon"], ac["alt_baro"], now)
             ac["recent_positions"] = list(_track_histories.get(ac["hex"], []))
+            ac["ground_truth_hex"] = _resolve_ground_truth_hex(ac["hex"], ac["lat"], ac["lon"])
             aircraft.append(ac)
     for k in stale_mn:
         _multinode_tracks.pop(k, None)
@@ -672,6 +708,7 @@ def _build_combined_aircraft_json() -> dict:
         _append_track_history(hex_code, lat, lon, entry.get("alt_baro", 0), now)
         aircraft.append({
             "hex": hex_code,
+            "ground_truth_hex": _resolve_ground_truth_hex(hex_code, lat, lon),
             "type": "adsb_icao",
             "flight": (entry.get("flight") or hex_code).strip(),
             "alt_baro": entry.get("alt_baro", 0),
@@ -1629,7 +1666,7 @@ async def push_ground_truth_snapshot(body: dict = Body(...)):
         raise HTTPException(status_code=400, detail="aircraft list required")
 
     for ac in aircraft_list:
-        hex_code = ac.get("hex") or ac.get("adsb_hex") or ""
+        hex_code = _normalize_hex_key(ac.get("hex") or ac.get("adsb_hex") or "")
         if not hex_code:
             continue
         lat = ac.get("lat", 0.0)
@@ -1658,8 +1695,16 @@ async def get_ground_truth_trail(hex_code: str):
     Used by the frontend map to render the dual-track comparison overlay
     (cyan dashed = ground truth, yellow solid = solver output).
     """
-    gt_trail = list(_ground_truth_trails.get(hex_code, []))
-    solved_trail = list(_track_histories.get(hex_code, []))
+    norm_hex = _normalize_hex_key(hex_code)
+    solved_trail = list(_track_histories.get(hex_code, [])) or list(_track_histories.get(norm_hex, []))
+    matched_hex = norm_hex
+    gt_trail = list(_ground_truth_trails.get(matched_hex, []))
+    if not gt_trail and solved_trail:
+        last = solved_trail[-1]
+        fallback_hex = _resolve_ground_truth_hex(norm_hex, last[0], last[1])
+        if fallback_hex:
+            matched_hex = fallback_hex
+            gt_trail = list(_ground_truth_trails.get(fallback_hex, []))
 
     if not gt_trail and not solved_trail:
         raise HTTPException(status_code=404, detail=f"No trail data for {hex_code}")
@@ -1675,6 +1720,7 @@ async def get_ground_truth_trail(hex_code: str):
 
     return {
         "hex": hex_code,
+        "ground_truth_hex": matched_hex,
         "ground_truth_trail": gt_trail,    # [lat, lon, alt_m, ts]
         "solved_trail": solved_trail,       # [lat, lon, alt_ft, ts]
         "position_error_km": position_error_km,

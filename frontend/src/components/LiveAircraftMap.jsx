@@ -22,6 +22,20 @@ L.Icon.Default.mergeOptions({
 });
 
 const API_BASE = "/api";
+const ANIMATION_MS = 1800;
+
+
+function interpolateBearing(start, end, progress) {
+  const a = start ?? 0;
+  const b = end ?? a;
+  let delta = ((b - a + 540) % 360) - 180;
+  return (a + delta * progress + 360) % 360;
+}
+
+
+function easeOutCubic(progress) {
+  return 1 - Math.pow(1 - progress, 3);
+}
 
 /* ── Icon factories ───────────────────────────────────────────────── */
 
@@ -143,6 +157,7 @@ function FitBounds({ aircraft, nodes, trails, selectedHex, focusNonce }) {
 
 export default function LiveAircraftMap() {
   const [aircraft, setAircraft] = useState([]);
+  const [displayAircraft, setDisplayAircraft] = useState([]);
   const [nodes, setNodes] = useState([]);
   const [showCoverage, setShowCoverage] = useState(false);
   const [showTrails, setShowTrails] = useState(true);
@@ -162,6 +177,8 @@ export default function LiveAircraftMap() {
 
   const wsRef = useRef(null);
   const reconnectTimer = useRef(null);
+  const animationFrameRef = useRef(null);
+  const displayedAircraftRef = useRef({});
 
   // Fetch nodes for coverage zones
   useEffect(() => {
@@ -266,12 +283,51 @@ export default function LiveAircraftMap() {
     connectWs();
     return () => {
       clearTimeout(reconnectTimer.current);
+      cancelAnimationFrame(animationFrameRef.current);
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
       }
     };
   }, [connectWs]);
+
+  useEffect(() => {
+    cancelAnimationFrame(animationFrameRef.current);
+
+    if (!aircraft.length) {
+      displayedAircraftRef.current = {};
+      setDisplayAircraft([]);
+      return;
+    }
+
+    const startByHex = displayedAircraftRef.current;
+    const startTs = performance.now();
+
+    const animate = (now) => {
+      const progress = Math.min(1, (now - startTs) / ANIMATION_MS);
+      const eased = easeOutCubic(progress);
+      const nextAircraft = aircraft.map((ac) => {
+        const start = startByHex[ac.hex] || ac;
+        const startLat = start.lat ?? ac.lat;
+        const startLon = start.lon ?? ac.lon;
+        return {
+          ...ac,
+          lat: startLat + ((ac.lat ?? startLat) - startLat) * eased,
+          lon: startLon + ((ac.lon ?? startLon) - startLon) * eased,
+          track: interpolateBearing(start.track, ac.track, eased),
+        };
+      });
+      displayedAircraftRef.current = Object.fromEntries(nextAircraft.map((ac) => [ac.hex, ac]));
+      setDisplayAircraft(nextAircraft);
+      if (progress < 1) {
+        animationFrameRef.current = requestAnimationFrame(animate);
+      }
+    };
+
+    animationFrameRef.current = requestAnimationFrame(animate);
+
+    return () => cancelAnimationFrame(animationFrameRef.current);
+  }, [aircraft]);
 
   // Fallback: poll if WebSocket not available
   useEffect(() => {
@@ -310,7 +366,8 @@ export default function LiveAircraftMap() {
 
   // Compute position error for a given hex (solved vs ground truth)
   function computeError(hex, ac) {
-    const gtTrail = groundTruthRef.current[hex];
+    const gtHex = ac.ground_truth_hex || hex;
+    const gtTrail = groundTruthRef.current[gtHex];
     if (!gtTrail || !gtTrail.length) return null;
     const last = gtTrail[gtTrail.length - 1]; // [lat, lon, alt_m, ts]
     const dlat = (ac.lat - last[0]) * 111.0;
@@ -375,7 +432,7 @@ export default function LiveAircraftMap() {
         />
 
         <FitBounds
-          aircraft={aircraft}
+          aircraft={displayAircraft}
           nodes={nodes}
           trails={trailsRef.current}
           selectedHex={selectedHex}
@@ -421,6 +478,13 @@ export default function LiveAircraftMap() {
         {showTrails &&
           Object.entries(trailsRef.current).map(([hex, positions]) => {
             const pts = positions.map((p) => [p[0], p[1]]);
+            const animated = displayedAircraftRef.current[hex];
+            if (animated && animated.lat && animated.lon) {
+              const last = pts[pts.length - 1];
+              if (!last || Math.abs(last[0] - animated.lat) > 0.00001 || Math.abs(last[1] - animated.lon) > 0.00001) {
+                pts.push([animated.lat, animated.lon]);
+              }
+            }
             if (pts.length < 2) return null;
             const isSelected = hex === selectedHex;
             return (
@@ -480,7 +544,7 @@ export default function LiveAircraftMap() {
           })}
 
         {/* Aircraft markers */}
-        {aircraft.map((ac) =>
+        {displayAircraft.map((ac) =>
           ac.lat && ac.lon ? (
             <Marker
               key={ac.hex}
@@ -507,7 +571,7 @@ export default function LiveAircraftMap() {
                 {/* Ground truth comparison */}
                 {(() => {
                   const err = computeError(ac.hex, ac);
-                  const gtTrail = groundTruthRef.current[ac.hex];
+                  const gtTrail = groundTruthRef.current[ac.ground_truth_hex || ac.hex];
                   if (!gtTrail || !gtTrail.length) return null;
                   const solvedPts = (trailsRef.current[ac.hex] || []).length;
                   const truthPts = gtTrail.length;
