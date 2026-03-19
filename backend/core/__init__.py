@@ -1,0 +1,1 @@
+"""Core package — shared mutable state and configuration."""

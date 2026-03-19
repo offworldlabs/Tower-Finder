@@ -126,6 +126,8 @@ class GeolocatedTrack:
 class PassiveRadarPipeline:
     """Full pipeline using retina-tracker and retina-geolocator."""
 
+    _BACKEND_DIR = os.path.dirname(os.path.dirname(__file__))
+
     def __init__(self, node_config: dict = None):
         config = node_config or DEFAULT_NODE_CONFIG
         self.config = config
@@ -136,7 +138,7 @@ class PassiveRadarPipeline:
 
         # Load tracker config
         tracker_config_path = os.path.join(
-            os.path.dirname(__file__), "retina_tracker", "config.yaml"
+            self._BACKEND_DIR, "retina_tracker", "config.yaml"
         )
         tracker_config = {}
         if os.path.exists(tracker_config_path):
@@ -179,7 +181,7 @@ class PassiveRadarPipeline:
 
         # Load geolocator config
         geo_config_path = os.path.join(
-            os.path.dirname(__file__), "retina_geolocator", "geolocator_config.yml"
+            self._BACKEND_DIR, "retina_geolocator", "geolocator_config.yml"
         )
         if os.path.exists(geo_config_path):
             self.geo_config = load_geolocator_config(geo_config_path)

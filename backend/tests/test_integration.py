@@ -169,10 +169,10 @@ cfg_path = "/Users/admin/Tower-Finder/backend/tower_config.json"
 with open(cfg_path) as f:
     orig = _json.load(f)
 
-from calculations import process_and_rank, reload_config
-from calculations import BAND_PRIORITY as BP_before
-from calculations import DEFAULT_RADIUS_KM as RADIUS_before
-from calculations import DEFAULT_LIMIT as LIMIT_before
+from services.tower_ranking import process_and_rank, reload_config
+from services.tower_ranking import BAND_PRIORITY as BP_before
+from services.tower_ranking import DEFAULT_RADIUS_KM as RADIUS_before
+from services.tower_ranking import DEFAULT_LIMIT as LIMIT_before
 check("VHF priority 0 before change", BP_before.get("VHF") == 0)
 check("Default radius is 80", RADIUS_before == 80)
 check("Default limit is 100", LIMIT_before == 100)
@@ -186,9 +186,9 @@ modified["search"]["default_limit"] = 15
 with open(cfg_path, "w") as f:
     _json.dump(modified, f, indent=2)
 reload_config()
-from calculations import BAND_PRIORITY as BP_after
-from calculations import DEFAULT_RADIUS_KM as RADIUS_after
-from calculations import DEFAULT_LIMIT as LIMIT_after
+from services.tower_ranking import BAND_PRIORITY as BP_after
+from services.tower_ranking import DEFAULT_RADIUS_KM as RADIUS_after
+from services.tower_ranking import DEFAULT_LIMIT as LIMIT_after
 check("UHF priority 0 after reload", BP_after.get("UHF") == 0)
 check("VHF priority 1 after reload", BP_after.get("VHF") == 1)
 check("Radius changed to 100", RADIUS_after == 100)
@@ -198,7 +198,7 @@ check("Limit changed to 15", LIMIT_after == 15)
 with open(cfg_path, "w") as f:
     _json.dump(orig, f, indent=2)
 reload_config()
-from calculations import BAND_PRIORITY as BP_restored
+from services.tower_ranking import BAND_PRIORITY as BP_restored
 check("VHF priority 0 after restore", BP_restored.get("VHF") == 0)
 
 
@@ -325,7 +325,7 @@ check("Empty coords returns empty dict", empty_result == {})
 
 # ─── 15. Broadcast band classification (FM/VHF/UHF) ─────────────────────────
 section("15. Broadcast band classification (FM / VHF / UHF)")
-from calculations import classify_band
+from services.tower_ranking import classify_band
 check("FM low edge 87.8", classify_band(87.8) == "FM")
 check("FM high edge 108.0", classify_band(108.0) == "FM")
 check("FM mid 95.5", classify_band(95.5) == "FM")
@@ -342,7 +342,7 @@ check("Above UHF 609 → None", classify_band(609) is None)
 
 # ─── 16. User frequency parsing ──────────────────────────────────────────────
 section("16. User frequency parsing")
-from calculations import parse_user_frequencies
+from services.tower_ranking import parse_user_frequencies
 check("Empty string → []", parse_user_frequencies("") == [])
 check("Single freq", parse_user_frequencies("95.5") == [95.5])
 check("Multiple freqs", parse_user_frequencies("95.5, 177.5, 500") == [95.5, 177.5, 500])
@@ -450,7 +450,7 @@ if aj["aircraft"]:
 
 # ─── 24. Node Analytics — Trust Score & Reputation ────────────────────────────
 section("24. Node Analytics — Trust Score & Reputation")
-from node_analytics import (
+from analytics import (
     TrustScoreState, AdsReportEntry, DetectionAreaState, NodeMetrics,
     NodeReputation, HistoricalCoverageMap, NodeAnalyticsManager,
     YAGI_BEAM_WIDTH_DEG, YAGI_MAX_RANGE_KM,
@@ -604,7 +604,7 @@ check("Admin unblock works", not mgr.is_node_blocked("node-A"))
 
 # ─── 27. Inter-Node Association ───────────────────────────────────────────────
 section("27. Inter-Node Association")
-from inter_node_association import (
+from analytics.association import (
     NodeGeometry, compute_overlap_zone, find_associations,
     InterNodeAssociator, _bistatic_delay_at, _lla_to_enu,
 )
@@ -672,7 +672,7 @@ check("Solver input is list", isinstance(solver_input, list))
 
 # ─── 28. Simulation World — Anomalous Objects ────────────────────────────────
 section("28. Simulation World — Anomalous Objects")
-from simulation_world import SimulationWorld, NodeConfig as SimNodeConfig
+from simulation.world import SimulationWorld, NodeConfig as SimNodeConfig
 
 world = SimulationWorld(center_lat=34.0, center_lon=-84.0)
 world.add_node(SimNodeConfig(
@@ -706,7 +706,7 @@ check("Aircraft summary is list", isinstance(summary, list))
 
 # ─── 29. Synthetic Node — Protocol & Config ──────────────────────────────────
 section("29. Synthetic Node — Protocol & Config")
-from synthetic_node import NodeConfig as SynNodeConfig, _config_hash
+from simulation.node import NodeConfig as SynNodeConfig, _config_hash
 
 cfg = SynNodeConfig(node_id="syn-test-01")
 check("Synth node ID has syn prefix", cfg.node_id.startswith("syn"))
@@ -734,7 +734,7 @@ check("--mode in help", "--mode" in result.stdout)
 check("--nodes-config in help", "--nodes-config" in result.stdout)
 
 # SyntheticNodeGenerator basic
-from synthetic_node import SyntheticNodeGenerator
+from simulation.node import SyntheticNodeGenerator
 gen = SyntheticNodeGenerator(cfg, mode="adsb")
 frame = gen.generate_frame(timestamp_ms=1000)
 check("Generated frame has delay", "delay" in frame)

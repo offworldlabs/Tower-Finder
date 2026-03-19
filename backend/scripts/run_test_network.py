@@ -40,9 +40,9 @@ import httpx
 # (Python defaults to block-buffering when stdout is not a tty)
 sys.stdout.reconfigure(line_buffering=True)
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from simulation_world import SimulationWorld, NodeConfig
+from simulation.world import SimulationWorld, NodeConfig
 from chain_of_custody.crypto_backend import SoftwareCryptoBackend
 from chain_of_custody.packet_signer import PacketSigner
 
@@ -124,7 +124,7 @@ async def run(
         node_dicts = raw.get("nodes", raw if isinstance(raw, list) else [])
         print(f"[cfg] Loaded {len(node_dicts)} nodes from {config_file}")
     else:
-        from generate_test_network import generate
+        from scripts.generate_test_network import generate
         raw = generate(n_nodes)
         node_dicts = raw["nodes"]
         print(f"[cfg] Generated {len(node_dicts)} nodes across regions")
@@ -157,7 +157,7 @@ async def run(
     node_pubkeys: dict[str, dict] = {}  # node_id → {public_key_pem, fingerprint, ...}
     for nd in node_dicts:
         nid = nd["node_id"]
-        key_dir = os.path.join(os.path.dirname(__file__), "coverage_data", "keys", nid)
+        key_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "coverage_data", "keys", nid)
         os.makedirs(key_dir, exist_ok=True)
         crypto = SoftwareCryptoBackend(key_file=os.path.join(key_dir, "synthetic_key.json"))
         node_signers[nid] = PacketSigner(nid, crypto)

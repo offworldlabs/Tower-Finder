@@ -7,12 +7,12 @@ import os
 import httpx
 from fastapi import APIRouter, Query, HTTPException, Body
 
-from calculations import (
+from services.tower_ranking import (
     process_and_rank, reload_config, _CONFIG_PATH,
     DEFAULT_RADIUS_KM, DEFAULT_LIMIT, parse_user_frequencies,
 )
-from maprad_client import fetch_broadcast_systems
-from fcc_client import fetch_fcc_broadcast_systems
+from clients.maprad import fetch_broadcast_systems
+from clients.fcc import fetch_fcc_broadcast_systems
 
 router = APIRouter()
 

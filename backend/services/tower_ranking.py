@@ -7,7 +7,7 @@ EARTH_RADIUS_KM = 6371.0
 FREQUENCY_MATCH_TOLERANCE_MHZ = 5.0  # ±5 MHz for user-measured frequency matching
 
 # ── Load configurable settings from tower_config.json ────────────────────
-_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "tower_config.json")
+_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "tower_config.json")
 
 
 def _load_config() -> dict:

@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, HTTPException
 
-import state
-from frame_processor import normalize_hex_key, resolve_ground_truth_hex
+from core import state
+from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex
 
 router = APIRouter()
 

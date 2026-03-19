@@ -15,10 +15,10 @@ import time
 
 import httpx
 
-import state
-from frame_processor import build_combined_aircraft_json, process_one_frame
+from core import state
+from services.frame_processor import build_combined_aircraft_json, process_one_frame
 
-_TAR1090_DATA_DIR = os.path.join(os.path.dirname(__file__), "tar1090_data")
+_TAR1090_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tar1090_data")
 
 
 # ── Frame processor (drain queue → thread-pool) ──────────────────────────────

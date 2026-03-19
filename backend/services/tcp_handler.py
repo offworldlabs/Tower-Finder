@@ -8,7 +8,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-import state
+from core import state
 from chain_of_custody.hash_chain import HashChainVerifier, HashChainEntry
 
 RETINA_PROTOCOL_VERSION = "1.0"

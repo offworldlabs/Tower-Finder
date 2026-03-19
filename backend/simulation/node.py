@@ -574,7 +574,7 @@ def _stream_tcp(generator: SyntheticNodeGenerator, host: str, port: int,
     config = generator.config
 
     # Initialize chain of custody
-    key_dir = os.path.join(os.path.dirname(__file__), "coverage_data", "keys", config.node_id)
+    key_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "coverage_data", "keys", config.node_id)
     os.makedirs(key_dir, exist_ok=True)
     crypto = SoftwareCryptoBackend(key_file=os.path.join(key_dir, "synthetic_key.json"))
     signer = PacketSigner(config.node_id, crypto)
@@ -810,7 +810,7 @@ def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
     Args:
         nodes_config_path: Path to JSON file with list of node configs.
     """
-    from simulation_world import SimulationWorld, NodeConfig as WorldNodeConfig
+    from simulation.world import SimulationWorld, NodeConfig as WorldNodeConfig
     from chain_of_custody.crypto_backend import SoftwareCryptoBackend
     from chain_of_custody.packet_signer import PacketSigner
     from chain_of_custody.hash_chain import HashChainBuilder
@@ -869,7 +869,7 @@ def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
         node_local_configs[wc.node_id] = local_cfg
 
         # Initialize chain of custody for this node
-        key_dir = os.path.join(os.path.dirname(__file__), "coverage_data", "keys", wc.node_id)
+        key_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "coverage_data", "keys", wc.node_id)
         os.makedirs(key_dir, exist_ok=True)
         crypto = SoftwareCryptoBackend(key_file=os.path.join(key_dir, "synthetic_key.json"))
         node_crypto[wc.node_id] = crypto

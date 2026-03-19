@@ -1,11 +1,12 @@
 """Tower Finder API — slim app factory.
 
-All business logic lives in dedicated modules:
-  state.py           – shared mutable state
-  tcp_handler.py     – RETINA TCP protocol
-  frame_processor.py – per-frame pipeline + aircraft JSON builder
-  background.py      – async background loops
-  routes/*           – FastAPI APIRouter modules
+All business logic lives in dedicated packages:
+  core/       – shared mutable state
+  services/   – TCP handler, frame processor, background tasks, storage
+  clients/    – external API clients (FCC, Maprad, OpenSky)
+  analytics/  – node trust, reputation, coverage, cross-node analysis
+  pipeline/   – passive radar signal processing
+  routes/     – FastAPI APIRouter modules
 """
 
 import asyncio
@@ -18,10 +19,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-from passive_radar import PassiveRadarPipeline, DEFAULT_NODE_CONFIG
-import state
-from tcp_handler import handle_tcp_client
-from background import (
+from pipeline.passive_radar import PassiveRadarPipeline, DEFAULT_NODE_CONFIG
+from core import state
+from services.tcp_handler import handle_tcp_client
+from services.background import (
     frame_processor_loop,
     aircraft_flush_task,
     reputation_evaluator,

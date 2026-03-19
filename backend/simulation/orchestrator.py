@@ -37,11 +37,11 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Optional
 
-# Add parent dir so we can import simulation_world
-sys.path.insert(0, os.path.dirname(__file__))
+# Add parent dir so we can import simulation packages
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from simulation_world import SimulationWorld, NodeConfig
-from fleet_generator import generate_fleet, fleet_summary
+from simulation.world import SimulationWorld, NodeConfig
+from simulation.generator import generate_fleet, fleet_summary
 
 logging.basicConfig(
     level=logging.INFO,

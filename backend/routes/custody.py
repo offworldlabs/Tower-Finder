@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, HTTPException, Header
 
-import state
+from core import state
 from chain_of_custody.crypto_backend import SignatureVerifier
 from chain_of_custody.hash_chain import HashChainVerifier, HashChainEntry
 from chain_of_custody.models import NodeIdentity

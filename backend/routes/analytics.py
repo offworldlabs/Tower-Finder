@@ -2,8 +2,8 @@
 
 from fastapi import APIRouter, Body, HTTPException
 
-import state
-from node_analytics import AdsReportEntry
+from core import state
+from analytics.trust import AdsReportEntry
 
 router = APIRouter()
 

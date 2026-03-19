@@ -11,7 +11,7 @@ import sys
 import shutil
 import tempfile
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 PASS = "\033[32m✓\033[0m"
 FAIL = "\033[31m✗\033[0m"

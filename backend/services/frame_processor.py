@@ -9,11 +9,11 @@ import math
 import time
 from collections import deque
 
-import state
-from passive_radar import PassiveRadarPipeline
+from core import state
+from pipeline.passive_radar import PassiveRadarPipeline
 from retina_geolocator.multinode_solver import solve_multinode
-from storage import archive_detections
-from tcp_handler import is_synthetic_node
+from services.storage import archive_detections
+from services.tcp_handler import is_synthetic_node
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

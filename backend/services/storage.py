@@ -18,7 +18,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_LOCAL_ARCHIVE_DIR = os.path.join(os.path.dirname(__file__), "coverage_data", "archive")
+_LOCAL_ARCHIVE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "coverage_data", "archive")
 
 # ---------- B2 SDK bootstrap (optional dependency) --------------------------
 

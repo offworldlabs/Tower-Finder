@@ -8,13 +8,13 @@ import asyncio
 import os
 from collections import defaultdict, deque
 
-from node_analytics import NodeAnalyticsManager
-from inter_node_association import InterNodeAssociator
+from analytics.manager import NodeAnalyticsManager
+from analytics.association import InterNodeAssociator
 from chain_of_custody.crypto_backend import SignatureVerifier
 from chain_of_custody.models import NodeIdentity
 
 # ── Coverage / analytics persistence ──────────────────────────────────────────
-COVERAGE_STORAGE_DIR = os.path.join(os.path.dirname(__file__), "coverage_data")
+COVERAGE_STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "coverage_data")
 
 # ── Connected node state tracking ─────────────────────────────────────────────
 connected_nodes: dict[str, dict] = {}

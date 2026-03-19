@@ -10,9 +10,9 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, HTTPException, Request, Header
 
-import state
-from passive_radar import PassiveRadarPipeline
-from tcp_handler import is_synthetic_node
+from core import state
+from pipeline.passive_radar import PassiveRadarPipeline
+from services.tcp_handler import is_synthetic_node
 
 router = APIRouter()
 
