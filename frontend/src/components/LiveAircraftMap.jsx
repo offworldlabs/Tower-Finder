@@ -8,6 +8,7 @@ import {
   Polygon,
   Polyline,
   useMap,
+  useMapEvents,
 } from "react-leaflet";
 import L from "leaflet";
 import "./LiveAircraftMap.css";
@@ -25,6 +26,8 @@ const API_BASE = "/api";
 const ANIMATION_MS = 700;
 const STALE_AIRCRAFT_MS = 8000;
 const MAX_HISTORY = 150;
+const VIEWPORT_PAD_DEG = 1.5;
+const FOCUS_CLUSTER_LIMIT = 24;
 
 
 function interpolateBearing(start, end, progress) {
@@ -39,6 +42,87 @@ function easeInOutCubic(progress) {
   return progress < 0.5
     ? 4 * progress * progress * progress
     : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+}
+
+function buildViewportSnapshot(bounds) {
+  return {
+    north: bounds.getNorth(),
+    south: bounds.getSouth(),
+    east: bounds.getEast(),
+    west: bounds.getWest(),
+  };
+}
+
+function isPointInViewport(lat, lon, viewport, pad = VIEWPORT_PAD_DEG) {
+  if (!viewport || lat == null || lon == null) return true;
+  return (
+    lat >= viewport.south - pad &&
+    lat <= viewport.north + pad &&
+    lon >= viewport.west - pad &&
+    lon <= viewport.east + pad
+  );
+}
+
+function getFocusPoints(aircraft, nodes, selectedHex) {
+  if (selectedHex) {
+    const selected = aircraft.find((ac) => ac.hex === selectedHex && ac.lat && ac.lon);
+    return selected ? [[selected.lat, selected.lon]] : [];
+  }
+
+  const validAircraft = aircraft.filter((ac) => ac.lat && ac.lon);
+  if (validAircraft.length > 0) {
+    let bestCenter = validAircraft[0];
+    let bestScore = -1;
+
+    for (const center of validAircraft) {
+      let score = 0;
+      for (const ac of validAircraft) {
+        if (Math.abs(ac.lat - center.lat) <= 4 && Math.abs(ac.lon - center.lon) <= 6) {
+          score += 1;
+        }
+      }
+      if (score > bestScore) {
+        bestScore = score;
+        bestCenter = center;
+      }
+    }
+
+    return validAircraft
+      .slice()
+      .sort((a, b) => {
+        const distA = Math.pow(a.lat - bestCenter.lat, 2) + Math.pow(a.lon - bestCenter.lon, 2);
+        const distB = Math.pow(b.lat - bestCenter.lat, 2) + Math.pow(b.lon - bestCenter.lon, 2);
+        return distA - distB;
+      })
+      .slice(0, FOCUS_CLUSTER_LIMIT)
+      .map((ac) => [ac.lat, ac.lon]);
+  }
+
+  return nodes
+    .filter((n) => n.rx_lat && n.rx_lon)
+    .map((n) => [n.rx_lat, n.rx_lon]);
+}
+
+function mergeTrailPositions(existing = [], incoming = []) {
+  if (!incoming.length) return existing;
+
+  const merged = [...existing];
+  let last = merged[merged.length - 1];
+
+  for (const point of incoming) {
+    if (!Array.isArray(point) || point.length < 2) continue;
+    if (
+      !last ||
+      Math.abs(last[0] - point[0]) > 0.00001 ||
+      Math.abs(last[1] - point[1]) > 0.00001 ||
+      Math.abs((last[3] || 0) - (point[3] || 0)) > 0.5
+    ) {
+      merged.push(point);
+      last = point;
+    }
+  }
+
+  return merged;
 }
 
 /* ── Icon factories ───────────────────────────────────────────────── */
@@ -132,14 +216,7 @@ function FitBounds({ aircraft, nodes, selectedHex, focusNonce }) {
     const isExplicit = focusNonce !== lastFocusNonce.current;
     if (initialFitted.current && userMoved.current && !isExplicit) return;
 
-    const pts = [];
-    if (selectedHex) {
-      const ac = aircraft.find((a) => a.hex === selectedHex);
-      if (ac?.lat && ac?.lon) pts.push([ac.lat, ac.lon]);
-    } else {
-      aircraft.forEach((ac) => { if (ac.lat && ac.lon) pts.push([ac.lat, ac.lon]); });
-      nodes.forEach((n) => { if (n.rx_lat && n.rx_lon) pts.push([n.rx_lat, n.rx_lon]); });
-    }
+    const pts = getFocusPoints(aircraft, nodes, selectedHex);
 
     if (pts.length >= 2) {
       map.fitBounds(pts, { padding: [60, 60], animate: true, duration: 0.5 });
@@ -153,6 +230,20 @@ function FitBounds({ aircraft, nodes, selectedHex, focusNonce }) {
       if (isExplicit) userMoved.current = false;
     }
   }, [aircraft, nodes, selectedHex, focusNonce, map]);
+
+  return null;
+}
+
+function ViewportTracker({ onChange }) {
+  const map = useMapEvents({
+    moveend: () => onChange(buildViewportSnapshot(map.getBounds())),
+    zoomend: () => onChange(buildViewportSnapshot(map.getBounds())),
+    resize: () => onChange(buildViewportSnapshot(map.getBounds())),
+  });
+
+  useEffect(() => {
+    onChange(buildViewportSnapshot(map.getBounds()));
+  }, [map, onChange]);
 
   return null;
 }
@@ -423,6 +514,7 @@ export default function LiveAircraftMap() {
   const [searchQuery, setSearchQuery] = useState("");
   const [paused, setPaused] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [viewport, setViewport] = useState(null);
 
   // Trails accumulated locally — keyed by hex
   // Each value: [[lat, lon, alt, ts], ...]
@@ -522,8 +614,8 @@ export default function LiveAircraftMap() {
           if (!ac.lat || !ac.lon) continue;
           const hex = ac.hex;
           if (ac.recent_positions && ac.recent_positions.length > 0) {
-            // Use server-maintained history
-            trails[hex] = ac.recent_positions;
+            // Merge server history into session history so the full trail stays visible.
+            trails[hex] = mergeTrailPositions(trails[hex] || [], ac.recent_positions);
           } else {
             // Accumulate locally
             const existing = trails[hex] || [];
@@ -537,7 +629,7 @@ export default function LiveAircraftMap() {
                 ...existing,
                 [ac.lat, ac.lon, ac.alt_baro || 0, now],
               ];
-              trails[hex] = updated.slice(-60);
+              trails[hex] = updated;
             }
           }
         }
@@ -653,12 +745,12 @@ export default function LiveAircraftMap() {
           for (const ac of newAircraft) {
             if (!ac.lat || !ac.lon) continue;
             if (ac.recent_positions && ac.recent_positions.length > 0) {
-              trails[ac.hex] = ac.recent_positions;
+              trails[ac.hex] = mergeTrailPositions(trails[ac.hex] || [], ac.recent_positions);
             } else {
               const existing = trails[ac.hex] || [];
               const last = existing[existing.length - 1];
               if (!last || Math.abs(last[0] - ac.lat) > 0.00005 || Math.abs(last[1] - ac.lon) > 0.00005) {
-                trails[ac.hex] = [...existing, [ac.lat, ac.lon, ac.alt_baro || 0, now]].slice(-60);
+                trails[ac.hex] = [...existing, [ac.lat, ac.lon, ac.alt_baro || 0, now]];
               }
             }
           }
@@ -693,10 +785,67 @@ export default function LiveAircraftMap() {
     );
   }, [displayAircraft, searchQuery]);
 
+  const visibleAircraft = useMemo(
+    () => filteredAircraft.filter(
+      (ac) => ac.hex === selectedHex || isPointInViewport(ac.lat, ac.lon, viewport)
+    ),
+    [filteredAircraft, selectedHex, viewport]
+  );
+
+  const visibleTruthOnlyAircraft = useMemo(
+    () => truthOnlyAircraft.filter(
+      (ac) => ac.hex === selectedHex || isPointInViewport(ac.lat, ac.lon, viewport)
+    ),
+    [truthOnlyAircraft, selectedHex, viewport]
+  );
+
+  const visibleNodes = useMemo(
+    () => nodes.filter((node) => isPointInViewport(node.rx_lat, node.rx_lon, viewport, 3)),
+    [nodes, viewport]
+  );
+
+  const visibleTrailEntries = useMemo(
+    () => {
+      if (!selectedHex) return [];
+      return Object.entries(trailsRef.current).filter(([hex, positions]) => (
+        hex === selectedHex
+        && positions.some((position) => isPointInViewport(position[0], position[1], viewport))
+      ));
+    },
+    [selectedHex, trailTick, viewport]
+  );
+
+  const visibleGroundTruthEntries = useMemo(
+    () => {
+      if (!selectedHex) return [];
+      return Object.entries(groundTruthRef.current).filter(([hex, positions]) => (
+        hex === selectedHex
+        && Array.isArray(positions)
+        && positions.some((position) => isPointInViewport(position[0], position[1], viewport))
+      ));
+    },
+    [selectedHex, trailTick, viewport]
+  );
+
   const selectedAc = selectedHex
-    ? filteredAircraft.find((ac) => ac.hex === selectedHex) ||
+    ? displayAircraft.find((ac) => ac.hex === selectedHex) ||
       truthOnlyAircraft.find((ac) => ac.hex === selectedHex)
     : null;
+
+  const handleViewportChange = useCallback((nextViewport) => {
+    setViewport((prev) => {
+      if (
+        prev
+        && Math.abs(prev.north - nextViewport.north) < 0.01
+        && Math.abs(prev.south - nextViewport.south) < 0.01
+        && Math.abs(prev.east - nextViewport.east) < 0.01
+        && Math.abs(prev.west - nextViewport.west) < 0.01
+      ) {
+        return prev;
+      }
+      return nextViewport;
+    });
+  }, []);
 
   function handleTogglePause() {
     if (paused) {
@@ -779,6 +928,8 @@ export default function LiveAircraftMap() {
               url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
             />
 
+            <ViewportTracker onChange={handleViewportChange} />
+
             <FitBounds
               aircraft={displayAircraft}
               nodes={nodes}
@@ -787,7 +938,7 @@ export default function LiveAircraftMap() {
             />
 
             {/* Coverage zones */}
-            {showCoverage && nodes.map((n) => (
+            {showCoverage && visibleNodes.map((n) => (
               <Polygon
                 key={`cone-${n.node_id}`}
                 positions={beamConePositions(n.rx_lat, n.rx_lon, n.beam_azimuth_deg, n.beam_width_deg, n.max_range_km)}
@@ -796,7 +947,7 @@ export default function LiveAircraftMap() {
             ))}
 
             {/* Node markers */}
-            {nodes.map((n) => (
+            {visibleNodes.map((n) => (
               <Marker key={`node-${n.node_id}`} position={[n.rx_lat, n.rx_lon]} icon={nodeIcon}>
                 <Popup>
                   <strong>{n.node_id}</strong><br />
@@ -807,7 +958,7 @@ export default function LiveAircraftMap() {
             ))}
 
             {/* Solved track trails (amber) */}
-            {showTrails && Object.entries(trailsRef.current).map(([hex, positions]) => {
+            {showTrails && visibleTrailEntries.map(([hex, positions]) => {
               const pts = positions.map((p) => [p[0], p[1]]);
               const animated = displayedAircraftRef.current[hex];
               if (animated?.lat && animated?.lon) {
@@ -827,7 +978,7 @@ export default function LiveAircraftMap() {
             })}
 
             {/* Ground truth trails (cyan dashed) */}
-            {showGroundTruth && Object.entries(groundTruthRef.current).map(([hex, positions]) => {
+            {showGroundTruth && visibleGroundTruthEntries.map(([hex, positions]) => {
               if (!Array.isArray(positions) || positions.length < 2) return null;
               const pts = positions.map((p) => [p[0], p[1]]);
               const isSelected = hex === selectedHex;
@@ -840,7 +991,7 @@ export default function LiveAircraftMap() {
             })}
 
             {/* Aircraft markers */}
-            {filteredAircraft.map((ac) =>
+            {visibleAircraft.map((ac) =>
               ac.lat && ac.lon ? (
                 <Marker
                   key={ac.hex}
@@ -857,7 +1008,7 @@ export default function LiveAircraftMap() {
             )}
 
             {/* Ground-truth-only markers */}
-            {showGroundTruth && truthOnlyAircraft.map((ac) => (
+            {showGroundTruth && visibleTruthOnlyAircraft.map((ac) => (
               <CircleMarker
                 key={`truth-only-${ac.hex}`}
                 center={[ac.lat, ac.lon]}
