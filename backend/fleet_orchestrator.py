@@ -203,6 +203,8 @@ class FleetOrchestrator:
         time_scale: float = 1.0,
         min_aircraft: int = 0,
         max_aircraft: int = 0,
+        beam_width_deg: float = 0.0,
+        max_range_km: float = 0.0,
     ):
         self.node_configs = node_configs
         self.host = host
@@ -214,6 +216,8 @@ class FleetOrchestrator:
         self.time_scale = max(0.1, time_scale)
         self.min_aircraft = max(0, min_aircraft)
         self.max_aircraft = max(0, max_aircraft)
+        self.beam_width_deg = max(0.0, beam_width_deg)
+        self.max_range_km = max(0.0, max_range_km)
         self.connections: dict[str, NodeConnection] = {}
         self.world: Optional[SimulationWorld] = None
         self._running = False
@@ -257,8 +261,8 @@ class FleetOrchestrator:
                 tx_alt_ft=cfg["tx_alt_ft"],
                 fc_hz=cfg["fc_hz"],
                 fs_hz=cfg.get("fs_hz", 2_000_000),
-                beam_width_deg=cfg.get("beam_width_deg", 45),
-                max_range_km=cfg.get("max_range_km", 50),
+                beam_width_deg=self.beam_width_deg or cfg.get("beam_width_deg", 45),
+                max_range_km=self.max_range_km or cfg.get("max_range_km", 50),
             )
             self.world.add_node(node)
 
@@ -629,6 +633,8 @@ async def main_async(args):
         time_scale=args.time_scale,
         min_aircraft=args.min_aircraft,
         max_aircraft=args.max_aircraft,
+        beam_width_deg=args.beam_width_deg,
+        max_range_km=args.max_range_km,
     )
 
     # Build shared simulation world
@@ -704,6 +710,10 @@ def main():
                         help="Minimum aircraft to keep alive (0 = auto demo default)")
     parser.add_argument("--max-aircraft", type=int, default=0,
                         help="Maximum aircraft in world (0 = auto demo default)")
+    parser.add_argument("--beam-width-deg", type=float, default=0,
+                        help="Override node beam width for demo visibility (0 = use config)")
+    parser.add_argument("--max-range-km", type=float, default=0,
+                        help="Override node max range for demo visibility (0 = use config)")
     parser.add_argument("--concurrency", type=int, default=50,
                         help="Max concurrent TCP connections during setup")
     parser.add_argument("--connect-retries", type=int, default=3,
