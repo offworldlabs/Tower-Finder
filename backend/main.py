@@ -66,12 +66,16 @@ async def lifespan(app: FastAPI):
     addrs = ", ".join(str(s.getsockname()) for s in server.sockets)
     logging.info("Radar TCP server listening on %s", addrs)
     async with server:
+        # Run multiple parallel frame processor workers so the thread pool can
+        # process frames concurrently (scipy/numpy release the GIL).
+        _n_frame_workers = int(os.environ.get("FRAME_WORKERS", "4"))
         tasks = [
             asyncio.create_task(server.serve_forever()),
             asyncio.create_task(reputation_evaluator()),
             asyncio.create_task(adsb_truth_fetcher()),
             asyncio.create_task(aircraft_flush_task(radar_pipeline)),
-            asyncio.create_task(frame_processor_loop(radar_pipeline)),
+            *[asyncio.create_task(frame_processor_loop(radar_pipeline))
+              for _ in range(_n_frame_workers)],
         ]
         yield
         for t in tasks:
