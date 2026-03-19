@@ -16,9 +16,10 @@ body {
 }
 
 .app {
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 /* ---- header ---- */
@@ -95,6 +96,8 @@ body {
   padding: 0;
   max-width: none;
   overflow: hidden;
+  height: 0;
+  min-height: 0;
 }
 
 .top-section {
