@@ -99,7 +99,10 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                         "server_capabilities": SERVER_CAPABILITIES,
                     })
                     state.node_analytics.register_node(node_id, config_payload)
-                    state.node_associator.register_node(node_id, config_payload)
+                    # Skip O(n²) overlap-zone computation for synthetic nodes —
+                    # they have known ground truth and don't need inter-node association.
+                    if not is_synth:
+                        state.node_associator.register_node(node_id, config_payload)
                     continue
 
                 # ── REGISTER_KEY (chain of custody) ────────────────
