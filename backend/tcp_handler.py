@@ -1,0 +1,269 @@
+"""TCP server handler implementing the RETINA node protocol.
+
+Handles: HELLO → CONFIG → HEARTBEAT → DETECTION → chain-of-custody messages.
+"""
+
+import asyncio
+import json
+import logging
+from datetime import datetime, timezone
+
+import state
+from chain_of_custody.hash_chain import HashChainVerifier, HashChainEntry
+
+RETINA_PROTOCOL_VERSION = "1.0"
+SERVER_CAPABILITIES = {
+    "config_request": True,
+    "adsb_report": True,
+    "association": True,
+    "analytics": True,
+    "coverage_map": True,
+}
+
+
+def is_synthetic_node(node_id: str) -> bool:
+    """Detect synthetic nodes by their 'synth-' ID prefix."""
+    return node_id.startswith("synth-")
+
+
+async def _send_msg(writer: asyncio.StreamWriter, msg: dict):
+    writer.write(json.dumps(msg).encode("utf-8") + b"\n")
+    await writer.drain()
+
+
+async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    """Handle a single TCP connection from a radar node.
+
+    Implements the RETINA node protocol:
+      1. Node sends HELLO → server validates version
+      2. Node sends CONFIG → server stores config, replies CONFIG_ACK
+      3. Steady state: node sends HEARTBEAT + DETECTION messages
+      4. Server sends CONFIG_REQUEST if heartbeat config hash mismatches
+    """
+    peer = writer.get_extra_info("peername")
+    logging.info("Radar TCP: new connection from %s", peer)
+    buf = b""
+    node_id = None
+
+    try:
+        while True:
+            chunk = await reader.read(4096)
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    logging.debug("Radar TCP: malformed JSON from %s", peer)
+                    continue
+
+                msg_type = msg.get("type")
+
+                # ── HELLO ──────────────────────────────────────────
+                if msg_type == "HELLO":
+                    node_id = msg.get("node_id", f"unknown-{peer}")
+                    version = msg.get("version", "0.0")
+                    is_synth = msg.get("is_synthetic", is_synthetic_node(node_id))
+                    caps = msg.get("capabilities", {})
+                    logging.info("Radar TCP: HELLO from %s (v%s, synthetic=%s, caps=%s)",
+                                 node_id, version, is_synth, list(caps.keys()))
+                    continue
+
+                # ── CONFIG ─────────────────────────────────────────
+                if msg_type == "CONFIG":
+                    if node_id is None:
+                        node_id = msg.get("node_id", f"unknown-{peer}")
+                    config_hash = msg.get("config_hash", "")
+                    config_payload = msg.get("config", {})
+                    is_synth = msg.get("is_synthetic", is_synthetic_node(node_id))
+                    state.connected_nodes[node_id] = {
+                        "config_hash": config_hash,
+                        "config": config_payload,
+                        "status": "active",
+                        "last_heartbeat": datetime.now(timezone.utc).isoformat(),
+                        "peer": str(peer),
+                        "is_synthetic": is_synth,
+                        "capabilities": msg.get("capabilities", {}),
+                    }
+                    logging.info("Radar TCP: CONFIG from %s (hash=%s, synthetic=%s)",
+                                 node_id, config_hash, is_synth)
+                    await _send_msg(writer, {
+                        "type": "CONFIG_ACK",
+                        "config_hash": config_hash,
+                        "server_version": RETINA_PROTOCOL_VERSION,
+                        "server_capabilities": SERVER_CAPABILITIES,
+                    })
+                    state.node_analytics.register_node(node_id, config_payload)
+                    state.node_associator.register_node(node_id, config_payload)
+                    continue
+
+                # ── REGISTER_KEY (chain of custody) ────────────────
+                if msg_type == "REGISTER_KEY":
+                    _handle_register_key(msg, node_id, writer)
+                    continue
+
+                # ── CHAIN_ENTRY ────────────────────────────────────
+                if msg_type == "CHAIN_ENTRY":
+                    await _handle_chain_entry(msg, node_id, writer)
+                    continue
+
+                # ── IQ_COMMITMENT ──────────────────────────────────
+                if msg_type == "IQ_COMMITMENT":
+                    await _handle_iq_commitment(msg, node_id, writer)
+                    continue
+
+                # ── HEARTBEAT ──────────────────────────────────────
+                if msg_type == "HEARTBEAT":
+                    await _handle_heartbeat(msg, node_id, writer)
+                    continue
+
+                # ── DETECTION ──────────────────────────────────────
+                if msg_type == "DETECTION":
+                    _enqueue_detection(msg, node_id)
+                    continue
+
+                # ── Legacy bare detection frame ────────────────────
+                if "timestamp" in msg and msg_type is None:
+                    if node_id:
+                        msg["_node_id"] = node_id
+                    try:
+                        state.frame_queue.put_nowait((node_id or "tcp-unknown", msg))
+                    except asyncio.QueueFull:
+                        pass
+                    continue
+
+    except (asyncio.IncompleteReadError, ConnectionResetError):
+        pass
+    finally:
+        if node_id and node_id in state.connected_nodes:
+            state.connected_nodes[node_id]["status"] = "disconnected"
+        logging.info("Radar TCP: connection closed from %s (node=%s)", peer, node_id)
+        writer.close()
+
+
+# ── Sub-handlers (keep handle_tcp_client readable) ────────────────────────────
+
+async def _handle_register_key(msg: dict, node_id: str | None, writer):
+    from chain_of_custody.models import NodeIdentity
+
+    key_node_id = msg.get("node_id", node_id)
+    pub_key_pem = msg.get("public_key_pem", "")
+    fingerprint = msg.get("fingerprint", "")
+    serial = msg.get("serial_number", "")
+    signing_mode = msg.get("signing_mode", "software")
+    if pub_key_pem and key_node_id:
+        identity = NodeIdentity(
+            node_id=key_node_id,
+            public_key_pem=pub_key_pem,
+            public_key_fingerprint=fingerprint,
+            serial_number=serial,
+            signing_mode=signing_mode,
+            registered_at=datetime.now(timezone.utc).isoformat(),
+        )
+        state.node_identities[key_node_id] = identity
+        state.sig_verifier.register_key(key_node_id, pub_key_pem)
+        logging.info("Chain of custody: registered key for %s (mode=%s, fp=%s)",
+                     key_node_id, signing_mode, fingerprint[:12])
+        await _send_msg(writer, {
+            "type": "KEY_ACK",
+            "node_id": key_node_id,
+            "fingerprint": fingerprint,
+            "status": "registered",
+        })
+
+
+async def _handle_chain_entry(msg: dict, node_id: str | None, writer):
+    entry_data = msg.get("entry", {})
+    ce_node_id = entry_data.get("node_id", node_id)
+    if not ce_node_id:
+        return
+    if ce_node_id not in state.chain_entries:
+        state.chain_entries[ce_node_id] = []
+    verified = False
+    if ce_node_id in state.node_identities:
+        try:
+            entry_obj = HashChainEntry.from_dict(entry_data)
+            verifier = HashChainVerifier(lambda nid: state.sig_verifier.get_key(nid))
+            valid, reason = verifier.verify_entry(entry_obj)
+            verified = valid
+            if not valid:
+                logging.warning("Chain entry verification failed for %s: %s", ce_node_id, reason)
+        except Exception as exc:
+            logging.warning("Chain entry parse error for %s: %s", ce_node_id, exc)
+    entry_data["_verified"] = verified
+    entry_data["_received_at"] = datetime.now(timezone.utc).isoformat()
+    state.chain_entries[ce_node_id].append(entry_data)
+    logging.info("Chain entry from %s (hour=%s, verified=%s)",
+                 ce_node_id, entry_data.get("hour_utc"), verified)
+    await _send_msg(writer, {
+        "type": "CHAIN_ENTRY_ACK",
+        "node_id": ce_node_id,
+        "entry_hash": entry_data.get("entry_hash", ""),
+        "verified": verified,
+    })
+
+
+async def _handle_iq_commitment(msg: dict, node_id: str | None, writer):
+    iq_data = msg.get("capture", {})
+    iq_node_id = iq_data.get("node_id", node_id)
+    if not iq_node_id:
+        return
+    if iq_node_id not in state.iq_commitments:
+        state.iq_commitments[iq_node_id] = []
+    iq_data["_received_at"] = datetime.now(timezone.utc).isoformat()
+    state.iq_commitments[iq_node_id].append(iq_data)
+    logging.info("IQ commitment from %s (capture=%s, hash=%s...)",
+                 iq_node_id, iq_data.get("capture_id"), iq_data.get("iq_hash", "")[:12])
+    await _send_msg(writer, {
+        "type": "IQ_COMMITMENT_ACK",
+        "node_id": iq_node_id,
+        "capture_id": iq_data.get("capture_id", ""),
+        "status": "committed",
+    })
+
+
+async def _handle_heartbeat(msg: dict, node_id: str | None, writer):
+    hb_node_id = msg.get("node_id", node_id)
+    hb_hash = msg.get("config_hash", "")
+    hb_status = msg.get("status", "active")
+    if hb_node_id and hb_node_id in state.connected_nodes:
+        state.connected_nodes[hb_node_id]["last_heartbeat"] = (
+            msg.get("timestamp") or datetime.now(timezone.utc).isoformat()
+        )
+        state.connected_nodes[hb_node_id]["status"] = hb_status
+        state.node_analytics.record_heartbeat(hb_node_id)
+        stored_hash = state.connected_nodes[hb_node_id].get("config_hash", "")
+        if stored_hash and hb_hash != stored_hash:
+            logging.warning("Radar TCP: config drift for %s (expected=%s got=%s)",
+                            hb_node_id, stored_hash, hb_hash)
+            await _send_msg(writer, {"type": "CONFIG_REQUEST", "node_id": hb_node_id})
+
+
+def _enqueue_detection(msg: dict, node_id: str | None):
+    frame = msg.get("data", msg)
+    if "signature" in frame and "payload_hash" in frame:
+        det_node_id = frame.get("node_id", node_id)
+        sig_valid = False
+        if det_node_id in state.node_identities:
+            sig_valid = state.sig_verifier.verify_packet(
+                det_node_id, frame["payload_hash"], frame["signature"]
+            )
+        frame["_signing_mode"] = frame.get("signing_mode", "unknown")
+        frame["_signature_valid"] = sig_valid
+        if not sig_valid and det_node_id in state.node_identities:
+            logging.warning("Invalid signature on detection from %s", det_node_id)
+    if "timestamp" not in frame and "timestamp_ms" in frame:
+        frame["timestamp"] = frame["timestamp_ms"]
+    if "timestamp" not in frame:
+        return
+    if node_id:
+        frame["_node_id"] = node_id
+    try:
+        state.frame_queue.put_nowait((node_id or "tcp-unknown", frame))
+    except asyncio.QueueFull:
+        logging.warning("Frame queue full, dropping TCP frame from %s", node_id)
