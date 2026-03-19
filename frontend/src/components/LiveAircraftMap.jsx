@@ -5,6 +5,7 @@ import {
   Marker,
   Popup,
   Circle,
+  CircleMarker,
   Polygon,
   Polyline,
   useMap,
@@ -179,6 +180,22 @@ export default function LiveAircraftMap() {
   const reconnectTimer = useRef(null);
   const animationFrameRef = useRef(null);
   const displayedAircraftRef = useRef({});
+
+  const matchedTruthHexes = new Set(
+    displayAircraft.map((ac) => ac.ground_truth_hex || ac.hex).filter(Boolean)
+  );
+  const truthOnlyAircraft = Object.entries(groundTruthRef.current)
+    .filter(([hex, positions]) => !matchedTruthHexes.has(hex) && Array.isArray(positions) && positions.length > 0)
+    .map(([hex, positions]) => {
+      const last = positions[positions.length - 1];
+      return {
+        hex,
+        lat: last[0],
+        lon: last[1],
+        alt_m: last[2],
+        points: positions.length,
+      };
+    });
 
   // Fetch nodes for coverage zones
   useEffect(() => {
@@ -381,7 +398,9 @@ export default function LiveAircraftMap() {
         <span className={`connection-badge ${connected ? "connected" : "disconnected"}`}>
           {connected ? "LIVE" : "POLLING"}
         </span>
-        <span className="aircraft-count">{aircraft.length} aircraft</span>
+        <span className="aircraft-count">
+          {aircraft.length} solved / {truthOnlyAircraft.length + aircraft.length} total
+        </span>
         <label className="coverage-toggle">
           <input
             type="checkbox"
@@ -619,6 +638,32 @@ export default function LiveAircraftMap() {
             </Marker>
           ) : null
         )}
+
+        {/* Ground-truth-only markers for aircraft not yet solved */}
+        {showGroundTruth &&
+          truthOnlyAircraft.map((ac) => (
+            <CircleMarker
+              key={`truth-only-${ac.hex}`}
+              center={[ac.lat, ac.lon]}
+              radius={6}
+              pathOptions={{
+                color: "#67e8f9",
+                weight: 2,
+                fillColor: "#22d3ee",
+                fillOpacity: 0.35,
+              }}
+            >
+              <Popup>
+                <strong>{ac.hex}</strong>
+                <br />
+                Ground truth only
+                <br />
+                Alt: {Math.round(ac.alt_m / 0.3048)} ft
+                <br />
+                Trail: {ac.points} pts
+              </Popup>
+            </CircleMarker>
+          ))}
       </MapContainer>
     </div>
   );
