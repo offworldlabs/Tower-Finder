@@ -1,32 +1,43 @@
+/* ── FR24-style dark theme for live radar ────────────────────── */
+
 .live-map-container {
   position: relative;
-  height: 500px;
-  border-radius: 12px;
+  height: 100%;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.08);
 }
+
+/* ── Top toolbar ─────────────────────────────────────────────── */
 
 .live-map-toolbar {
   position: absolute;
-  top: 10px;
-  right: 10px;
+  top: 0;
+  left: 0;
+  right: 0;
   z-index: 1000;
   display: flex;
   align-items: center;
-  gap: 12px;
-  background: rgba(15, 23, 42, 0.85);
-  backdrop-filter: blur(8px);
-  padding: 6px 14px;
-  border-radius: 8px;
-  font-size: 0.8rem;
+  gap: 8px;
+  background: rgba(15, 23, 42, 0.92);
+  backdrop-filter: blur(12px);
+  padding: 5px 12px;
+  font-size: 0.76rem;
   color: #cbd5e1;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-wrap: wrap;
+}
+
+.toolbar-separator {
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
 }
 
 .connection-badge {
   padding: 2px 8px;
   border-radius: 4px;
-  font-weight: 600;
-  font-size: 0.7rem;
+  font-weight: 700;
+  font-size: 0.65rem;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -47,60 +58,303 @@
   50% { opacity: 0.7; }
 }
 
-.aircraft-count {
-  font-variant-numeric: tabular-nums;
-}
-
-.coverage-toggle {
+/* Search input */
+.toolbar-search {
   display: flex;
   align-items: center;
   gap: 4px;
-  cursor: pointer;
-  user-select: none;
-}
-
-button.coverage-toggle {
-  border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(30, 41, 59, 0.9);
-  color: #e2e8f0;
-  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 6px;
+  padding: 2px 8px;
 }
 
-button.coverage-toggle:hover {
+.toolbar-search input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #e2e8f0;
+  font-size: 0.76rem;
+  width: 120px;
+}
+
+.toolbar-search input::placeholder {
+  color: #475569;
+}
+
+.toolbar-search-icon {
+  width: 13px;
+  height: 13px;
+  color: #475569;
+  flex-shrink: 0;
+}
+
+/* Stats */
+.aircraft-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Toggle buttons */
+.toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(30, 41, 59, 0.8);
+  color: #94a3b8;
+  padding: 3px 8px;
+  border-radius: 5px;
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: all 0.15s;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.toggle-btn:hover {
   background: rgba(51, 65, 85, 0.95);
+  color: #e2e8f0;
 }
 
-.coverage-toggle input {
-  accent-color: #ef4444;
+.toggle-btn.active {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: rgba(59, 130, 246, 0.4);
+  color: #93c5fd;
 }
 
-/* Map legend pill */
+/* Legend */
 .map-legend {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 0.75rem;
-  color: #94a3b8;
-  padding-left: 6px;
-  border-left: 1px solid rgba(255,255,255,0.12);
+  gap: 8px;
+  font-size: 0.68rem;
+  color: #64748b;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 3px;
 }
 
 .legend-dot {
   display: inline-block;
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 
-/* Aircraft marker triangle */
+/* ── Detail panel ────────────────────────────────────────────── */
+
+.detail-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 280px;
+  height: 100%;
+  background: rgba(15, 23, 42, 0.96);
+  backdrop-filter: blur(16px);
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  z-index: 1001;
+  display: flex;
+  flex-direction: column;
+  animation: slide-in-right 0.2s ease-out;
+  overflow: hidden;
+}
+
+@keyframes slide-in-right {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+.detail-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.detail-panel-header h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  color: #f1f5f9;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.detail-panel-header .close-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #94a3b8;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.detail-panel-header .close-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+}
+
+.detail-panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 14px;
+}
+
+.detail-section {
+  margin-bottom: 14px;
+}
+
+.detail-section-title {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #475569;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.detail-field {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.detail-label {
+  color: #64748b;
+  font-size: 0.76rem;
+}
+
+.detail-value {
+  color: #e2e8f0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.detail-value.good { color: #4ade80; }
+.detail-value.warn { color: #fbbf24; }
+.detail-value.bad  { color: #f87171; }
+
+.detail-hex-badge {
+  display: inline-block;
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  color: #93c5fd;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 0.75rem;
+  font-family: monospace;
+  letter-spacing: 0.5px;
+}
+
+.detail-source-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.detail-source-badge.multinode {
+  background: rgba(139, 92, 246, 0.2);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  color: #c4b5fd;
+}
+
+.detail-source-badge.adsb {
+  background: rgba(59, 130, 246, 0.2);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  color: #93c5fd;
+}
+
+.detail-source-badge.other {
+  background: rgba(22, 163, 106, 0.2);
+  border: 1px solid rgba(22, 163, 106, 0.3);
+  color: #6ee7b7;
+}
+
+/* ── Aircraft markers ────────────────────────────────────────── */
+
 .aircraft-marker {
   background: none !important;
   border: none !important;
 }
 
+.aircraft-label {
+  font-size: 9px;
+  color: #cbd5e1;
+  white-space: nowrap;
+  text-shadow: 0 1px 3px rgba(0,0,0,.9), 0 0 6px rgba(0,0,0,.5);
+  margin-top: -2px;
+  font-weight: 600;
+  text-align: center;
+  line-height: 1.2;
+}
+
 .node-marker {
   background: none !important;
   border: none !important;
+}
+
+/* ── Bottom playback bar ─────────────────────────────────────── */
+
+.playback-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(15, 23, 42, 0.94);
+  backdrop-filter: blur(12px);
+  padding: 6px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.playback-bar input[type="range"] {
+  flex: 1;
+  accent-color: #3b82f6;
+  height: 4px;
+}
+
+.playback-time {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.72rem;
+  min-width: 32px;
+  text-align: center;
+}
+
+/* ── Scrollbar ──────────────────────────────────────────────── */
+
+.detail-panel-body::-webkit-scrollbar {
+  width: 4px;
+}
+
+.detail-panel-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.detail-panel-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
 }

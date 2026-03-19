@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import {
   MapContainer,
   TileLayer,
   Marker,
   Popup,
-  Circle,
   CircleMarker,
   Polygon,
   Polyline,
@@ -24,6 +23,7 @@ L.Icon.Default.mergeOptions({
 
 const API_BASE = "/api";
 const ANIMATION_MS = 1800;
+const MAX_HISTORY = 150;
 
 
 function interpolateBearing(start, end, progress) {
@@ -40,22 +40,25 @@ function easeOutCubic(progress) {
 
 /* ── Icon factories ───────────────────────────────────────────────── */
 
-function makeAircraftIcon(ac) {
+function makeAircraftIcon(ac, showLabel, isSelected) {
   const track = ac.track ?? 0;
   const isMultinode = ac.multinode;
   const hasAdsb = ac.type !== "tisb_other" && ac.type !== "multinode_solve";
   const color = isMultinode ? "#8b5cf6" : hasAdsb ? "#3b82f6" : "#16a34a";
+  const label = ac.flight?.trim() || ac.hex?.slice(-6)?.toUpperCase() || "";
+  const alt = ac.alt_baro ? `FL${Math.round(ac.alt_baro / 100)}` : "";
+  const labelHtml = showLabel
+    ? `<div class="aircraft-label">${label}${alt ? "<br>" + alt : ""}</div>`
+    : "";
+  const glow = isSelected ? "filter:drop-shadow(0 0 6px #fbbf24);" : "";
   return L.divIcon({
     className: "aircraft-marker",
-    html: `<div style="
-      transform: rotate(${track}deg);
-      color: ${color};
-      font-size: 20px;
-      line-height: 1;
-      text-shadow: 0 1px 3px rgba(0,0,0,.4);
-    ">&#9650;</div>`,
-    iconSize: [20, 20],
-    iconAnchor: [10, 10],
+    html: `<div style="display:flex;flex-direction:column;align-items:center;${glow}">
+      <div style="transform:rotate(${track}deg);color:${color};font-size:22px;line-height:1;text-shadow:0 1px 4px rgba(0,0,0,.6);">&#9650;</div>
+      ${labelHtml}
+    </div>`,
+    iconSize: [80, 40],
+    iconAnchor: [40, 12],
   });
 }
 
@@ -154,6 +157,151 @@ function FitBounds({ aircraft, nodes, trails, selectedHex, focusNonce }) {
   return null;
 }
 
+/* ── Aircraft detail side panel ───────────────────────────────── */
+
+function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError }) {
+  if (!ac) return null;
+  const err = computeError(ac.hex, ac);
+  const gtHex = ac.ground_truth_hex || ac.hex;
+  const gtTrail = groundTruth[gtHex];
+  const solvedPts = (trails[ac.hex] || []).length;
+  const truthPts = gtTrail?.length || 0;
+  const gtLast = gtTrail?.length ? gtTrail[gtTrail.length - 1] : null;
+  const altErrFt = gtLast ? Math.abs((ac.alt_baro || 0) - gtLast[2] / 0.3048) : null;
+
+  const isMultinode = ac.multinode;
+  const hasAdsb = ac.type !== "tisb_other" && ac.type !== "multinode_solve";
+  const sourceLabel = isMultinode
+    ? `Multi-node (${ac.n_nodes}N)`
+    : hasAdsb ? "ADS-B" : ac.type || "Unknown";
+  const sourceBadge = isMultinode ? "multinode" : hasAdsb ? "adsb" : "other";
+  const isTruthOnly = !ac.type && !ac.flight;
+
+  return (
+    <div className="detail-panel">
+      <div className="detail-panel-header">
+        <h3>{ac.flight?.trim() || ac.hex}</h3>
+        <button className="close-btn" onClick={onClose} title="Close">&times;</button>
+      </div>
+      <div className="detail-panel-body">
+        <div className="detail-section">
+          <div className="detail-section-title">Identity</div>
+          <div className="detail-field">
+            <span className="detail-label">HEX</span>
+            <span className="detail-hex-badge">{ac.hex}</span>
+          </div>
+          {!isTruthOnly && (
+            <>
+              <div className="detail-field">
+                <span className="detail-label">Callsign</span>
+                <span className="detail-value">{ac.flight?.trim() || "\u2014"}</span>
+              </div>
+              <div className="detail-field">
+                <span className="detail-label">Source</span>
+                <span className={`detail-source-badge ${sourceBadge}`}>{sourceLabel}</span>
+              </div>
+            </>
+          )}
+          {isTruthOnly && (
+            <div className="detail-field">
+              <span className="detail-label">Status</span>
+              <span className="detail-source-badge other">Ground truth only</span>
+            </div>
+          )}
+        </div>
+
+        <div className="detail-section">
+          <div className="detail-section-title">Position</div>
+          <div className="detail-field">
+            <span className="detail-label">Latitude</span>
+            <span className="detail-value">{ac.lat?.toFixed(5) ?? "\u2014"}</span>
+          </div>
+          <div className="detail-field">
+            <span className="detail-label">Longitude</span>
+            <span className="detail-value">{ac.lon?.toFixed(5) ?? "\u2014"}</span>
+          </div>
+          <div className="detail-field">
+            <span className="detail-label">Altitude</span>
+            <span className="detail-value">
+              {ac.alt_baro != null
+                ? `${ac.alt_baro.toLocaleString()} ft`
+                : ac.alt_m != null
+                  ? `${Math.round(ac.alt_m / 0.3048).toLocaleString()} ft`
+                  : "\u2014"}
+            </span>
+          </div>
+          {!isTruthOnly && (
+            <>
+              <div className="detail-field">
+                <span className="detail-label">Speed</span>
+                <span className="detail-value">{ac.gs != null ? `${ac.gs} kts` : "\u2014"}</span>
+              </div>
+              <div className="detail-field">
+                <span className="detail-label">Heading</span>
+                <span className="detail-value">{ac.track != null ? `${ac.track.toFixed(0)}\u00b0` : "\u2014"}</span>
+              </div>
+            </>
+          )}
+        </div>
+
+        {isMultinode && (
+          <div className="detail-section">
+            <div className="detail-section-title">Multi-node</div>
+            <div className="detail-field">
+              <span className="detail-label">Nodes</span>
+              <span className="detail-value">{ac.n_nodes}</span>
+            </div>
+            <div className="detail-field">
+              <span className="detail-label">RMS Delay</span>
+              <span className="detail-value">{ac.rms_delay ?? "\u2014"} \u03bcs</span>
+            </div>
+            <div className="detail-field">
+              <span className="detail-label">RMS Doppler</span>
+              <span className="detail-value">{ac.rms_doppler ?? "\u2014"} Hz</span>
+            </div>
+          </div>
+        )}
+
+        <div className="detail-section">
+          <div className="detail-section-title">Accuracy</div>
+          <div className="detail-field">
+            <span className="detail-label">Solved pts</span>
+            <span className="detail-value">{solvedPts}</span>
+          </div>
+          <div className="detail-field">
+            <span className="detail-label">Truth pts</span>
+            <span className="detail-value">{truthPts}</span>
+          </div>
+          {err !== null && (
+            <div className="detail-field">
+              <span className="detail-label">Pos Error</span>
+              <span className={`detail-value ${err < 2 ? "good" : err < 5 ? "warn" : "bad"}`}>
+                {err.toFixed(2)} km
+              </span>
+            </div>
+          )}
+          {altErrFt !== null && (
+            <div className="detail-field">
+              <span className="detail-label">Alt Error</span>
+              <span className="detail-value">{Math.round(altErrFt)} ft</span>
+            </div>
+          )}
+        </div>
+
+        {isTruthOnly && (
+          <div className="detail-section">
+            <div className="detail-section-title">Trail</div>
+            <div className="detail-field">
+              <span className="detail-label">Points</span>
+              <span className="detail-value">{ac.points || 0}</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ── Main component ───────────────────────────────────────────── */
 
 export default function LiveAircraftMap() {
@@ -163,9 +311,12 @@ export default function LiveAircraftMap() {
   const [showCoverage, setShowCoverage] = useState(false);
   const [showTrails, setShowTrails] = useState(true);
   const [showGroundTruth, setShowGroundTruth] = useState(true);
+  const [showLabels, setShowLabels] = useState(true);
   const [connected, setConnected] = useState(false);
   const [selectedHex, setSelectedHex] = useState(null);
   const [focusNonce, setFocusNonce] = useState(0);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [paused, setPaused] = useState(false);
 
   // Trails accumulated locally — keyed by hex
   // Each value: [[lat, lon, alt, ts], ...]
@@ -180,6 +331,8 @@ export default function LiveAircraftMap() {
   const reconnectTimer = useRef(null);
   const animationFrameRef = useRef(null);
   const displayedAircraftRef = useRef({});
+  const pausedRef = useRef(false);
+  const historyRef = useRef([]);
 
   const matchedTruthHexes = new Set(
     displayAircraft.map((ac) => ac.ground_truth_hex || ac.hex).filter(Boolean)
@@ -244,7 +397,12 @@ export default function LiveAircraftMap() {
       try {
         const data = JSON.parse(evt.data);
         const newAircraft = data.aircraft || [];
-        setAircraft(newAircraft);
+
+        // Buffer history for playback
+        historyRef.current.push({ aircraft: newAircraft, ts: Date.now() });
+        if (historyRef.current.length > MAX_HISTORY) historyRef.current.shift();
+
+        if (!pausedRef.current) setAircraft(newAircraft);
 
         // Update ground truth from broadcast
         if (data.ground_truth && typeof data.ground_truth === "object") {
@@ -355,7 +513,9 @@ export default function LiveAircraftMap() {
         if (res.ok) {
           const data = await res.json();
           const newAircraft = data.aircraft || [];
-          setAircraft(newAircraft);
+          historyRef.current.push({ aircraft: newAircraft, ts: Date.now() });
+          if (historyRef.current.length > MAX_HISTORY) historyRef.current.shift();
+          if (!pausedRef.current) setAircraft(newAircraft);
           if (data.ground_truth) groundTruthRef.current = data.ground_truth;
           // Accumulate trails locally during polling
           const trails = trailsRef.current;
@@ -392,51 +552,100 @@ export default function LiveAircraftMap() {
     return Math.sqrt(dlat * dlat + dlon * dlon);
   }
 
+  // Search filter
+  const filteredAircraft = useMemo(() => {
+    if (!searchQuery.trim()) return displayAircraft;
+    const q = searchQuery.trim().toLowerCase();
+    return displayAircraft.filter(
+      (ac) =>
+        (ac.hex || "").toLowerCase().includes(q) ||
+        (ac.flight || "").toLowerCase().includes(q)
+    );
+  }, [displayAircraft, searchQuery]);
+
+  const selectedAc = selectedHex
+    ? filteredAircraft.find((ac) => ac.hex === selectedHex) ||
+      truthOnlyAircraft.find((ac) => ac.hex === selectedHex)
+    : null;
+
+  function handleTogglePause() {
+    if (paused) {
+      setPaused(false);
+      pausedRef.current = false;
+    } else {
+      setPaused(true);
+      pausedRef.current = true;
+    }
+  }
+
+  function handleHistorySeek(index) {
+    if (index >= 0 && index < historyRef.current.length) {
+      setDisplayAircraft(historyRef.current[index].aircraft);
+    }
+  }
+
+  function formatSecondsAgo(ts) {
+    const sec = Math.round((Date.now() - ts) / 1000);
+    return sec <= 0 ? "now" : `-${sec}s`;
+  }
+
   return (
     <div className="live-map-container">
       <div className="live-map-toolbar">
         <span className={`connection-badge ${connected ? "connected" : "disconnected"}`}>
-          {connected ? "LIVE" : "POLLING"}
+          {connected ? (paused ? "PAUSED" : "LIVE") : "POLL"}
         </span>
         <span className="aircraft-count">
-          {aircraft.length} solved / {truthOnlyAircraft.length + aircraft.length} total
+          {filteredAircraft.length} / {displayAircraft.length + truthOnlyAircraft.length}
         </span>
-        <label className="coverage-toggle">
+
+        <div className="toolbar-separator" />
+
+        {/* Search */}
+        <div className="toolbar-search">
+          <svg className="toolbar-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+          </svg>
           <input
-            type="checkbox"
-            checked={showCoverage}
-            onChange={(e) => setShowCoverage(e.target.checked)}
+            type="text"
+            placeholder="Search hex / callsign\u2026"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
           />
+        </div>
+
+        <div className="toolbar-separator" />
+
+        {/* Layer toggles */}
+        <button className={`toggle-btn${showCoverage ? " active" : ""}`} onClick={() => setShowCoverage((v) => !v)}>
           Coverage
-        </label>
-        <label className="coverage-toggle">
-          <input
-            type="checkbox"
-            checked={showTrails}
-            onChange={(e) => setShowTrails(e.target.checked)}
-          />
-          Solved tracks
-        </label>
-        <label className="coverage-toggle">
-          <input
-            type="checkbox"
-            checked={showGroundTruth}
-            onChange={(e) => setShowGroundTruth(e.target.checked)}
-          />
-          Ground truth
-        </label>
-        <button
-          type="button"
-          className="coverage-toggle"
-          onClick={() => setFocusNonce((n) => n + 1)}
-        >
-          Focus traffic
         </button>
+        <button className={`toggle-btn${showLabels ? " active" : ""}`} onClick={() => setShowLabels((v) => !v)}>
+          Labels
+        </button>
+        <button className={`toggle-btn${showTrails ? " active" : ""}`} onClick={() => setShowTrails((v) => !v)}>
+          Trails
+        </button>
+        <button className={`toggle-btn${showGroundTruth ? " active" : ""}`} onClick={() => setShowGroundTruth((v) => !v)}>
+          Truth
+        </button>
+
+        <div className="toolbar-separator" />
+
+        {/* Playback */}
+        <button className={`toggle-btn${paused ? " active" : ""}`} onClick={handleTogglePause}>
+          {paused ? "\u25b6 Resume" : "\u23f8 Pause"}
+        </button>
+        <button className="toggle-btn" onClick={() => setFocusNonce((n) => n + 1)}>
+          \u25ce Fit
+        </button>
+
         {/* Legend */}
         <span className="map-legend">
-          <span className="legend-dot" style={{ background: "#f59e0b" }} /> Solved
-          &nbsp;
-          <span className="legend-dot" style={{ background: "#22d3ee" }} /> Truth
+          <span className="legend-item"><span className="legend-dot" style={{ background: "#3b82f6" }} /> ADS-B</span>
+          <span className="legend-item"><span className="legend-dot" style={{ background: "#8b5cf6" }} /> Multi</span>
+          <span className="legend-item"><span className="legend-dot" style={{ background: "#22d3ee" }} /> Truth</span>
+          <span className="legend-item"><span className="legend-dot" style={{ background: "#ef4444" }} /> Node</span>
         </span>
       </div>
 
@@ -563,79 +772,16 @@ export default function LiveAircraftMap() {
           })}
 
         {/* Aircraft markers */}
-        {displayAircraft.map((ac) =>
+        {filteredAircraft.map((ac) =>
           ac.lat && ac.lon ? (
             <Marker
               key={ac.hex}
               position={[ac.lat, ac.lon]}
-              icon={makeAircraftIcon(ac)}
+              icon={makeAircraftIcon(ac, showLabels, ac.hex === selectedHex)}
               eventHandlers={{
                 click: () => setSelectedHex((prev) => (prev === ac.hex ? null : ac.hex)),
               }}
-            >
-              <Popup>
-                <strong>{ac.flight?.trim() || ac.hex}</strong>
-                <br />
-                Alt: {ac.alt_baro ?? "?"} ft
-                <br />
-                GS: {ac.gs ?? "?"} kts &middot; Trk: {ac.track ?? "?"}°
-                {ac.multinode && (
-                  <>
-                    <br />
-                    <em>Multi-node ({ac.n_nodes}N)</em>
-                    <br />
-                    RMS: {ac.rms_delay}μs / {ac.rms_doppler}Hz
-                  </>
-                )}
-                {/* Ground truth comparison */}
-                {(() => {
-                  const err = computeError(ac.hex, ac);
-                  const gtTrail = groundTruthRef.current[ac.ground_truth_hex || ac.hex];
-                  if (!gtTrail || !gtTrail.length) return null;
-                  const solvedPts = (trailsRef.current[ac.hex] || []).length;
-                  const truthPts = gtTrail.length;
-                  const gtLast = gtTrail[gtTrail.length - 1];
-                  const altErrFt = gtLast
-                    ? Math.abs(ac.alt_baro - (gtLast[2] / 0.3048))
-                    : null;
-                  return (
-                    <>
-                      <br />
-                      <hr style={{ margin: "4px 0", borderColor: "#444" }} />
-                      <span style={{ color: "#22d3ee", fontSize: "0.85em" }}>
-                        Ground truth comparison
-                      </span>
-                      <br />
-                      <span style={{ color: "#f59e0b" }}>
-                        ● Solved: {solvedPts} pts
-                      </span>
-                      &nbsp;
-                      <span style={{ color: "#22d3ee" }}>
-                        ● Truth: {truthPts} pts
-                      </span>
-                      <br />
-                      {err !== null && (
-                        <>
-                          <strong
-                            style={{
-                              color: err < 2 ? "#4ade80" : err < 5 ? "#fbbf24" : "#f87171",
-                            }}
-                          >
-                            Pos error: {err.toFixed(2)} km
-                          </strong>
-                          <br />
-                        </>
-                      )}
-                      {altErrFt !== null && (
-                        <span style={{ fontSize: "0.85em" }}>
-                          Alt error: {Math.round(altErrFt)} ft
-                        </span>
-                      )}
-                    </>
-                  );
-                })()}
-              </Popup>
-            </Marker>
+            />
           ) : null
         )}
 
@@ -652,19 +798,46 @@ export default function LiveAircraftMap() {
                 fillColor: "#22d3ee",
                 fillOpacity: 0.35,
               }}
-            >
-              <Popup>
-                <strong>{ac.hex}</strong>
-                <br />
-                Ground truth only
-                <br />
-                Alt: {Math.round(ac.alt_m / 0.3048)} ft
-                <br />
-                Trail: {ac.points} pts
-              </Popup>
-            </CircleMarker>
+              eventHandlers={{
+                click: () => setSelectedHex((prev) => (prev === ac.hex ? null : ac.hex)),
+              }}
+            />
           ))}
       </MapContainer>
+
+      {/* Detail side panel */}
+      {selectedAc && (
+        <AircraftDetailPanel
+          ac={selectedAc}
+          onClose={() => setSelectedHex(null)}
+          groundTruth={groundTruthRef.current}
+          trails={trailsRef.current}
+          computeError={computeError}
+        />
+      )}
+
+      {/* Playback bar when paused */}
+      {paused && historyRef.current.length > 0 && (
+        <div className="playback-bar">
+          <span className="playback-time">
+            {historyRef.current.length > 0
+              ? formatSecondsAgo(historyRef.current[0].ts)
+              : ""}
+          </span>
+          <input
+            type="range"
+            min={0}
+            max={historyRef.current.length - 1}
+            defaultValue={historyRef.current.length - 1}
+            onChange={(e) => handleHistorySeek(Number(e.target.value))}
+          />
+          <span className="playback-time">
+            {historyRef.current.length > 0
+              ? formatSecondsAgo(historyRef.current[historyRef.current.length - 1].ts)
+              : ""}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

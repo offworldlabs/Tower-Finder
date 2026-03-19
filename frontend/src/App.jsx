@@ -83,7 +83,7 @@ export default function App() {
         </nav>
       </header>
 
-      <main className="app-body">
+      <main className={`app-body${activeTab === "live" ? " live-active" : ""}`}>
         {activeTab === "towers" && (
           <>
             <div className="top-section">

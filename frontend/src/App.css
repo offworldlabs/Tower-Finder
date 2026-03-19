@@ -91,6 +91,12 @@ body {
   margin: 0 auto;
 }
 
+.app-body.live-active {
+  padding: 0;
+  max-width: none;
+  overflow: hidden;
+}
+
 .top-section {
   display: grid;
   grid-template-columns: 360px 1fr;
