@@ -383,7 +383,7 @@ async def run(
                     ok = resp.status_code in (200, 404)  # 404 if no archive yet = still OK
                     print(f"  [{name:<10}] {resp.status_code}  archive endpoint reachable")
                 elif name == "custody":
-                    n_keys = data.get("registered_keys", 0)
+                    n_keys = data.get("registered_nodes", 0)
                     ok = resp.status_code == 200 and n_keys > 0
                     print(f"  [{name:<10}] {resp.status_code}  {n_keys} signing keys registered")
                 else:
