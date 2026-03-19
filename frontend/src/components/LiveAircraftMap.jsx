@@ -155,41 +155,75 @@ function sampleTrailPositions(positions, maxPoints = 240) {
   return sampled;
 }
 
+// Split trail into N segments with increasing opacity/weight for a fade effect
+function buildTrailSegments(positions, numSegments = 8) {
+  if (!positions || positions.length < 2) return [];
+  const segs = [];
+  const total = positions.length;
+  const step = Math.max(1, Math.ceil(total / numSegments));
+  for (let i = 0; i < numSegments; i++) {
+    const start = i * step;
+    const end = Math.min(start + step + 1, total); // +1 for overlap between segments
+    if (end - start < 2) break;
+    const t = (i + 1) / numSegments;
+    segs.push({
+      positions: positions.slice(start, end),
+      opacity: 0.08 + t * 0.92,
+      weight: 1.5 + t * 3.5,
+    });
+  }
+  return segs;
+}
+
 /* ── Icon factories ───────────────────────────────────────────────── */
+
+// Top-down airplane SVG path (nose pointing up/north at 0°)
+const PLANE_PATH = "M16,2 C15.3,5.5 14.7,9 14.7,13 L3,20 L3,23 L14.7,19 L14.7,26 L11.5,28 L11.5,30.5 L16,29 L20.5,30.5 L20.5,28 L17.3,26 L17.3,19 L29,23 L29,20 L17.3,13 C17.3,9 16.7,5.5 16,2Z";
 
 function makeAircraftIcon(ac, showLabel, isSelected) {
   const track = ac.track ?? 0;
   const isMultinode = ac.multinode;
   const hasAdsb = ac.type !== "tisb_other" && ac.type !== "multinode_solve";
-  const color = isMultinode ? "#8b5cf6" : hasAdsb ? "#3b82f6" : "#16a34a";
+  const color = isMultinode ? "#a78bfa" : hasAdsb ? "#38bdf8" : "#2dd4bf";
   const label = ac.flight?.trim() || ac.hex?.slice(-6)?.toUpperCase() || "";
   const alt = ac.alt_baro ? `FL${Math.round(ac.alt_baro / 100)}` : "";
-  const labelHtml = showLabel
-    ? `<div class="aircraft-label">${label}${alt ? "<br>" + alt : ""}</div>`
+
+  // Icon size scales with altitude: higher altitude → likely a larger aircraft
+  const altFt = ac.alt_baro ?? 0;
+  const size = altFt > 35000 ? 30 : altFt > 20000 ? 26 : altFt > 5000 ? 22 : 18;
+
+  const glow = isSelected
+    ? "filter:drop-shadow(0 0 7px #fbbf24) drop-shadow(0 0 3px #fbbf24);"
+    : "filter:drop-shadow(0 2px 5px rgba(0,0,0,0.85));";
+
+  const svgHtml = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 32 32"
+    style="display:block;transform:rotate(${track}deg);${glow}">
+    <path fill="${color}" stroke="rgba(255,255,255,0.7)" stroke-width="1.2" stroke-linejoin="round"
+      d="${PLANE_PATH}"/>
+  </svg>`;
+
+  const labelHtml = showLabel && label
+    ? `<div class="aircraft-label">${label}${alt ? `<span class="aircraft-alt"> ${alt}</span>` : ""}</div>`
     : "";
-  const glow = isSelected ? "filter:drop-shadow(0 0 6px #fbbf24);" : "";
+
   return L.divIcon({
     className: "aircraft-marker",
-    html: `<div style="display:flex;flex-direction:column;align-items:center;${glow}">
-      <div style="transform:rotate(${track}deg);color:${color};font-size:22px;line-height:1;text-shadow:0 1px 4px rgba(0,0,0,.6);">&#9650;</div>
-      ${labelHtml}
-    </div>`,
-    iconSize: [80, 40],
-    iconAnchor: [40, 12],
+    html: `<div style="display:flex;flex-direction:column;align-items:center;">${svgHtml}${labelHtml}</div>`,
+    iconSize: [90, 44],
+    iconAnchor: [45, Math.round(size / 2)],
   });
 }
 
 const nodeIcon = L.divIcon({
   className: "node-marker",
-  html: `<div style="
-    width:12px;height:12px;
-    background:#ef4444;
-    border:2px solid #fff;
-    border-radius:50%;
-    box-shadow:0 1px 4px rgba(0,0,0,.3);
-  "></div>`,
-  iconSize: [12, 12],
-  iconAnchor: [6, 6],
+  html: `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24"
+    style="display:block;filter:drop-shadow(0 0 5px rgba(239,68,68,0.75));">
+    <circle cx="12" cy="12" r="3.2" fill="#ef4444"/>
+    <circle cx="12" cy="12" r="6.5" fill="none" stroke="#ef4444" stroke-width="1.5" opacity="0.6"/>
+    <circle cx="12" cy="12" r="10.5" fill="none" stroke="#ef4444" stroke-width="1" opacity="0.25"/>
+  </svg>`,
+  iconSize: [22, 22],
+  iconAnchor: [11, 11],
 });
 
 /* ── Beam cone polygon ─────────────────────────────────────────── */
@@ -341,7 +375,7 @@ function AircraftListPanel({ allAircraft, truthOnly, selectedHex, onSelect, coll
             {filtered.map((ac) => {
               const isSolved = ac._isSolved;
               const isMultinode = ac.multinode;
-              const color = !isSolved ? "#22d3ee" : isMultinode ? "#8b5cf6" : "#3b82f6";
+              const color = !isSolved ? "#2dd4bf" : isMultinode ? "#a78bfa" : "#38bdf8";
               const callsign = ac.flight?.trim() || ac.hex?.slice(-6).toUpperCase() || ac.hex;
               const alt = ac.alt_baro
                 ? `FL${Math.round(ac.alt_baro / 100)}`
@@ -359,10 +393,14 @@ function AircraftListPanel({ allAircraft, truthOnly, selectedHex, onSelect, coll
                   onClick={() => onSelect(ac.hex)}
                 >
                   <div className="al-indicator" style={{ background: color }} />
-                  <span
+                  <svg
                     className="al-icon"
-                    style={{ color, transform: `rotate(${ac.track ?? 0}deg)` }}
-                  >▲</span>
+                    viewBox="0 0 32 32"
+                    fill={color}
+                    style={{ transform: `rotate(${ac.track ?? 0}deg)`, width: 13, height: 13, flexShrink: 0 }}
+                  >
+                    <path d={PLANE_PATH}/>
+                  </svg>
                   <div className="al-info">
                     <span className="al-callsign">{callsign}</span>
                     <span className="al-sub">
@@ -938,9 +976,9 @@ export default function LiveAircraftMap() {
         <button className="toggle-btn" onClick={() => setFocusNonce((n) => n + 1)}>◎ Fit</button>
 
         <span className="map-legend">
-          <span className="legend-item"><span className="legend-dot" style={{ background: "#3b82f6" }} /> ADS-B</span>
-          <span className="legend-item"><span className="legend-dot" style={{ background: "#8b5cf6" }} /> Multi</span>
-          {showGroundTruth && <span className="legend-item"><span className="legend-dot" style={{ background: "#22d3ee" }} /> Truth</span>}
+          <span className="legend-item"><span className="legend-dot" style={{ background: "#38bdf8" }} /> ADS-B</span>
+          <span className="legend-item"><span className="legend-dot" style={{ background: "#a78bfa" }} /> Multi</span>
+          {showGroundTruth && <span className="legend-item"><span className="legend-dot" style={{ background: "#2dd4bf" }} /> Truth</span>}
           <span className="legend-item"><span className="legend-dot" style={{ background: "#ef4444" }} /> Node</span>
         </span>
       </div>
@@ -968,8 +1006,8 @@ export default function LiveAircraftMap() {
             style={{ height: "100%", width: "100%" }}
           >
             <TileLayer
-              attribution='&copy; <a href="https://carto.com">CARTO</a>'
-              url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+              attribution='&copy; <a href="https://carto.com">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+              url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
             />
 
             <ViewportTracker onChange={handleViewportChange} />
@@ -1001,14 +1039,16 @@ export default function LiveAircraftMap() {
               </Marker>
             ))}
 
-            {/* Selected solved trail only */}
-            {showTrails && selectedTrailPositions.length >= 2 && (
-              <Polyline
-                key={`trail-${selectedHex}-${trailTick}`}
-                positions={selectedTrailPositions}
-                pathOptions={{ color: "#f59e0b", weight: 4, opacity: 0.95 }}
-              />
-            )}
+            {/* Selected solved trail — gradient fade from tail to tip */}
+            {showTrails && selectedTrailPositions.length >= 2 &&
+              buildTrailSegments(selectedTrailPositions).map((seg, i) => (
+                <Polyline
+                  key={`trail-${selectedHex}-seg${i}-${trailTick}`}
+                  positions={seg.positions}
+                  pathOptions={{ color: "#f59e0b", weight: seg.weight, opacity: seg.opacity, lineCap: "round", lineJoin: "round" }}
+                />
+              ))
+            }
 
             {/* Aircraft markers */}
             {visibleAircraft.map((ac) =>
