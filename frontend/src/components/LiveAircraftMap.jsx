@@ -521,7 +521,7 @@ export default function LiveAircraftMap() {
   const [nodes, setNodes] = useState([]);
   const [showCoverage, setShowCoverage] = useState(false);
   const [showTrails, setShowTrails] = useState(true);
-  const [showGroundTruth, setShowGroundTruth] = useState(true);
+  const [showGroundTruth, setShowGroundTruth] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
   const [connected, setConnected] = useState(false);
   const [selectedHex, setSelectedHex] = useState(null);
@@ -562,6 +562,11 @@ export default function LiveAircraftMap() {
         points: positions.length,
       };
     });
+
+  const debugTruthOnlyAircraft = useMemo(
+    () => (showGroundTruth ? truthOnlyAircraft : []),
+    [showGroundTruth, truthOnlyAircraft]
+  );
 
   // Fetch nodes for coverage zones
   useEffect(() => {
@@ -808,10 +813,10 @@ export default function LiveAircraftMap() {
   );
 
   const visibleTruthOnlyAircraft = useMemo(
-    () => truthOnlyAircraft.filter(
+    () => debugTruthOnlyAircraft.filter(
       (ac) => ac.hex === selectedHex || isPointInViewport(ac.lat, ac.lon, viewport)
     ),
-    [truthOnlyAircraft, selectedHex, viewport]
+    [debugTruthOnlyAircraft, selectedHex, viewport]
   );
 
   const visibleNodes = useMemo(
@@ -847,8 +852,14 @@ export default function LiveAircraftMap() {
 
   const selectedAc = selectedHex
     ? displayAircraft.find((ac) => ac.hex === selectedHex) ||
-      truthOnlyAircraft.find((ac) => ac.hex === selectedHex)
+      debugTruthOnlyAircraft.find((ac) => ac.hex === selectedHex)
     : null;
+
+  useEffect(() => {
+    if (!showGroundTruth && selectedHex && truthOnlyAircraft.some((ac) => ac.hex === selectedHex)) {
+      setSelectedHex(null);
+    }
+  }, [showGroundTruth, selectedHex, truthOnlyAircraft]);
 
   const handleViewportChange = useCallback((nextViewport) => {
     setViewport((prev) => {
@@ -894,7 +905,7 @@ export default function LiveAircraftMap() {
           {connected ? (paused ? "PAUSED" : "LIVE") : "POLL"}
         </span>
         <span className="aircraft-count">
-          {displayAircraft.length + truthOnlyAircraft.length} aircraft
+          {displayAircraft.length + debugTruthOnlyAircraft.length} aircraft
         </span>
 
         <div className="toolbar-separator" />
@@ -902,7 +913,7 @@ export default function LiveAircraftMap() {
         <button className={`toggle-btn${showCoverage ? " active" : ""}`} onClick={() => setShowCoverage((v) => !v)}>Coverage</button>
         <button className={`toggle-btn${showLabels ? " active" : ""}`} onClick={() => setShowLabels((v) => !v)}>Labels</button>
         <button className={`toggle-btn${showTrails ? " active" : ""}`} onClick={() => setShowTrails((v) => !v)}>Trails</button>
-        <button className={`toggle-btn${showGroundTruth ? " active" : ""}`} onClick={() => setShowGroundTruth((v) => !v)}>Truth</button>
+        <button className={`toggle-btn${showGroundTruth ? " active" : ""}`} onClick={() => setShowGroundTruth((v) => !v)}>Debug Truth</button>
 
         <div className="toolbar-separator" />
 
@@ -914,7 +925,7 @@ export default function LiveAircraftMap() {
         <span className="map-legend">
           <span className="legend-item"><span className="legend-dot" style={{ background: "#3b82f6" }} /> ADS-B</span>
           <span className="legend-item"><span className="legend-dot" style={{ background: "#8b5cf6" }} /> Multi</span>
-          <span className="legend-item"><span className="legend-dot" style={{ background: "#22d3ee" }} /> Truth</span>
+          {showGroundTruth && <span className="legend-item"><span className="legend-dot" style={{ background: "#22d3ee" }} /> Truth</span>}
           <span className="legend-item"><span className="legend-dot" style={{ background: "#ef4444" }} /> Node</span>
         </span>
       </div>
@@ -923,7 +934,7 @@ export default function LiveAircraftMap() {
       <div className="live-map-body">
         <AircraftListPanel
           allAircraft={displayAircraft}
-          truthOnly={truthOnlyAircraft}
+          truthOnly={debugTruthOnlyAircraft}
           selectedHex={selectedHex}
           onSelect={(hex) => {
             setSelectedHex((prev) => (prev === hex ? null : hex));
