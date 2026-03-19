@@ -245,6 +245,12 @@ async def _handle_heartbeat(msg: dict, node_id: str | None, writer):
 
 
 def _enqueue_detection(msg: dict, node_id: str | None):
+    # For synthetic demo nodes: extract ADS-B positions directly without
+    # going through the thread-pool queue, which would starve the event loop.
+    if node_id and is_synthetic_node(node_id):
+        _apply_synthetic_adsb(msg, node_id)
+        return
+
     frame = msg.get("data", msg)
     if "signature" in frame and "payload_hash" in frame:
         det_node_id = frame.get("node_id", node_id)
@@ -267,3 +273,30 @@ def _enqueue_detection(msg: dict, node_id: str | None):
         state.frame_queue.put_nowait((node_id or "tcp-unknown", frame))
     except asyncio.QueueFull:
         logging.warning("Frame queue full, dropping TCP frame from %s", node_id)
+
+
+def _apply_synthetic_adsb(msg: dict, node_id: str):
+    """Fast-path for synthetic nodes: store ADS-B positions directly in state."""
+    import time as _time
+    frame = msg.get("data", msg)
+    adsb_list = frame.get("adsb")
+    if not adsb_list:
+        return
+    ts_ms = int(_time.time() * 1000)
+    for entry in adsb_list:
+        if not isinstance(entry, dict):
+            continue
+        hex_code = entry.get("hex")
+        if not hex_code:
+            continue
+        state.adsb_aircraft[hex_code] = {
+            "hex": hex_code,
+            "flight": entry.get("flight", ""),
+            "lat": entry.get("lat", 0),
+            "lon": entry.get("lon", 0),
+            "alt_baro": entry.get("alt_baro", 0),
+            "gs": entry.get("gs", 0),
+            "track": entry.get("track", 0),
+            "last_seen_ms": ts_ms,
+        }
+    state.aircraft_dirty = True
