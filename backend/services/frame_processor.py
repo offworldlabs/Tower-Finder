@@ -109,6 +109,10 @@ def get_or_create_node_pipeline(
 
 def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarPipeline):
     """CPU-heavy frame processing — never runs on the event loop."""
+    # Synthetic nodes bypass analytics — their ground truth is already known
+    # and they generate far too many frames to process meaningfully.
+    if is_synthetic_node(node_id):
+        return
     state.node_analytics.record_detection_frame(node_id, frame)
 
     # Skip expensive multinode solver for synthetic demo nodes — ground truth
