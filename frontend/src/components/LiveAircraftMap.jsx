@@ -7,11 +7,30 @@ import {
   CircleMarker,
   Polygon,
   Polyline,
-  useMap,
-  useMapEvents,
 } from "react-leaflet";
 import L from "leaflet";
 import "./LiveAircraftMap.css";
+
+import {
+  ANIMATION_MS,
+  STALE_AIRCRAFT_MS,
+  interpolateBearing,
+  easeInOutCubic,
+  isPointInViewport,
+  sampleTrailPositions,
+  buildTrailSegments,
+  makeAircraftIcon,
+  nodeIcon,
+  beamConePositions,
+  FitBounds,
+  ViewportTracker,
+  useAircraftFeed,
+  useNodes,
+  AircraftListPanel,
+  AircraftDetailPanel,
+  Toolbar,
+  PlaybackBar,
+} from "./map";
 
 // Fix default icon paths
 delete L.Icon.Default.prototype._getIconUrl;
@@ -22,561 +41,28 @@ L.Icon.Default.mergeOptions({
   shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
 });
 
-const API_BASE = "/api";
-const ANIMATION_MS = 700;
-const STALE_AIRCRAFT_MS = 8000;
-const MAX_HISTORY = 150;
-const VIEWPORT_PAD_DEG = 1.5;
-const FOCUS_CLUSTER_LIMIT = 24;
-
-
-function interpolateBearing(start, end, progress) {
-  const a = start ?? 0;
-  const b = end ?? a;
-  let delta = ((b - a + 540) % 360) - 180;
-  return (a + delta * progress + 360) % 360;
-}
-
-
-function easeInOutCubic(progress) {
-  return progress < 0.5
-    ? 4 * progress * progress * progress
-    : 1 - Math.pow(-2 * progress + 2, 3) / 2;
-}
-
-function buildViewportSnapshot(bounds) {
-  return {
-    north: bounds.getNorth(),
-    south: bounds.getSouth(),
-    east: bounds.getEast(),
-    west: bounds.getWest(),
-  };
-}
-
-function isPointInViewport(lat, lon, viewport, pad = VIEWPORT_PAD_DEG) {
-  if (!viewport || lat == null || lon == null) return true;
-  return (
-    lat >= viewport.south - pad &&
-    lat <= viewport.north + pad &&
-    lon >= viewport.west - pad &&
-    lon <= viewport.east + pad
-  );
-}
-
-function getFocusPoints(aircraft, nodes, selectedHex) {
-  if (selectedHex) {
-    const selected = aircraft.find((ac) => ac.hex === selectedHex && ac.lat && ac.lon);
-    return selected ? [[selected.lat, selected.lon]] : [];
-  }
-
-  const validAircraft = aircraft.filter((ac) => ac.lat && ac.lon);
-  if (validAircraft.length > 0) {
-    let bestCenter = validAircraft[0];
-    let bestScore = -1;
-
-    for (const center of validAircraft) {
-      let score = 0;
-      for (const ac of validAircraft) {
-        if (Math.abs(ac.lat - center.lat) <= 4 && Math.abs(ac.lon - center.lon) <= 6) {
-          score += 1;
-        }
-      }
-      if (score > bestScore) {
-        bestScore = score;
-        bestCenter = center;
-      }
-    }
-
-    return validAircraft
-      .slice()
-      .sort((a, b) => {
-        const distA = Math.pow(a.lat - bestCenter.lat, 2) + Math.pow(a.lon - bestCenter.lon, 2);
-        const distB = Math.pow(b.lat - bestCenter.lat, 2) + Math.pow(b.lon - bestCenter.lon, 2);
-        return distA - distB;
-      })
-      .slice(0, FOCUS_CLUSTER_LIMIT)
-      .map((ac) => [ac.lat, ac.lon]);
-  }
-
-  return nodes
-    .filter((n) => n.rx_lat && n.rx_lon)
-    .map((n) => [n.rx_lat, n.rx_lon]);
-}
-
-function mergeTrailPositions(existing = [], incoming = []) {
-  if (!incoming.length) return existing;
-
-  const normalizedIncoming = incoming
-    .filter((point) => Array.isArray(point) && point.length >= 2)
-    .slice()
-    .sort((a, b) => (a[3] || 0) - (b[3] || 0));
-
-  if (!existing.length) return normalizedIncoming;
-
-  const merged = [...existing];
-  let last = merged[merged.length - 1];
-  let lastTs = last?.[3] || 0;
-
-  for (const point of normalizedIncoming) {
-    const pointTs = point[3] || 0;
-
-    // Server sends the full recent history on every tick. Only append the truly new tail.
-    if (pointTs <= lastTs) continue;
-
-    if (
-      last
-      && Math.abs(last[0] - point[0]) < 0.00001
-      && Math.abs(last[1] - point[1]) < 0.00001
-    ) {
-      lastTs = pointTs;
-      continue;
-    }
-
-    merged.push(point);
-    last = point;
-    lastTs = pointTs;
-  }
-
-  return merged;
-}
-
-function sampleTrailPositions(positions, maxPoints = 240) {
-  if (!Array.isArray(positions) || positions.length <= maxPoints) return positions || [];
-
-  const stride = Math.ceil(positions.length / maxPoints);
-  const sampled = positions.filter((_, index) => index % stride === 0);
-  const last = positions[positions.length - 1];
-  const tail = sampled[sampled.length - 1];
-
-  if (!tail || tail[0] !== last[0] || tail[1] !== last[1]) {
-    sampled.push(last);
-  }
-
-  return sampled;
-}
-
-// Split trail into N segments with increasing opacity/weight for a fade effect
-function buildTrailSegments(positions, numSegments = 8) {
-  if (!positions || positions.length < 2) return [];
-  const segs = [];
-  const total = positions.length;
-  const step = Math.max(1, Math.ceil(total / numSegments));
-  for (let i = 0; i < numSegments; i++) {
-    const start = i * step;
-    const end = Math.min(start + step + 1, total); // +1 for overlap between segments
-    if (end - start < 2) break;
-    const t = (i + 1) / numSegments;
-    segs.push({
-      positions: positions.slice(start, end),
-      opacity: 0.08 + t * 0.92,
-      weight: 1.5 + t * 3.5,
-    });
-  }
-  return segs;
-}
-
-/* ── Icon factories ───────────────────────────────────────────────── */
-
-// Top-down airplane SVG path (nose pointing up/north at 0°)
-const PLANE_PATH = "M16,2 C15.3,5.5 14.7,9 14.7,13 L3,20 L3,23 L14.7,19 L14.7,26 L11.5,28 L11.5,30.5 L16,29 L20.5,30.5 L20.5,28 L17.3,26 L17.3,19 L29,23 L29,20 L17.3,13 C17.3,9 16.7,5.5 16,2Z";
-
-function makeAircraftIcon(ac, showLabel, isSelected) {
-  const track = ac.track ?? 0;
-  const isMultinode = ac.multinode;
-  const hasAdsb = ac.type !== "tisb_other" && ac.type !== "multinode_solve";
-  const color = isMultinode ? "#a78bfa" : hasAdsb ? "#38bdf8" : "#2dd4bf";
-  const label = ac.flight?.trim() || ac.hex?.slice(-6)?.toUpperCase() || "";
-  const alt = ac.alt_baro ? `FL${Math.round(ac.alt_baro / 100)}` : "";
-
-  // Icon size scales with altitude: higher altitude → likely a larger aircraft
-  const altFt = ac.alt_baro ?? 0;
-  const size = altFt > 35000 ? 30 : altFt > 20000 ? 26 : altFt > 5000 ? 22 : 18;
-
-  const glow = isSelected
-    ? "filter:drop-shadow(0 0 7px #fbbf24) drop-shadow(0 0 3px #fbbf24);"
-    : "filter:drop-shadow(0 2px 5px rgba(0,0,0,0.85));";
-
-  const svgHtml = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 32 32"
-    style="display:block;transform:rotate(${track}deg);${glow}">
-    <path fill="${color}" stroke="rgba(255,255,255,0.7)" stroke-width="1.2" stroke-linejoin="round"
-      d="${PLANE_PATH}"/>
-  </svg>`;
-
-  const labelHtml = showLabel && label
-    ? `<div class="aircraft-label">${label}${alt ? `<span class="aircraft-alt"> ${alt}</span>` : ""}</div>`
-    : "";
-
-  return L.divIcon({
-    className: "aircraft-marker",
-    html: `<div style="display:flex;flex-direction:column;align-items:center;">${svgHtml}${labelHtml}</div>`,
-    iconSize: [90, 44],
-    iconAnchor: [45, Math.round(size / 2)],
-  });
-}
-
-const nodeIcon = L.divIcon({
-  className: "node-marker",
-  html: `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24"
-    style="display:block;filter:drop-shadow(0 0 5px rgba(239,68,68,0.75));">
-    <circle cx="12" cy="12" r="3.2" fill="#ef4444"/>
-    <circle cx="12" cy="12" r="6.5" fill="none" stroke="#ef4444" stroke-width="1.5" opacity="0.6"/>
-    <circle cx="12" cy="12" r="10.5" fill="none" stroke="#ef4444" stroke-width="1" opacity="0.25"/>
-  </svg>`,
-  iconSize: [22, 22],
-  iconAnchor: [11, 11],
-});
-
-/* ── Beam cone polygon ─────────────────────────────────────────── */
-
-function beamConePositions(lat, lon, azimuthDeg, beamWidthDeg, rangeKm) {
-  const R = 6371;
-  const startBearing = azimuthDeg - beamWidthDeg / 2;
-  const endBearing = azimuthDeg + beamWidthDeg / 2;
-  const points = [[lat, lon]]; // apex
-  const steps = 30;
-  for (let i = 0; i <= steps; i++) {
-    const bearing = startBearing + (endBearing - startBearing) * (i / steps);
-    const bRad = (bearing * Math.PI) / 180;
-    const d = rangeKm / R;
-    const lat1 = (lat * Math.PI) / 180;
-    const lon1 = (lon * Math.PI) / 180;
-    const lat2 = Math.asin(
-      Math.sin(lat1) * Math.cos(d) + Math.cos(lat1) * Math.sin(d) * Math.cos(bRad)
-    );
-    const lon2 =
-      lon1 +
-      Math.atan2(
-        Math.sin(bRad) * Math.sin(d) * Math.cos(lat1),
-        Math.cos(d) - Math.sin(lat1) * Math.sin(lat2)
-      );
-    points.push([(lat2 * 180) / Math.PI, (lon2 * 180) / Math.PI]);
-  }
-  points.push([lat, lon]); // close
-  return points;
-}
-
-/* ── Auto-fit map bounds ──────────────────────────────────────── */
-
-function FitBounds({ aircraft, nodes, selectedHex, focusNonce }) {
-  const map = useMap();
-  const initialFitted = useRef(false);
-  const userMoved = useRef(false);
-  const lastFocusNonce = useRef(null);
-
-  // Detect user-initiated pan/zoom — after that, never auto-fit again unless
-  // the user explicitly clicks "Fit" or selects an aircraft (focusNonce bump).
-  useEffect(() => {
-    const onMove = () => { userMoved.current = true; };
-    map.on("dragstart", onMove);
-    map.on("zoomstart", onMove);
-    return () => {
-      map.off("dragstart", onMove);
-      map.off("zoomstart", onMove);
-    };
-  }, [map]);
-
-  useEffect(() => {
-    // After initial fit, only re-fit when focusNonce changes (explicit Fit/select).
-    const isExplicit = focusNonce !== lastFocusNonce.current;
-    if (initialFitted.current && userMoved.current && !isExplicit) return;
-
-    const pts = getFocusPoints(aircraft, nodes, selectedHex);
-
-    if (pts.length >= 2) {
-      map.fitBounds(pts, { padding: [60, 60], animate: true, duration: 0.5 });
-      initialFitted.current = true;
-      lastFocusNonce.current = focusNonce;
-      if (isExplicit) userMoved.current = false;
-    } else if (pts.length === 1) {
-      map.setView(pts[0], 10, { animate: true, duration: 0.5 });
-      initialFitted.current = true;
-      lastFocusNonce.current = focusNonce;
-      if (isExplicit) userMoved.current = false;
-    }
-  }, [aircraft, nodes, selectedHex, focusNonce, map]);
-
-  return null;
-}
-
-function ViewportTracker({ onChange }) {
-  const map = useMapEvents({
-    moveend: () => onChange(buildViewportSnapshot(map.getBounds())),
-    zoomend: () => onChange(buildViewportSnapshot(map.getBounds())),
-    resize: () => onChange(buildViewportSnapshot(map.getBounds())),
-  });
-
-  useEffect(() => {
-    onChange(buildViewportSnapshot(map.getBounds()));
-  }, [map, onChange]);
-
-  return null;
-}
-
-/* ── Aircraft list sidebar ─────────────────────────────────────── */
-
-function AircraftListPanel({ allAircraft, truthOnly, selectedHex, onSelect, collapsed, onToggleCollapse, searchQuery, onSearchChange }) {
-  const rowRefs = useRef({});
-
-  useEffect(() => {
-    if (selectedHex && rowRefs.current[selectedHex]) {
-      rowRefs.current[selectedHex].scrollIntoView({ behavior: "smooth", block: "nearest" });
-    }
-  }, [selectedHex]);
-
-  const all = useMemo(() => [
-    ...allAircraft.map((ac) => ({ ...ac, _isSolved: true })),
-    ...truthOnly.map((ac) => ({ ...ac, _isSolved: false })),
-  ].sort((a, b) => {
-    const altA = a.alt_baro ?? (a.alt_m ? a.alt_m / 0.3048 : 0);
-    const altB = b.alt_baro ?? (b.alt_m ? b.alt_m / 0.3048 : 0);
-    return altB - altA;
-  }), [allAircraft, truthOnly]);
-
-  const filtered = useMemo(() => {
-    if (!searchQuery.trim()) return all;
-    const q = searchQuery.toLowerCase();
-    return all.filter(
-      (ac) =>
-        (ac.hex || "").toLowerCase().includes(q) ||
-        (ac.flight || "").toLowerCase().includes(q)
-    );
-  }, [all, searchQuery]);
-
-  return (
-    <div className={`aircraft-list-panel${collapsed ? " collapsed" : ""}`}>
-      <div className="al-header">
-        <div className="al-title">
-          {!collapsed && <>Aircraft <span className="al-count">{filtered.length}</span></>}
-        </div>
-        <button className="al-collapse-btn" onClick={onToggleCollapse} title={collapsed ? "Expand" : "Collapse"}>
-          {collapsed ? "▶" : "◀"}
-        </button>
-      </div>
-
-      {!collapsed && (
-        <>
-          <div className="al-search">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
-            </svg>
-            <input
-              type="text"
-              placeholder="Search callsign / hex…"
-              value={searchQuery}
-              onChange={(e) => onSearchChange(e.target.value)}
-            />
-            {searchQuery && (
-              <button className="al-clear" onClick={() => onSearchChange("")}>×</button>
-            )}
-          </div>
-
-          <div className="al-list">
-            {filtered.length === 0 && <div className="al-empty">No aircraft</div>}
-            {filtered.map((ac) => {
-              const isSolved = ac._isSolved;
-              const isMultinode = ac.multinode;
-              const color = !isSolved ? "#2dd4bf" : isMultinode ? "#a78bfa" : "#38bdf8";
-              const callsign = ac.flight?.trim() || ac.hex?.slice(-6).toUpperCase() || ac.hex;
-              const alt = ac.alt_baro
-                ? `FL${Math.round(ac.alt_baro / 100)}`
-                : ac.alt_m
-                  ? `FL${Math.round(ac.alt_m / 0.3048 / 100)}`
-                  : "—";
-              const spd = ac.gs ? `${Math.round(ac.gs)}kt` : "—";
-              const hdg = ac.track ? `${Math.round(ac.track)}°` : "";
-              const isSelected = ac.hex === selectedHex;
-              return (
-                <div
-                  key={ac.hex}
-                  ref={(el) => { rowRefs.current[ac.hex] = el; }}
-                  className={`al-row${isSelected ? " selected" : ""}${!isSolved ? " truth-only" : ""}`}
-                  onClick={() => onSelect(ac.hex)}
-                >
-                  <div className="al-indicator" style={{ background: color }} />
-                  <svg
-                    className="al-icon"
-                    viewBox="0 0 32 32"
-                    fill={color}
-                    style={{ transform: `rotate(${ac.track ?? 0}deg)`, width: 13, height: 13, flexShrink: 0 }}
-                  >
-                    <path d={PLANE_PATH}/>
-                  </svg>
-                  <div className="al-info">
-                    <span className="al-callsign">{callsign}</span>
-                    <span className="al-sub">
-                      {isSolved ? (isMultinode ? `Multi·${ac.n_nodes}N` : "ADS-B") : "Truth"}
-                    </span>
-                  </div>
-                  <div className="al-stats">
-                    <span className="al-alt">{alt}</span>
-                    <span className="al-spd">{spd}{hdg ? ` · ${hdg}` : ""}</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-/* ── Aircraft detail side panel ───────────────────────────────── */
-
-function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError }) {
-  if (!ac) return null;
-  const err = computeError(ac.hex, ac);
-  const gtHex = ac.ground_truth_hex || ac.hex;
-  const gtTrail = groundTruth[gtHex];
-  const solvedPts = (trails[ac.hex] || []).length;
-  const truthPts = gtTrail?.length || 0;
-  const gtLast = gtTrail?.length ? gtTrail[gtTrail.length - 1] : null;
-  const altErrFt = gtLast ? Math.abs((ac.alt_baro || 0) - gtLast[2] / 0.3048) : null;
-
-  const isMultinode = ac.multinode;
-  const hasAdsb = ac.type !== "tisb_other" && ac.type !== "multinode_solve";
-  const sourceLabel = isMultinode
-    ? `Multi-node (${ac.n_nodes}N)`
-    : hasAdsb ? "ADS-B" : ac.type || "Unknown";
-  const sourceBadge = isMultinode ? "multinode" : hasAdsb ? "adsb" : "other";
-  const isTruthOnly = !ac.type && !ac.flight;
-
-  return (
-    <div className="detail-panel">
-      <div className="detail-panel-header">
-        <h3>{ac.flight?.trim() || ac.hex}</h3>
-        <button className="close-btn" onClick={onClose} title="Close">&times;</button>
-      </div>
-      <div className="detail-panel-body">
-        <div className="detail-section">
-          <div className="detail-section-title">Identity</div>
-          <div className="detail-field">
-            <span className="detail-label">HEX</span>
-            <span className="detail-hex-badge">{ac.hex}</span>
-          </div>
-          {!isTruthOnly && (
-            <>
-              <div className="detail-field">
-                <span className="detail-label">Callsign</span>
-                <span className="detail-value">{ac.flight?.trim() || "\u2014"}</span>
-              </div>
-              <div className="detail-field">
-                <span className="detail-label">Source</span>
-                <span className={`detail-source-badge ${sourceBadge}`}>{sourceLabel}</span>
-              </div>
-            </>
-          )}
-          {isTruthOnly && (
-            <div className="detail-field">
-              <span className="detail-label">Status</span>
-              <span className="detail-source-badge other">Ground truth only</span>
-            </div>
-          )}
-        </div>
-
-        <div className="detail-section">
-          <div className="detail-section-title">Position</div>
-          <div className="detail-field">
-            <span className="detail-label">Latitude</span>
-            <span className="detail-value">{ac.lat?.toFixed(5) ?? "\u2014"}</span>
-          </div>
-          <div className="detail-field">
-            <span className="detail-label">Longitude</span>
-            <span className="detail-value">{ac.lon?.toFixed(5) ?? "\u2014"}</span>
-          </div>
-          <div className="detail-field">
-            <span className="detail-label">Altitude</span>
-            <span className="detail-value">
-              {ac.alt_baro != null
-                ? `${ac.alt_baro.toLocaleString()} ft`
-                : ac.alt_m != null
-                  ? `${Math.round(ac.alt_m / 0.3048).toLocaleString()} ft`
-                  : "\u2014"}
-            </span>
-          </div>
-          {!isTruthOnly && (
-            <>
-              <div className="detail-field">
-                <span className="detail-label">Speed</span>
-                <span className="detail-value">{ac.gs != null ? `${ac.gs} kts` : "\u2014"}</span>
-              </div>
-              <div className="detail-field">
-                <span className="detail-label">Heading</span>
-                <span className="detail-value">{ac.track != null ? `${ac.track.toFixed(0)}\u00b0` : "\u2014"}</span>
-              </div>
-            </>
-          )}
-        </div>
-
-        {isMultinode && (
-          <div className="detail-section">
-            <div className="detail-section-title">Multi-node</div>
-            <div className="detail-field">
-              <span className="detail-label">Nodes</span>
-              <span className="detail-value">{ac.n_nodes}</span>
-            </div>
-            <div className="detail-field">
-              <span className="detail-label">RMS Delay</span>
-              <span className="detail-value">{ac.rms_delay ?? "\u2014"} \u03bcs</span>
-            </div>
-            <div className="detail-field">
-              <span className="detail-label">RMS Doppler</span>
-              <span className="detail-value">{ac.rms_doppler ?? "\u2014"} Hz</span>
-            </div>
-          </div>
-        )}
-
-        <div className="detail-section">
-          <div className="detail-section-title">Accuracy</div>
-          <div className="detail-field">
-            <span className="detail-label">Solved pts</span>
-            <span className="detail-value">{solvedPts}</span>
-          </div>
-          <div className="detail-field">
-            <span className="detail-label">Truth pts</span>
-            <span className="detail-value">{truthPts}</span>
-          </div>
-          {err !== null && (
-            <div className="detail-field">
-              <span className="detail-label">Pos Error</span>
-              <span className={`detail-value ${err < 2 ? "good" : err < 5 ? "warn" : "bad"}`}>
-                {err.toFixed(2)} km
-              </span>
-            </div>
-          )}
-          {altErrFt !== null && (
-            <div className="detail-field">
-              <span className="detail-label">Alt Error</span>
-              <span className="detail-value">{Math.round(altErrFt)} ft</span>
-            </div>
-          )}
-        </div>
-
-        {isTruthOnly && (
-          <div className="detail-section">
-            <div className="detail-section-title">Trail</div>
-            <div className="detail-field">
-              <span className="detail-label">Points</span>
-              <span className="detail-value">{ac.points || 0}</span>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 /* ── Main component ───────────────────────────────────────────── */
 
 export default function LiveAircraftMap() {
-  const [aircraft, setAircraft] = useState([]);
+  /* ── Data feeds ─────────────────────────────────────────────── */
+  const {
+    aircraft,
+    connected,
+    trailsRef,
+    groundTruthRef,
+    trailTick,
+    historyRef,
+    setPaused: setFeedPaused,
+  } = useAircraftFeed();
+
+  const nodes = useNodes();
+
+  /* ── Local UI state ─────────────────────────────────────────── */
   const [displayAircraft, setDisplayAircraft] = useState([]);
-  const [nodes, setNodes] = useState([]);
   const [showCoverage, setShowCoverage] = useState(false);
   const [showTrails, setShowTrails] = useState(true);
   const [showGroundTruth, setShowGroundTruth] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
-  const [connected, setConnected] = useState(false);
   const [selectedHex, setSelectedHex] = useState(null);
   const [focusNonce, setFocusNonce] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
@@ -584,175 +70,19 @@ export default function LiveAircraftMap() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [viewport, setViewport] = useState(null);
 
-  // Trails accumulated locally — keyed by hex
-  // Each value: [[lat, lon, alt, ts], ...]
-  const trailsRef = useRef({});
-  // Ground truth trails from server WS broadcast — keyed by hex
-  // Each value: [[lat, lon, alt_m, ts], ...]
-  const groundTruthRef = useRef({});
-  // Force re-render when trails update (every WS tick)
-  const [trailTick, setTrailTick] = useState(0);
-
-  const wsRef = useRef(null);
-  const reconnectTimer = useRef(null);
   const animationFrameRef = useRef(null);
   const displayedAircraftRef = useRef({});
-  const pausedRef = useRef(false);
-  const historyRef = useRef([]);
 
-  const matchedTruthHexes = new Set(
-    displayAircraft.map((ac) => ac.ground_truth_hex || ac.hex).filter(Boolean)
-  );
-  const truthOnlyAircraft = Object.entries(groundTruthRef.current)
-    .filter(([hex, positions]) => !matchedTruthHexes.has(hex) && Array.isArray(positions) && positions.length > 0)
-    .map(([hex, positions]) => {
-      const last = positions[positions.length - 1];
-      return {
-        hex,
-        lat: last[0],
-        lon: last[1],
-        alt_m: last[2],
-        points: positions.length,
-      };
-    });
-
-  const debugTruthOnlyAircraft = useMemo(
-    () => (showGroundTruth ? truthOnlyAircraft : []),
-    [showGroundTruth, truthOnlyAircraft]
-  );
-
-  // Fetch nodes for coverage zones
-  useEffect(() => {
-    async function loadNodes() {
-      try {
-        const res = await fetch(`${API_BASE}/radar/analytics`);
-        if (!res.ok) return;
-        const data = await res.json();
-        const nodeList = [];
-        for (const [id, info] of Object.entries(data.nodes || {})) {
-          const da = info.detection_area;
-          if (da) {
-            nodeList.push({
-              node_id: id,
-              rx_lat: da.rx.lat,
-              rx_lon: da.rx.lon,
-              tx_lat: da.tx.lat,
-              tx_lon: da.tx.lon,
-              beam_azimuth_deg: da.beam_azimuth_deg,
-              beam_width_deg: da.beam_width_deg,
-              max_range_km: da.max_range_km,
-            });
-          }
-        }
-        setNodes(nodeList);
-      } catch {
-        /* ignore */
-      }
-    }
-    loadNodes();
-    const interval = setInterval(loadNodes, 30000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // WebSocket connection with reconnect
-  const connectWs = useCallback(() => {
-    if (wsRef.current) return;
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${proto}//${window.location.host}/ws/aircraft`);
-
-    ws.onopen = () => {
-      setConnected(true);
-    };
-
-    ws.onmessage = (evt) => {
-      try {
-        const data = JSON.parse(evt.data);
-        const newAircraft = data.aircraft || [];
-
-        // Buffer history for playback
-        historyRef.current.push({ aircraft: newAircraft, ts: Date.now() });
-        if (historyRef.current.length > MAX_HISTORY) historyRef.current.shift();
-
-        if (!pausedRef.current) setAircraft(newAircraft);
-
-        // Update ground truth from broadcast
-        if (data.ground_truth && typeof data.ground_truth === "object") {
-          groundTruthRef.current = data.ground_truth;
-        }
-
-        // Update trails — prefer server-provided recent_positions, fall back to local accumulation
-        const trails = trailsRef.current;
-        const now = Date.now() / 1000;
-        for (const ac of newAircraft) {
-          if (!ac.lat || !ac.lon) continue;
-          const hex = ac.hex;
-          if (ac.recent_positions && ac.recent_positions.length > 0) {
-            // Merge server history into session history so the full trail stays visible.
-            trails[hex] = mergeTrailPositions(trails[hex] || [], ac.recent_positions);
-          } else {
-            // Accumulate locally
-            const existing = trails[hex] || [];
-            const last = existing[existing.length - 1];
-            if (
-              !last ||
-              Math.abs(last[0] - ac.lat) > 0.00005 ||
-              Math.abs(last[1] - ac.lon) > 0.00005
-            ) {
-              const updated = [
-                ...existing,
-                [ac.lat, ac.lon, ac.alt_baro || 0, now],
-              ];
-              trails[hex] = updated;
-            }
-          }
-        }
-        setTrailTick((t) => t + 1);
-      } catch {
-        /* ignore */
-      }
-    };
-
-    ws.onclose = () => {
-      setConnected(false);
-      wsRef.current = null;
-      reconnectTimer.current = setTimeout(connectWs, 3000);
-    };
-
-    ws.onerror = () => {
-      ws.close();
-    };
-
-    wsRef.current = ws;
-  }, []);
-
-  useEffect(() => {
-    connectWs();
-    return () => {
-      clearTimeout(reconnectTimer.current);
-      cancelAnimationFrame(animationFrameRef.current);
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-    };
-  }, [connectWs]);
-
+  /* ── Animation: smoothly interpolate aircraft positions ───── */
   useEffect(() => {
     cancelAnimationFrame(animationFrameRef.current);
 
     if (!aircraft.length) {
       const existing = Object.values(displayedAircraftRef.current || {});
-      if (!existing.length) {
-        setDisplayAircraft([]);
-        return;
-      }
+      if (!existing.length) { setDisplayAircraft([]); return; }
 
       const now = Date.now();
-      const fresh = existing.filter((ac) => {
-        const updatedAt = ac._updatedAt ?? now;
-        return now - updatedAt < STALE_AIRCRAFT_MS;
-      });
-
+      const fresh = existing.filter((ac) => now - (ac._updatedAt ?? now) < STALE_AIRCRAFT_MS);
       displayedAircraftRef.current = Object.fromEntries(fresh.map((ac) => [ac.hex, ac]));
       setDisplayAircraft(fresh);
       return;
@@ -761,12 +91,13 @@ export default function LiveAircraftMap() {
     const startByHex = displayedAircraftRef.current;
     const startTs = performance.now();
     const nextByHex = Object.fromEntries(
-      aircraft.map((ac) => [ac.hex, { ...ac, _updatedAt: Date.now() }])
+      aircraft.map((ac) => [ac.hex, { ...ac, _updatedAt: Date.now() }]),
     );
 
     const animate = (now) => {
       const progress = Math.min(1, (now - startTs) / ANIMATION_MS);
       const eased = easeInOutCubic(progress);
+
       const nextAircraft = Object.values(nextByHex).map((ac) => {
         const start = startByHex[ac.hex] || ac;
         const startLat = start.lat ?? ac.lat;
@@ -781,118 +112,71 @@ export default function LiveAircraftMap() {
 
       Object.values(startByHex).forEach((ac) => {
         if (nextByHex[ac.hex]) return;
-        const updatedAt = ac._updatedAt ?? 0;
-        if (Date.now() - updatedAt < STALE_AIRCRAFT_MS) {
-          nextAircraft.push(ac);
-        }
+        if (Date.now() - (ac._updatedAt ?? 0) < STALE_AIRCRAFT_MS) nextAircraft.push(ac);
       });
 
       displayedAircraftRef.current = Object.fromEntries(nextAircraft.map((ac) => [ac.hex, ac]));
       setDisplayAircraft(nextAircraft);
-      if (progress < 1) {
-        animationFrameRef.current = requestAnimationFrame(animate);
-      }
+      if (progress < 1) animationFrameRef.current = requestAnimationFrame(animate);
     };
 
     animationFrameRef.current = requestAnimationFrame(animate);
-
     return () => cancelAnimationFrame(animationFrameRef.current);
   }, [aircraft]);
 
-  // Fallback: poll if WebSocket not available
-  useEffect(() => {
-    if (connected) return;
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch(`${API_BASE}/radar/data/aircraft.json`);
-        if (res.ok) {
-          const data = await res.json();
-          const newAircraft = data.aircraft || [];
-          historyRef.current.push({ aircraft: newAircraft, ts: Date.now() });
-          if (historyRef.current.length > MAX_HISTORY) historyRef.current.shift();
-          if (!pausedRef.current) setAircraft(newAircraft);
-          if (data.ground_truth) groundTruthRef.current = data.ground_truth;
-          // Accumulate trails locally during polling
-          const trails = trailsRef.current;
-          const now = Date.now() / 1000;
-          for (const ac of newAircraft) {
-            if (!ac.lat || !ac.lon) continue;
-            if (ac.recent_positions && ac.recent_positions.length > 0) {
-              trails[ac.hex] = mergeTrailPositions(trails[ac.hex] || [], ac.recent_positions);
-            } else {
-              const existing = trails[ac.hex] || [];
-              const last = existing[existing.length - 1];
-              if (!last || Math.abs(last[0] - ac.lat) > 0.00005 || Math.abs(last[1] - ac.lon) > 0.00005) {
-                trails[ac.hex] = [...existing, [ac.lat, ac.lon, ac.alt_baro || 0, now]];
-              }
-            }
-          }
-          setTrailTick((t) => t + 1);
-        }
-      } catch {
-        /* ignore */
-      }
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [connected]);
+  /* ── Derived: truth-only aircraft ───────────────────────────── */
+  const matchedTruthHexes = new Set(
+    displayAircraft.map((ac) => ac.ground_truth_hex || ac.hex).filter(Boolean),
+  );
 
-  // Compute position error for a given hex (solved vs ground truth)
-  function computeError(hex, ac) {
-    const gtHex = ac.ground_truth_hex || hex;
-    const gtTrail = groundTruthRef.current[gtHex];
-    if (!gtTrail || !gtTrail.length) return null;
-    const last = gtTrail[gtTrail.length - 1]; // [lat, lon, alt_m, ts]
-    const dlat = (ac.lat - last[0]) * 111.0;
-    const dlon = (ac.lon - last[1]) * 111.0 * Math.cos((ac.lat * Math.PI) / 180);
-    return Math.sqrt(dlat * dlat + dlon * dlon);
-  }
+  const truthOnlyAircraft = Object.entries(groundTruthRef.current)
+    .filter(([hex, positions]) => !matchedTruthHexes.has(hex) && Array.isArray(positions) && positions.length > 0)
+    .map(([hex, positions]) => {
+      const last = positions[positions.length - 1];
+      return { hex, lat: last[0], lon: last[1], alt_m: last[2], points: positions.length };
+    });
 
-  // Search filter
+  const debugTruthOnlyAircraft = useMemo(
+    () => (showGroundTruth ? truthOnlyAircraft : []),
+    [showGroundTruth, truthOnlyAircraft],
+  );
+
+  /* ── Derived: viewport culling ──────────────────────────────── */
   const filteredAircraft = useMemo(() => {
     if (!searchQuery.trim()) return displayAircraft;
     const q = searchQuery.trim().toLowerCase();
     return displayAircraft.filter(
-      (ac) =>
-        (ac.hex || "").toLowerCase().includes(q) ||
-        (ac.flight || "").toLowerCase().includes(q)
+      (ac) => (ac.hex || "").toLowerCase().includes(q) || (ac.flight || "").toLowerCase().includes(q),
     );
   }, [displayAircraft, searchQuery]);
 
   const visibleAircraft = useMemo(
-    () => filteredAircraft.filter(
-      (ac) => ac.hex === selectedHex || isPointInViewport(ac.lat, ac.lon, viewport)
-    ),
-    [filteredAircraft, selectedHex, viewport]
+    () => filteredAircraft.filter((ac) => ac.hex === selectedHex || isPointInViewport(ac.lat, ac.lon, viewport)),
+    [filteredAircraft, selectedHex, viewport],
   );
 
   const visibleTruthOnlyAircraft = useMemo(
-    () => debugTruthOnlyAircraft.filter(
-      (ac) => ac.hex === selectedHex || isPointInViewport(ac.lat, ac.lon, viewport)
-    ),
-    [debugTruthOnlyAircraft, selectedHex, viewport]
+    () => debugTruthOnlyAircraft.filter((ac) => ac.hex === selectedHex || isPointInViewport(ac.lat, ac.lon, viewport)),
+    [debugTruthOnlyAircraft, selectedHex, viewport],
   );
 
   const visibleNodes = useMemo(
     () => nodes.filter((node) => isPointInViewport(node.rx_lat, node.rx_lon, viewport, 3)),
-    [nodes, viewport]
+    [nodes, viewport],
   );
 
-  const visibleTrailEntries = useMemo(
-    () => {
-      if (!selectedHex) return [];
-      return Object.entries(trailsRef.current).filter(([hex, positions]) => (
-        hex === selectedHex
-        && positions.some((position) => isPointInViewport(position[0], position[1], viewport))
-      ));
-    },
-    [selectedHex, trailTick, viewport]
-  );
+  /* ── Derived: trail for selected aircraft ───────────────────── */
+  const visibleTrailEntries = useMemo(() => {
+    if (!selectedHex) return [];
+    return Object.entries(trailsRef.current).filter(
+      ([hex, positions]) => hex === selectedHex && positions.some((p) => isPointInViewport(p[0], p[1], viewport)),
+    );
+  }, [selectedHex, trailTick, viewport]);
 
   const selectedTrailPositions = useMemo(() => {
     if (!visibleTrailEntries.length) return [];
     const [, positions] = visibleTrailEntries[0];
-    const sampled = sampleTrailPositions(positions);
-    const pts = sampled.map((p) => [p[0], p[1]]);
+    const pts = sampleTrailPositions(positions).map((p) => [p[0], p[1]]);
     const animated = selectedHex ? displayedAircraftRef.current[selectedHex] : null;
     if (animated?.lat && animated?.lon) {
       const last = pts[pts.length - 1];
@@ -904,39 +188,28 @@ export default function LiveAircraftMap() {
   }, [selectedHex, visibleTrailEntries]);
 
   const selectedAc = selectedHex
-    ? displayAircraft.find((ac) => ac.hex === selectedHex) ||
-      debugTruthOnlyAircraft.find((ac) => ac.hex === selectedHex)
+    ? displayAircraft.find((ac) => ac.hex === selectedHex) || debugTruthOnlyAircraft.find((ac) => ac.hex === selectedHex)
     : null;
 
+  /* ── Side-effects ───────────────────────────────────────────── */
   useEffect(() => {
     if (!showGroundTruth && selectedHex && truthOnlyAircraft.some((ac) => ac.hex === selectedHex)) {
       setSelectedHex(null);
     }
   }, [showGroundTruth, selectedHex, truthOnlyAircraft]);
 
-  const handleViewportChange = useCallback((nextViewport) => {
+  /* ── Callbacks ──────────────────────────────────────────────── */
+  const handleViewportChange = useCallback((next) => {
     setViewport((prev) => {
-      if (
-        prev
-        && Math.abs(prev.north - nextViewport.north) < 0.01
-        && Math.abs(prev.south - nextViewport.south) < 0.01
-        && Math.abs(prev.east - nextViewport.east) < 0.01
-        && Math.abs(prev.west - nextViewport.west) < 0.01
-      ) {
-        return prev;
-      }
-      return nextViewport;
+      if (prev && Math.abs(prev.north - next.north) < 0.01 && Math.abs(prev.south - next.south) < 0.01 && Math.abs(prev.east - next.east) < 0.01 && Math.abs(prev.west - next.west) < 0.01) return prev;
+      return next;
     });
   }, []);
 
   function handleTogglePause() {
-    if (paused) {
-      setPaused(false);
-      pausedRef.current = false;
-    } else {
-      setPaused(true);
-      pausedRef.current = true;
-    }
+    const next = !paused;
+    setPaused(next);
+    setFeedPaused(next);
   }
 
   function handleHistorySeek(index) {
@@ -945,54 +218,51 @@ export default function LiveAircraftMap() {
     }
   }
 
+  function handleSelectAircraft(hex) {
+    setSelectedHex((prev) => (prev === hex ? null : hex));
+    setFocusNonce((n) => n + 1);
+  }
+
+  function computeError(hex, ac) {
+    const gtHex = ac.ground_truth_hex || hex;
+    const gtTrail = groundTruthRef.current[gtHex];
+    if (!gtTrail || !gtTrail.length) return null;
+    const last = gtTrail[gtTrail.length - 1];
+    const dlat = (ac.lat - last[0]) * 111.0;
+    const dlon = (ac.lon - last[1]) * 111.0 * Math.cos((ac.lat * Math.PI) / 180);
+    return Math.sqrt(dlat * dlat + dlon * dlon);
+  }
+
   function formatSecondsAgo(ts) {
     const sec = Math.round((Date.now() - ts) / 1000);
     return sec <= 0 ? "now" : `-${sec}s`;
   }
 
+  /* ── Render ─────────────────────────────────────────────────── */
   return (
     <div className="live-map-container">
-      {/* ── Top toolbar ── */}
-      <div className="live-map-toolbar">
-        <span className={`connection-badge ${connected ? "connected" : "disconnected"}`}>
-          {connected ? (paused ? "PAUSED" : "LIVE") : "POLL"}
-        </span>
-        <span className="aircraft-count">
-          {displayAircraft.length + debugTruthOnlyAircraft.length} aircraft
-        </span>
+      <Toolbar
+        connected={connected}
+        paused={paused}
+        aircraftCount={displayAircraft.length + debugTruthOnlyAircraft.length}
+        showCoverage={showCoverage}
+        showLabels={showLabels}
+        showTrails={showTrails}
+        showGroundTruth={showGroundTruth}
+        onToggleCoverage={() => setShowCoverage((v) => !v)}
+        onToggleLabels={() => setShowLabels((v) => !v)}
+        onToggleTrails={() => setShowTrails((v) => !v)}
+        onToggleGroundTruth={() => setShowGroundTruth((v) => !v)}
+        onTogglePause={handleTogglePause}
+        onFit={() => setFocusNonce((n) => n + 1)}
+      />
 
-        <div className="toolbar-separator" />
-
-        <button className={`toggle-btn${showCoverage ? " active" : ""}`} onClick={() => setShowCoverage((v) => !v)}>Coverage</button>
-        <button className={`toggle-btn${showLabels ? " active" : ""}`} onClick={() => setShowLabels((v) => !v)}>Labels</button>
-        <button className={`toggle-btn${showTrails ? " active" : ""}`} onClick={() => setShowTrails((v) => !v)}>Trails</button>
-        <button className={`toggle-btn${showGroundTruth ? " active" : ""}`} onClick={() => setShowGroundTruth((v) => !v)}>Debug Truth</button>
-
-        <div className="toolbar-separator" />
-
-        <button className={`toggle-btn${paused ? " active" : ""}`} onClick={handleTogglePause}>
-          {paused ? "▶ Resume" : "⏸ Pause"}
-        </button>
-        <button className="toggle-btn" onClick={() => setFocusNonce((n) => n + 1)}>◎ Fit</button>
-
-        <span className="map-legend">
-          <span className="legend-item"><span className="legend-dot" style={{ background: "#38bdf8" }} /> ADS-B</span>
-          <span className="legend-item"><span className="legend-dot" style={{ background: "#a78bfa" }} /> Multi</span>
-          {showGroundTruth && <span className="legend-item"><span className="legend-dot" style={{ background: "#2dd4bf" }} /> Truth</span>}
-          <span className="legend-item"><span className="legend-dot" style={{ background: "#ef4444" }} /> Node</span>
-        </span>
-      </div>
-
-      {/* ── Body: sidebar + map ── */}
       <div className="live-map-body">
         <AircraftListPanel
           allAircraft={displayAircraft}
           truthOnly={debugTruthOnlyAircraft}
           selectedHex={selectedHex}
-          onSelect={(hex) => {
-            setSelectedHex((prev) => (prev === hex ? null : hex));
-            setFocusNonce((n) => n + 1);
-          }}
+          onSelect={handleSelectAircraft}
           collapsed={sidebarCollapsed}
           onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
           searchQuery={searchQuery}
@@ -1000,24 +270,14 @@ export default function LiveAircraftMap() {
         />
 
         <div className="live-map-area">
-          <MapContainer
-            center={[34.0, -84.5]}
-            zoom={8}
-            style={{ height: "100%", width: "100%" }}
-          >
+          <MapContainer center={[34.0, -84.5]} zoom={8} style={{ height: "100%", width: "100%" }}>
             <TileLayer
               attribution='&copy; <a href="https://carto.com">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
               url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
             />
 
             <ViewportTracker onChange={handleViewportChange} />
-
-            <FitBounds
-              aircraft={displayAircraft}
-              nodes={nodes}
-              selectedHex={selectedHex}
-              focusNonce={focusNonce}
-            />
+            <FitBounds aircraft={displayAircraft} nodes={nodes} selectedHex={selectedHex} focusNonce={focusNonce} />
 
             {/* Coverage zones */}
             {showCoverage && visibleNodes.map((n) => (
@@ -1033,13 +293,13 @@ export default function LiveAircraftMap() {
               <Marker key={`node-${n.node_id}`} position={[n.rx_lat, n.rx_lon]} icon={nodeIcon}>
                 <Popup>
                   <strong>{n.node_id}</strong><br />
-                  Beam: {n.beam_azimuth_deg}° / {n.beam_width_deg}°<br />
+                  Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
                   Range: {n.max_range_km} km
                 </Popup>
               </Marker>
             ))}
 
-            {/* Selected solved trail — gradient fade from tail to tip */}
+            {/* Selected trail — gradient fade */}
             {showTrails && selectedTrailPositions.length >= 2 &&
               buildTrailSegments(selectedTrailPositions).map((seg, i) => (
                 <Polyline
@@ -1057,14 +317,9 @@ export default function LiveAircraftMap() {
                   key={ac.hex}
                   position={[ac.lat, ac.lon]}
                   icon={makeAircraftIcon(ac, showLabels, ac.hex === selectedHex)}
-                  eventHandlers={{
-                    click: () => {
-                      setSelectedHex((prev) => (prev === ac.hex ? null : ac.hex));
-                      setFocusNonce((n) => n + 1);
-                    },
-                  }}
+                  eventHandlers={{ click: () => handleSelectAircraft(ac.hex) }}
                 />
-              ) : null
+              ) : null,
             )}
 
             {/* Ground-truth-only markers */}
@@ -1074,17 +329,11 @@ export default function LiveAircraftMap() {
                 center={[ac.lat, ac.lon]}
                 radius={6}
                 pathOptions={{ color: "#67e8f9", weight: 2, fillColor: "#22d3ee", fillOpacity: 0.35 }}
-                eventHandlers={{
-                  click: () => {
-                    setSelectedHex((prev) => (prev === ac.hex ? null : ac.hex));
-                    setFocusNonce((n) => n + 1);
-                  },
-                }}
+                eventHandlers={{ click: () => handleSelectAircraft(ac.hex) }}
               />
             ))}
           </MapContainer>
 
-          {/* Detail panel (absolute inside map area) */}
           {selectedAc && (
             <AircraftDetailPanel
               ac={selectedAc}
@@ -1095,23 +344,12 @@ export default function LiveAircraftMap() {
             />
           )}
 
-          {/* Playback bar when paused */}
           {paused && historyRef.current.length > 0 && (
-            <div className="playback-bar">
-              <span className="playback-time">
-                {formatSecondsAgo(historyRef.current[0].ts)}
-              </span>
-              <input
-                type="range"
-                min={0}
-                max={historyRef.current.length - 1}
-                defaultValue={historyRef.current.length - 1}
-                onChange={(e) => handleHistorySeek(Number(e.target.value))}
-              />
-              <span className="playback-time">
-                {formatSecondsAgo(historyRef.current[historyRef.current.length - 1].ts)}
-              </span>
-            </div>
+            <PlaybackBar
+              history={historyRef.current}
+              onSeek={handleHistorySeek}
+              formatSecondsAgo={formatSecondsAgo}
+            />
           )}
         </div>
       </div>

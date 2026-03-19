@@ -24,6 +24,16 @@
   min-width: 0;
 }
 
+/* Subtle dark tint over the map tiles — makes the light Voyager map
+   feel more premium without going full dark-mode. */
+.live-map-area .leaflet-container {
+  background: #1a2744;
+}
+.live-map-area .leaflet-tile-pane {
+  opacity: 0.82;
+  filter: saturate(0.85) brightness(0.78);
+}
+
 /* ── Left aircraft list sidebar ───────────────────────────────── */
 .aircraft-list-panel {
   width: 280px;
