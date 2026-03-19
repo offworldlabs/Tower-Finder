@@ -6,17 +6,17 @@ HOST="${HOST:-localhost}"
 PORT="${PORT:-3012}"
 VALIDATION_URL="${VALIDATION_URL:-https://localhost}"
 
-# Demo-oriented defaults: 18 nodes is the empirical ceiling for full-pipeline
-# processing on a 2-core droplet with 4 parallel frame workers (40 fps budget).
-NODES="${NODES:-18}"
+# Demo-oriented defaults: 16 nodes sits right at the empirical throughput ceiling
+# (~32 fps) for full-pipeline on a 2-core droplet with 4 parallel frame workers.
+NODES="${NODES:-16}"
 MODE="${MODE:-adsb}"
 INTERVAL="${INTERVAL:-0.5}"
 TIME_SCALE="${TIME_SCALE:-4.0}"
-MIN_AIRCRAFT="${MIN_AIRCRAFT:-12}"
-MAX_AIRCRAFT="${MAX_AIRCRAFT:-18}"
+MIN_AIRCRAFT="${MIN_AIRCRAFT:-10}"
+MAX_AIRCRAFT="${MAX_AIRCRAFT:-16}"
 BEAM_WIDTH_DEG="${BEAM_WIDTH_DEG:-120}"
 MAX_RANGE_KM="${MAX_RANGE_KM:-140}"
-CONCURRENCY="${CONCURRENCY:-9}"
+CONCURRENCY="${CONCURRENCY:-8}"
 CONNECT_RETRIES="${CONNECT_RETRIES:-5}"
 
 LOG_FILE="${LOG_FILE:-/tmp/fleet.log}"
