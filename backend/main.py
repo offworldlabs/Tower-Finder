@@ -25,6 +25,10 @@ from node_analytics import NodeAnalyticsManager, AdsReportEntry
 from inter_node_association import InterNodeAssociator
 from retina_geolocator.multinode_solver import solve_multinode
 from storage import archive_detections, list_archived_files, read_archived_file
+from chain_of_custody.crypto_backend import SignatureVerifier
+from chain_of_custody.packet_signer import PacketVerifier, canonicalize
+from chain_of_custody.hash_chain import HashChainVerifier
+from chain_of_custody.models import SignedPacket, HashChainEntry, NodeIdentity
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -39,6 +43,12 @@ _node_associator = InterNodeAssociator()
 _multinode_tracks: dict[str, dict] = {}  # key → solver result for multi-node geolocations
 _adsb_aircraft: dict[str, dict] = {}     # hex → latest ADS-B position from node-reported frames
 _node_pipelines: dict[str, PassiveRadarPipeline] = {}  # node_id → per-node tracker pipeline
+
+# ── Chain of Custody: server-side signature verification ──────────────────────
+_sig_verifier = SignatureVerifier()
+_node_identities: dict[str, NodeIdentity] = {}  # node_id → NodeIdentity
+_chain_entries: dict[str, list[dict]] = {}       # node_id → list of chain entry dicts (append-only)
+_iq_commitments: dict[str, list[dict]] = {}      # node_id → list of IQ capture metadata
 
 # External ADS-B truth source (OpenSky Network)
 # Cached positions: {icao_hex: {lat, lon, alt_m, timestamp}}
@@ -262,6 +272,85 @@ async def _handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Strea
                     handshake_complete = True
                     continue
 
+                # ── REGISTER_KEY (chain of custody) ────────────────────
+                if msg_type == "REGISTER_KEY":
+                    key_node_id = msg.get("node_id", node_id)
+                    pub_key_pem = msg.get("public_key_pem", "")
+                    fingerprint = msg.get("fingerprint", "")
+                    serial = msg.get("serial_number", "")
+                    signing_mode = msg.get("signing_mode", "software")
+                    if pub_key_pem and key_node_id:
+                        identity = NodeIdentity(
+                            node_id=key_node_id,
+                            public_key_pem=pub_key_pem,
+                            public_key_fingerprint=fingerprint,
+                            serial_number=serial,
+                            signing_mode=signing_mode,
+                            registered_at=datetime.now(timezone.utc).isoformat(),
+                        )
+                        _node_identities[key_node_id] = identity
+                        _sig_verifier.register_key(key_node_id, pub_key_pem)
+                        logging.info("Chain of custody: registered key for %s (mode=%s, fp=%s)",
+                                     key_node_id, signing_mode, fingerprint[:12])
+                        await _send_msg(writer, {
+                            "type": "KEY_ACK",
+                            "node_id": key_node_id,
+                            "fingerprint": fingerprint,
+                            "status": "registered",
+                        })
+                    continue
+
+                # ── CHAIN_ENTRY (hourly hash chain) ────────────────────
+                if msg_type == "CHAIN_ENTRY":
+                    entry_data = msg.get("entry", {})
+                    ce_node_id = entry_data.get("node_id", node_id)
+                    if ce_node_id:
+                        if ce_node_id not in _chain_entries:
+                            _chain_entries[ce_node_id] = []
+                        # Verify signature if key is registered
+                        verified = False
+                        if ce_node_id in _node_identities:
+                            try:
+                                entry_obj = HashChainEntry.from_dict(entry_data)
+                                verifier = HashChainVerifier(lambda nid: _sig_verifier.get_key(nid))
+                                valid, reason = verifier.verify_entry(entry_obj)
+                                verified = valid
+                                if not valid:
+                                    logging.warning("Chain entry verification failed for %s: %s", ce_node_id, reason)
+                            except Exception as exc:
+                                logging.warning("Chain entry parse error for %s: %s", ce_node_id, exc)
+                        entry_data["_verified"] = verified
+                        entry_data["_received_at"] = datetime.now(timezone.utc).isoformat()
+                        _chain_entries[ce_node_id].append(entry_data)
+                        logging.info("Chain entry received from %s (hour=%s, verified=%s)",
+                                     ce_node_id, entry_data.get("hour_utc"), verified)
+                        await _send_msg(writer, {
+                            "type": "CHAIN_ENTRY_ACK",
+                            "node_id": ce_node_id,
+                            "entry_hash": entry_data.get("entry_hash", ""),
+                            "verified": verified,
+                        })
+                    continue
+
+                # ── IQ_COMMITMENT (IQ capture metadata) ────────────────
+                if msg_type == "IQ_COMMITMENT":
+                    iq_data = msg.get("capture", {})
+                    iq_node_id = iq_data.get("node_id", node_id)
+                    if iq_node_id:
+                        if iq_node_id not in _iq_commitments:
+                            _iq_commitments[iq_node_id] = []
+                        iq_data["_received_at"] = datetime.now(timezone.utc).isoformat()
+                        _iq_commitments[iq_node_id].append(iq_data)
+                        logging.info("IQ commitment from %s (capture=%s, hash=%s...)",
+                                     iq_node_id, iq_data.get("capture_id"), iq_data.get("iq_hash", "")[:12])
+                        await _send_msg(writer, {
+                            "type": "IQ_COMMITMENT_ACK",
+                            "node_id": iq_node_id,
+                            "capture_id": iq_data.get("capture_id", ""),
+                            "status": "committed",
+                        })
+                    continue
+
                 # ── HEARTBEAT ──────────────────────────────────────────
                 if msg_type == "HEARTBEAT":
                     hb_node_id = msg.get("node_id", node_id)
@@ -283,6 +372,21 @@ async def _handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Strea
                 # ── DETECTION ──────────────────────────────────────────
                 if msg_type == "DETECTION":
                     frame = msg.get("data", msg)
+                    # Check for signed packet envelope
+                    if "signature" in frame and "payload_hash" in frame:
+                        # Signed detection — verify before processing
+                        det_node_id = frame.get("node_id", node_id)
+                        sig_valid = False
+                        if det_node_id in _node_identities:
+                            sig_valid = _sig_verifier.verify_packet(
+                                det_node_id, frame["payload_hash"], frame["signature"]
+                            )
+                        frame["_signing_mode"] = frame.get("signing_mode", "unknown")
+                        frame["_signature_valid"] = sig_valid
+                        if not sig_valid and det_node_id in _node_identities:
+                            logging.warning("Invalid signature on detection from %s", det_node_id)
+                    if "timestamp" not in frame and "timestamp_ms" in frame:
+                        frame["timestamp"] = frame["timestamp_ms"]
                     if "timestamp" not in frame:
                         continue
                     if node_id:
@@ -1346,6 +1450,12 @@ async def test_network_dashboard():
             "websocket_clients": ws_clients,
             "external_adsb_cached": ext_adsb,
         },
+        "chain_of_custody": {
+            "registered_keys": len(_node_identities),
+            "chain_entries_total": sum(len(e) for e in _chain_entries.values()),
+            "iq_commitments_total": sum(len(c) for c in _iq_commitments.values()),
+            "nodes_with_chains": len(_chain_entries),
+        },
         "subsystem_health": {
             "tcp_server": "ok",
             "radar_pipeline": "ok" if hasattr(_radar_pipeline, 'tracker') else "error",
@@ -1354,6 +1464,7 @@ async def test_network_dashboard():
             "data_archival": "ok",  # always available (local fallback)
             "websocket_broadcast": "ok" if ws_clients >= 0 else "error",
             "aircraft_feed": "ok" if n_aircraft >= 0 else "error",
+            "chain_of_custody": "ok" if len(_node_identities) > 0 or total_nodes == 0 else "waiting",
         },
     }
 
@@ -1457,3 +1568,194 @@ async def validate_ground_truth(body: dict = Body(...)):
         "matches": matches[:50],  # limit response size
         "unmatched_ids": unmatched_truth[:20],
     }
+
+
+# ── Chain of Custody API Endpoints ───────────────────────────────────────────
+
+@app.post("/api/custody/register")
+async def custody_register_node(
+    body: dict = Body(...),
+    x_api_key: str = Header(default="", alias="X-API-Key"),
+):
+    """Register a node's public key for chain of custody verification.
+
+    Expected body: {
+        "node_id": "syn-...",
+        "public_key_pem": "-----BEGIN PUBLIC KEY-----\n...",
+        "fingerprint": "abcdef0123456789",
+        "serial_number": "SYN-...",
+        "signing_mode": "software"
+    }
+    """
+    if RADAR_API_KEY and x_api_key != RADAR_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
+
+    node_id = body.get("node_id", "")
+    pub_key_pem = body.get("public_key_pem", "")
+    fingerprint = body.get("fingerprint", "")
+
+    if not node_id or not pub_key_pem:
+        raise HTTPException(status_code=400, detail="node_id and public_key_pem required")
+
+    identity = NodeIdentity(
+        node_id=node_id,
+        public_key_pem=pub_key_pem,
+        public_key_fingerprint=fingerprint,
+        serial_number=body.get("serial_number", ""),
+        signing_mode=body.get("signing_mode", "software"),
+        registered_at=datetime.now(timezone.utc).isoformat(),
+    )
+    _node_identities[node_id] = identity
+    _sig_verifier.register_key(node_id, pub_key_pem)
+
+    logging.info("Chain of custody: HTTP registered key for %s (mode=%s)", node_id, identity.signing_mode)
+
+    return {
+        "status": "registered",
+        "node_id": node_id,
+        "fingerprint": fingerprint,
+        "signing_mode": identity.signing_mode,
+    }
+
+
+@app.post("/api/custody/chain-entry")
+async def custody_submit_chain_entry(
+    body: dict = Body(...),
+    x_api_key: str = Header(default="", alias="X-API-Key"),
+):
+    """Submit an hourly hash chain entry for verification and storage.
+
+    Expected body: HashChainEntry fields (see models.py).
+    """
+    if RADAR_API_KEY and x_api_key != RADAR_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
+
+    node_id = body.get("node_id", "")
+    if not node_id:
+        raise HTTPException(status_code=400, detail="node_id required")
+
+    if node_id not in _chain_entries:
+        _chain_entries[node_id] = []
+
+    verified = False
+    reason = "no key registered"
+    if node_id in _node_identities:
+        try:
+            entry_obj = HashChainEntry.from_dict(body)
+            verifier = HashChainVerifier(lambda nid: _sig_verifier.get_key(nid))
+            verified, reason = verifier.verify_entry(entry_obj)
+        except Exception as exc:
+            reason = str(exc)
+
+    body["_verified"] = verified
+    body["_received_at"] = datetime.now(timezone.utc).isoformat()
+    _chain_entries[node_id].append(body)
+
+    return {
+        "status": "stored",
+        "node_id": node_id,
+        "entry_hash": body.get("entry_hash", ""),
+        "verified": verified,
+        "reason": reason,
+    }
+
+
+@app.post("/api/custody/iq-commitment")
+async def custody_iq_commitment(
+    body: dict = Body(...),
+    x_api_key: str = Header(default="", alias="X-API-Key"),
+):
+    """Submit an IQ capture commitment (hash + signature + TSA token).
+
+    This must be received BEFORE the IQ data upload.
+    """
+    if RADAR_API_KEY and x_api_key != RADAR_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
+
+    node_id = body.get("node_id", "")
+    if not node_id:
+        raise HTTPException(status_code=400, detail="node_id required")
+
+    if node_id not in _iq_commitments:
+        _iq_commitments[node_id] = []
+
+    body["_received_at"] = datetime.now(timezone.utc).isoformat()
+    _iq_commitments[node_id].append(body)
+
+    return {
+        "status": "committed",
+        "node_id": node_id,
+        "capture_id": body.get("capture_id", ""),
+    }
+
+
+@app.get("/api/custody/status")
+async def custody_status():
+    """Return chain of custody system status."""
+    return {
+        "registered_nodes": len(_node_identities),
+        "node_keys": {
+            nid: {
+                "fingerprint": ident.public_key_fingerprint,
+                "signing_mode": ident.signing_mode,
+                "serial_number": ident.serial_number,
+                "registered_at": ident.registered_at,
+            }
+            for nid, ident in _node_identities.items()
+        },
+        "chain_entries": {
+            nid: {
+                "count": len(entries),
+                "latest_hour": entries[-1].get("hour_utc") if entries else None,
+                "latest_verified": entries[-1].get("_verified") if entries else None,
+            }
+            for nid, entries in _chain_entries.items()
+        },
+        "iq_commitments": {
+            nid: len(captures) for nid, captures in _iq_commitments.items()
+        },
+    }
+
+
+@app.get("/api/custody/chain/{node_id}")
+async def custody_node_chain(node_id: str):
+    """Return the full hash chain for a specific node."""
+    entries = _chain_entries.get(node_id, [])
+    if not entries:
+        raise HTTPException(status_code=404, detail=f"No chain entries for node {node_id}")
+
+    identity = _node_identities.get(node_id)
+    return {
+        "node_id": node_id,
+        "identity": identity.to_dict() if identity else None,
+        "chain_length": len(entries),
+        "entries": entries,
+    }
+
+
+@app.get("/api/custody/verify/{node_id}")
+async def custody_verify_chain(node_id: str):
+    """Verify the complete hash chain for a node.
+
+    Checks chain linkage, entry hashes, and signatures.
+    """
+    entries = _chain_entries.get(node_id, [])
+    if not entries:
+        raise HTTPException(status_code=404, detail=f"No chain entries for node {node_id}")
+
+    if node_id not in _node_identities:
+        raise HTTPException(status_code=400, detail=f"No public key registered for {node_id}")
+
+    try:
+        entry_objs = [HashChainEntry.from_dict(e) for e in entries]
+        verifier = HashChainVerifier(lambda nid: _sig_verifier.get_key(nid))
+        valid, issues = verifier.verify_chain(entry_objs)
+        return {
+            "node_id": node_id,
+            "chain_length": len(entries),
+            "valid": valid,
+            "issues": issues,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Verification error: {exc}")
+

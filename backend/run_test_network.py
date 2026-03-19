@@ -43,6 +43,8 @@ sys.stdout.reconfigure(line_buffering=True)
 sys.path.insert(0, os.path.dirname(__file__))
 
 from simulation_world import SimulationWorld, NodeConfig
+from chain_of_custody.crypto_backend import SoftwareCryptoBackend
+from chain_of_custody.packet_signer import PacketSigner
 
 # Max concurrent HTTP posts (avoids overwhelming server / OS fd limits)
 CONCURRENCY = 20
@@ -65,6 +67,7 @@ async def _post_node(
     api_key: str,
     node_id: str,
     frame: dict,
+    signer: PacketSigner | None = None,
 ) -> tuple[str, bool, int]:
     """POST one frame for one node.  Returns (node_id, success, n_tracks)."""
     if not frame.get("delay"):
@@ -74,10 +77,18 @@ async def _post_node(
     if api_key:
         headers["X-API-Key"] = api_key
 
+    payload = {"node_id": node_id, "frames": [frame]}
+    if signer:
+        signed = signer.sign_frame(frame)
+        payload["signature"] = signed.signature
+        payload["payload_hash"] = signed.payload_hash
+        payload["signing_mode"] = signed.signing_mode
+        payload["public_key_fingerprint"] = signed.public_key_fingerprint
+
     try:
         resp = await client.post(
             url,
-            json={"node_id": node_id, "frames": [frame]},
+            json=payload,
             headers=headers,
             timeout=15.0,
         )
@@ -141,6 +152,23 @@ async def run(
         )
         world.add_node(cfg)
 
+    # ── Chain of Custody: per-node crypto + signers ──────────────────────────
+    node_signers: dict[str, PacketSigner] = {}
+    node_pubkeys: dict[str, dict] = {}  # node_id → {public_key_pem, fingerprint, ...}
+    for nd in node_dicts:
+        nid = nd["node_id"]
+        key_dir = os.path.join(os.path.dirname(__file__), "coverage_data", "keys", nid)
+        os.makedirs(key_dir, exist_ok=True)
+        crypto = SoftwareCryptoBackend(key_file=os.path.join(key_dir, "synthetic_key.json"))
+        node_signers[nid] = PacketSigner(nid, crypto)
+        node_pubkeys[nid] = {
+            "node_id": nid,
+            "public_key_pem": crypto.get_public_key_pem(),
+            "fingerprint": crypto.get_public_key_fingerprint(),
+            "serial_number": crypto.get_serial_number(),
+            "signing_mode": crypto.signing_mode,
+        }
+
     # ── Stats ─────────────────────────────────────────────────────────────────
     stats = {
         "steps": 0,
@@ -171,6 +199,23 @@ async def run(
     bulk_url = f"{server.rstrip('/')}/api/radar/detections/bulk"
 
     async with httpx.AsyncClient(limits=limits) as client:
+        # ── Register chain of custody keys for all nodes ─────────────────
+        custody_url = f"{server.rstrip('/')}/api/custody/register"
+        cust_headers = {"Content-Type": "application/json"}
+        if api_key:
+            cust_headers["X-API-Key"] = api_key
+        key_reg_ok = 0
+        for nid, pub in node_pubkeys.items():
+            try:
+                resp = await client.post(
+                    custody_url, json=pub, headers=cust_headers, timeout=10.0,
+                )
+                if resp.status_code == 200:
+                    key_reg_ok += 1
+            except Exception:
+                pass
+        print(f"  [custody] Registered {key_reg_ok}/{len(node_pubkeys)} signing keys")
+
         for step in range(n_steps):
             ts_ms = int(time.time() * 1000)
 
@@ -192,7 +237,10 @@ async def run(
 
             async def _post_one(nid, frame):
                 async with sem:
-                    return await _post_node(client, detections_url, api_key, nid, frame)
+                    return await _post_node(
+                        client, detections_url, api_key, nid, frame,
+                        signer=node_signers.get(nid),
+                    )
 
             items = list(to_send.items())
 
@@ -297,6 +345,7 @@ async def run(
                 "nodes":     client.get(f"{server}/api/radar/nodes"),
                 "analytics": client.get(f"{server}/api/radar/analytics"),
                 "archive":   client.get(f"{server}/api/data/archive", headers=headers),
+                "custody":   client.get(f"{server}/api/custody/status"),
             }
             responses = {}
             for name, coro in checks.items():
@@ -333,6 +382,10 @@ async def run(
                 elif name == "archive":
                     ok = resp.status_code in (200, 404)  # 404 if no archive yet = still OK
                     print(f"  [{name:<10}] {resp.status_code}  archive endpoint reachable")
+                elif name == "custody":
+                    n_keys = data.get("registered_keys", 0)
+                    ok = resp.status_code == 200 and n_keys > 0
+                    print(f"  [{name:<10}] {resp.status_code}  {n_keys} signing keys registered")
                 else:
                     ok = resp.status_code == 200
                     print(f"  [{name:<10}] {resp.status_code}")

@@ -4,13 +4,20 @@ Synthetic Node Microservice for Retina Passive Radar Network.
 Generates and streams synthetic detection data over TCP to the
 tracker server for testing. Implements the full RETINA node protocol:
 
-  HELLO → CONFIG → (wait CONFIG_ACK) → steady state (HEARTBEAT + DETECTION)
+  HELLO → CONFIG → REGISTER_KEY → (wait CONFIG_ACK, KEY_ACK)
+  → steady state (HEARTBEAT + signed DETECTION + CHAIN_ENTRY)
 
 Supports three detection modes:
 
 1. Detection-only: delay/doppler/snr data (simulated aircraft tracks)
 2. With ADS-B: some detections include ADS-B truth data
 3. With anomalous objects: objects that have no ADS-B correlation
+
+Chain of Custody:
+  - Each detection is signed with P-256 ECDSA (software stub)
+  - Hourly hash chain entries link all detections
+  - TSA timestamps and OTS proofs anchor chain entries
+  - IQ circular buffer runs for protocol testing
 
 Usage:
     python synthetic_node.py                           # defaults
@@ -410,15 +417,18 @@ def _recv_msg(sock: socket.socket, timeout: float = CONFIG_ACK_TIMEOUT_S) -> Opt
 
 # ── Protocol handshake ────────────────────────────────────────────────────────
 
-def _perform_handshake(sock: socket.socket, config: NodeConfig) -> bool:
-    """Perform the RETINA TCP handshake: HELLO → CONFIG → wait CONFIG_ACK.
+def _perform_handshake(sock: socket.socket, config: NodeConfig,
+                       crypto_backend=None) -> bool:
+    """Perform the RETINA TCP handshake: HELLO → CONFIG → REGISTER_KEY → wait ACKs.
 
+    If crypto_backend is provided, also registers the public key for
+    chain of custody verification.
     Returns True if handshake succeeded, False otherwise.
     """
     cfg_hash = _config_hash(config)
     cfg_payload = asdict(config)
 
-    is_synthetic = config.node_id.startswith("synth-")
+    is_synthetic = config.node_id.startswith("synth-") or config.node_id.startswith("syn-")
 
     # 1. Send HELLO with capabilities
     _send_msg(sock, {
@@ -432,6 +442,7 @@ def _perform_handshake(sock: socket.socket, config: NodeConfig) -> bool:
             "doppler": True,
             "config_hash": True,
             "heartbeat": True,
+            "chain_of_custody": crypto_backend is not None,
         },
     })
     print(f"  → HELLO (version={RETINA_VERSION}, synthetic={is_synthetic})", file=sys.stderr)
@@ -446,13 +457,15 @@ def _perform_handshake(sock: socket.socket, config: NodeConfig) -> bool:
     print(f"  → CONFIG (hash={cfg_hash})", file=sys.stderr)
 
     # 3. Wait for CONFIG_ACK
+    config_acked = False
     for attempt in range(3):
         ack = _recv_msg(sock, timeout=CONFIG_ACK_TIMEOUT_S)
         if ack and ack.get("type") == "CONFIG_ACK":
             ack_hash = ack.get("config_hash", "")
             if ack_hash == cfg_hash:
                 print(f"  ← CONFIG_ACK (hash={ack_hash}) — handshake complete", file=sys.stderr)
-                return True
+                config_acked = True
+                break
             else:
                 print(f"  ← CONFIG_ACK hash mismatch (expected={cfg_hash} got={ack_hash})", file=sys.stderr)
         elif ack:
@@ -466,8 +479,29 @@ def _perform_handshake(sock: socket.socket, config: NodeConfig) -> bool:
                 "config": cfg_payload,
             })
 
-    print("  ! Handshake failed after 3 attempts", file=sys.stderr)
-    return False
+    if not config_acked:
+        print("  ! Handshake failed after 3 attempts", file=sys.stderr)
+        return False
+
+    # 4. Register public key (chain of custody)
+    if crypto_backend is not None:
+        _send_msg(sock, {
+            "type": "REGISTER_KEY",
+            "node_id": config.node_id,
+            "public_key_pem": crypto_backend.get_public_key_pem(),
+            "fingerprint": crypto_backend.get_public_key_fingerprint(),
+            "serial_number": crypto_backend.get_serial_number(),
+            "signing_mode": crypto_backend.signing_mode,
+        })
+        print(f"  → REGISTER_KEY (fp={crypto_backend.get_public_key_fingerprint()[:12]}...)", file=sys.stderr)
+        # Wait for KEY_ACK (non-blocking — best effort)
+        key_ack = _recv_msg(sock, timeout=5)
+        if key_ack and key_ack.get("type") == "KEY_ACK":
+            print(f"  ← KEY_ACK — key registered", file=sys.stderr)
+        else:
+            print(f"  ! KEY_ACK not received (chain of custody may not verify)", file=sys.stderr)
+
+    return True
 
 
 # ── Heartbeat thread ──────────────────────────────────────────────────────────
@@ -527,14 +561,35 @@ def _listener_loop(sock: socket.socket, config: NodeConfig, stop_event: threadin
 
 def _stream_tcp(generator: SyntheticNodeGenerator, host: str, port: int,
                 interval_ms: int = 500, cloudflare_host: Optional[str] = None):
-    """Stream detection frames to the tracker server over TCP with full protocol."""
+    """Stream detection frames to the tracker server over TCP with full protocol.
+
+    Includes chain of custody: signing, hash chain, TSA timestamping.
+    """
+    from chain_of_custody.crypto_backend import SoftwareCryptoBackend
+    from chain_of_custody.packet_signer import PacketSigner
+    from chain_of_custody.hash_chain import HashChainBuilder
+    from chain_of_custody.tsa_client import TimestampManager
+    from chain_of_custody.iq_buffer import IQCircularBuffer
+
     config = generator.config
+
+    # Initialize chain of custody
+    key_dir = os.path.join(os.path.dirname(__file__), "coverage_data", "keys", config.node_id)
+    os.makedirs(key_dir, exist_ok=True)
+    crypto = SoftwareCryptoBackend(key_file=os.path.join(key_dir, "synthetic_key.json"))
+    signer = PacketSigner(config.node_id, crypto)
+    chain_builder = HashChainBuilder(config.node_id, crypto, asdict(config))
+    tsa_manager = TimestampManager(enable_tsa=True, enable_ots=True)
+    iq_buffer = IQCircularBuffer(is_synthetic=True)
+    iq_buffer.start()
+
+    print(f"  Chain of custody: key_fp={crypto.get_public_key_fingerprint()[:12]}... serial={crypto.get_serial_number()}", file=sys.stderr)
 
     while True:
         sock = _connect_tcp(host, port, cloudflare_host=cloudflare_host)
 
-        # Perform handshake
-        if not _perform_handshake(sock, config):
+        # Perform handshake (with key registration)
+        if not _perform_handshake(sock, config, crypto_backend=crypto):
             print("Handshake failed, reconnecting in 5s...", file=sys.stderr)
             sock.close()
             time.sleep(5)
@@ -552,15 +607,21 @@ def _stream_tcp(generator: SyntheticNodeGenerator, host: str, port: int,
         listener_thread.start()
 
         try:
+            last_chain_check = time.time()
+
             while True:
                 timestamp_ms = int(time.time() * 1000)
                 frame = generator.generate_frame(timestamp_ms)
 
-                # Wrap in DETECTION message
+                # Sign the detection frame
+                signed = signer.sign_frame(frame)
+                chain_builder.add_detection(signed.payload_hash)
+
+                # Wrap in DETECTION message with signed envelope
                 detection_msg = {
                     "type": "DETECTION",
                     "node_id": config.node_id,
-                    "data": frame,
+                    "data": signed.to_dict(),
                 }
 
                 try:
@@ -569,6 +630,29 @@ def _stream_tcp(generator: SyntheticNodeGenerator, host: str, port: int,
                     print("\nConnection lost, reconnecting...", file=sys.stderr)
                     break
 
+                # Check for hour boundary — close chain and submit
+                now = time.time()
+                if now - last_chain_check > 60:  # Check every ~60s
+                    last_chain_check = now
+                    entry = chain_builder.close_hour()
+                    if entry:
+                        # Get TSA timestamp and OTS proof
+                        tsa_token, ots_proof = tsa_manager.timestamp_entry(entry.entry_hash)
+                        if tsa_token:
+                            entry.tsa_token = tsa_token
+                        if ots_proof:
+                            entry.ots_proof = ots_proof
+                        # Submit chain entry to server
+                        try:
+                            _send_msg(sock, {
+                                "type": "CHAIN_ENTRY",
+                                "node_id": config.node_id,
+                                "entry": entry.to_dict(),
+                            })
+                            print(f"\n  → CHAIN_ENTRY (hour={entry.hour_utc}, n={entry.n_detections})", file=sys.stderr)
+                        except (BrokenPipeError, ConnectionResetError, OSError):
+                            pass
+
                 # Print summary to stderr
                 n_det = len(frame["delay"])
                 n_adsb = sum(
@@ -576,9 +660,10 @@ def _stream_tcp(generator: SyntheticNodeGenerator, host: str, port: int,
                 ) if "adsb" in frame else 0
                 print(
                     f"\r[{time.strftime('%H:%M:%S')}] "
-                    f"Sent DETECTION: {n_det} detections"
+                    f"Sent signed DETECTION: {n_det} detections"
                     f"{f', {n_adsb} with ADS-B' if n_adsb else ''}"
-                    f" | targets: {len(generator.targets)}",
+                    f" | targets: {len(generator.targets)}"
+                    f" | chain: {chain_builder.pending_detections} pending",
                     end="", file=sys.stderr,
                 )
 
@@ -586,6 +671,11 @@ def _stream_tcp(generator: SyntheticNodeGenerator, host: str, port: int,
 
         except KeyboardInterrupt:
             print("\nStopping synthetic node.", file=sys.stderr)
+            # Close any pending chain entry
+            entry = chain_builder.close_hour()
+            if entry:
+                print(f"  Final chain entry: {entry.n_detections} detections", file=sys.stderr)
+            iq_buffer.stop()
             stop_event.set()
             sock.close()
             return
@@ -713,13 +803,17 @@ def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
                            cloudflare_host: Optional[str] = None):
     """Run multiple synthetic nodes from a shared simulation world.
 
-    Each node gets its own TCP connection and protocol handshake.
+    Each node gets its own TCP connection, protocol handshake, and
+    chain of custody key pair (signing, hash chain).
     All nodes observe the SAME aircraft objects.
 
     Args:
         nodes_config_path: Path to JSON file with list of node configs.
     """
     from simulation_world import SimulationWorld, NodeConfig as WorldNodeConfig
+    from chain_of_custody.crypto_backend import SoftwareCryptoBackend
+    from chain_of_custody.packet_signer import PacketSigner
+    from chain_of_custody.hash_chain import HashChainBuilder
 
     # Load node configs
     with open(nodes_config_path) as f:
@@ -758,9 +852,12 @@ def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
     for nc in node_configs:
         print(f"  {nc.node_id}: RX=({nc.rx_lat:.4f}, {nc.rx_lon:.4f}) beam={nc.beam_azimuth_deg:.0f}°", file=sys.stderr)
 
-    # Connect each node
+    # Connect each node with chain of custody
     node_sockets: dict[str, socket.socket] = {}
     node_local_configs: dict[str, NodeConfig] = {}
+    node_crypto: dict[str, SoftwareCryptoBackend] = {}
+    node_signers: dict[str, PacketSigner] = {}
+    node_chains: dict[str, HashChainBuilder] = {}
 
     for wc in node_configs:
         local_cfg = NodeConfig(
@@ -771,8 +868,16 @@ def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
         )
         node_local_configs[wc.node_id] = local_cfg
 
+        # Initialize chain of custody for this node
+        key_dir = os.path.join(os.path.dirname(__file__), "coverage_data", "keys", wc.node_id)
+        os.makedirs(key_dir, exist_ok=True)
+        crypto = SoftwareCryptoBackend(key_file=os.path.join(key_dir, "synthetic_key.json"))
+        node_crypto[wc.node_id] = crypto
+        node_signers[wc.node_id] = PacketSigner(wc.node_id, crypto)
+        node_chains[wc.node_id] = HashChainBuilder(wc.node_id, crypto, asdict(local_cfg))
+
         sock = _connect_tcp(host, port, cloudflare_host=cloudflare_host)
-        if not _perform_handshake(sock, local_cfg):
+        if not _perform_handshake(sock, local_cfg, crypto_backend=crypto):
             print(f"Handshake failed for {wc.node_id}", file=sys.stderr)
             sock.close()
             continue
@@ -791,6 +896,12 @@ def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
         )
         t.start()
 
+    # Track last chain-close time per node
+    last_chain_check: dict[str, float] = {nid: time.time() for nid in node_sockets}
+    current_hour: dict[str, str] = {}
+    for nid in node_sockets:
+        current_hour[nid] = time.strftime("%Y-%m-%dT%H", time.gmtime())
+
     # Main simulation loop
     try:
         while True:
@@ -806,16 +917,55 @@ def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
                 n_det = len(frame["delay"])
                 total_det += n_det
 
-                detection_msg = {
-                    "type": "DETECTION",
-                    "node_id": nid,
-                    "data": frame,
-                }
+                # Sign the detection frame
+                signer = node_signers.get(nid)
+                if signer:
+                    signed = signer.sign_frame(frame)
+                    node_chains[nid].add_detection(signed.payload_hash)
+                    detection_msg = {
+                        "type": "DETECTION",
+                        "node_id": nid,
+                        "data": frame,
+                        "signature": signed.signature,
+                        "payload_hash": signed.payload_hash,
+                        "signing_mode": signed.signing_mode,
+                        "public_key_fingerprint": signed.public_key_fingerprint,
+                    }
+                else:
+                    detection_msg = {
+                        "type": "DETECTION",
+                        "node_id": nid,
+                        "data": frame,
+                    }
+
                 try:
                     _send_msg(node_sockets[nid], detection_msg)
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     print(f"\nLost connection for {nid}", file=sys.stderr)
                     node_sockets.pop(nid, None)
+
+            # Check hour boundary for chain closure (every 60s)
+            now = time.time()
+            hour_now = time.strftime("%Y-%m-%dT%H", time.gmtime())
+            for nid in list(node_sockets.keys()):
+                if now - last_chain_check.get(nid, 0) < 60:
+                    continue
+                last_chain_check[nid] = now
+                if hour_now != current_hour.get(nid):
+                    chain_builder = node_chains.get(nid)
+                    if chain_builder and chain_builder._detection_hashes:
+                        entry = chain_builder.close_hour()
+                        if entry:
+                            chain_msg = {
+                                "type": "CHAIN_ENTRY",
+                                "node_id": nid,
+                                "entry": asdict(entry),
+                            }
+                            try:
+                                _send_msg(node_sockets[nid], chain_msg)
+                            except (BrokenPipeError, ConnectionResetError, OSError):
+                                pass
+                    current_hour[nid] = hour_now
 
             n_aircraft = len(world.aircraft)
             n_adsb = sum(1 for ac in world.aircraft if ac.has_adsb)
@@ -837,6 +987,13 @@ def _stream_multi_node_tcp(nodes_config_path: str, host: str, port: int,
         print("\nStopping multi-node simulation.", file=sys.stderr)
     finally:
         stop_event.set()
+        # Close any pending chain entries
+        for nid, chain_builder in node_chains.items():
+            if chain_builder._detection_hashes:
+                try:
+                    chain_builder.close_hour()
+                except Exception:
+                    pass
         for sock in node_sockets.values():
             sock.close()
 
