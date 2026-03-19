@@ -157,6 +157,111 @@ function FitBounds({ aircraft, nodes, trails, selectedHex, focusNonce }) {
   return null;
 }
 
+/* ── Aircraft list sidebar ─────────────────────────────────────── */
+
+function AircraftListPanel({ allAircraft, truthOnly, selectedHex, onSelect, collapsed, onToggleCollapse, searchQuery, onSearchChange }) {
+  const rowRefs = useRef({});
+
+  useEffect(() => {
+    if (selectedHex && rowRefs.current[selectedHex]) {
+      rowRefs.current[selectedHex].scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [selectedHex]);
+
+  const all = useMemo(() => [
+    ...allAircraft.map((ac) => ({ ...ac, _isSolved: true })),
+    ...truthOnly.map((ac) => ({ ...ac, _isSolved: false })),
+  ].sort((a, b) => {
+    const altA = a.alt_baro ?? (a.alt_m ? a.alt_m / 0.3048 : 0);
+    const altB = b.alt_baro ?? (b.alt_m ? b.alt_m / 0.3048 : 0);
+    return altB - altA;
+  }), [allAircraft, truthOnly]);
+
+  const filtered = useMemo(() => {
+    if (!searchQuery.trim()) return all;
+    const q = searchQuery.toLowerCase();
+    return all.filter(
+      (ac) =>
+        (ac.hex || "").toLowerCase().includes(q) ||
+        (ac.flight || "").toLowerCase().includes(q)
+    );
+  }, [all, searchQuery]);
+
+  return (
+    <div className={`aircraft-list-panel${collapsed ? " collapsed" : ""}`}>
+      <div className="al-header">
+        <div className="al-title">
+          {!collapsed && <>Aircraft <span className="al-count">{filtered.length}</span></>}
+        </div>
+        <button className="al-collapse-btn" onClick={onToggleCollapse} title={collapsed ? "Expand" : "Collapse"}>
+          {collapsed ? "▶" : "◀"}
+        </button>
+      </div>
+
+      {!collapsed && (
+        <>
+          <div className="al-search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+            </svg>
+            <input
+              type="text"
+              placeholder="Search callsign / hex…"
+              value={searchQuery}
+              onChange={(e) => onSearchChange(e.target.value)}
+            />
+            {searchQuery && (
+              <button className="al-clear" onClick={() => onSearchChange("")}>×</button>
+            )}
+          </div>
+
+          <div className="al-list">
+            {filtered.length === 0 && <div className="al-empty">No aircraft</div>}
+            {filtered.map((ac) => {
+              const isSolved = ac._isSolved;
+              const isMultinode = ac.multinode;
+              const color = !isSolved ? "#22d3ee" : isMultinode ? "#8b5cf6" : "#3b82f6";
+              const callsign = ac.flight?.trim() || ac.hex?.slice(-6).toUpperCase() || ac.hex;
+              const alt = ac.alt_baro
+                ? `FL${Math.round(ac.alt_baro / 100)}`
+                : ac.alt_m
+                  ? `FL${Math.round(ac.alt_m / 0.3048 / 100)}`
+                  : "—";
+              const spd = ac.gs ? `${Math.round(ac.gs)}kt` : "—";
+              const hdg = ac.track ? `${Math.round(ac.track)}°` : "";
+              const isSelected = ac.hex === selectedHex;
+              return (
+                <div
+                  key={ac.hex}
+                  ref={(el) => { rowRefs.current[ac.hex] = el; }}
+                  className={`al-row${isSelected ? " selected" : ""}${!isSolved ? " truth-only" : ""}`}
+                  onClick={() => onSelect(ac.hex)}
+                >
+                  <div className="al-indicator" style={{ background: color }} />
+                  <span
+                    className="al-icon"
+                    style={{ color, transform: `rotate(${ac.track ?? 0}deg)` }}
+                  >▲</span>
+                  <div className="al-info">
+                    <span className="al-callsign">{callsign}</span>
+                    <span className="al-sub">
+                      {isSolved ? (isMultinode ? `Multi·${ac.n_nodes}N` : "ADS-B") : "Truth"}
+                    </span>
+                  </div>
+                  <div className="al-stats">
+                    <span className="al-alt">{alt}</span>
+                    <span className="al-spd">{spd}{hdg ? ` · ${hdg}` : ""}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ── Aircraft detail side panel ───────────────────────────────── */
 
 function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError }) {
@@ -317,6 +422,7 @@ export default function LiveAircraftMap() {
   const [focusNonce, setFocusNonce] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [paused, setPaused] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   // Trails accumulated locally — keyed by hex
   // Each value: [[lat, lon, alt, ts], ...]
@@ -591,56 +697,29 @@ export default function LiveAircraftMap() {
 
   return (
     <div className="live-map-container">
+      {/* ── Top toolbar ── */}
       <div className="live-map-toolbar">
         <span className={`connection-badge ${connected ? "connected" : "disconnected"}`}>
           {connected ? (paused ? "PAUSED" : "LIVE") : "POLL"}
         </span>
         <span className="aircraft-count">
-          {filteredAircraft.length} / {displayAircraft.length + truthOnlyAircraft.length}
+          {displayAircraft.length + truthOnlyAircraft.length} aircraft
         </span>
 
         <div className="toolbar-separator" />
 
-        {/* Search */}
-        <div className="toolbar-search">
-          <svg className="toolbar-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
-          </svg>
-          <input
-            type="text"
-            placeholder="Search hex / callsign\u2026"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-          />
-        </div>
+        <button className={`toggle-btn${showCoverage ? " active" : ""}`} onClick={() => setShowCoverage((v) => !v)}>Coverage</button>
+        <button className={`toggle-btn${showLabels ? " active" : ""}`} onClick={() => setShowLabels((v) => !v)}>Labels</button>
+        <button className={`toggle-btn${showTrails ? " active" : ""}`} onClick={() => setShowTrails((v) => !v)}>Trails</button>
+        <button className={`toggle-btn${showGroundTruth ? " active" : ""}`} onClick={() => setShowGroundTruth((v) => !v)}>Truth</button>
 
         <div className="toolbar-separator" />
 
-        {/* Layer toggles */}
-        <button className={`toggle-btn${showCoverage ? " active" : ""}`} onClick={() => setShowCoverage((v) => !v)}>
-          Coverage
-        </button>
-        <button className={`toggle-btn${showLabels ? " active" : ""}`} onClick={() => setShowLabels((v) => !v)}>
-          Labels
-        </button>
-        <button className={`toggle-btn${showTrails ? " active" : ""}`} onClick={() => setShowTrails((v) => !v)}>
-          Trails
-        </button>
-        <button className={`toggle-btn${showGroundTruth ? " active" : ""}`} onClick={() => setShowGroundTruth((v) => !v)}>
-          Truth
-        </button>
-
-        <div className="toolbar-separator" />
-
-        {/* Playback */}
         <button className={`toggle-btn${paused ? " active" : ""}`} onClick={handleTogglePause}>
-          {paused ? "\u25b6 Resume" : "\u23f8 Pause"}
+          {paused ? "▶ Resume" : "⏸ Pause"}
         </button>
-        <button className="toggle-btn" onClick={() => setFocusNonce((n) => n + 1)}>
-          \u25ce Fit
-        </button>
+        <button className="toggle-btn" onClick={() => setFocusNonce((n) => n + 1)}>◎ Fit</button>
 
-        {/* Legend */}
         <span className="map-legend">
           <span className="legend-item"><span className="legend-dot" style={{ background: "#3b82f6" }} /> ADS-B</span>
           <span className="legend-item"><span className="legend-dot" style={{ background: "#8b5cf6" }} /> Multi</span>
@@ -649,195 +728,159 @@ export default function LiveAircraftMap() {
         </span>
       </div>
 
-      <MapContainer
-        center={[34.0, -84.5]}
-        zoom={8}
-        style={{ height: "100%", width: "100%" }}
-      >
-        <TileLayer
-          attribution='&copy; <a href="https://carto.com">CARTO</a>'
-          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-        />
-
-        <FitBounds
-          aircraft={displayAircraft}
-          nodes={nodes}
-          trails={trailsRef.current}
+      {/* ── Body: sidebar + map ── */}
+      <div className="live-map-body">
+        <AircraftListPanel
+          allAircraft={displayAircraft}
+          truthOnly={truthOnlyAircraft}
           selectedHex={selectedHex}
-          focusNonce={focusNonce}
+          onSelect={(hex) => {
+            setSelectedHex((prev) => (prev === hex ? null : hex));
+            setFocusNonce((n) => n + 1);
+          }}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
         />
 
-        {/* Coverage zones */}
-        {showCoverage &&
-          nodes.map((n) => (
-            <Polygon
-              key={`cone-${n.node_id}`}
-              positions={beamConePositions(
-                n.rx_lat,
-                n.rx_lon,
-                n.beam_azimuth_deg,
-                n.beam_width_deg,
-                n.max_range_km
-              )}
-              pathOptions={{
-                color: "#ef4444",
-                fillColor: "#ef4444",
-                fillOpacity: 0.08,
-                weight: 1,
-                dashArray: "4 4",
-              }}
+        <div className="live-map-area">
+          <MapContainer
+            center={[34.0, -84.5]}
+            zoom={8}
+            style={{ height: "100%", width: "100%" }}
+          >
+            <TileLayer
+              attribution='&copy; <a href="https://carto.com">CARTO</a>'
+              url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
             />
-          ))}
 
-        {/* Node markers */}
-        {nodes.map((n) => (
-          <Marker key={`node-${n.node_id}`} position={[n.rx_lat, n.rx_lon]} icon={nodeIcon}>
-            <Popup>
-              <strong>{n.node_id}</strong>
-              <br />
-              Beam: {n.beam_azimuth_deg}° / {n.beam_width_deg}°
-              <br />
-              Range: {n.max_range_km} km
-            </Popup>
-          </Marker>
-        ))}
+            <FitBounds
+              aircraft={displayAircraft}
+              nodes={nodes}
+              trails={trailsRef.current}
+              selectedHex={selectedHex}
+              focusNonce={focusNonce}
+            />
 
-        {/* ── Solved track trails (yellow/amber) ── */}
-        {showTrails &&
-          Object.entries(trailsRef.current).map(([hex, positions]) => {
-            const pts = positions.map((p) => [p[0], p[1]]);
-            const animated = displayedAircraftRef.current[hex];
-            if (animated && animated.lat && animated.lon) {
-              const last = pts[pts.length - 1];
-              if (!last || Math.abs(last[0] - animated.lat) > 0.00001 || Math.abs(last[1] - animated.lon) > 0.00001) {
-                pts.push([animated.lat, animated.lon]);
+            {/* Coverage zones */}
+            {showCoverage && nodes.map((n) => (
+              <Polygon
+                key={`cone-${n.node_id}`}
+                positions={beamConePositions(n.rx_lat, n.rx_lon, n.beam_azimuth_deg, n.beam_width_deg, n.max_range_km)}
+                pathOptions={{ color: "#ef4444", fillColor: "#ef4444", fillOpacity: 0.08, weight: 1, dashArray: "4 4" }}
+              />
+            ))}
+
+            {/* Node markers */}
+            {nodes.map((n) => (
+              <Marker key={`node-${n.node_id}`} position={[n.rx_lat, n.rx_lon]} icon={nodeIcon}>
+                <Popup>
+                  <strong>{n.node_id}</strong><br />
+                  Beam: {n.beam_azimuth_deg}° / {n.beam_width_deg}°<br />
+                  Range: {n.max_range_km} km
+                </Popup>
+              </Marker>
+            ))}
+
+            {/* Solved track trails (amber) */}
+            {showTrails && Object.entries(trailsRef.current).map(([hex, positions]) => {
+              const pts = positions.map((p) => [p[0], p[1]]);
+              const animated = displayedAircraftRef.current[hex];
+              if (animated?.lat && animated?.lon) {
+                const last = pts[pts.length - 1];
+                if (!last || Math.abs(last[0] - animated.lat) > 0.00001 || Math.abs(last[1] - animated.lon) > 0.00001) {
+                  pts.push([animated.lat, animated.lon]);
+                }
               }
-            }
-            if (pts.length < 2) return null;
-            const isSelected = hex === selectedHex;
-            return (
-              <>
-                <Polyline
-                  key={`trail-shadow-${hex}-${trailTick}`}
-                  positions={pts}
-                  pathOptions={{
-                    color: "#111827",
-                    weight: isSelected ? 8 : 6,
-                    opacity: 0.55,
-                  }}
-                />
-                <Polyline
-                  key={`trail-${hex}-${trailTick}`}
-                  positions={pts}
-                  pathOptions={{
-                    color: isSelected ? "#fde68a" : "#f59e0b",
-                    weight: isSelected ? 5 : 4,
-                    opacity: isSelected ? 1 : 0.92,
-                  }}
-                />
-              </>
-            );
-          })}
+              if (pts.length < 2) return null;
+              const isSelected = hex === selectedHex;
+              return (
+                <>
+                  <Polyline key={`trail-shadow-${hex}-${trailTick}`} positions={pts} pathOptions={{ color: "#111827", weight: isSelected ? 8 : 6, opacity: 0.55 }} />
+                  <Polyline key={`trail-${hex}-${trailTick}`} positions={pts} pathOptions={{ color: isSelected ? "#fde68a" : "#f59e0b", weight: isSelected ? 5 : 4, opacity: isSelected ? 1 : 0.92 }} />
+                </>
+              );
+            })}
 
-        {/* ── Ground truth trails (cyan dashed) ── */}
-        {showGroundTruth &&
-          Object.entries(groundTruthRef.current).map(([hex, positions]) => {
-            if (!Array.isArray(positions) || positions.length < 2) return null;
-            const pts = positions.map((p) => [p[0], p[1]]);
-            const isSelected = hex === selectedHex;
-            return (
-              <>
-                <Polyline
-                  key={`gt-shadow-${hex}-${trailTick}`}
-                  positions={pts}
-                  pathOptions={{
-                    color: "#082f49",
-                    weight: isSelected ? 7 : 5,
-                    opacity: 0.45,
-                    dashArray: "6 5",
-                  }}
-                />
-                <Polyline
-                  key={`gt-${hex}-${trailTick}`}
-                  positions={pts}
-                  pathOptions={{
-                    color: "#22d3ee",
-                    weight: isSelected ? 4 : 3,
-                    opacity: isSelected ? 0.95 : 0.8,
-                    dashArray: "6 5",
-                  }}
-                />
-              </>
-            );
-          })}
+            {/* Ground truth trails (cyan dashed) */}
+            {showGroundTruth && Object.entries(groundTruthRef.current).map(([hex, positions]) => {
+              if (!Array.isArray(positions) || positions.length < 2) return null;
+              const pts = positions.map((p) => [p[0], p[1]]);
+              const isSelected = hex === selectedHex;
+              return (
+                <>
+                  <Polyline key={`gt-shadow-${hex}-${trailTick}`} positions={pts} pathOptions={{ color: "#082f49", weight: isSelected ? 7 : 5, opacity: 0.45, dashArray: "6 5" }} />
+                  <Polyline key={`gt-${hex}-${trailTick}`} positions={pts} pathOptions={{ color: "#22d3ee", weight: isSelected ? 4 : 3, opacity: isSelected ? 0.95 : 0.8, dashArray: "6 5" }} />
+                </>
+              );
+            })}
 
-        {/* Aircraft markers */}
-        {filteredAircraft.map((ac) =>
-          ac.lat && ac.lon ? (
-            <Marker
-              key={ac.hex}
-              position={[ac.lat, ac.lon]}
-              icon={makeAircraftIcon(ac, showLabels, ac.hex === selectedHex)}
-              eventHandlers={{
-                click: () => setSelectedHex((prev) => (prev === ac.hex ? null : ac.hex)),
-              }}
+            {/* Aircraft markers */}
+            {filteredAircraft.map((ac) =>
+              ac.lat && ac.lon ? (
+                <Marker
+                  key={ac.hex}
+                  position={[ac.lat, ac.lon]}
+                  icon={makeAircraftIcon(ac, showLabels, ac.hex === selectedHex)}
+                  eventHandlers={{
+                    click: () => {
+                      setSelectedHex((prev) => (prev === ac.hex ? null : ac.hex));
+                      setFocusNonce((n) => n + 1);
+                    },
+                  }}
+                />
+              ) : null
+            )}
+
+            {/* Ground-truth-only markers */}
+            {showGroundTruth && truthOnlyAircraft.map((ac) => (
+              <CircleMarker
+                key={`truth-only-${ac.hex}`}
+                center={[ac.lat, ac.lon]}
+                radius={6}
+                pathOptions={{ color: "#67e8f9", weight: 2, fillColor: "#22d3ee", fillOpacity: 0.35 }}
+                eventHandlers={{
+                  click: () => {
+                    setSelectedHex((prev) => (prev === ac.hex ? null : ac.hex));
+                    setFocusNonce((n) => n + 1);
+                  },
+                }}
+              />
+            ))}
+          </MapContainer>
+
+          {/* Detail panel (absolute inside map area) */}
+          {selectedAc && (
+            <AircraftDetailPanel
+              ac={selectedAc}
+              onClose={() => setSelectedHex(null)}
+              groundTruth={groundTruthRef.current}
+              trails={trailsRef.current}
+              computeError={computeError}
             />
-          ) : null
-        )}
+          )}
 
-        {/* Ground-truth-only markers for aircraft not yet solved */}
-        {showGroundTruth &&
-          truthOnlyAircraft.map((ac) => (
-            <CircleMarker
-              key={`truth-only-${ac.hex}`}
-              center={[ac.lat, ac.lon]}
-              radius={6}
-              pathOptions={{
-                color: "#67e8f9",
-                weight: 2,
-                fillColor: "#22d3ee",
-                fillOpacity: 0.35,
-              }}
-              eventHandlers={{
-                click: () => setSelectedHex((prev) => (prev === ac.hex ? null : ac.hex)),
-              }}
-            />
-          ))}
-      </MapContainer>
-
-      {/* Detail side panel */}
-      {selectedAc && (
-        <AircraftDetailPanel
-          ac={selectedAc}
-          onClose={() => setSelectedHex(null)}
-          groundTruth={groundTruthRef.current}
-          trails={trailsRef.current}
-          computeError={computeError}
-        />
-      )}
-
-      {/* Playback bar when paused */}
-      {paused && historyRef.current.length > 0 && (
-        <div className="playback-bar">
-          <span className="playback-time">
-            {historyRef.current.length > 0
-              ? formatSecondsAgo(historyRef.current[0].ts)
-              : ""}
-          </span>
-          <input
-            type="range"
-            min={0}
-            max={historyRef.current.length - 1}
-            defaultValue={historyRef.current.length - 1}
-            onChange={(e) => handleHistorySeek(Number(e.target.value))}
-          />
-          <span className="playback-time">
-            {historyRef.current.length > 0
-              ? formatSecondsAgo(historyRef.current[historyRef.current.length - 1].ts)
-              : ""}
-          </span>
+          {/* Playback bar when paused */}
+          {paused && historyRef.current.length > 0 && (
+            <div className="playback-bar">
+              <span className="playback-time">
+                {formatSecondsAgo(historyRef.current[0].ts)}
+              </span>
+              <input
+                type="range"
+                min={0}
+                max={historyRef.current.length - 1}
+                defaultValue={historyRef.current.length - 1}
+                onChange={(e) => handleHistorySeek(Number(e.target.value))}
+              />
+              <span className="playback-time">
+                {formatSecondsAgo(historyRef.current[historyRef.current.length - 1].ts)}
+              </span>
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 }
