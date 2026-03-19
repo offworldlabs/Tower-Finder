@@ -125,6 +125,21 @@ function mergeTrailPositions(existing = [], incoming = []) {
   return merged;
 }
 
+function sampleTrailPositions(positions, maxPoints = 240) {
+  if (!Array.isArray(positions) || positions.length <= maxPoints) return positions || [];
+
+  const stride = Math.ceil(positions.length / maxPoints);
+  const sampled = positions.filter((_, index) => index % stride === 0);
+  const last = positions[positions.length - 1];
+  const tail = sampled[sampled.length - 1];
+
+  if (!tail || tail[0] !== last[0] || tail[1] !== last[1]) {
+    sampled.push(last);
+  }
+
+  return sampled;
+}
+
 /* ── Icon factories ───────────────────────────────────────────────── */
 
 function makeAircraftIcon(ac, showLabel, isSelected) {
@@ -815,17 +830,20 @@ export default function LiveAircraftMap() {
     [selectedHex, trailTick, viewport]
   );
 
-  const visibleGroundTruthEntries = useMemo(
-    () => {
-      if (!selectedHex) return [];
-      return Object.entries(groundTruthRef.current).filter(([hex, positions]) => (
-        hex === selectedHex
-        && Array.isArray(positions)
-        && positions.some((position) => isPointInViewport(position[0], position[1], viewport))
-      ));
-    },
-    [selectedHex, trailTick, viewport]
-  );
+  const selectedTrailPositions = useMemo(() => {
+    if (!visibleTrailEntries.length) return [];
+    const [, positions] = visibleTrailEntries[0];
+    const sampled = sampleTrailPositions(positions);
+    const pts = sampled.map((p) => [p[0], p[1]]);
+    const animated = selectedHex ? displayedAircraftRef.current[selectedHex] : null;
+    if (animated?.lat && animated?.lon) {
+      const last = pts[pts.length - 1];
+      if (!last || Math.abs(last[0] - animated.lat) > 0.00001 || Math.abs(last[1] - animated.lon) > 0.00001) {
+        pts.push([animated.lat, animated.lon]);
+      }
+    }
+    return pts;
+  }, [selectedHex, visibleTrailEntries]);
 
   const selectedAc = selectedHex
     ? displayAircraft.find((ac) => ac.hex === selectedHex) ||
@@ -957,38 +975,14 @@ export default function LiveAircraftMap() {
               </Marker>
             ))}
 
-            {/* Solved track trails (amber) */}
-            {showTrails && visibleTrailEntries.map(([hex, positions]) => {
-              const pts = positions.map((p) => [p[0], p[1]]);
-              const animated = displayedAircraftRef.current[hex];
-              if (animated?.lat && animated?.lon) {
-                const last = pts[pts.length - 1];
-                if (!last || Math.abs(last[0] - animated.lat) > 0.00001 || Math.abs(last[1] - animated.lon) > 0.00001) {
-                  pts.push([animated.lat, animated.lon]);
-                }
-              }
-              if (pts.length < 2) return null;
-              const isSelected = hex === selectedHex;
-              return (
-                <>
-                  <Polyline key={`trail-shadow-${hex}-${trailTick}`} positions={pts} pathOptions={{ color: "#111827", weight: isSelected ? 8 : 6, opacity: 0.55 }} />
-                  <Polyline key={`trail-${hex}-${trailTick}`} positions={pts} pathOptions={{ color: isSelected ? "#fde68a" : "#f59e0b", weight: isSelected ? 5 : 4, opacity: isSelected ? 1 : 0.92 }} />
-                </>
-              );
-            })}
-
-            {/* Ground truth trails (cyan dashed) */}
-            {showGroundTruth && visibleGroundTruthEntries.map(([hex, positions]) => {
-              if (!Array.isArray(positions) || positions.length < 2) return null;
-              const pts = positions.map((p) => [p[0], p[1]]);
-              const isSelected = hex === selectedHex;
-              return (
-                <>
-                  <Polyline key={`gt-shadow-${hex}-${trailTick}`} positions={pts} pathOptions={{ color: "#082f49", weight: isSelected ? 7 : 5, opacity: 0.45, dashArray: "6 5" }} />
-                  <Polyline key={`gt-${hex}-${trailTick}`} positions={pts} pathOptions={{ color: "#22d3ee", weight: isSelected ? 4 : 3, opacity: isSelected ? 0.95 : 0.8, dashArray: "6 5" }} />
-                </>
-              );
-            })}
+            {/* Selected solved trail only */}
+            {showTrails && selectedTrailPositions.length >= 2 && (
+              <Polyline
+                key={`trail-${selectedHex}-${trailTick}`}
+                positions={selectedTrailPositions}
+                pathOptions={{ color: "#f59e0b", weight: 4, opacity: 0.95 }}
+              />
+            )}
 
             {/* Aircraft markers */}
             {visibleAircraft.map((ac) =>
