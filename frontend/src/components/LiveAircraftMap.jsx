@@ -106,53 +106,50 @@ function beamConePositions(lat, lon, azimuthDeg, beamWidthDeg, rangeKm) {
 
 /* ── Auto-fit map bounds ──────────────────────────────────────── */
 
-function FitBounds({ aircraft, nodes, trails, selectedHex, focusNonce }) {
+function FitBounds({ aircraft, nodes, selectedHex, focusNonce }) {
   const map = useMap();
-  const fitted = useRef(false);
-  const lastFocusKey = useRef(null);
+  const initialFitted = useRef(false);
+  const userMoved = useRef(false);
+  const lastFocusNonce = useRef(null);
+
+  // Detect user-initiated pan/zoom — after that, never auto-fit again unless
+  // the user explicitly clicks "Fit" or selects an aircraft (focusNonce bump).
+  useEffect(() => {
+    const onMove = () => { userMoved.current = true; };
+    map.on("dragstart", onMove);
+    map.on("zoomstart", onMove);
+    return () => {
+      map.off("dragstart", onMove);
+      map.off("zoomstart", onMove);
+    };
+  }, [map]);
 
   useEffect(() => {
+    // After initial fit, only re-fit when focusNonce changes (explicit Fit/select).
+    const isExplicit = focusNonce !== lastFocusNonce.current;
+    if (initialFitted.current && userMoved.current && !isExplicit) return;
+
     const pts = [];
-
-    const trailEntries = Object.entries(trails || {});
-    const activeTrailEntries = selectedHex
-      ? trailEntries.filter(([hex]) => hex === selectedHex)
-      : trailEntries;
-
-    activeTrailEntries.forEach(([, positions]) => {
-      positions.forEach((p) => {
-        if (p[0] && p[1]) pts.push([p[0], p[1]]);
-      });
-    });
-
-    if (pts.length === 0) {
-      const activeAircraft = selectedHex
-        ? aircraft.filter((ac) => ac.hex === selectedHex)
-        : aircraft;
-      activeAircraft.forEach((ac) => {
-        if (ac.lat && ac.lon) pts.push([ac.lat, ac.lon]);
-      });
+    if (selectedHex) {
+      const ac = aircraft.find((a) => a.hex === selectedHex);
+      if (ac?.lat && ac?.lon) pts.push([ac.lat, ac.lon]);
+    } else {
+      aircraft.forEach((ac) => { if (ac.lat && ac.lon) pts.push([ac.lat, ac.lon]); });
+      nodes.forEach((n) => { if (n.rx_lat && n.rx_lon) pts.push([n.rx_lat, n.rx_lon]); });
     }
-
-    if (pts.length === 0) {
-      nodes.forEach((n) => {
-        if (n.rx_lat && n.rx_lon) pts.push([n.rx_lat, n.rx_lon]);
-      });
-    }
-
-    const focusKey = `${selectedHex || "all"}:${focusNonce}:${pts.length}`;
-    if (fitted.current && lastFocusKey.current === focusKey) return;
 
     if (pts.length >= 2) {
-      map.fitBounds(pts, { padding: [40, 40] });
-      fitted.current = true;
-      lastFocusKey.current = focusKey;
+      map.fitBounds(pts, { padding: [60, 60], animate: true, duration: 0.5 });
+      initialFitted.current = true;
+      lastFocusNonce.current = focusNonce;
+      if (isExplicit) userMoved.current = false;
     } else if (pts.length === 1) {
-      map.setView(pts[0], 10);
-      fitted.current = true;
-      lastFocusKey.current = focusKey;
+      map.setView(pts[0], 10, { animate: true, duration: 0.5 });
+      initialFitted.current = true;
+      lastFocusNonce.current = focusNonce;
+      if (isExplicit) userMoved.current = false;
     }
-  }, [aircraft, nodes, trails, selectedHex, focusNonce, map]);
+  }, [aircraft, nodes, selectedHex, focusNonce, map]);
 
   return null;
 }
@@ -758,7 +755,6 @@ export default function LiveAircraftMap() {
             <FitBounds
               aircraft={displayAircraft}
               nodes={nodes}
-              trails={trailsRef.current}
               selectedHex={selectedHex}
               focusNonce={focusNonce}
             />
