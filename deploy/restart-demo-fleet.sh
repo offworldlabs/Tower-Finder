@@ -6,17 +6,18 @@ HOST="${HOST:-localhost}"
 PORT="${PORT:-3012}"
 VALIDATION_URL="${VALIDATION_URL:-https://localhost}"
 
-# Demo-oriented defaults: 14 nodes × 2 fps = 28 fps stays under the ~29-30 fps
-# ceiling imposed by the Kalman tracker (pure-Python, GIL-bound) on a 2-core droplet.
-NODES="${NODES:-14}"
+# Demo-oriented defaults: 12 nodes × ~1.9 fps = 22.8 fps comfortably under the
+# ~25 fps ceiling imposed by the Kalman tracker (pure-Python, GIL-bound) on a
+# 2-core droplet.  Increase NODES on a larger server.
+NODES="${NODES:-12}"
 MODE="${MODE:-adsb}"
 INTERVAL="${INTERVAL:-0.5}"
 TIME_SCALE="${TIME_SCALE:-4.0}"
-MIN_AIRCRAFT="${MIN_AIRCRAFT:-10}"
-MAX_AIRCRAFT="${MAX_AIRCRAFT:-14}"
+MIN_AIRCRAFT="${MIN_AIRCRAFT:-8}"
+MAX_AIRCRAFT="${MAX_AIRCRAFT:-12}"
 BEAM_WIDTH_DEG="${BEAM_WIDTH_DEG:-120}"
 MAX_RANGE_KM="${MAX_RANGE_KM:-140}"
-CONCURRENCY="${CONCURRENCY:-7}"
+CONCURRENCY="${CONCURRENCY:-6}"
 CONNECT_RETRIES="${CONNECT_RETRIES:-5}"
 
 LOG_FILE="${LOG_FILE:-/tmp/fleet.log}"
