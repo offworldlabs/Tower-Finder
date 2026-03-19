@@ -37,6 +37,8 @@ async def frame_processor_loop(default_pipeline):
             logging.debug("Frame processing failed", exc_info=True)
         finally:
             state.frame_queue.task_done()
+        # Yield to event loop between frames so HTTP/TCP handlers stay responsive
+        await asyncio.sleep(0)
 
 
 # ── Aircraft flush (2 s tick) ─────────────────────────────────────────────────

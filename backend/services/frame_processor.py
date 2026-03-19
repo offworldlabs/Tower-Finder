@@ -111,20 +111,23 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     """CPU-heavy frame processing — never runs on the event loop."""
     state.node_analytics.record_detection_frame(node_id, frame)
 
-    assoc = state.node_associator.submit_frame(node_id, frame, frame.get("timestamp", 0))
-    if assoc:
-        solver_inputs = state.node_associator.format_candidates_for_solver(assoc)
-        node_cfgs = get_node_configs()
-        for s_in in solver_inputs:
-            if s_in["n_nodes"] < 2:
-                continue
-            try:
-                result = solve_multinode(s_in, node_cfgs)
-            except Exception:
-                result = None
-            if result and result.get("success"):
-                key = f"mn-{result['timestamp_ms']}-{result['lat']:.3f}"
-                state.multinode_tracks[key] = result
+    # Skip expensive multinode solver for synthetic demo nodes — ground truth
+    # is already known and the solver would consume 100% CPU unnecessarily.
+    if not is_synthetic_node(node_id):
+        assoc = state.node_associator.submit_frame(node_id, frame, frame.get("timestamp", 0))
+        if assoc:
+            solver_inputs = state.node_associator.format_candidates_for_solver(assoc)
+            node_cfgs = get_node_configs()
+            for s_in in solver_inputs:
+                if s_in["n_nodes"] < 2:
+                    continue
+                try:
+                    result = solve_multinode(s_in, node_cfgs)
+                except Exception:
+                    result = None
+                if result and result.get("success"):
+                    key = f"mn-{result['timestamp_ms']}-{result['lat']:.3f}"
+                    state.multinode_tracks[key] = result
 
     # Extract embedded ADS-B
     adsb_list = frame.get("adsb")
