@@ -22,7 +22,8 @@ L.Icon.Default.mergeOptions({
 });
 
 const API_BASE = "/api";
-const ANIMATION_MS = 1800;
+const ANIMATION_MS = 700;
+const STALE_AIRCRAFT_MS = 8000;
 const MAX_HISTORY = 150;
 
 
@@ -34,8 +35,10 @@ function interpolateBearing(start, end, progress) {
 }
 
 
-function easeOutCubic(progress) {
-  return 1 - Math.pow(1 - progress, 3);
+function easeInOutCubic(progress) {
+  return progress < 0.5
+    ? 4 * progress * progress * progress
+    : 1 - Math.pow(-2 * progress + 2, 3) / 2;
 }
 
 /* ── Icon factories ───────────────────────────────────────────────── */
@@ -573,18 +576,33 @@ export default function LiveAircraftMap() {
     cancelAnimationFrame(animationFrameRef.current);
 
     if (!aircraft.length) {
-      displayedAircraftRef.current = {};
-      setDisplayAircraft([]);
+      const existing = Object.values(displayedAircraftRef.current || {});
+      if (!existing.length) {
+        setDisplayAircraft([]);
+        return;
+      }
+
+      const now = Date.now();
+      const fresh = existing.filter((ac) => {
+        const updatedAt = ac._updatedAt ?? now;
+        return now - updatedAt < STALE_AIRCRAFT_MS;
+      });
+
+      displayedAircraftRef.current = Object.fromEntries(fresh.map((ac) => [ac.hex, ac]));
+      setDisplayAircraft(fresh);
       return;
     }
 
     const startByHex = displayedAircraftRef.current;
     const startTs = performance.now();
+    const nextByHex = Object.fromEntries(
+      aircraft.map((ac) => [ac.hex, { ...ac, _updatedAt: Date.now() }])
+    );
 
     const animate = (now) => {
       const progress = Math.min(1, (now - startTs) / ANIMATION_MS);
-      const eased = easeOutCubic(progress);
-      const nextAircraft = aircraft.map((ac) => {
+      const eased = easeInOutCubic(progress);
+      const nextAircraft = Object.values(nextByHex).map((ac) => {
         const start = startByHex[ac.hex] || ac;
         const startLat = start.lat ?? ac.lat;
         const startLon = start.lon ?? ac.lon;
@@ -595,6 +613,15 @@ export default function LiveAircraftMap() {
           track: interpolateBearing(start.track, ac.track, eased),
         };
       });
+
+      Object.values(startByHex).forEach((ac) => {
+        if (nextByHex[ac.hex]) return;
+        const updatedAt = ac._updatedAt ?? 0;
+        if (Date.now() - updatedAt < STALE_AIRCRAFT_MS) {
+          nextAircraft.push(ac);
+        }
+      });
+
       displayedAircraftRef.current = Object.fromEntries(nextAircraft.map((ac) => [ac.hex, ac]));
       setDisplayAircraft(nextAircraft);
       if (progress < 1) {
