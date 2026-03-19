@@ -6,17 +6,17 @@ HOST="${HOST:-localhost}"
 PORT="${PORT:-3012}"
 VALIDATION_URL="${VALIDATION_URL:-https://localhost}"
 
-# Demo-oriented defaults: 16 nodes sits right at the empirical throughput ceiling
-# (~32 fps) for full-pipeline on a 2-core droplet with 4 parallel frame workers.
-NODES="${NODES:-16}"
+# Demo-oriented defaults: 14 nodes × 2 fps = 28 fps stays under the ~29-30 fps
+# ceiling imposed by the Kalman tracker (pure-Python, GIL-bound) on a 2-core droplet.
+NODES="${NODES:-14}"
 MODE="${MODE:-adsb}"
 INTERVAL="${INTERVAL:-0.5}"
 TIME_SCALE="${TIME_SCALE:-4.0}"
 MIN_AIRCRAFT="${MIN_AIRCRAFT:-10}"
-MAX_AIRCRAFT="${MAX_AIRCRAFT:-16}"
+MAX_AIRCRAFT="${MAX_AIRCRAFT:-14}"
 BEAM_WIDTH_DEG="${BEAM_WIDTH_DEG:-120}"
 MAX_RANGE_KM="${MAX_RANGE_KM:-140}"
-CONCURRENCY="${CONCURRENCY:-8}"
+CONCURRENCY="${CONCURRENCY:-7}"
 CONNECT_RETRIES="${CONNECT_RETRIES:-5}"
 
 LOG_FILE="${LOG_FILE:-/tmp/fleet.log}"
