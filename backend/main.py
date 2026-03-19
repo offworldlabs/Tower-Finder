@@ -6,7 +6,7 @@ import time
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from collections import defaultdict
+from collections import defaultdict, deque
 
 import httpx
 from fastapi import FastAPI, Query, HTTPException, Body, WebSocket, WebSocketDisconnect, Request, Header
@@ -53,6 +53,16 @@ _iq_commitments: dict[str, list[dict]] = {}      # node_id → list of IQ captur
 # External ADS-B truth source (OpenSky Network)
 # Cached positions: {icao_hex: {lat, lon, alt_m, timestamp}}
 _external_adsb_cache: dict[str, dict] = {}
+
+# ── Track history: rolling position buffer per aircraft ───────────────────────
+# hex → deque of [lat, lon, alt_ft, ts]  (maxlen=60, ~2 min at 2s updates)
+_track_histories: dict[str, deque] = {}
+_TRACK_HISTORY_MAX = 60
+
+# Ground truth trails from fleet_orchestrator (simulation true positions)
+# hex → deque of [lat, lon, alt_m, ts]
+_ground_truth_trails: dict[str, deque] = {}
+_GROUND_TRUTH_MAX = 120  # ~4 min at 2s updates
 
 # ── WebSocket broadcast infrastructure ────────────────────────────────────────
 _ws_clients: set[WebSocket] = set()
@@ -559,6 +569,20 @@ async def _frame_processor():
             _frame_queue.task_done()
 
 
+def _append_track_history(hex_code: str, lat: float, lon: float, alt_ft: float, ts: float):
+    """Append a position to the rolling track history for an aircraft hex."""
+    if hex_code not in _track_histories:
+        _track_histories[hex_code] = deque(maxlen=_TRACK_HISTORY_MAX)
+    hist = _track_histories[hex_code]
+    # Skip duplicate points (< 5m movement)
+    if hist:
+        dlat = abs(hist[-1][0] - lat)
+        dlon = abs(hist[-1][1] - lon)
+        if dlat < 0.00005 and dlon < 0.00005:
+            return
+    hist.append([round(lat, 6), round(lon, 6), round(alt_ft, 0), round(ts, 1)])
+
+
 def _build_combined_aircraft_json() -> dict:
     """Build combined aircraft.json from all sources:
     per-node pipelines, default pipeline, multi-node solver, ADS-B reports.
@@ -574,6 +598,7 @@ def _build_combined_aircraft_json() -> dict:
             if ac_hex in seen_hex:
                 continue
             seen_hex.add(ac_hex)
+            _append_track_history(ac_hex, track.lat, track.lon, track.alt_ft, now)
             aircraft.append({
                 "hex": ac_hex,
                 "type": "tisb_other",
@@ -588,6 +613,7 @@ def _build_combined_aircraft_json() -> dict:
                 "messages": track.n_detections,
                 "rssi": -10.0,
                 "category": "A3",
+                "recent_positions": list(_track_histories.get(ac_hex, [])),
             })
 
     # 2. Default pipeline (for file-loaded data)
@@ -596,6 +622,7 @@ def _build_combined_aircraft_json() -> dict:
         if ac_hex in seen_hex:
             continue
         seen_hex.add(ac_hex)
+        _append_track_history(ac_hex, track.lat, track.lon, track.alt_ft, now)
         aircraft.append({
             "hex": ac_hex,
             "type": "tisb_other",
@@ -610,6 +637,7 @@ def _build_combined_aircraft_json() -> dict:
             "messages": track.n_detections,
             "rssi": -10.0,
             "category": "A3",
+            "recent_positions": list(_track_histories.get(ac_hex, [])),
         })
 
     # 3. Multi-node solver results
@@ -622,6 +650,8 @@ def _build_combined_aircraft_json() -> dict:
         ac = _multinode_to_aircraft(key, r)
         if ac["hex"] not in seen_hex:
             seen_hex.add(ac["hex"])
+            _append_track_history(ac["hex"], ac["lat"], ac["lon"], ac["alt_baro"], now)
+            ac["recent_positions"] = list(_track_histories.get(ac["hex"], []))
             aircraft.append(ac)
     for k in stale_mn:
         _multinode_tracks.pop(k, None)
@@ -639,6 +669,7 @@ def _build_combined_aircraft_json() -> dict:
         if not lat or not lon:
             continue
         seen_hex.add(hex_code)
+        _append_track_history(hex_code, lat, lon, entry.get("alt_baro", 0), now)
         aircraft.append({
             "hex": hex_code,
             "type": "adsb_icao",
@@ -652,14 +683,23 @@ def _build_combined_aircraft_json() -> dict:
             "seen": 0,
             "messages": 1,
             "rssi": -15.0,
+            "recent_positions": list(_track_histories.get(hex_code, [])),
         })
     for k in stale_adsb:
         _adsb_aircraft.pop(k, None)
+
+    # Build compact ground truth snapshot (latest position per hex only)
+    gt_snapshot = {
+        h: list(trail)[-30:]  # last 30 points to keep payload small
+        for h, trail in _ground_truth_trails.items()
+        if trail
+    }
 
     return {
         "now": now,
         "messages": len(aircraft),
         "aircraft": aircraft,
+        "ground_truth": gt_snapshot,
     }
 
 
@@ -1567,6 +1607,79 @@ async def validate_ground_truth(body: dict = Body(...)):
         },
         "matches": matches[:50],  # limit response size
         "unmatched_ids": unmatched_truth[:20],
+    }
+
+
+@app.post("/api/test/ground-truth/push")
+async def push_ground_truth_snapshot(body: dict = Body(...)):
+    """Accept live ground truth position snapshots from fleet_orchestrator.
+
+    Expected body: {
+        "ts_ms": 1234567890000,
+        "aircraft": [
+            {"hex": "abc123", "lat": 33.5, "lon": -84.3,
+             "alt_m": 10000.0, "heading": 120.5, "speed_ms": 250.0}
+        ]
+    }
+    Called every 2s by the fleet orchestrator during a live simulation run.
+    """
+    ts = body.get("ts_ms", int(time.time() * 1000)) / 1000.0
+    aircraft_list = body.get("aircraft", [])
+    if not isinstance(aircraft_list, list):
+        raise HTTPException(status_code=400, detail="aircraft list required")
+
+    for ac in aircraft_list:
+        hex_code = ac.get("hex") or ac.get("adsb_hex") or ""
+        if not hex_code:
+            continue
+        lat = ac.get("lat", 0.0)
+        lon = ac.get("lon", 0.0)
+        alt_m = ac.get("alt_m") or ac.get("alt_km", 0) * 1000
+        if not lat or not lon:
+            continue
+        if hex_code not in _ground_truth_trails:
+            _ground_truth_trails[hex_code] = deque(maxlen=_GROUND_TRUTH_MAX)
+        trail = _ground_truth_trails[hex_code]
+        # Only append if moved (> ~5 m)
+        if trail:
+            dlat = abs(trail[-1][0] - lat)
+            dlon = abs(trail[-1][1] - lon)
+            if dlat < 0.00005 and dlon < 0.00005:
+                continue
+        trail.append([round(lat, 6), round(lon, 6), round(alt_m, 0), round(ts, 1)])
+
+    return {"status": "ok", "received": len(aircraft_list), "tracked_hex": len(_ground_truth_trails)}
+
+
+@app.get("/api/test/ground-truth/{hex_code}")
+async def get_ground_truth_trail(hex_code: str):
+    """Return ground truth trail and solved trail for a specific aircraft hex.
+
+    Used by the frontend map to render the dual-track comparison overlay
+    (cyan dashed = ground truth, yellow solid = solver output).
+    """
+    gt_trail = list(_ground_truth_trails.get(hex_code, []))
+    solved_trail = list(_track_histories.get(hex_code, []))
+
+    if not gt_trail and not solved_trail:
+        raise HTTPException(status_code=404, detail=f"No trail data for {hex_code}")
+
+    # Compute position error if both trails have recent data
+    position_error_km = None
+    if gt_trail and solved_trail:
+        gt_last = gt_trail[-1]   # [lat, lon, alt_m, ts]
+        sol_last = solved_trail[-1]  # [lat, lon, alt_ft, ts]
+        dlat = (sol_last[0] - gt_last[0]) * 111.0
+        dlon = (sol_last[1] - gt_last[1]) * 111.0 * math.cos(math.radians(gt_last[0]))
+        position_error_km = round(math.sqrt(dlat ** 2 + dlon ** 2), 3)
+
+    return {
+        "hex": hex_code,
+        "ground_truth_trail": gt_trail,    # [lat, lon, alt_m, ts]
+        "solved_trail": solved_trail,       # [lat, lon, alt_ft, ts]
+        "position_error_km": position_error_km,
+        "ground_truth_points": len(gt_trail),
+        "solved_points": len(solved_trail),
     }
 
 

@@ -434,6 +434,54 @@ class FleetOrchestrator:
         log.info("Ground truth saved: %s (%d snapshots)", path, len(self.ground_truth))
 
 
+async def _push_ground_truth_live(
+    orchestrator: FleetOrchestrator,
+    base_url: str,
+    interval_s: float = 2.0,
+):
+    """Push live ground truth positions to the server every interval_s seconds.
+
+    The server stores these in _ground_truth_trails so the frontend map can
+    render side-by-side solved track (yellow) vs ground truth (cyan dashed).
+    """
+    import httpx
+
+    log.info("Ground truth live push started (url=%s, interval=%.1fs)", base_url, interval_s)
+    url = f"{base_url}/api/test/ground-truth/push"
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        while orchestrator._running:
+            await asyncio.sleep(interval_s)
+
+            if orchestrator.world is None:
+                continue
+
+            try:
+                aircraft = orchestrator.world.get_aircraft_summary()
+                # Remap field names to what the server endpoint expects
+                payload_aircraft = []
+                for ac in aircraft:
+                    hex_code = ac.get("adsb_hex") or ac.get("id", "")
+                    if not hex_code:
+                        continue
+                    payload_aircraft.append({
+                        "hex": hex_code,
+                        "lat": ac["lat"],
+                        "lon": ac["lon"],
+                        "alt_m": ac["alt_km"] * 1000,
+                        "heading": ac.get("heading", 0),
+                        "speed_ms": ac.get("speed_ms", 0),
+                    })
+
+                if payload_aircraft:
+                    await client.post(url, json={
+                        "ts_ms": int(time.time() * 1000),
+                        "aircraft": payload_aircraft,
+                    })
+            except Exception as e:
+                log.debug("Ground truth push failed: %s", e)
+
+
 async def _validate_against_server(
     orchestrator: FleetOrchestrator,
     base_url: str,
@@ -536,6 +584,10 @@ async def main_async(args):
     if args.validate and args.validation_url:
         tasks.append(_validate_against_server(
             orchestrator, args.validation_url, interval_s=30.0,
+        ))
+        # Push live ground truth to server for map overlay comparison
+        tasks.append(_push_ground_truth_live(
+            orchestrator, args.validation_url, interval_s=2.0,
         ))
 
     try:

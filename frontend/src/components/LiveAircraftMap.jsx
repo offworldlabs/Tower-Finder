@@ -6,6 +6,7 @@ import {
   Popup,
   Circle,
   Polygon,
+  Polyline,
   useMap,
 } from "react-leaflet";
 import L from "leaflet";
@@ -118,7 +119,20 @@ export default function LiveAircraftMap() {
   const [aircraft, setAircraft] = useState([]);
   const [nodes, setNodes] = useState([]);
   const [showCoverage, setShowCoverage] = useState(true);
+  const [showTrails, setShowTrails] = useState(true);
+  const [showGroundTruth, setShowGroundTruth] = useState(true);
   const [connected, setConnected] = useState(false);
+  const [selectedHex, setSelectedHex] = useState(null);
+
+  // Trails accumulated locally — keyed by hex
+  // Each value: [[lat, lon, alt, ts], ...]
+  const trailsRef = useRef({});
+  // Ground truth trails from server WS broadcast — keyed by hex
+  // Each value: [[lat, lon, alt_m, ts], ...]
+  const groundTruthRef = useRef({});
+  // Force re-render when trails update (every WS tick)
+  const [trailTick, setTrailTick] = useState(0);
+
   const wsRef = useRef(null);
   const reconnectTimer = useRef(null);
 
@@ -168,7 +182,41 @@ export default function LiveAircraftMap() {
     ws.onmessage = (evt) => {
       try {
         const data = JSON.parse(evt.data);
-        setAircraft(data.aircraft || []);
+        const newAircraft = data.aircraft || [];
+        setAircraft(newAircraft);
+
+        // Update ground truth from broadcast
+        if (data.ground_truth && typeof data.ground_truth === "object") {
+          groundTruthRef.current = data.ground_truth;
+        }
+
+        // Update trails — prefer server-provided recent_positions, fall back to local accumulation
+        const trails = trailsRef.current;
+        const now = Date.now() / 1000;
+        for (const ac of newAircraft) {
+          if (!ac.lat || !ac.lon) continue;
+          const hex = ac.hex;
+          if (ac.recent_positions && ac.recent_positions.length > 0) {
+            // Use server-maintained history
+            trails[hex] = ac.recent_positions;
+          } else {
+            // Accumulate locally
+            const existing = trails[hex] || [];
+            const last = existing[existing.length - 1];
+            if (
+              !last ||
+              Math.abs(last[0] - ac.lat) > 0.00005 ||
+              Math.abs(last[1] - ac.lon) > 0.00005
+            ) {
+              const updated = [
+                ...existing,
+                [ac.lat, ac.lon, ac.alt_baro || 0, now],
+              ];
+              trails[hex] = updated.slice(-60);
+            }
+          }
+        }
+        setTrailTick((t) => t + 1);
       } catch {
         /* ignore */
       }
@@ -177,7 +225,6 @@ export default function LiveAircraftMap() {
     ws.onclose = () => {
       setConnected(false);
       wsRef.current = null;
-      // Reconnect after 3s
       reconnectTimer.current = setTimeout(connectWs, 3000);
     };
 
@@ -207,7 +254,25 @@ export default function LiveAircraftMap() {
         const res = await fetch(`${API_BASE}/radar/data/aircraft.json`);
         if (res.ok) {
           const data = await res.json();
-          setAircraft(data.aircraft || []);
+          const newAircraft = data.aircraft || [];
+          setAircraft(newAircraft);
+          if (data.ground_truth) groundTruthRef.current = data.ground_truth;
+          // Accumulate trails locally during polling
+          const trails = trailsRef.current;
+          const now = Date.now() / 1000;
+          for (const ac of newAircraft) {
+            if (!ac.lat || !ac.lon) continue;
+            if (ac.recent_positions && ac.recent_positions.length > 0) {
+              trails[ac.hex] = ac.recent_positions;
+            } else {
+              const existing = trails[ac.hex] || [];
+              const last = existing[existing.length - 1];
+              if (!last || Math.abs(last[0] - ac.lat) > 0.00005 || Math.abs(last[1] - ac.lon) > 0.00005) {
+                trails[ac.hex] = [...existing, [ac.lat, ac.lon, ac.alt_baro || 0, now]].slice(-60);
+              }
+            }
+          }
+          setTrailTick((t) => t + 1);
         }
       } catch {
         /* ignore */
@@ -215,6 +280,16 @@ export default function LiveAircraftMap() {
     }, 3000);
     return () => clearInterval(interval);
   }, [connected]);
+
+  // Compute position error for a given hex (solved vs ground truth)
+  function computeError(hex, ac) {
+    const gtTrail = groundTruthRef.current[hex];
+    if (!gtTrail || !gtTrail.length) return null;
+    const last = gtTrail[gtTrail.length - 1]; // [lat, lon, alt_m, ts]
+    const dlat = (ac.lat - last[0]) * 111.0;
+    const dlon = (ac.lon - last[1]) * 111.0 * Math.cos((ac.lat * Math.PI) / 180);
+    return Math.sqrt(dlat * dlat + dlon * dlon);
+  }
 
   return (
     <div className="live-map-container">
@@ -229,8 +304,30 @@ export default function LiveAircraftMap() {
             checked={showCoverage}
             onChange={(e) => setShowCoverage(e.target.checked)}
           />
-          Coverage zones
+          Coverage
         </label>
+        <label className="coverage-toggle">
+          <input
+            type="checkbox"
+            checked={showTrails}
+            onChange={(e) => setShowTrails(e.target.checked)}
+          />
+          Solved tracks
+        </label>
+        <label className="coverage-toggle">
+          <input
+            type="checkbox"
+            checked={showGroundTruth}
+            onChange={(e) => setShowGroundTruth(e.target.checked)}
+          />
+          Ground truth
+        </label>
+        {/* Legend */}
+        <span className="map-legend">
+          <span className="legend-dot" style={{ background: "#f59e0b" }} /> Solved
+          &nbsp;
+          <span className="legend-dot" style={{ background: "#22d3ee" }} /> Truth
+        </span>
       </div>
 
       <MapContainer
@@ -280,6 +377,45 @@ export default function LiveAircraftMap() {
           </Marker>
         ))}
 
+        {/* ── Solved track trails (yellow/amber) ── */}
+        {showTrails &&
+          Object.entries(trailsRef.current).map(([hex, positions]) => {
+            const pts = positions.map((p) => [p[0], p[1]]);
+            if (pts.length < 2) return null;
+            const isSelected = hex === selectedHex;
+            return (
+              <Polyline
+                key={`trail-${hex}-${trailTick}`}
+                positions={pts}
+                pathOptions={{
+                  color: isSelected ? "#fbbf24" : "#f59e0b",
+                  weight: isSelected ? 3 : 2,
+                  opacity: isSelected ? 0.9 : 0.65,
+                }}
+              />
+            );
+          })}
+
+        {/* ── Ground truth trails (cyan dashed) ── */}
+        {showGroundTruth &&
+          Object.entries(groundTruthRef.current).map(([hex, positions]) => {
+            if (!Array.isArray(positions) || positions.length < 2) return null;
+            const pts = positions.map((p) => [p[0], p[1]]);
+            const isSelected = hex === selectedHex;
+            return (
+              <Polyline
+                key={`gt-${hex}-${trailTick}`}
+                positions={pts}
+                pathOptions={{
+                  color: "#22d3ee",
+                  weight: isSelected ? 3 : 2,
+                  opacity: isSelected ? 0.9 : 0.5,
+                  dashArray: "6 5",
+                }}
+              />
+            );
+          })}
+
         {/* Aircraft markers */}
         {aircraft.map((ac) =>
           ac.lat && ac.lon ? (
@@ -287,6 +423,9 @@ export default function LiveAircraftMap() {
               key={ac.hex}
               position={[ac.lat, ac.lon]}
               icon={makeAircraftIcon(ac)}
+              eventHandlers={{
+                click: () => setSelectedHex((prev) => (prev === ac.hex ? null : ac.hex)),
+              }}
             >
               <Popup>
                 <strong>{ac.flight?.trim() || ac.hex}</strong>
@@ -302,6 +441,53 @@ export default function LiveAircraftMap() {
                     RMS: {ac.rms_delay}μs / {ac.rms_doppler}Hz
                   </>
                 )}
+                {/* Ground truth comparison */}
+                {(() => {
+                  const err = computeError(ac.hex, ac);
+                  const gtTrail = groundTruthRef.current[ac.hex];
+                  if (!gtTrail || !gtTrail.length) return null;
+                  const solvedPts = (trailsRef.current[ac.hex] || []).length;
+                  const truthPts = gtTrail.length;
+                  const gtLast = gtTrail[gtTrail.length - 1];
+                  const altErrFt = gtLast
+                    ? Math.abs(ac.alt_baro - (gtLast[2] / 0.3048))
+                    : null;
+                  return (
+                    <>
+                      <br />
+                      <hr style={{ margin: "4px 0", borderColor: "#444" }} />
+                      <span style={{ color: "#22d3ee", fontSize: "0.85em" }}>
+                        Ground truth comparison
+                      </span>
+                      <br />
+                      <span style={{ color: "#f59e0b" }}>
+                        ● Solved: {solvedPts} pts
+                      </span>
+                      &nbsp;
+                      <span style={{ color: "#22d3ee" }}>
+                        ● Truth: {truthPts} pts
+                      </span>
+                      <br />
+                      {err !== null && (
+                        <>
+                          <strong
+                            style={{
+                              color: err < 2 ? "#4ade80" : err < 5 ? "#fbbf24" : "#f87171",
+                            }}
+                          >
+                            Pos error: {err.toFixed(2)} km
+                          </strong>
+                          <br />
+                        </>
+                      )}
+                      {altErrFt !== null && (
+                        <span style={{ fontSize: "0.85em" }}>
+                          Alt error: {Math.round(altErrFt)} ft
+                        </span>
+                      )}
+                    </>
+                  );
+                })()}
               </Popup>
             </Marker>
           ) : null

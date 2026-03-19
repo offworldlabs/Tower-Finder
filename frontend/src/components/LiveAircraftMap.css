@@ -63,6 +63,25 @@
   accent-color: #ef4444;
 }
 
+/* Map legend pill */
+.map-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: #94a3b8;
+  padding-left: 6px;
+  border-left: 1px solid rgba(255,255,255,0.12);
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
 /* Aircraft marker triangle */
 .aircraft-marker {
   background: none !important;
