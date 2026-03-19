@@ -444,42 +444,48 @@ async def _push_ground_truth_live(
     The server stores these in _ground_truth_trails so the frontend map can
     render side-by-side solved track (yellow) vs ground truth (cyan dashed).
     """
-    import httpx
+    import urllib.request
 
     log.info("Ground truth live push started (url=%s, interval=%.1fs)", base_url, interval_s)
     url = f"{base_url}/api/test/ground-truth/push"
+    loop = asyncio.get_event_loop()
 
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        while orchestrator._running:
-            await asyncio.sleep(interval_s)
+    while orchestrator._running:
+        await asyncio.sleep(interval_s)
 
-            if orchestrator.world is None:
-                continue
+        if orchestrator.world is None:
+            continue
 
-            try:
-                aircraft = orchestrator.world.get_aircraft_summary()
-                # Remap field names to what the server endpoint expects
-                payload_aircraft = []
-                for ac in aircraft:
-                    hex_code = ac.get("adsb_hex") or ac.get("id", "")
-                    if not hex_code:
-                        continue
-                    payload_aircraft.append({
-                        "hex": hex_code,
-                        "lat": ac["lat"],
-                        "lon": ac["lon"],
-                        "alt_m": ac["alt_km"] * 1000,
-                        "heading": ac.get("heading", 0),
-                        "speed_ms": ac.get("speed_ms", 0),
-                    })
+        try:
+            aircraft = orchestrator.world.get_aircraft_summary()
+            # Remap field names to what the server endpoint expects
+            payload_aircraft = []
+            for ac in aircraft:
+                hex_code = ac.get("adsb_hex") or ac.get("id", "")
+                if not hex_code:
+                    continue
+                payload_aircraft.append({
+                    "hex": hex_code,
+                    "lat": ac["lat"],
+                    "lon": ac["lon"],
+                    "alt_m": ac["alt_km"] * 1000,
+                    "heading": ac.get("heading", 0),
+                    "speed_ms": ac.get("speed_ms", 0),
+                })
 
-                if payload_aircraft:
-                    await client.post(url, json={
-                        "ts_ms": int(time.time() * 1000),
-                        "aircraft": payload_aircraft,
-                    })
-            except Exception as e:
-                log.debug("Ground truth push failed: %s", e)
+            if payload_aircraft:
+                body = json.dumps({
+                    "ts_ms": int(time.time() * 1000),
+                    "aircraft": payload_aircraft,
+                }).encode()
+                req = urllib.request.Request(
+                    url, data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                await loop.run_in_executor(None, lambda r=req: urllib.request.urlopen(r, timeout=4))
+        except Exception as e:
+            log.debug("Ground truth push failed: %s", e)
 
 
 async def _validate_against_server(
@@ -488,9 +494,14 @@ async def _validate_against_server(
     interval_s: float = 30.0,
 ):
     """Periodically compare server output against simulation ground truth."""
-    import httpx
+    import urllib.request
 
     log.info("Validation loop started (interval=%.0fs, url=%s)", interval_s, base_url)
+    loop = asyncio.get_event_loop()
+
+    def _get_json(endpoint_url):
+        with urllib.request.urlopen(endpoint_url, timeout=10) as r:
+            return json.loads(r.read())
 
     while orchestrator._running:
         await asyncio.sleep(interval_s)
@@ -499,21 +510,24 @@ async def _validate_against_server(
             continue
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                # Fetch server's aircraft state
-                resp = await client.get(f"{base_url}/api/radar/data/aircraft.json")
-                if resp.status_code != 200:
-                    log.warning("Validation: server returned %d", resp.status_code)
-                    continue
-                server_aircraft = resp.json().get("aircraft", [])
+            server_aircraft_data = await loop.run_in_executor(
+                None, _get_json, f"{base_url}/api/radar/data/aircraft.json"
+            )
+            server_aircraft = server_aircraft_data.get("aircraft", [])
 
-                # Fetch server analytics
-                resp2 = await client.get(f"{base_url}/api/radar/analytics")
-                analytics = resp2.json() if resp2.status_code == 200 else {}
+            try:
+                analytics = await loop.run_in_executor(
+                    None, _get_json, f"{base_url}/api/radar/analytics"
+                )
+            except Exception:
+                analytics = {}
 
-                # Fetch node status
-                resp3 = await client.get(f"{base_url}/api/radar/nodes")
-                nodes_status = resp3.json() if resp3.status_code == 200 else {}
+            try:
+                nodes_status = await loop.run_in_executor(
+                    None, _get_json, f"{base_url}/api/radar/nodes"
+                )
+            except Exception:
+                nodes_status = {}
 
             # Compare against latest ground truth
             truth = orchestrator.ground_truth[-1]
