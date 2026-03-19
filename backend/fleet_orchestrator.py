@@ -198,6 +198,7 @@ class FleetOrchestrator:
         mode: str = "adsb",
         frame_interval: float = 0.5,
         max_concurrent_connects: int = 50,
+        connect_retries: int = 3,
     ):
         self.node_configs = node_configs
         self.host = host
@@ -205,6 +206,7 @@ class FleetOrchestrator:
         self.mode = mode
         self.frame_interval = frame_interval
         self.max_concurrent_connects = max_concurrent_connects
+        self.connect_retries = max(1, connect_retries)
         self.connections: dict[str, NodeConnection] = {}
         self.world: Optional[SimulationWorld] = None
         self._running = False
@@ -255,48 +257,75 @@ class FleetOrchestrator:
             self.world.min_aircraft, self.world.max_aircraft,
         )
 
-    async def _connect_batch(self, configs: list[dict]) -> int:
-        """Connect a batch of nodes concurrently."""
+    async def _connect_batch(self, configs: list[dict]) -> list[dict]:
+        """Connect a batch of nodes concurrently and return failed configs."""
         sem = asyncio.Semaphore(self.max_concurrent_connects)
-        connected = 0
+        failed: list[dict] = []
 
         async def _connect_one(cfg):
-            nonlocal connected
             async with sem:
+                if cfg["node_id"] in self.connections:
+                    return
                 conn = NodeConnection(cfg, self.host, self.port)
                 if await conn.connect():
                     if await conn.handshake():
                         self.connections[cfg["node_id"]] = conn
-                        connected += 1
+                        return
                     else:
                         await conn.close()
                         log.warning("%s: handshake failed", cfg["node_id"])
+                failed.append(cfg)
 
         await asyncio.gather(*[_connect_one(c) for c in configs])
-        return connected
+        return failed
 
     async def connect_all(self):
-        """Connect all nodes in batches to avoid overwhelming the server."""
+        """Connect all nodes in batches and retry failed handshakes."""
         log.info("Connecting %d nodes to %s:%d ...", len(self.node_configs), self.host, self.port)
 
-        batch_size = min(50, len(self.node_configs))
-        total_connected = 0
+        batch_size = max(1, min(self.max_concurrent_connects, len(self.node_configs)))
+        pending = list(self.node_configs)
 
-        for i in range(0, len(self.node_configs), batch_size):
-            batch = self.node_configs[i:i + batch_size]
-            n = await self._connect_batch(batch)
-            total_connected += n
+        for attempt in range(1, self.connect_retries + 1):
+            if not pending:
+                break
+
             log.info(
-                "  batch %d-%d: %d/%d connected (total: %d/%d)",
-                i + 1, i + len(batch), n, len(batch),
-                total_connected, len(self.node_configs),
+                "Connection round %d/%d: %d nodes pending",
+                attempt,
+                self.connect_retries,
+                len(pending),
             )
-            # Small delay between batches to let server process handshakes
-            await asyncio.sleep(0.5)
 
-        self._stats["connected_nodes"] = total_connected
-        self._stats["handshake_ok"] = total_connected
-        log.info("Fleet connected: %d/%d nodes", total_connected, len(self.node_configs))
+            next_pending: list[dict] = []
+            round_start_connected = len(self.connections)
+
+            for i in range(0, len(pending), batch_size):
+                batch = pending[i:i + batch_size]
+                failed = await self._connect_batch(batch)
+                next_pending.extend(failed)
+                round_connected = len(self.connections) - round_start_connected
+                log.info(
+                    "  batch %d-%d: %d/%d connected this round (total: %d/%d)",
+                    i + 1,
+                    i + len(batch),
+                    len(batch) - len(failed),
+                    len(batch),
+                    len(self.connections),
+                    len(self.node_configs),
+                )
+                await asyncio.sleep(1.0)
+
+            pending = next_pending
+            if pending and attempt < self.connect_retries:
+                log.info("Retrying %d failed nodes after cooldown", len(pending))
+                await asyncio.sleep(min(2 * attempt, 5))
+
+        self._stats["connected_nodes"] = len(self.connections)
+        self._stats["handshake_ok"] = len(self.connections)
+        log.info("Fleet connected: %d/%d nodes", len(self.connections), len(self.node_configs))
+        if pending:
+            log.warning("%d nodes still failed after retries", len(pending))
 
     def _record_ground_truth(self, timestamp_ms: int):
         """Snapshot the simulation ground truth for validation."""
@@ -576,6 +605,7 @@ async def main_async(args):
         mode=args.mode,
         frame_interval=args.interval,
         max_concurrent_connects=args.concurrency,
+        connect_retries=args.connect_retries,
     )
 
     # Build shared simulation world
@@ -647,6 +677,8 @@ def main():
                         help="Run duration in seconds (0 = infinite)")
     parser.add_argument("--concurrency", type=int, default=50,
                         help="Max concurrent TCP connections during setup")
+    parser.add_argument("--connect-retries", type=int, default=3,
+                        help="How many retry rounds to use for failed handshakes")
     parser.add_argument("--validate", action="store_true",
                         help="Enable validation against server API")
     parser.add_argument("--validation-url", type=str, default="http://localhost:8000",
