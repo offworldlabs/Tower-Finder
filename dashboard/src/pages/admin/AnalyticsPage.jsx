@@ -32,19 +32,19 @@ export default function AnalyticsPage() {
   // Trust distribution chart
   const trustData = summaries.map((n) => ({
     name: (n.node_id || "").slice(-8),
-    trust: Math.round((n.trust_score || 0) * 100),
-    reputation: Math.round((n.reputation_score || 0) * 100),
+    trust: Math.round((n.trust?.trust_score || 0) * 100),
+    reputation: Math.round((n.reputation?.reputation || 0) * 100),
   }));
 
   // Detection share pie chart
   const detectionShare = summaries.map((n, i) => ({
     name: (n.node_id || "").slice(-8),
-    value: n.total_detections || 0,
+    value: n.metrics?.total_detections || n.detection_area?.n_detections || 0,
     fill: COLORS[i % COLORS.length],
   }));
 
-  const totalDetections = summaries.reduce((s, n) => s + (n.total_detections || 0), 0);
-  const totalFrames = summaries.reduce((s, n) => s + (n.total_frames || 0), 0);
+  const totalDetections = summaries.reduce((s, n) => s + (n.metrics?.total_detections || n.detection_area?.n_detections || 0), 0);
+  const totalFrames = summaries.reduce((s, n) => s + (n.metrics?.total_frames || 0), 0);
 
   return (
     <>

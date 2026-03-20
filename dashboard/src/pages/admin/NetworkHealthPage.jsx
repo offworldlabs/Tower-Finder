@@ -12,14 +12,23 @@ export default function NetworkHealthPage() {
   const timerRef = useRef();
 
   const fetchAll = () => {
-    Promise.all([api.fleetDashboard(), api.aircraft(), api.nodes()])
-      .then(([d, a, n]) => {
+    Promise.all([api.fleetDashboard(), api.aircraft(), api.nodes(), api.analytics()])
+      .then(([d, a, n, an]) => {
         setDashboard(d);
         const acList = a.aircraft || [];
         setAircraft(acList);
         // api.nodes() returns {nodes: {id: {...}, ...}, total, connected}
         const nodeMap = n.nodes || {};
-        const nodeList = Object.entries(nodeMap).map(([id, info]) => ({ node_id: id, ...info }));
+        // analytics.nodes is {node_id: {trust, metrics, detection_area, reputation, ...}}
+        const analyticsMap = an?.nodes || {};
+        const nodeList = Object.entries(nodeMap).map(([id, info]) => {
+          const stats = analyticsMap[id] || {};
+          return {
+            node_id: id,
+            ...info,
+            _analytics: stats,
+          };
+        });
         setHistory((prev) => {
           const next = [
             ...prev,
@@ -145,11 +154,11 @@ export default function NetworkHealthPage() {
                         {online ? "Online" : "Offline"}
                       </span>
                     </td>
-                    <td>{(node.total_detections || node.detections || 0).toLocaleString()}</td>
-                    <td>{node.total_tracks || node.tracks || 0}</td>
-                    <td>{((node.trust_score || 0) * 100).toFixed(0)}%</td>
-                    <td>{((node.reputation_score || 0) * 100).toFixed(0)}%</td>
-                    <td>{formatUptime(node.uptime_s || node.uptime || 0)}</td>
+                    <td>{(node._analytics?.metrics?.total_detections || node._analytics?.detection_area?.n_detections || 0).toLocaleString()}</td>
+                    <td>{node._analytics?.metrics?.total_tracks || 0}</td>
+                    <td>{((node._analytics?.trust?.trust_score || 0) * 100).toFixed(0)}%</td>
+                    <td>{((node._analytics?.reputation?.reputation || 0) * 100).toFixed(0)}%</td>
+                    <td>{formatUptime(node._analytics?.metrics?.uptime_s || 0)}</td>
                   </tr>
                 );
               })}

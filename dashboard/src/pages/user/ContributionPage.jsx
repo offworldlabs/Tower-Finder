@@ -29,13 +29,13 @@ export default function ContributionPage() {
   // Build contribution chart
   const chartData = summaries.map((n) => ({
     name: (n.node_id || n.name || "").slice(-8),
-    detections: n.total_detections || 0,
-    trust: Math.round((n.trust_score || 0) * 100),
+    detections: n.metrics?.total_detections || n.detection_area?.n_detections || 0,
+    trust: Math.round((n.trust?.trust_score || 0) * 100),
   }));
 
-  const totalDetections = summaries.reduce((s, n) => s + (n.total_detections || 0), 0);
+  const totalDetections = summaries.reduce((s, n) => s + (n.metrics?.total_detections || n.detection_area?.n_detections || 0), 0);
   const avgTrust = summaries.length
-    ? summaries.reduce((s, n) => s + (n.trust_score || 0), 0) / summaries.length
+    ? summaries.reduce((s, n) => s + (n.trust?.trust_score || 0), 0) / summaries.length
     : 0;
 
   return (

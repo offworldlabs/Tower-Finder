@@ -72,17 +72,17 @@ export default function NodeManagementPage() {
               </div>
               <div className="node-meta">
                 <span className="meta-label">Detections</span>
-                <span>{(node.total_detections || summary.total_detections || 0).toLocaleString()}</span>
+                <span>{(summary.metrics?.total_detections || summary.detection_area?.n_detections || 0).toLocaleString()}</span>
                 <span className="meta-label">Frames</span>
-                <span>{(node.total_frames || summary.total_frames || 0).toLocaleString()}</span>
+                <span>{(summary.metrics?.total_frames || 0).toLocaleString()}</span>
                 <span className="meta-label">Trust</span>
-                <span>{((node.trust_score || summary.trust_score || 0) * 100).toFixed(0)}%</span>
+                <span>{((summary.trust?.trust_score || 0) * 100).toFixed(0)}%</span>
                 <span className="meta-label">Reputation</span>
-                <span>{((node.reputation_score || summary.reputation_score || 0) * 100).toFixed(0)}%</span>
+                <span>{((summary.reputation?.reputation || 0) * 100).toFixed(0)}%</span>
                 <span className="meta-label">Avg SNR</span>
-                <span>{(node.avg_snr || summary.avg_snr || 0).toFixed(1)} dB</span>
+                <span>{(summary.metrics?.avg_snr || 0).toFixed(1)} dB</span>
                 <span className="meta-label">Uptime</span>
-                <span>{formatUptime(node.uptime_s || summary.uptime_s || 0)}</span>
+                <span>{formatUptime(summary.metrics?.uptime_s || 0)}</span>
               </div>
             </div>
           );

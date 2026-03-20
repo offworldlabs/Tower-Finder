@@ -44,10 +44,12 @@ export default function DataExplorerPage() {
             </thead>
             <tbody>
               {archives.map((file, i) => {
-                const name = typeof file === "string" ? file : file.filename || file.name || "";
-                const node = file.node_id || extractNodeId(name);
-                const size = file.size ? formatBytes(file.size) : "—";
-                const date = file.timestamp || file.date || extractDate(name) || "—";
+                const key = typeof file === "string" ? file : (file.key || "");
+                const parts = key.split("/");
+                const name = parts[parts.length - 1] || key;
+                const node = parts[3] || parts[2] || extractNodeId(key) || "—";
+                const size = file.size_bytes != null ? formatBytes(file.size_bytes) : "—";
+                const date = file.modified ? new Date(file.modified).toLocaleString() : "—";
                 return (
                   <tr key={i}>
                     <td style={{ fontFamily: "monospace", fontSize: 12 }}>{name}</td>

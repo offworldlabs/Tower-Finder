@@ -16,7 +16,13 @@ export default function OverviewPage() {
       .then(([n, a]) => {
         // n.nodes is a dict {node_id: {status, ...}}
         const nodeMap = n.nodes || {};
-        const nodeList = Object.entries(nodeMap).map(([id, info]) => ({ node_id: id, ...info }));
+        // a.nodes is a dict {node_id: {trust, metrics, detection_area, reputation}}
+        const analyticsMap = a?.nodes || {};
+        const nodeList = Object.entries(nodeMap).map(([id, info]) => ({
+          node_id: id,
+          ...info,
+          _analytics: analyticsMap[id] || {},
+        }));
         setNodes(nodeList);
         setAnalytics(a);
       })
@@ -28,14 +34,14 @@ export default function OverviewPage() {
 
   const nodeList = Array.isArray(nodes) ? nodes : [];
   const onlineCount = nodeList.filter((n) => n.status !== "disconnected" && n.status != null).length;
-  const totalDetections = nodeList.reduce((s, n) => s + (n.total_detections || n.detections || 0), 0);
-  const totalTracks = nodeList.reduce((s, n) => s + (n.total_tracks || n.tracks || 0), 0);
+  const totalDetections = nodeList.reduce((s, n) => s + (n._analytics?.metrics?.total_detections || n._analytics?.detection_area?.n_detections || 0), 0);
+  const totalTracks = nodeList.reduce((s, n) => s + (n._analytics?.metrics?.total_tracks || 0), 0);
 
   // Build a simple detection-over-index chart from node data
   const chartData = nodeList.map((n, i) => ({
     name: n.name || n.node_id || `Node ${i + 1}`,
-    detections: n.total_detections || n.detections || 0,
-    tracks: n.total_tracks || n.tracks || 0,
+    detections: n._analytics?.metrics?.total_detections || n._analytics?.detection_area?.n_detections || 0,
+    tracks: n._analytics?.metrics?.total_tracks || 0,
   }));
 
   return (
@@ -120,13 +126,13 @@ export default function OverviewPage() {
                 </div>
                 <div className="node-meta">
                   <span className="meta-label">Detections</span>
-                  <span>{(node.total_detections || node.detections || 0).toLocaleString()}</span>
+                  <span>{(node._analytics?.metrics?.total_detections || node._analytics?.detection_area?.n_detections || 0).toLocaleString()}</span>
                   <span className="meta-label">Tracks</span>
-                  <span>{node.total_tracks || node.tracks || 0}</span>
+                  <span>{node._analytics?.metrics?.total_tracks || 0}</span>
                   <span className="meta-label">Uptime</span>
-                  <span>{formatUptime(node.uptime_s || node.uptime || 0)}</span>
+                  <span>{formatUptime(node._analytics?.metrics?.uptime_s || 0)}</span>
                   <span className="meta-label">Avg SNR</span>
-                  <span>{(node.avg_snr || 0).toFixed(1)} dB</span>
+                  <span>{(node._analytics?.metrics?.avg_snr || 0).toFixed(1)} dB</span>
                 </div>
               </div>
             );
