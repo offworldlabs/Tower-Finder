@@ -501,14 +501,20 @@ tr:hover td {
   background: var(--accent-hover);
 }
 
-.btn-outline {
+.btn-outline,
+.btn-secondary {
   background: transparent;
   border: 1px solid var(--border-light);
   color: var(--text-secondary);
 }
-.btn-outline:hover {
+.btn-outline:hover,
+.btn-secondary:hover {
   border-color: var(--accent);
   color: var(--text-primary);
+}
+.btn-secondary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .btn-sm {

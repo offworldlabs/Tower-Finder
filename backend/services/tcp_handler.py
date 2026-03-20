@@ -11,6 +11,14 @@ from datetime import datetime, timezone
 from core import state
 from chain_of_custody.hash_chain import HashChainVerifier, HashChainEntry
 
+# Lazy import to avoid circular dependency — routes.admin must be importable first
+def _log_event(category: str, message: str, severity: str = "info", meta: dict | None = None):
+    try:
+        from routes.admin import log_event
+        log_event(category, message, severity, meta)
+    except Exception:
+        pass
+
 RETINA_PROTOCOL_VERSION = "1.0"
 SERVER_CAPABILITIES = {
     "config_request": True,
@@ -92,6 +100,12 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                     }
                     logging.info("Radar TCP: CONFIG from %s (hash=%s, synthetic=%s)",
                                  node_id, config_hash, is_synth)
+                    _log_event(
+                        "node",
+                        f"Node {node_id} connected (hash={config_hash[:8]}, synthetic={is_synth})",
+                        "info",
+                        {"node_id": node_id, "config_hash": config_hash, "is_synthetic": is_synth},
+                    )
                     await _send_msg(writer, {
                         "type": "CONFIG_ACK",
                         "config_hash": config_hash,
@@ -150,6 +164,12 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
     finally:
         if node_id and node_id in state.connected_nodes:
             state.connected_nodes[node_id]["status"] = "disconnected"
+            _log_event(
+                "node",
+                f"Node {node_id} disconnected",
+                "warning",
+                {"node_id": node_id},
+            )
         logging.info("Radar TCP: connection closed from %s (node=%s)", peer, node_id)
         writer.close()
 
@@ -249,6 +269,12 @@ async def _handle_heartbeat(msg: dict, node_id: str | None, writer):
         if stored_hash and hb_hash != stored_hash:
             logging.warning("Radar TCP: config drift for %s (expected=%s got=%s)",
                             hb_node_id, stored_hash, hb_hash)
+            _log_event(
+                "config",
+                f"Config drift detected for {hb_node_id} (expected={stored_hash[:8]}, got={hb_hash[:8]})",
+                "warning",
+                {"node_id": hb_node_id, "expected_hash": stored_hash, "actual_hash": hb_hash},
+            )
             await _send_msg(writer, {"type": "CONFIG_REQUEST", "node_id": hb_node_id})
 
 

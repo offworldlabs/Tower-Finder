@@ -8,12 +8,13 @@ import { api } from "../../api/client";
 export default function OverviewPage() {
   const [nodes, setNodes] = useState([]);
   const [analytics, setAnalytics] = useState(null);
+  const [aircraftCount, setAircraftCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
   useEffect(() => {
-    Promise.all([api.nodes(), api.analytics()])
-      .then(([n, a]) => {
+    Promise.all([api.nodes(), api.analytics(), api.aircraft()])
+      .then(([n, a, ac]) => {
         // n.nodes is a dict {node_id: {status, ...}}
         const nodeMap = n.nodes || {};
         // a.nodes is a dict {node_id: {trust, metrics, detection_area, reputation}}
@@ -25,6 +26,7 @@ export default function OverviewPage() {
         }));
         setNodes(nodeList);
         setAnalytics(a);
+        setAircraftCount((ac.aircraft || []).length);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -34,8 +36,11 @@ export default function OverviewPage() {
 
   const nodeList = Array.isArray(nodes) ? nodes : [];
   const onlineCount = nodeList.filter((n) => n.status !== "disconnected" && n.status != null).length;
-  const totalDetections = nodeList.reduce((s, n) => s + (n._analytics?.metrics?.total_detections || n._analytics?.detection_area?.n_detections || 0), 0);
-  const totalTracks = nodeList.reduce((s, n) => s + (n._analytics?.metrics?.total_tracks || 0), 0);
+  // detection_area.n_detections is the most reliably populated counter
+  const totalFrameDetections = nodeList.reduce(
+    (s, n) => s + (n._analytics?.metrics?.total_detections || n._analytics?.detection_area?.n_detections || 0),
+    0,
+  );
 
   // Build a simple detection-over-index chart from node data
   const chartData = nodeList.map((n, i) => ({
@@ -57,12 +62,12 @@ export default function OverviewPage() {
           <div className="stat-value">{onlineCount} / {nodeList.length}</div>
         </div>
         <div className="stat-card success">
-          <div className="stat-label">Total Detections</div>
-          <div className="stat-value">{totalDetections.toLocaleString()}</div>
+          <div className="stat-label">Live Aircraft</div>
+          <div className="stat-value">{aircraftCount.toLocaleString()}</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Active Tracks</div>
-          <div className="stat-value">{totalTracks.toLocaleString()}</div>
+          <div className="stat-label">Frame Detections</div>
+          <div className="stat-value">{totalFrameDetections.toLocaleString()}</div>
         </div>
         <div className="stat-card warning">
           <div className="stat-label">Network Nodes</div>

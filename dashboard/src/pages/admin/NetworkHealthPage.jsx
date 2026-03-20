@@ -12,7 +12,10 @@ export default function NetworkHealthPage() {
   const timerRef = useRef();
 
   const fetchAll = () => {
-    Promise.all([api.fleetDashboard(), api.aircraft(), api.nodes(), api.analytics()])
+    // Fetch fleet dashboard and node data in parallel; if fleetDashboard fails
+    // we still render the node list from nodes/analytics.
+    const dashPromise = api.fleetDashboard().catch(() => null);
+    Promise.all([dashPromise, api.aircraft(), api.nodes(), api.analytics()])
       .then(([d, a, n, an]) => {
         setDashboard(d);
         const acList = a.aircraft || [];
@@ -40,8 +43,10 @@ export default function NetworkHealthPage() {
           ].slice(-30);
           return next;
         });
-        // Attach nodeList onto dashboard for rendering below
-        d._nodeList = nodeList;
+        // Attach nodeList onto dashboard (or a stub) for rendering below
+        const dash = d || {};
+        dash._nodeList = nodeList;
+        setDashboard({ ...dash, _nodeList: nodeList });
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -133,8 +138,9 @@ export default function NetworkHealthPage() {
               <tr>
                 <th>Node ID</th>
                 <th>Status</th>
+                <th>Last Heartbeat</th>
                 <th>Detections</th>
-                <th>Tracks</th>
+                <th>Avg SNR</th>
                 <th>Trust</th>
                 <th>Reputation</th>
                 <th>Uptime</th>
@@ -147,21 +153,27 @@ export default function NetworkHealthPage() {
                 return (
                   <tr key={id}>
                     <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
-                      {id.slice(-12)}
+                      {id}
                     </td>
                     <td>
                       <span className={`badge ${online ? "online" : "offline"}`}>
                         {online ? "Online" : "Offline"}
                       </span>
                     </td>
+                    <td style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                      {formatRelativeTime(node.last_heartbeat)}
+                    </td>
                     <td>{(node._analytics?.metrics?.total_detections || node._analytics?.detection_area?.n_detections || 0).toLocaleString()}</td>
-                    <td>{node._analytics?.metrics?.total_tracks || 0}</td>
+                    <td>{(node._analytics?.metrics?.avg_snr || 0).toFixed(1)} dB</td>
                     <td>{((node._analytics?.trust?.trust_score || 0) * 100).toFixed(0)}%</td>
                     <td>{((node._analytics?.reputation?.reputation || 0) * 100).toFixed(0)}%</td>
                     <td>{formatUptime(node._analytics?.metrics?.uptime_s || 0)}</td>
                   </tr>
                 );
               })}
+              {nodes.length === 0 && (
+                <tr><td colSpan={8} style={{ textAlign: "center", padding: 32 }}>No nodes connected</td></tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -176,4 +188,13 @@ function formatUptime(seconds) {
   const m = Math.floor((seconds % 3600) / 60);
   if (h > 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
   return `${h}h ${m}m`;
+}
+
+function formatRelativeTime(isoStr) {
+  if (!isoStr) return "—";
+  const diffS = Math.round((Date.now() - new Date(isoStr).getTime()) / 1000);
+  if (diffS < 5) return "just now";
+  if (diffS < 60) return `${diffS}s ago`;
+  if (diffS < 3600) return `${Math.floor(diffS / 60)}m ago`;
+  return `${Math.floor(diffS / 3600)}h ago`;
 }

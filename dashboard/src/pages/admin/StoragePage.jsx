@@ -1,42 +1,53 @@
 import { useState, useEffect } from "react";
 import { api } from "../../api/client";
 
+const PAGE_SIZE = 50;
+
 export default function StoragePage() {
   const [storage, setStorage] = useState(null);
   const [archives, setArchives] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([api.adminStorage(), api.archive()])
-      .then(([s, a]) => {
-        setStorage(s);
-        setArchives(Array.isArray(a) ? a : a.files || a.archives || []);
+    api.adminStorage()
+      .then((s) => setStorage(s))
+      .catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    setLoading(true);
+    api.archive(PAGE_SIZE, page * PAGE_SIZE)
+      .then((data) => {
+        setArchives(data.files || []);
+        setTotal(data.total ?? data.count ?? 0);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, []);
+  }, [page]);
 
-  if (loading) return <div className="empty-state">Loading…</div>;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
     <>
       <div className="page-header">
-        <h1>Data & Storage</h1>
+        <h1>Data &amp; Storage</h1>
         <p>Storage usage and data management</p>
       </div>
 
       <div className="stats-grid">
         <div className="stat-card accent">
           <div className="stat-label">Archive Files</div>
-          <div className="stat-value">{storage?.archive_files || 0}</div>
+          <div className="stat-value">{storage?.archive_files?.toLocaleString() ?? "—"}</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Archive Size</div>
-          <div className="stat-value">{storage?.archive_mb?.toFixed(1) || 0} MB</div>
+          <div className="stat-value">{storage?.archive_mb?.toFixed(1) ?? "0"} MB</div>
         </div>
         <div className="stat-card success">
-          <div className="stat-label">Available Archives</div>
-          <div className="stat-value">{archives.length}</div>
+          <div className="stat-label">Total Indexed</div>
+          <div className="stat-value">{total.toLocaleString()}</div>
         </div>
       </div>
 
@@ -48,11 +59,11 @@ export default function StoragePage() {
               <tbody>
                 <tr>
                   <td style={{ color: "var(--text-muted)" }}>Archive Files</td>
-                  <td>{storage?.archive_files || 0}</td>
+                  <td>{storage?.archive_files?.toLocaleString() ?? "—"}</td>
                 </tr>
                 <tr>
                   <td style={{ color: "var(--text-muted)" }}>Total Size</td>
-                  <td>{storage?.archive_mb?.toFixed(2) || 0} MB</td>
+                  <td>{storage?.archive_mb?.toFixed(2) ?? "0"} MB</td>
                 </tr>
                 <tr>
                   <td style={{ color: "var(--text-muted)" }}>Raw Bytes</td>
@@ -74,7 +85,28 @@ export default function StoragePage() {
       </div>
 
       <div className="card" style={{ marginTop: 16 }}>
-        <div className="card-header"><h3>Recent Archives</h3></div>
+        <div className="card-header">
+          <h3>Recent Archives</h3>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button
+              className="btn btn-secondary"
+              disabled={page === 0 || loading}
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+            >
+              ← Prev
+            </button>
+            <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
+              {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of {total.toLocaleString()}
+            </span>
+            <button
+              className="btn btn-secondary"
+              disabled={page >= totalPages - 1 || loading}
+              onClick={() => setPage((p) => p + 1)}
+            >
+              Next →
+            </button>
+          </div>
+        </div>
         <div className="table-wrapper">
           <table>
             <thead>
@@ -82,24 +114,30 @@ export default function StoragePage() {
                 <th>Filename</th>
                 <th>Node</th>
                 <th>Size</th>
+                <th>Date</th>
               </tr>
             </thead>
             <tbody>
-              {archives.slice(0, 50).map((file, i) => {
-                const name = typeof file === "string" ? file : file.filename || file.name || "";
+              {loading ? (
+                <tr><td colSpan={4} style={{ textAlign: "center", padding: 32 }}>Loading…</td></tr>
+              ) : archives.length === 0 ? (
+                <tr><td colSpan={4} style={{ textAlign: "center", padding: 32 }}>No archives</td></tr>
+              ) : archives.map((file, i) => {
+                const key = typeof file === "string" ? file : (file.key || "");
+                const parts = key.split("/");
+                const name = parts[parts.length - 1] || key;
+                const node = parts.length >= 4 ? parts[3] : "—";
+                const size = file.size_bytes != null ? formatBytes(file.size_bytes) : "—";
+                const date = file.modified ? new Date(file.modified).toLocaleString() : "—";
                 return (
                   <tr key={i}>
                     <td style={{ fontFamily: "monospace", fontSize: 12 }}>{name}</td>
-                    <td>{file.node_id || "—"}</td>
-                    <td>{file.size ? formatBytes(file.size) : "—"}</td>
+                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{node}</td>
+                    <td>{size}</td>
+                    <td style={{ fontSize: 12 }}>{date}</td>
                   </tr>
                 );
               })}
-              {archives.length === 0 && (
-                <tr>
-                  <td colSpan={3} style={{ textAlign: "center", padding: 32 }}>No archives</td>
-                </tr>
-              )}
             </tbody>
           </table>
         </div>

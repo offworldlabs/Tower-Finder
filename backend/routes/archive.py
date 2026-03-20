@@ -11,9 +11,11 @@ router = APIRouter()
 async def list_archive(
     date: str = Query(None, description="Date prefix, e.g. 2025/06/21"),
     node_id: str = Query(None, description="Filter by node ID"),
+    limit: int = Query(50, ge=1, le=500, description="Page size"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
 ):
-    files = list_archived_files(date_prefix=date, node_id=node_id)
-    return {"files": files, "count": len(files)}
+    result = list_archived_files(date_prefix=date, node_id=node_id, limit=limit, offset=offset)
+    return result
 
 
 @router.get("/api/data/archive/{key:path}")

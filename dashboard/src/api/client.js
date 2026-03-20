@@ -37,7 +37,11 @@ export const api = {
   overlaps: () => request("/api/radar/association/overlaps"),
 
   // Archive
-  archive: () => request("/api/data/archive"),
+  archive: (limit = 50, offset = 0, nodeId = null) => {
+    const params = new URLSearchParams({ limit, offset });
+    if (nodeId) params.set("node_id", nodeId);
+    return request(`/api/data/archive?${params}`);
+  },
 
   // Custody
   custody: () => request("/api/custody/status"),

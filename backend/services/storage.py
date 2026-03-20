@@ -103,14 +103,23 @@ def archive_detections(node_id: str, detections: list[dict], *, tag: str = "dete
     return key
 
 
-def list_archived_files(date_prefix: str | None = None, node_id: str | None = None) -> list[dict]:
+def list_archived_files(
+    date_prefix: str | None = None,
+    node_id: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    sort_desc: bool = True,
+) -> dict:
     """List archived detection files filtered by optional date prefix and node_id.
 
     Args:
         date_prefix: e.g. "2025/06/21" or "2025/06"
         node_id: filter to a specific node
+        limit: max number of results to return (default 100, max 500)
+        offset: pagination offset
+        sort_desc: if True, newest files first
 
-    Returns list of {key, size_bytes, modified} dicts.
+    Returns dict of {files: [...], count: N, total: N}.
     """
     _ensure_local_dir()
     base = Path(_LOCAL_ARCHIVE_DIR)
@@ -121,9 +130,9 @@ def list_archived_files(date_prefix: str | None = None, node_id: str | None = No
         search_dir = base / date_prefix
 
     if not search_dir.exists():
-        return results
+        return {"files": [], "count": 0, "total": 0}
 
-    for p in sorted(search_dir.rglob("*.json")):
+    for p in search_dir.rglob("*.json"):
         rel = p.relative_to(base)
         parts = rel.parts
         # key structure: YYYY/MM/DD/node_id/filename.json
@@ -137,7 +146,11 @@ def list_archived_files(date_prefix: str | None = None, node_id: str | None = No
             "modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
         })
 
-    return results
+    results.sort(key=lambda x: x["modified"], reverse=sort_desc)
+    total = len(results)
+    limit = min(limit, 500)  # hard cap
+    page = results[offset: offset + limit]
+    return {"files": page, "count": len(page), "total": total}
 
 
 def read_archived_file(key: str) -> dict | None:
