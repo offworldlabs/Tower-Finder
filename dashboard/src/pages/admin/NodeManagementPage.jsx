@@ -11,7 +11,10 @@ export default function NodeManagementPage() {
   useEffect(() => {
     Promise.all([api.nodes(), api.analytics()])
       .then(([n, a]) => {
-        setNodes(Array.isArray(n) ? n : n.nodes || []);
+        // n.nodes is a dict {node_id: {status, ...}}
+        const nodeMap = n.nodes || {};
+        const nodeList = Object.entries(nodeMap).map(([id, info]) => ({ node_id: id, ...info }));
+        setNodes(nodeList);
         setAnalytics(a);
       })
       .catch(console.error)
@@ -20,7 +23,9 @@ export default function NodeManagementPage() {
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
-  const summaries = analytics?.node_summaries || analytics?.nodes || [];
+  // analytics.nodes is a dict {node_id: summary}
+  const rawSummaries = analytics?.nodes || {};
+  const summaries = Array.isArray(rawSummaries) ? rawSummaries : Object.values(rawSummaries);
   const summaryMap = {};
   summaries.forEach((s) => {
     summaryMap[s.node_id] = s;

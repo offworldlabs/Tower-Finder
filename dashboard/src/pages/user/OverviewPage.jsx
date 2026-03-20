@@ -14,7 +14,10 @@ export default function OverviewPage() {
   useEffect(() => {
     Promise.all([api.nodes(), api.analytics()])
       .then(([n, a]) => {
-        setNodes(Array.isArray(n) ? n : n.nodes || []);
+        // n.nodes is a dict {node_id: {status, ...}}
+        const nodeMap = n.nodes || {};
+        const nodeList = Object.entries(nodeMap).map(([id, info]) => ({ node_id: id, ...info }));
+        setNodes(nodeList);
         setAnalytics(a);
       })
       .catch(console.error)
