@@ -21,8 +21,10 @@ export default function ContributionPage() {
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
-  const summaries = analytics?.node_summaries || analytics?.nodes || [];
-  const crossNode = analytics?.cross_node_analysis || {};
+  // analytics.nodes is a dict {node_id: summary} from the backend
+  const rawNodes = analytics?.nodes || {};
+  const summaries = Array.isArray(rawNodes) ? rawNodes : Object.values(rawNodes);
+  const crossNode = analytics?.cross_node || analytics?.cross_node_analysis || {};
 
   // Build contribution chart
   const chartData = summaries.map((n) => ({

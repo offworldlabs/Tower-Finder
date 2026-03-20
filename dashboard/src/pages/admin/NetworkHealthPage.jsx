@@ -12,22 +12,27 @@ export default function NetworkHealthPage() {
   const timerRef = useRef();
 
   const fetchAll = () => {
-    Promise.all([api.fleetDashboard(), api.aircraft()])
-      .then(([d, a]) => {
+    Promise.all([api.fleetDashboard(), api.aircraft(), api.nodes()])
+      .then(([d, a, n]) => {
         setDashboard(d);
         const acList = a.aircraft || [];
         setAircraft(acList);
+        // api.nodes() returns {nodes: {id: {...}, ...}, total, connected}
+        const nodeMap = n.nodes || {};
+        const nodeList = Object.entries(nodeMap).map(([id, info]) => ({ node_id: id, ...info }));
         setHistory((prev) => {
           const next = [
             ...prev,
             {
               time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
               aircraft: acList.length,
-              nodes: d.nodes?.length || 0,
+              nodes: nodeList.length,
             },
           ].slice(-30);
           return next;
         });
+        // Attach nodeList onto dashboard for rendering below
+        d._nodeList = nodeList;
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -41,11 +46,12 @@ export default function NetworkHealthPage() {
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
-  const nodes = dashboard?.nodes || [];
-  const tracks = dashboard?.tracks || {};
+  const nodes = dashboard?._nodeList || [];
+  const dashNodes = dashboard?.nodes || {}; // {total, active, synthetic, real}
+  const tracks = dashboard?.pipeline || {};
   const analyticsData = dashboard?.analytics || {};
   const coc = dashboard?.chain_of_custody || {};
-  const onlineNodes = nodes.filter((n) => n.status === "online" || n.connected);
+  const onlineNodes = nodes.filter((n) => n.status !== "disconnected" && n.status !== undefined);
 
   return (
     <>
@@ -57,7 +63,7 @@ export default function NetworkHealthPage() {
       <div className="stats-grid">
         <div className="stat-card accent">
           <div className="stat-label">Nodes Online</div>
-          <div className="stat-value">{onlineNodes.length} / {nodes.length}</div>
+          <div className="stat-value">{dashNodes.active ?? onlineNodes.length} / {dashNodes.total ?? nodes.length}</div>
         </div>
         <div className="stat-card success">
           <div className="stat-label">Aircraft Tracked</div>
@@ -65,11 +71,11 @@ export default function NetworkHealthPage() {
         </div>
         <div className="stat-card warning">
           <div className="stat-label">Active Tracks</div>
-          <div className="stat-value">{tracks.active || tracks.count || 0}</div>
+          <div className="stat-value">{tracks.active_tracks || 0}</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">CoC Chains</div>
-          <div className="stat-value">{coc.total_chains || Object.keys(coc).length || 0}</div>
+          <div className="stat-value">{coc.nodes_with_chains || 0}</div>
         </div>
       </div>
 
