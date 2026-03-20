@@ -1,8 +1,8 @@
 # Tower Finder
 
-Passive radar network platform — find broadcast tower illuminators, ingest IQ data from distributed nodes, process detections, and visualize aircraft tracks in real time.
+Passive radar network platform — find broadcast tower illuminators, collect detections from distributed nodes, and visualize aircraft tracks in real time.
 
-Given geographic coordinates, the system queries the [Maprad.io](https://maprad.io) transmitter database for nearby FM/VHF/UHF broadcast towers, then filters and ranks them by suitability for passive radar use. A distributed node network streams IQ frames over TCP for server-side passive radar processing, with results displayed on a live aircraft map and managed through admin/user dashboards.
+Given geographic coordinates, the system queries the [Maprad.io](https://maprad.io) transmitter database for nearby FM/VHF/UHF broadcast towers, then filters and ranks them by suitability for passive radar use. A distributed node network performs local signal processing and reports detections over TCP, with results displayed on a live aircraft map and managed through admin/user dashboards.
 
 ## Project Structure
 
@@ -82,15 +82,16 @@ The dashboard (`dashboard/`) is a separate React app with role-based views:
 
 **Admin pages:** Network health, node management, analytics, events, storage, chain-of-custody, user management, configuration.
 
-## Passive Radar Pipeline
+## Passive Radar Network
 
-The backend runs a full passive radar signal processing pipeline:
+Distributed nodes run their own passive radar signal processing and report results to the server:
 
-1. Distributed nodes stream IQ frames to the TCP server (port 3012)
-2. Parallel frame processor workers (configurable via `FRAME_WORKERS`, default 4) run matched filtering and detection
-3. Detections are correlated with ADS-B truth data from OpenSky
-4. Node reputation and trust scores are computed continuously
-5. Results are written to tar1090-compatible JSON for the live map and archived to B2 storage
+1. Nodes connect to the TCP server (port 3012) using the RETINA protocol (HELLO → CONFIG → steady-state messages)
+2. Each node performs local signal processing and sends DETECTION messages with bistatic range/Doppler data
+3. The server verifies detection signatures (chain-of-custody), correlates with ADS-B truth data from OpenSky, and computes node reputation/trust scores
+4. Nodes also submit IQ hash commitments and chain entries for auditability (no raw IQ is transferred)
+5. Parallel frame processor workers (configurable via `FRAME_WORKERS`, default 4) process incoming detections and write tar1090-compatible JSON for the live map
+6. Processed data is archived to B2 storage
 
 ## API
 
