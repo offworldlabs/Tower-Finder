@@ -1,0 +1,50 @@
+const BASE = "";
+
+async function request(path, opts = {}) {
+  const res = await fetch(`${BASE}${path}`, {
+    credentials: "same-origin",
+    ...opts,
+    headers: { "Content-Type": "application/json", ...opts.headers },
+  });
+  if (res.status === 401) {
+    window.location.href = "/login";
+    throw new Error("Unauthorized");
+  }
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+export const api = {
+  // Auth
+  me: () => request("/api/auth/me"),
+  logout: () => request("/api/auth/logout", { method: "POST" }),
+
+  // Radar / nodes
+  nodes: () => request("/api/radar/nodes"),
+  status: () => request("/api/radar/status"),
+  analytics: () => request("/api/radar/analytics"),
+  nodeAnalytics: (id) => request(`/api/radar/analytics/${id}`),
+  aircraft: () => request("/api/radar/data/aircraft.json"),
+  overlaps: () => request("/api/radar/association/overlaps"),
+
+  // Archive
+  archive: () => request("/api/data/archive"),
+
+  // Custody
+  custody: () => request("/api/custody/status"),
+
+  // Test dashboard (fleet overview)
+  fleetDashboard: () => request("/api/test/dashboard"),
+
+  // Admin
+  adminUsers: () => request("/api/admin/users"),
+  adminSetRole: (uid, role) =>
+    request(`/api/admin/users/${uid}/role`, {
+      method: "PUT",
+      body: JSON.stringify({ role }),
+    }),
+  adminEvents: (limit = 100) => request(`/api/admin/events?limit=${limit}`),
+  adminNodeConfig: () => request("/api/admin/config/nodes"),
+  adminTowerConfig: () => request("/api/admin/config/towers"),
+  adminStorage: () => request("/api/admin/storage"),
+};

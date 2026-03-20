@@ -36,6 +36,8 @@ from routes.streaming import router as streaming_router
 from routes.archive import router as archive_router
 from routes.test import router as test_router
 from routes.custody import router as custody_router
+from routes.auth import router as auth_router
+from routes.admin import router as admin_router
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -92,9 +94,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv(
         "CORS_ORIGINS",
-        "http://localhost:5173,http://localhost:3000,https://retina.fm,"
-        "https://api.retina.fm,https://testapi.retina.fm,https://testmap.retina.fm",
+        "http://localhost:5173,http://localhost:3000,http://localhost:5174,"
+        "https://retina.fm,https://api.retina.fm,https://dash.retina.fm,"
+        "https://admin.retina.fm,https://testapi.retina.fm,https://testmap.retina.fm",
     ).split(","),
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -103,6 +107,7 @@ app.add_middleware(
 for router in (
     towers_router, stats_router, radar_router, analytics_router,
     streaming_router, archive_router, test_router, custody_router,
+    auth_router, admin_router,
 ):
     app.include_router(router)
 

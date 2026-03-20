@@ -7,3 +7,4 @@ scipy>=1.7.0
 pyyaml>=5.4.0
 b2sdk>=2.0.0
 cryptography>=41.0.0
+PyJWT>=2.8.0
