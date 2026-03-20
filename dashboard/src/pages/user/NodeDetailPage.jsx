@@ -70,15 +70,16 @@ export default function NodeDetailPage() {
             <div className="chart-container" style={{ height: 200 }}>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={barData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                  <XAxis dataKey="name" stroke="#64748b" tick={{ fontSize: 11 }} />
-                  <YAxis stroke="#64748b" tick={{ fontSize: 11 }} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis dataKey="name" stroke="#94a3b8" tick={{ fontSize: 11 }} />
+                  <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} />
                   <Tooltip
                     contentStyle={{
-                      background: "#1a2035",
-                      border: "1px solid #1e293b",
+                      background: "#ffffff",
+                      border: "1px solid #e2e8f0",
                       borderRadius: 6,
                       fontSize: 12,
+                      color: "#0f172a",
                     }}
                   />
                   <Bar dataKey="value" fill="#3b82f6" radius={[4, 4, 0, 0]} />

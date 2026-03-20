@@ -86,15 +86,16 @@ export default function NetworkHealthPage() {
             <div className="chart-container">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={history}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                  <XAxis dataKey="time" stroke="#64748b" tick={{ fontSize: 10 }} />
-                  <YAxis stroke="#64748b" tick={{ fontSize: 11 }} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis dataKey="time" stroke="#94a3b8" tick={{ fontSize: 10 }} />
+                  <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} />
                   <Tooltip
                     contentStyle={{
-                      background: "#1a2035",
-                      border: "1px solid #1e293b",
+                      background: "#ffffff",
+                      border: "1px solid #e2e8f0",
                       borderRadius: 6,
                       fontSize: 12,
+                      color: "#0f172a",
                     }}
                   />
                   <Area type="monotone" dataKey="aircraft" stroke="#3b82f6" fill="rgba(59,130,246,0.15)" name="Aircraft" />

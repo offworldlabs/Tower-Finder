@@ -59,25 +59,7 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      <div className="card" style={{ marginTop: 16 }}>
-        <div className="card-header">
-          <h3>Setup Guide</h3>
-        </div>
-        <div className="card-body">
-          <div style={{ color: "var(--text-secondary)", fontSize: 14 }}>
-            <p style={{ marginBottom: 12 }}>
-              <strong>Getting Started with Your Retina Node</strong>
-            </p>
-            <ol style={{ paddingLeft: 20, display: "flex", flexDirection: "column", gap: 8 }}>
-              <li>Connect your node hardware to power and ethernet</li>
-              <li>The node will automatically register with the network</li>
-              <li>Your node will appear in the Overview tab within minutes</li>
-              <li>Monitor detections and trust score as the node calibrates</li>
-              <li>Join the community Discord for support and updates</li>
-            </ol>
-          </div>
-        </div>
-      </div>
+
     </>
   );
 }

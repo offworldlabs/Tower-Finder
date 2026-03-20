@@ -1,24 +1,24 @@
-/* ── CSS Variables (Dark Theme) ───────────────────────────────────────────── */
+/* ── CSS Variables ────────────────────────────────────────────────────────── */
 :root {
-  --bg-primary: #0b0f19;
-  --bg-secondary: #111827;
-  --bg-card: #1a2035;
-  --bg-card-hover: #1e293b;
-  --bg-input: #0f172a;
-  --text-primary: #f1f5f9;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  --border: #1e293b;
-  --border-light: #334155;
+  --bg-primary: #f1f5f9;
+  --bg-secondary: #ffffff;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f8fafc;
+  --bg-input: #f8fafc;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+  --border: #e2e8f0;
+  --border-light: #cbd5e1;
   --accent: #3b82f6;
   --accent-hover: #2563eb;
-  --accent-light: rgba(59, 130, 246, 0.15);
+  --accent-light: rgba(59, 130, 246, 0.10);
   --success: #10b981;
-  --success-light: rgba(16, 185, 129, 0.15);
+  --success-light: rgba(16, 185, 129, 0.10);
   --warning: #f59e0b;
-  --warning-light: rgba(245, 158, 11, 0.15);
+  --warning-light: rgba(245, 158, 11, 0.10);
   --error: #ef4444;
-  --error-light: rgba(239, 68, 68, 0.15);
+  --error-light: rgba(239, 68, 68, 0.10);
   --sidebar-width: 250px;
   --header-height: 56px;
   --radius: 8px;
@@ -416,7 +416,7 @@ td {
 }
 
 tr:hover td {
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(0, 0, 0, 0.02);
 }
 
 /* ── Status Badge ────────────────────────────────────────────────────────── */
@@ -613,7 +613,7 @@ tr:hover td {
   padding: 4px;
   min-width: 160px;
   z-index: 100;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
 }
 
 .user-dropdown button {
@@ -636,14 +636,14 @@ tr:hover td {
 
 /* ── Code / Config blocks ────────────────────────────────────────────────── */
 .config-block {
-  background: var(--bg-input);
+  background: #f1f5f9;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 16px;
   font-family: "SF Mono", "Fira Code", monospace;
   font-size: 12px;
   line-height: 1.6;
-  color: var(--text-secondary);
+  color: #334155;
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-all;

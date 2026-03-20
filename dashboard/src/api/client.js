@@ -1,17 +1,26 @@
 const BASE = "";
 
 async function request(path, opts = {}) {
-  const res = await fetch(`${BASE}${path}`, {
-    credentials: "same-origin",
-    ...opts,
-    headers: { "Content-Type": "application/json", ...opts.headers },
-  });
-  if (res.status === 401) {
-    window.location.href = "/login";
-    throw new Error("Unauthorized");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      credentials: "same-origin",
+      ...opts,
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json", ...opts.headers },
+    });
+    clearTimeout(timer);
+    if (res.status === 401) {
+      window.location.href = "/login";
+      throw new Error("Unauthorized");
+    }
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return res.json();
+  } catch (e) {
+    clearTimeout(timer);
+    throw e;
   }
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
 }
 
 export const api = {

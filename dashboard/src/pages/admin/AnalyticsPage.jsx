@@ -78,15 +78,16 @@ export default function AnalyticsPage() {
             <div className="chart-container">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={trustData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                  <XAxis dataKey="name" stroke="#64748b" tick={{ fontSize: 10 }} />
-                  <YAxis stroke="#64748b" tick={{ fontSize: 11 }} domain={[0, 100]} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis dataKey="name" stroke="#94a3b8" tick={{ fontSize: 10 }} />
+                  <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} domain={[0, 100]} />
                   <Tooltip
                     contentStyle={{
-                      background: "#1a2035",
-                      border: "1px solid #1e293b",
+                      background: "#ffffff",
+                      border: "1px solid #e2e8f0",
                       borderRadius: 6,
                       fontSize: 12,
+                      color: "#0f172a",
                     }}
                   />
                   <Bar dataKey="trust" fill="#3b82f6" name="Trust %" radius={[4, 4, 0, 0]} />
@@ -120,10 +121,11 @@ export default function AnalyticsPage() {
                   </Pie>
                   <Tooltip
                     contentStyle={{
-                      background: "#1a2035",
-                      border: "1px solid #1e293b",
+                      background: "#ffffff",
+                      border: "1px solid #e2e8f0",
                       borderRadius: 6,
                       fontSize: 12,
+                      color: "#0f172a",
                     }}
                   />
                 </PieChart>
