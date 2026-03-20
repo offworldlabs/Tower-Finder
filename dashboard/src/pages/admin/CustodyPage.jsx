@@ -14,9 +14,8 @@ export default function CustodyPage() {
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
-  // Custody data can be a dict of node chains or a single object
-  const chains = custody?.chains || custody || {};
-  const nodeIds = Object.keys(chains).filter((k) => k !== "total_chains" && k !== "status");
+  // API returns { registered_nodes, node_keys: {nodeId: key}, chain_entries: {nodeId: []}, iq_commitments: {nodeId: n} }
+  const nodeIds = Object.keys(custody?.node_keys || {});
 
   return (
     <>
@@ -27,25 +26,24 @@ export default function CustodyPage() {
 
       <div className="stats-grid">
         <div className="stat-card accent">
-          <div className="stat-label">Active Chains</div>
-          <div className="stat-value">{custody?.total_chains || nodeIds.length}</div>
+          <div className="stat-label">Registered Nodes</div>
+          <div className="stat-value">{custody?.registered_nodes ?? nodeIds.length}</div>
         </div>
         <div className="stat-card success">
-          <div className="stat-label">Verified</div>
+          <div className="stat-label">With Chain Entries</div>
           <div className="stat-value">
-            {nodeIds.filter((id) => {
-              const c = chains[id];
-              return c?.verified || c?.valid;
-            }).length}
+            {nodeIds.filter((id) => (custody?.chain_entries?.[id]?.length || 0) > 0).length}
           </div>
         </div>
       </div>
 
       {nodeIds.map((nodeId) => {
-        const chain = chains[nodeId];
-        if (!chain) return null;
-        const entries = chain.entries || chain.chain || [];
-        const isValid = chain.verified || chain.valid;
+        const entries = Array.isArray(custody?.chain_entries?.[nodeId])
+          ? custody.chain_entries[nodeId]
+          : [];
+        const iqCount = custody?.iq_commitments?.[nodeId] || 0;
+        const isValid = entries.length > 0;
+        const latestHash = entries.length > 0 ? (entries[entries.length - 1]?.hash || "—") : "—";
 
         return (
           <div className="card" key={nodeId} style={{ marginBottom: 16 }}>
@@ -62,17 +60,17 @@ export default function CustodyPage() {
                 <tbody>
                   <tr>
                     <td style={{ color: "var(--text-muted)" }}>Chain Length</td>
-                    <td>{chain.length || entries.length || 0}</td>
+                    <td>{entries.length}</td>
                   </tr>
                   <tr>
                     <td style={{ color: "var(--text-muted)" }}>Latest Hash</td>
                     <td style={{ fontFamily: "monospace", fontSize: 11 }}>
-                      {chain.latest_hash || chain.head || "—"}
+                      {latestHash}
                     </td>
                   </tr>
                   <tr>
                     <td style={{ color: "var(--text-muted)" }}>IQ Commitments</td>
-                    <td>{chain.iq_commitments || 0}</td>
+                    <td>{iqCount}</td>
                   </tr>
                 </tbody>
               </table>
