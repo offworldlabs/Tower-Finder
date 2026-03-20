@@ -27,7 +27,7 @@ export default function OverviewPage() {
   if (loading) return <div className="empty-state">Loading…</div>;
 
   const nodeList = Array.isArray(nodes) ? nodes : [];
-  const onlineCount = nodeList.filter((n) => n.status === "online" || n.connected).length;
+  const onlineCount = nodeList.filter((n) => n.status !== "disconnected" && n.status != null).length;
   const totalDetections = nodeList.reduce((s, n) => s + (n.total_detections || n.detections || 0), 0);
   const totalTracks = nodeList.reduce((s, n) => s + (n.total_tracks || n.tracks || 0), 0);
 
@@ -105,7 +105,7 @@ export default function OverviewPage() {
         <div className="node-grid" style={{ padding: 16 }}>
           {nodeList.map((node) => {
             const id = node.node_id || node.id;
-            const online = node.status === "online" || node.connected;
+            const online = node.status !== "disconnected" && node.status != null;
             return (
               <div
                 className="node-card"

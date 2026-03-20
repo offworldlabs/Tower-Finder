@@ -134,7 +134,7 @@ export default function NetworkHealthPage() {
             <tbody>
               {nodes.map((node) => {
                 const id = node.node_id || node.id || "";
-                const online = node.status === "online" || node.connected;
+                const online = node.status !== "disconnected" && node.status != null;
                 return (
                   <tr key={id}>
                     <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>

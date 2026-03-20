@@ -46,13 +46,13 @@ export default function NodeManagementPage() {
         <div className="stat-card success">
           <div className="stat-label">Online</div>
           <div className="stat-value">
-            {nodes.filter((n) => n.status === "online" || n.connected).length}
+            {nodes.filter((n) => n.status !== "disconnected" && n.status != null).length}
           </div>
         </div>
         <div className="stat-card error">
           <div className="stat-label">Offline</div>
           <div className="stat-value">
-            {nodes.filter((n) => n.status !== "online" && !n.connected).length}
+            {nodes.filter((n) => n.status === "disconnected" || n.status == null).length}
           </div>
         </div>
       </div>
@@ -60,7 +60,7 @@ export default function NodeManagementPage() {
       <div className="node-grid">
         {nodes.map((node) => {
           const id = node.node_id || node.id;
-          const online = node.status === "online" || node.connected;
+          const online = node.status !== "disconnected" && node.status != null;
           const summary = summaryMap[id] || {};
           return (
             <div className="node-card" key={id} onClick={() => navigate(`/nodes/${id}`)}>
