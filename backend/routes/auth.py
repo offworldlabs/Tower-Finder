@@ -74,7 +74,9 @@ async def callback_google(request: Request, code: str = "", state: str = "/"):
         provider="google",
     )
     token = create_token(user)
-    response = RedirectResponse(state or "/")
+    # Validate redirect to prevent open-redirect attacks
+    safe_redirect = state if state and state.startswith("/") and not state.startswith("//") else "/"
+    response = RedirectResponse(safe_redirect)
     response.set_cookie(
         "auth_token", token,
         httponly=True, secure=True, samesite="lax",
@@ -144,7 +146,9 @@ async def callback_github(request: Request, code: str = "", state: str = "/"):
         provider="github",
     )
     token = create_token(user)
-    response = RedirectResponse(state or "/")
+    # Validate redirect to prevent open-redirect attacks
+    safe_redirect = state if state and state.startswith("/") and not state.startswith("//") else "/"
+    response = RedirectResponse(safe_redirect)
     response.set_cookie(
         "auth_token", token,
         httponly=True, secure=True, samesite="lax",

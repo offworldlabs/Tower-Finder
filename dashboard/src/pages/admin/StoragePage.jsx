@@ -43,7 +43,7 @@ export default function StoragePage() {
         </div>
         <div className="stat-card">
           <div className="stat-label">Archive Size</div>
-          <div className="stat-value">{storage?.archive_mb?.toFixed(1) ?? "0"} MB</div>
+          <div className="stat-value">{storage?.archive_mb != null ? storage.archive_mb.toFixed(1) + " MB" : "—"}</div>
         </div>
         <div className="stat-card success">
           <div className="stat-label">Total Indexed</div>

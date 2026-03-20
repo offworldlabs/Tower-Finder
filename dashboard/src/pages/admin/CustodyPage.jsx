@@ -14,7 +14,7 @@ export default function CustodyPage() {
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
-  // API returns { registered_nodes, node_keys: {nodeId: key}, chain_entries: {nodeId: []}, iq_commitments: {nodeId: n} }
+  // API returns { registered_nodes, node_keys: {nodeId: {fingerprint, signing_mode, ...}}, chain_entries: {nodeId: {count, latest_hour, latest_verified}}, iq_commitments: {nodeId: count} }
   const nodeIds = Object.keys(custody?.node_keys || {});
 
   return (
@@ -32,18 +32,19 @@ export default function CustodyPage() {
         <div className="stat-card success">
           <div className="stat-label">With Chain Entries</div>
           <div className="stat-value">
-            {nodeIds.filter((id) => (custody?.chain_entries?.[id]?.length || 0) > 0).length}
+            {nodeIds.filter((id) => (custody?.chain_entries?.[id]?.count || 0) > 0).length}
           </div>
         </div>
       </div>
 
       {nodeIds.map((nodeId) => {
-        const entries = Array.isArray(custody?.chain_entries?.[nodeId])
-          ? custody.chain_entries[nodeId]
-          : [];
+        // chain_entries[nodeId] = {count, latest_hour, latest_verified} (summary from API)
+        const chainSummary = custody?.chain_entries?.[nodeId] || {};
+        const chainCount = chainSummary.count || 0;
+        const isValid = chainSummary.latest_verified === true;
+        const latestHour = chainSummary.latest_hour || "—";
         const iqCount = custody?.iq_commitments?.[nodeId] || 0;
-        const isValid = entries.length > 0;
-        const latestHash = entries.length > 0 ? (entries[entries.length - 1]?.hash || "—") : "—";
+        const keyInfo = custody?.node_keys?.[nodeId] || {};
 
         return (
           <div className="card" key={nodeId} style={{ marginBottom: 16 }}>
@@ -51,8 +52,8 @@ export default function CustodyPage() {
               <h3 style={{ fontFamily: "monospace", fontSize: 13 }}>
                 {nodeId.slice(-12)}
               </h3>
-              <span className={`badge ${isValid ? "online" : "offline"}`}>
-                {isValid ? "Verified" : "Unverified"}
+              <span className={`badge ${isValid ? "online" : chainCount > 0 ? "warning" : "offline"}`}>
+                {isValid ? "Verified" : chainCount > 0 ? "Unverified" : "No Entries"}
               </span>
             </div>
             <div className="card-body">
@@ -60,30 +61,30 @@ export default function CustodyPage() {
                 <tbody>
                   <tr>
                     <td style={{ color: "var(--text-muted)" }}>Chain Length</td>
-                    <td>{entries.length}</td>
+                    <td>{chainCount}</td>
                   </tr>
                   <tr>
-                    <td style={{ color: "var(--text-muted)" }}>Latest Hash</td>
+                    <td style={{ color: "var(--text-muted)" }}>Latest Hour (UTC)</td>
                     <td style={{ fontFamily: "monospace", fontSize: 11 }}>
-                      {latestHash}
+                      {latestHour}
                     </td>
                   </tr>
                   <tr>
                     <td style={{ color: "var(--text-muted)" }}>IQ Commitments</td>
                     <td>{iqCount}</td>
                   </tr>
+                  <tr>
+                    <td style={{ color: "var(--text-muted)" }}>Signing Mode</td>
+                    <td>{keyInfo.signing_mode || "—"}</td>
+                  </tr>
+                  <tr>
+                    <td style={{ color: "var(--text-muted)" }}>Key Fingerprint</td>
+                    <td style={{ fontFamily: "monospace", fontSize: 11 }}>
+                      {keyInfo.fingerprint || "—"}
+                    </td>
+                  </tr>
                 </tbody>
               </table>
-              {entries.length > 0 && (
-                <details style={{ marginTop: 12 }}>
-                  <summary style={{ cursor: "pointer", color: "var(--accent)", fontSize: 13 }}>
-                    View chain entries ({entries.length})
-                  </summary>
-                  <div className="config-block" style={{ marginTop: 8 }}>
-                    {JSON.stringify(entries.slice(-5), null, 2)}
-                  </div>
-                </details>
-              )}
             </div>
           </div>
         );

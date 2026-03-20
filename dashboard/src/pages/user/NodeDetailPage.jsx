@@ -30,7 +30,7 @@ export default function NodeDetailPage() {
   const barData = [
     { name: "Avg SNR", value: metrics.avg_snr || 0 },
     { name: "Trust", value: (trust.trust_score || 0) * 100 },
-    { name: "Reputation", value: (reputation.score || metrics.reputation_score || 0) * 100 },
+    { name: "Reputation", value: (reputation.reputation || 0) * 100 },
   ];
 
   return (
@@ -91,9 +91,9 @@ export default function NodeDetailPage() {
                 <tr><td>Trust Score</td><td>{((trust.trust_score || 0) * 100).toFixed(1)}%</td></tr>
                 <tr><td>ADS-B Matches</td><td>{trust.adsb_matches || 0}</td></tr>
                 <tr><td>ADS-B Misses</td><td>{trust.adsb_misses || 0}</td></tr>
-                <tr><td>Reputation</td><td>{((reputation.score || metrics.reputation_score || 0) * 100).toFixed(1)}%</td></tr>
-                <tr><td>Penalties</td><td>{reputation.penalties || 0}</td></tr>
-                <tr><td>Rewards</td><td>{reputation.rewards || 0}</td></tr>
+                <tr><td>Reputation</td><td>{((reputation.reputation || 0) * 100).toFixed(1)}%</td></tr>
+                <tr><td>Penalties</td><td>{reputation.n_penalties || 0}</td></tr>
+                <tr><td>Blocked</td><td>{reputation.blocked ? "Yes" : "No"}</td></tr>
               </tbody>
             </table>
           </div>
