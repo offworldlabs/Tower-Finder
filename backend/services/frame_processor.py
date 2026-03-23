@@ -228,19 +228,38 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     seen_hex: set[str] = set()
     aircraft: list[dict] = []
 
+    def _fresh_adsb(ac_hex: str):
+        """Return state.adsb_aircraft entry if it's recent (< 60 s), else None."""
+        entry = state.adsb_aircraft.get(ac_hex)
+        if not entry:
+            return None
+        if now - entry.get("last_seen_ms", 0) / 1000 > 60:
+            return None
+        return entry
+
     def _track_entry(ac_hex, track):
-        append_track_history(ac_hex, track.lat, track.lon, track.alt_ft, now)
+        # Prefer live ADS-B position over potentially stale pipeline position.
+        # The pipeline position can lag by queue_depth × processing_time when
+        # the frame queue is saturated, but state.adsb_aircraft is updated on
+        # every incoming TCP frame via the fast-path extractor.
+        adsb = _fresh_adsb(ac_hex)
+        lat = round(adsb["lat"] if adsb and adsb.get("lat") else track.lat, 6)
+        lon = round(adsb["lon"] if adsb and adsb.get("lon") else track.lon, 6)
+        alt_ft = adsb.get("alt_baro", track.alt_ft) if adsb else track.alt_ft
+        gs = round(adsb.get("gs", track.speed_knots) if adsb else track.speed_knots, 1)
+        heading = round(adsb.get("track", track.track_angle) if adsb else track.track_angle, 1)
+        append_track_history(ac_hex, lat, lon, alt_ft, now)
         return {
             "hex": ac_hex,
-            "ground_truth_hex": resolve_ground_truth_hex(ac_hex, track.lat, track.lon),
+            "ground_truth_hex": resolve_ground_truth_hex(ac_hex, lat, lon),
             "type": "tisb_other",
             "flight": (track.adsb_hex or f"PR{abs(hash(track.track_id)) % 10000:04d}").strip(),
-            "alt_baro": round(track.alt_ft),
-            "alt_geom": round(track.alt_ft),
-            "gs": round(track.speed_knots, 1),
-            "track": round(track.track_angle, 1),
-            "lat": round(track.lat, 6),
-            "lon": round(track.lon, 6),
+            "alt_baro": round(alt_ft),
+            "alt_geom": round(alt_ft),
+            "gs": gs,
+            "track": heading,
+            "lat": lat,
+            "lon": lon,
             "seen": 0,
             "messages": track.n_detections,
             "rssi": -10.0,

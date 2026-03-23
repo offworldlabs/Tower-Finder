@@ -288,7 +288,16 @@ async def _handle_heartbeat(msg: dict, node_id: str | None, writer):
             await _send_msg(writer, {"type": "CONFIG_REQUEST", "node_id": hb_node_id})
 
 
+import time as _time_mod
+
 _last_drop_log: float = 0.0     # monotonic timestamp of last drop warning
+
+# Per-node rate limiting: skip heavy queue processing if a frame was already
+# enqueued from this node within the last NODE_FRAME_MIN_INTERVAL_S seconds.
+# ADS-B positions are always extracted regardless (fast-path below).
+import os as _os
+_NODE_MIN_INTERVAL_S: float = float(_os.getenv("NODE_FRAME_MIN_INTERVAL_S", "1.0"))
+_per_node_last_enqueue: dict[str, float] = {}
 
 
 def _enqueue_detection(msg: dict, node_id: str | None):
@@ -304,21 +313,29 @@ def _enqueue_detection(msg: dict, node_id: str | None):
         return
     if node_id:
         frame["_node_id"] = node_id
+
+    # ALWAYS extract ADS-B positions immediately, even before queuing.
+    # This keeps state.adsb_aircraft fresh regardless of queue depth.
+    if node_id:
+        _apply_synthetic_adsb(msg, node_id)
+
+    # Per-node rate limiting: only send to the heavy pipeline at most
+    # once per _NODE_MIN_INTERVAL_S.  Position is already captured above.
+    now_m = _time_mod.monotonic()
+    if node_id:
+        last = _per_node_last_enqueue.get(node_id, 0.0)
+        if (now_m - last) < _NODE_MIN_INTERVAL_S:
+            return  # position already updated; skip expensive queue work
+        _per_node_last_enqueue[node_id] = now_m
+
     try:
         state.frame_queue.put_nowait((node_id or "tcp-unknown", frame))
     except asyncio.QueueFull:
         state.frames_dropped += 1
-        # Fast-path: when the frame is dropped from the queue, still capture
-        # embedded ADS-B positions so aircraft remain visible on the map.
-        # This runs on the event loop but only fires on dropped frames.
-        if node_id:
-            _apply_synthetic_adsb(msg, node_id)
         # Rate-limit drop warnings to once per 30 s so logging doesn't
         # block the event loop under heavy load (1000+ nodes).
-        import time as _t
-        now = _t.monotonic()
-        if now - _last_drop_log > 30:
-            _last_drop_log = now
+        if now_m - _last_drop_log > 30:
+            _last_drop_log = now_m
             logging.warning("Frame queue full – %d total drops", state.frames_dropped)
 
 
