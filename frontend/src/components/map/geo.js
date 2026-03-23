@@ -59,29 +59,46 @@ export function getFocusPoints(aircraft, nodes, selectedHex) {
     .map((n) => [n.rx_lat, n.rx_lon]);
 }
 
-export function beamConePositions(lat, lon, azimuthDeg, beamWidthDeg, rangeKm) {
-  const R = 6371;
-  const startBearing = azimuthDeg - beamWidthDeg / 2;
-  const endBearing = azimuthDeg + beamWidthDeg / 2;
-  const points = [[lat, lon]];
-  const steps = 30;
+/**
+ * Bistatic oval (ellipse) for passive radar coverage.
+ *
+ * The detection zone of a bistatic RX/TX pair is an ellipse whose foci are
+ * the receiver and the transmitter.  Every point on the boundary satisfies
+ * d_rx + d_tx = L + maxRangeKm  (where L = baseline distance).
+ *
+ * Semi-major  a = (L + maxRangeKm) / 2
+ * Semi-minor  b = sqrt(a² − (L/2)²)
+ * Center      = midpoint of RX–TX
+ * Tilt        = bearing along the RX→TX axis
+ */
+export function bistaticOvalPositions(rxLat, rxLon, txLat, txLon, maxRangeKm) {
+  const cosLat = Math.cos(((rxLat + txLat) / 2) * (Math.PI / 180));
+  const dx = (txLon - rxLon) * cosLat * 111.32; // km east
+  const dy = (txLat - rxLat) * 111.32;          // km north
+  const L  = Math.sqrt(dx * dx + dy * dy);       // baseline km
+
+  const a = (L + maxRangeKm) / 2;
+  const c = L / 2;
+  const b = Math.sqrt(Math.max(0, a * a - c * c));
+
+  // Tilt: angle of major axis from north (RX→TX bearing)
+  const tiltRad = Math.atan2(dx, dy);
+
+  const centerLat = (rxLat + txLat) / 2;
+  const centerLon = (rxLon + txLon) / 2;
+
+  const points = [];
+  const steps = 64;
   for (let i = 0; i <= steps; i++) {
-    const bearing = startBearing + (endBearing - startBearing) * (i / steps);
-    const bRad = (bearing * Math.PI) / 180;
-    const d = rangeKm / R;
-    const lat1 = (lat * Math.PI) / 180;
-    const lon1 = (lon * Math.PI) / 180;
-    const lat2 = Math.asin(
-      Math.sin(lat1) * Math.cos(d) + Math.cos(lat1) * Math.sin(d) * Math.cos(bRad)
-    );
-    const lon2 =
-      lon1 +
-      Math.atan2(
-        Math.sin(bRad) * Math.sin(d) * Math.cos(lat1),
-        Math.cos(d) - Math.sin(lat1) * Math.sin(lat2)
-      );
-    points.push([(lat2 * 180) / Math.PI, (lon2 * 180) / Math.PI]);
+    const theta = (2 * Math.PI * i) / steps;
+    const cosT = Math.cos(theta);
+    const sinT = Math.sin(theta);
+    // Rotate ellipse by tilt angle
+    const localNorth = a * cosT * Math.cos(tiltRad) - b * sinT * Math.sin(tiltRad);
+    const localEast  = a * cosT * Math.sin(tiltRad) + b * sinT * Math.cos(tiltRad);
+    const lat = centerLat + localNorth / 111.32;
+    const lon = centerLon + localEast  / (111.32 * cosLat);
+    points.push([lat, lon]);
   }
-  points.push([lat, lon]);
   return points;
 }

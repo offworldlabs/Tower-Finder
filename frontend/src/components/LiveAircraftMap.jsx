@@ -21,7 +21,7 @@ import {
   buildTrailSegments,
   makeAircraftIcon,
   nodeIcon,
-  beamConePositions,
+  bistaticOvalPositions,
   FitBounds,
   ViewportTracker,
   useAircraftFeed,
@@ -282,9 +282,9 @@ export default function LiveAircraftMap() {
             {/* Coverage zones */}
             {showCoverage && visibleNodes.map((n) => (
               <Polygon
-                key={`cone-${n.node_id}`}
-                positions={beamConePositions(n.rx_lat, n.rx_lon, n.beam_azimuth_deg, n.beam_width_deg, n.max_range_km)}
-                pathOptions={{ color: "#ef4444", fillColor: "#ef4444", fillOpacity: 0.08, weight: 1, dashArray: "4 4" }}
+                key={`oval-${n.node_id}`}
+                positions={bistaticOvalPositions(n.rx_lat, n.rx_lon, n.tx_lat, n.tx_lon, n.max_range_km)}
+                pathOptions={{ color: "#ef4444", fillColor: "#ef4444", fillOpacity: 0.07, weight: 1, dashArray: "4 4" }}
               />
             ))}
 
