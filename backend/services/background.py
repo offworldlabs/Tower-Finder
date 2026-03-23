@@ -65,17 +65,24 @@ async def broadcast_aircraft(aircraft_data: dict):
 
 async def aircraft_flush_task(default_pipeline):
     """Write aircraft.json to disk and broadcast via WS at most every 2 s."""
+    loop = asyncio.get_event_loop()
     while True:
         await asyncio.sleep(2)
         if not state.aircraft_dirty:
             continue
         state.aircraft_dirty = False
         try:
-            aircraft_data = build_combined_aircraft_json(default_pipeline)
+            # Run the heavy iteration in a thread — it walks 1000+ pipelines
+            # and must NOT block the event loop (causes HTTP starvation).
+            aircraft_data = await loop.run_in_executor(
+                None, build_combined_aircraft_json, default_pipeline,
+            )
             state.latest_aircraft_json = aircraft_data
             aircraft_path = os.path.join(_TAR1090_DATA_DIR, "aircraft.json")
-            with open(aircraft_path, "w") as f:
-                json.dump(aircraft_data, f)
+            def _write_json():
+                with open(aircraft_path, "w") as f:
+                    json.dump(aircraft_data, f)
+            await loop.run_in_executor(None, _write_json)
             await broadcast_aircraft(aircraft_data)
         except Exception:
             logging.debug("Aircraft flush failed", exc_info=True)

@@ -154,6 +154,9 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                 # ── DETECTION ──────────────────────────────────────
                 if msg_type == "DETECTION":
                     _enqueue_detection(msg, node_id)
+                    # Yield to the event loop after each detection so
+                    # HTTP handlers and other coroutines can run.
+                    await asyncio.sleep(0)
                     continue
 
                 # ── Legacy bare detection frame ────────────────────
@@ -287,17 +290,10 @@ async def _handle_heartbeat(msg: dict, node_id: str | None, writer):
 
 def _enqueue_detection(msg: dict, node_id: str | None):
     frame = msg.get("data", msg)
+    # Signature verification is CPU-intensive — defer to the frame
+    # processor thread pool instead of blocking the event loop.
     if "signature" in frame and "payload_hash" in frame:
-        det_node_id = frame.get("node_id", node_id)
-        sig_valid = False
-        if det_node_id in state.node_identities:
-            sig_valid = state.sig_verifier.verify_packet(
-                det_node_id, frame["payload_hash"], frame["signature"]
-            )
-        frame["_signing_mode"] = frame.get("signing_mode", "unknown")
-        frame["_signature_valid"] = sig_valid
-        if not sig_valid and det_node_id in state.node_identities:
-            logging.warning("Invalid signature on detection from %s", det_node_id)
+        frame["_needs_sig_verify"] = True
     if "timestamp" not in frame and "timestamp_ms" in frame:
         frame["timestamp"] = frame["timestamp_ms"]
     if "timestamp" not in frame:
