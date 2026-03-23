@@ -80,6 +80,14 @@ async def test_network_dashboard():
             "websocket_clients": ws_clients,
             "external_adsb_cached": ext_adsb,
         },
+        "server_health": {
+            "frame_queue_depth": state.frame_queue.qsize(),
+            "frame_queue_max": state.frame_queue.maxsize,
+            "frames_dropped": state.frames_dropped,
+            "frame_queue_utilization_pct": round(
+                state.frame_queue.qsize() / max(state.frame_queue.maxsize, 1) * 100, 1
+            ),
+        },
         "chain_of_custody": {
             "registered_keys": len(state.node_identities),
             "chain_entries_total": sum(len(e) for e in state.chain_entries.values()),

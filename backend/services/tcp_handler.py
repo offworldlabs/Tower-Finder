@@ -300,6 +300,7 @@ def _enqueue_detection(msg: dict, node_id: str | None):
     try:
         state.frame_queue.put_nowait((node_id or "tcp-unknown", frame))
     except asyncio.QueueFull:
+        state.frames_dropped += 1
         logging.warning("Frame queue full, dropping TCP frame from %s", node_id)
 
 

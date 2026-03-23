@@ -56,7 +56,11 @@ latest_aircraft_json: dict = {"now": 0, "aircraft": [], "messages": 0}
 aircraft_dirty: bool = False
 
 # ── Async frame queue (TCP → processor) ──────────────────────────────────────
-frame_queue: asyncio.Queue = asyncio.Queue(maxsize=5000)
+_FRAME_QUEUE_SIZE = int(os.getenv("FRAME_QUEUE_SIZE", "10000"))
+frame_queue: asyncio.Queue = asyncio.Queue(maxsize=_FRAME_QUEUE_SIZE)
+
+# Monotonic counter for dropped frames (useful for monitoring)
+frames_dropped: int = 0
 
 # ── Rate limiter buckets ──────────────────────────────────────────────────────
 rate_buckets: dict[str, list] = defaultdict(list)

@@ -25,6 +25,7 @@ from services.tcp_handler import handle_tcp_client
 from services.background import (
     frame_processor_loop,
     aircraft_flush_task,
+    archive_flush_task,
     reputation_evaluator,
     adsb_truth_fetcher,
 )
@@ -76,12 +77,16 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(reputation_evaluator()),
             asyncio.create_task(adsb_truth_fetcher()),
             asyncio.create_task(aircraft_flush_task(radar_pipeline)),
+            asyncio.create_task(archive_flush_task()),
             *[asyncio.create_task(frame_processor_loop(radar_pipeline))
               for _ in range(_n_frame_workers)],
         ]
         yield
         for t in tasks:
             t.cancel()
+        # Flush remaining buffered archives before exit
+        from services.frame_processor import flush_all_archive_buffers
+        flush_all_archive_buffers()
         state.node_analytics.save_coverage_maps()
         logging.info("Coverage maps saved to %s", state.COVERAGE_STORAGE_DIR)
 

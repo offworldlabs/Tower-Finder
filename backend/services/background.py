@@ -16,7 +16,12 @@ import time
 import httpx
 
 from core import state
-from services.frame_processor import build_combined_aircraft_json, process_one_frame
+from services.frame_processor import (
+    build_combined_aircraft_json,
+    process_one_frame,
+    flush_all_archive_buffers,
+    _ARCHIVE_FLUSH_INTERVAL,
+)
 
 _TAR1090_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tar1090_data")
 
@@ -77,6 +82,17 @@ async def aircraft_flush_task(default_pipeline):
 
 
 # ── Reputation evaluator (60 s tick) ─────────────────────────────────────────
+
+async def archive_flush_task():
+    """Periodically flush batched detection archives to disk/B2."""
+    while True:
+        await asyncio.sleep(_ARCHIVE_FLUSH_INTERVAL)
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, flush_all_archive_buffers)
+        except Exception:
+            logging.debug("Archive batch flush failed", exc_info=True)
+
 
 async def reputation_evaluator():
     while True:

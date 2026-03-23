@@ -32,6 +32,8 @@ services:
       # Increase rate limits for fleet simulator
       - RADAR_RATE_LIMIT=10000
       - RADAR_RATE_WINDOW=60
+      - FRAME_WORKERS=6
+      - FRAME_QUEUE_SIZE=10000
     # Override CMD to use test startup (auto-selects nginx-test.conf)
     command: ["/bin/sh", "/app/deploy/start-test.sh"]
     restart: unless-stopped
@@ -67,10 +69,11 @@ services:
       - FLEET_NODES=200
       - FLEET_REGIONS=us
       - FLEET_MODE=adsb
-      - FLEET_INTERVAL=0.5
+      # 200 nodes / 8.0s = 25 fps — matches the Kalman tracker ceiling
+      - FLEET_INTERVAL=8.0
       - FLEET_TIME_SCALE=4.0
-      - FLEET_MIN_AIRCRAFT=48
-      - FLEET_MAX_AIRCRAFT=72
+      - FLEET_MIN_AIRCRAFT=30
+      - FLEET_MAX_AIRCRAFT=50
       - FLEET_BEAM_WIDTH_DEG=120
       - FLEET_MAX_RANGE_KM=140
       - FLEET_CONCURRENCY=20

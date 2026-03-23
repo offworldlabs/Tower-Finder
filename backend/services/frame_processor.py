@@ -7,12 +7,37 @@ and the combined aircraft.json builder used by the flush task.
 import logging
 import math
 import time
-from collections import deque
+from collections import defaultdict, deque
 
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
 from retina_geolocator.multinode_solver import solve_multinode
 from services.storage import archive_detections
+
+# ── Archive batching ──────────────────────────────────────────────────────────
+# Instead of writing every frame to disk immediately (slow I/O in the hot path),
+# collect frames in memory and flush them periodically from a background task.
+_archive_buffer: dict[str, list[dict]] = defaultdict(list)
+_ARCHIVE_FLUSH_INTERVAL = 30          # seconds between batch writes
+_ARCHIVE_BATCH_MAX = 200              # flush if a node accumulates this many
+
+
+def _flush_archive_node(node_id: str):
+    """Write buffered frames for one node to disk in a single call."""
+    frames = _archive_buffer.pop(node_id, [])
+    if not frames:
+        return
+    try:
+        archive_detections(node_id, frames)
+    except Exception:
+        logging.debug("Archive flush failed for %s (%d frames)", node_id, len(frames))
+
+
+def flush_all_archive_buffers():
+    """Flush every node's buffered frames. Called from the background task."""
+    node_ids = list(_archive_buffer.keys())
+    for nid in node_ids:
+        _flush_archive_node(nid)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -150,10 +175,10 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     pipeline.process_frame(frame)
 
     state.node_analytics.maybe_auto_save()
-    try:
-        archive_detections(node_id, [frame])
-    except Exception:
-        pass
+    # Queue frame for batched archival instead of blocking per-frame
+    _archive_buffer[node_id].append(frame)
+    if len(_archive_buffer[node_id]) >= _ARCHIVE_BATCH_MAX:
+        _flush_archive_node(node_id)
 
 
 # ── Multi-node result → tar1090-compatible dict ──────────────────────────────

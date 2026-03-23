@@ -6,19 +6,76 @@ HOST="${HOST:-localhost}"
 PORT="${PORT:-3012}"
 VALIDATION_URL="${VALIDATION_URL:-https://localhost}"
 
-# Demo-oriented defaults: 12 nodes × ~1.9 fps = 22.8 fps comfortably under the
-# ~25 fps ceiling imposed by the Kalman tracker (pure-Python, GIL-bound) on a
-# 2-core droplet.  Increase NODES on a larger server.
-NODES="${NODES:-12}"
+# ── Scaling profiles ───────────────────────────────────────────────────────────
+# The Kalman tracker is pure-Python / GIL-bound and tops out at ~25 fps on a
+# 2-core droplet.  The constraint is:  NODES / INTERVAL ≤ 25 fps.
+#
+# PROFILE  NODES  INTERVAL  effective fps  notes
+# ───────  ─────  ────────  ─────────────  ──────────────────────────
+# demo       12      0.5       24          original demo (2-core safe)
+# 100       100      4.0       25          comfortable on 2-core
+# 200       200      8.0       25          tight on 2-core
+# 300       300     12.0       25          needs 4-core ideally
+# 500       500     20.0       25          needs 4+ core
+#
+PROFILE="${PROFILE:-demo}"
+case "$PROFILE" in
+  demo)
+    NODES="${NODES:-12}"
+    INTERVAL="${INTERVAL:-0.5}"
+    TIME_SCALE="${TIME_SCALE:-4.0}"
+    MIN_AIRCRAFT="${MIN_AIRCRAFT:-8}"
+    MAX_AIRCRAFT="${MAX_AIRCRAFT:-12}"
+    CONCURRENCY="${CONCURRENCY:-6}"
+    FRAME_WORKERS="${FRAME_WORKERS:-4}"
+    ;;
+  100)
+    NODES="${NODES:-100}"
+    INTERVAL="${INTERVAL:-4.0}"
+    TIME_SCALE="${TIME_SCALE:-4.0}"
+    MIN_AIRCRAFT="${MIN_AIRCRAFT:-20}"
+    MAX_AIRCRAFT="${MAX_AIRCRAFT:-35}"
+    CONCURRENCY="${CONCURRENCY:-20}"
+    FRAME_WORKERS="${FRAME_WORKERS:-6}"
+    ;;
+  200)
+    NODES="${NODES:-200}"
+    INTERVAL="${INTERVAL:-8.0}"
+    TIME_SCALE="${TIME_SCALE:-4.0}"
+    MIN_AIRCRAFT="${MIN_AIRCRAFT:-30}"
+    MAX_AIRCRAFT="${MAX_AIRCRAFT:-50}"
+    CONCURRENCY="${CONCURRENCY:-30}"
+    FRAME_WORKERS="${FRAME_WORKERS:-6}"
+    ;;
+  300)
+    NODES="${NODES:-300}"
+    INTERVAL="${INTERVAL:-12.0}"
+    TIME_SCALE="${TIME_SCALE:-4.0}"
+    MIN_AIRCRAFT="${MIN_AIRCRAFT:-40}"
+    MAX_AIRCRAFT="${MAX_AIRCRAFT:-60}"
+    CONCURRENCY="${CONCURRENCY:-40}"
+    FRAME_WORKERS="${FRAME_WORKERS:-8}"
+    ;;
+  500)
+    NODES="${NODES:-500}"
+    INTERVAL="${INTERVAL:-20.0}"
+    TIME_SCALE="${TIME_SCALE:-4.0}"
+    MIN_AIRCRAFT="${MIN_AIRCRAFT:-50}"
+    MAX_AIRCRAFT="${MAX_AIRCRAFT:-80}"
+    CONCURRENCY="${CONCURRENCY:-50}"
+    FRAME_WORKERS="${FRAME_WORKERS:-8}"
+    ;;
+  *)
+    echo "Unknown PROFILE=$PROFILE (use: demo, 100, 200, 300, 500)" >&2
+    exit 1
+    ;;
+esac
+
 MODE="${MODE:-adsb}"
-INTERVAL="${INTERVAL:-0.5}"
-TIME_SCALE="${TIME_SCALE:-4.0}"
-MIN_AIRCRAFT="${MIN_AIRCRAFT:-8}"
-MAX_AIRCRAFT="${MAX_AIRCRAFT:-12}"
 BEAM_WIDTH_DEG="${BEAM_WIDTH_DEG:-120}"
 MAX_RANGE_KM="${MAX_RANGE_KM:-140}"
-CONCURRENCY="${CONCURRENCY:-6}"
 CONNECT_RETRIES="${CONNECT_RETRIES:-5}"
+FRAME_QUEUE_SIZE="${FRAME_QUEUE_SIZE:-10000}"
 
 LOG_FILE="${LOG_FILE:-/tmp/fleet.log}"
 PID_FILE="${PID_FILE:-/tmp/fleet.pid}"
@@ -27,6 +84,8 @@ cd "$APP_DIR"
 
 pkill -f "simulation/orchestrator.py" 2>/dev/null || true
 sleep 2
+
+echo "Starting fleet: PROFILE=$PROFILE  NODES=$NODES  INTERVAL=$INTERVAL  fps=$(echo "$NODES / $INTERVAL" | bc -l | head -c5)"
 
 nohup python3 backend/simulation/orchestrator.py \
   --nodes "$NODES" \
