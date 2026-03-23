@@ -75,9 +75,9 @@ def _refresh_analytics_and_nodes():
     }
     state.latest_nodes_bytes = orjson.dumps(nodes_data)
 
-    # Overlaps
+    # Overlaps — only include zones with actual overlap to keep payload small
     overlaps_data = {
-        "overlaps": state.node_associator.get_overlap_summary(),
+        "overlaps": [z for z in state.node_associator.get_overlap_summary() if z["has_overlap"]],
         "registered_nodes": list(state.node_associator.node_geometries.keys()),
     }
     state.latest_overlaps_bytes = orjson.dumps(overlaps_data)

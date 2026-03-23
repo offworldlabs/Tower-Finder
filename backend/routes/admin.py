@@ -1,5 +1,6 @@
 """Admin-only API routes — user management, events, config, leaderboard."""
 
+import asyncio
 import json
 import logging
 import os
@@ -214,9 +215,8 @@ async def config_history(_admin=Depends(require_admin)):
 
 # ── Storage stats ─────────────────────────────────────────────────────────────
 
-@router.get("/storage")
-async def storage_stats(_admin=Depends(require_admin)):
-    archive_dir = _BACKEND_DIR / "coverage_data" / "archive"
+def _scan_archive_dir(archive_dir) -> tuple[int, int, dict]:
+    """Blocking file walk — must run in a thread executor."""
     total_files = 0
     total_bytes = 0
     per_node: dict[str, dict] = {}
@@ -226,13 +226,22 @@ async def storage_stats(_admin=Depends(require_admin)):
                 total_files += 1
                 sz = f.stat().st_size
                 total_bytes += sz
-                # Try to extract node_id from path
                 parts = f.relative_to(archive_dir).parts
                 node = parts[3] if len(parts) > 3 else "unknown"
                 if node not in per_node:
                     per_node[node] = {"files": 0, "bytes": 0}
                 per_node[node]["files"] += 1
                 per_node[node]["bytes"] += sz
+    return total_files, total_bytes, per_node
+
+
+@router.get("/storage")
+async def storage_stats(_admin=Depends(require_admin)):
+    archive_dir = _BACKEND_DIR / "coverage_data" / "archive"
+    loop = asyncio.get_event_loop()
+    total_files, total_bytes, per_node = await loop.run_in_executor(
+        None, _scan_archive_dir, archive_dir
+    )
 
     b2_status = "not_configured"
     b2_key_id = os.getenv("B2_KEY_ID", "")
@@ -254,7 +263,8 @@ async def storage_stats(_admin=Depends(require_admin)):
 @router.get("/leaderboard")
 async def leaderboard(_user=Depends(get_current_user)):
     """Public leaderboard — rankings by detections, uptime, trust."""
-    summaries = state.node_analytics.get_all_summaries()
+    loop = asyncio.get_event_loop()
+    summaries = await loop.run_in_executor(None, state.node_analytics.get_all_summaries)
     entries = []
     for node_id, s in summaries.items():
         m = s.get("metrics", {})
