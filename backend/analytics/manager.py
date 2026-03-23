@@ -2,6 +2,7 @@
 
 import os
 import time
+import threading
 
 from analytics.trust import AdsReportEntry, TrustScoreState
 from analytics.detection_area import DetectionAreaState
@@ -9,13 +10,13 @@ from analytics.metrics import NodeMetrics
 from analytics.reputation import NodeReputation
 from analytics.coverage import HistoricalCoverageMap
 from analytics.cross_node import compute_delay_bin_overlap, coverage_suggestion
-from analytics.constants import YAGI_BEAM_WIDTH_DEG, YAGI_MAX_RANGE_KM
+from analytics.constants import YAGI_BEAM_WIDTH_DEG, YAGI_MAX_RANGE_KM, haversine_km
 
 
 class NodeAnalyticsManager:
     """Central analytics aggregator for all connected nodes."""
 
-    _ANALYSIS_CACHE_TTL = 30  # seconds
+    _ANALYSIS_CACHE_TTL = 60  # seconds
 
     def __init__(self, storage_dir: str = ""):
         self.trust_scores: dict[str, TrustScoreState] = {}
@@ -30,6 +31,7 @@ class NodeAnalyticsManager:
         self._cross_node_cache_ts: float = 0.0
         self._summaries_cache: dict | None = None
         self._summaries_cache_ts: float = 0.0
+        self._analytics_lock = threading.Lock()
         if storage_dir:
             self._load_coverage_maps()
 
@@ -105,6 +107,10 @@ class NodeAnalyticsManager:
                 area_a = self.detection_areas.get(a_id)
                 area_b = self.detection_areas.get(b_id)
                 if area_a and area_b and area_a.n_detections > 0 and area_b.n_detections > 0:
+                    dist = haversine_km(area_a.rx_lat, area_a.rx_lon,
+                                        area_b.rx_lat, area_b.rx_lon)
+                    if dist > area_a.max_range_km + area_b.max_range_km:
+                        continue
                     overlap = compute_delay_bin_overlap(area_a, area_b)
                     ts_a = self.trust_scores.get(a_id)
                     ts_b = self.trust_scores.get(b_id)
@@ -139,55 +145,70 @@ class NodeAnalyticsManager:
         now = time.monotonic()
         if self._summaries_cache is not None and now - self._summaries_cache_ts < self._ANALYSIS_CACHE_TTL:
             return self._summaries_cache
-        all_nodes = (set(self.trust_scores) | set(self.detection_areas)
-                     | set(self.metrics) | set(self.reputations))
-        result = {nid: self.get_node_summary(nid) for nid in sorted(all_nodes)}
-        self._summaries_cache = result
-        self._summaries_cache_ts = now
-        return result
+        with self._analytics_lock:
+            # Double-check after acquiring lock
+            now = time.monotonic()
+            if self._summaries_cache is not None and now - self._summaries_cache_ts < self._ANALYSIS_CACHE_TTL:
+                return self._summaries_cache
+            all_nodes = (set(self.trust_scores) | set(self.detection_areas)
+                         | set(self.metrics) | set(self.reputations))
+            result = {nid: self.get_node_summary(nid) for nid in sorted(all_nodes)}
+            self._summaries_cache = result
+            self._summaries_cache_ts = now
+            return result
 
     def get_cross_node_analysis(self) -> dict:
         now = time.monotonic()
         if self._cross_node_cache is not None and now - self._cross_node_cache_ts < self._ANALYSIS_CACHE_TTL:
             return self._cross_node_cache
+        with self._analytics_lock:
+            # Double-check after acquiring lock
+            now = time.monotonic()
+            if self._cross_node_cache is not None and now - self._cross_node_cache_ts < self._ANALYSIS_CACHE_TTL:
+                return self._cross_node_cache
 
-        node_ids = sorted(self.detection_areas.keys())
-        pair_overlaps = []
-        for i, a_id in enumerate(node_ids):
-            for b_id in node_ids[i + 1:]:
-                overlap = compute_delay_bin_overlap(
-                    self.detection_areas[a_id],
-                    self.detection_areas[b_id],
+            node_ids = sorted(self.detection_areas.keys())
+            pair_overlaps = []
+            # Only compute pair overlaps for nodes within range of each other
+            for i, a_id in enumerate(node_ids):
+                area_a = self.detection_areas[a_id]
+                for b_id in node_ids[i + 1:]:
+                    area_b = self.detection_areas[b_id]
+                    dist = haversine_km(area_a.rx_lat, area_a.rx_lon,
+                                        area_b.rx_lat, area_b.rx_lon)
+                    if dist > area_a.max_range_km + area_b.max_range_km:
+                        continue
+                    overlap = compute_delay_bin_overlap(area_a, area_b)
+                    if overlap["overlap_ratio"] > 0:
+                        pair_overlaps.append({
+                            "node_a": a_id,
+                            "node_b": b_id,
+                            **overlap,
+                        })
+
+            if self.detection_areas:
+                areas = list(self.detection_areas.values())
+                avg_lat = sum(a.rx_lat for a in areas) / len(areas)
+                avg_lon = sum(a.rx_lon for a in areas) / len(areas)
+                suggestions = coverage_suggestion(
+                    areas, avg_lat, avg_lon,
+                    trust_scores=self.trust_scores,
                 )
-                pair_overlaps.append({
-                    "node_a": a_id,
-                    "node_b": b_id,
-                    **overlap,
-                })
+            else:
+                suggestions = []
 
-        if self.detection_areas:
-            areas = list(self.detection_areas.values())
-            avg_lat = sum(a.rx_lat for a in areas) / len(areas)
-            avg_lon = sum(a.rx_lon for a in areas) / len(areas)
-            suggestions = coverage_suggestion(
-                areas, avg_lat, avg_lon,
-                trust_scores=self.trust_scores,
-            )
-        else:
-            suggestions = []
+            blocked = [
+                nid for nid, rep in self.reputations.items() if rep.blocked
+            ]
 
-        blocked = [
-            nid for nid, rep in self.reputations.items() if rep.blocked
-        ]
-
-        result = {
-            "pair_overlaps": pair_overlaps,
-            "coverage_suggestions": suggestions,
-            "blocked_nodes": blocked,
-        }
-        self._cross_node_cache = result
-        self._cross_node_cache_ts = now
-        return result
+            result = {
+                "pair_overlaps": pair_overlaps,
+                "coverage_suggestions": suggestions,
+                "blocked_nodes": blocked,
+            }
+            self._cross_node_cache = result
+            self._cross_node_cache_ts = now
+            return result
 
     # ── Persistent storage ────────────────────────────────────────────────
 
