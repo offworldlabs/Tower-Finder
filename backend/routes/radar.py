@@ -1,6 +1,5 @@
 """Radar pipeline endpoints: receiver/aircraft JSON, detections, nodes, status."""
 
-import asyncio
 import json
 import logging
 import os
@@ -8,7 +7,6 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 
-import orjson
 from fastapi import APIRouter, Body, HTTPException, Request, Header
 from fastapi.responses import Response
 
@@ -192,23 +190,4 @@ async def radar_status():
 
 @router.get("/api/radar/nodes")
 async def radar_nodes():
-    loop = asyncio.get_event_loop()
-    def _build():
-        return orjson.dumps({
-            "nodes": {
-                nid: {
-                    "status": info.get("status"),
-                    "config_hash": info.get("config_hash"),
-                    "last_heartbeat": info.get("last_heartbeat"),
-                    "peer": info.get("peer"),
-                    "is_synthetic": info.get("is_synthetic", is_synthetic_node(nid)),
-                    "capabilities": info.get("capabilities", {}),
-                }
-                for nid, info in state.connected_nodes.items()
-            },
-            "connected": sum(1 for n in state.connected_nodes.values() if n.get("status") not in ("disconnected",)),
-            "total": len(state.connected_nodes),
-            "synthetic": sum(1 for n in state.connected_nodes.values() if n.get("is_synthetic")),
-        })
-    body = await loop.run_in_executor(None, _build)
-    return Response(content=body, media_type="application/json")
+    return Response(content=state.latest_nodes_bytes, media_type="application/json")

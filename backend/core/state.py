@@ -56,6 +56,11 @@ latest_aircraft_json: dict = {"now": 0, "aircraft": [], "messages": 0}
 latest_aircraft_json_bytes: bytes = b'{"now":0,"aircraft":[],"messages":0}'
 aircraft_dirty: bool = False
 
+# ── Pre-serialized analytics / nodes / overlaps (refreshed by background task)
+latest_analytics_bytes: bytes = b'{"nodes":{},"cross_node":{"pair_overlaps":[],"coverage_suggestions":[],"blocked_nodes":[]}}'
+latest_nodes_bytes: bytes = b'{"nodes":{},"connected":0,"total":0,"synthetic":0}'
+latest_overlaps_bytes: bytes = b'{"overlaps":[],"registered_nodes":[]}'
+
 # ── Async frame queue (TCP → processor) ──────────────────────────────────────
 _FRAME_QUEUE_SIZE = int(os.getenv("FRAME_QUEUE_SIZE", "10000"))
 frame_queue: asyncio.Queue = asyncio.Queue(maxsize=_FRAME_QUEUE_SIZE)

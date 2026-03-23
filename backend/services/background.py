@@ -1,12 +1,14 @@
 """Background async tasks that run for the lifetime of the server.
 
-- frame_processor_loop  – drains state.frame_queue in a thread-pool
-- aircraft_flush_task   – writes aircraft.json + broadcasts via WS every 2 s
-- reputation_evaluator  – re-evaluates node reputations every 60 s
-- adsb_truth_fetcher    – fetches OpenSky positions every 30 s
+- frame_processor_loop    – drains state.frame_queue in a thread-pool
+- aircraft_flush_task     – writes aircraft.json + broadcasts via WS every 2 s
+- analytics_refresh_task  – pre-computes analytics/nodes/overlaps every 30 s
+- reputation_evaluator    – re-evaluates node reputations every 60 s
+- adsb_truth_fetcher      – fetches OpenSky positions every 30 s
 """
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import math
@@ -25,6 +27,66 @@ from services.frame_processor import (
 )
 
 _TAR1090_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tar1090_data")
+
+# Dedicated single-thread executor for analytics pre-computation so it
+# never competes with frame processing in the default pool.
+_analytics_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="analytics-bg",
+)
+
+
+# ── Analytics / nodes / overlaps pre-computation (30 s tick) ──────────────────
+
+def _refresh_analytics_and_nodes():
+    """Heavy work: recompute analytics, nodes, and overlaps → store as bytes."""
+    from services.tcp_handler import is_synthetic_node
+
+    # Analytics
+    analytics_data = {
+        "nodes": state.node_analytics.get_all_summaries(),
+        "cross_node": state.node_analytics.get_cross_node_analysis(),
+    }
+    state.latest_analytics_bytes = orjson.dumps(analytics_data)
+
+    # Nodes
+    nodes_data = {
+        "nodes": {
+            nid: {
+                "status": info.get("status"),
+                "config_hash": info.get("config_hash"),
+                "last_heartbeat": info.get("last_heartbeat"),
+                "peer": info.get("peer"),
+                "is_synthetic": info.get("is_synthetic", is_synthetic_node(nid)),
+                "capabilities": info.get("capabilities", {}),
+            }
+            for nid, info in state.connected_nodes.items()
+        },
+        "connected": sum(1 for n in state.connected_nodes.values() if n.get("status") not in ("disconnected",)),
+        "total": len(state.connected_nodes),
+        "synthetic": sum(1 for n in state.connected_nodes.values() if n.get("is_synthetic")),
+    }
+    state.latest_nodes_bytes = orjson.dumps(nodes_data)
+
+    # Overlaps
+    overlaps_data = {
+        "overlaps": state.node_associator.get_overlap_summary(),
+        "registered_nodes": list(state.node_associator.node_geometries.keys()),
+    }
+    state.latest_overlaps_bytes = orjson.dumps(overlaps_data)
+
+
+async def analytics_refresh_task():
+    """Pre-compute analytics/nodes/overlaps every 30 s in a dedicated thread."""
+    loop = asyncio.get_event_loop()
+    # Initial delay: wait for some nodes to register
+    await asyncio.sleep(5)
+    while True:
+        try:
+            await loop.run_in_executor(_analytics_executor, _refresh_analytics_and_nodes)
+            logging.debug("Analytics refresh completed")
+        except Exception:
+            logging.debug("Analytics refresh failed", exc_info=True)
+        await asyncio.sleep(30)
 
 
 # ── Frame processor (drain queue → thread-pool) ──────────────────────────────

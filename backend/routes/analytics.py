@@ -1,7 +1,5 @@
 """Node analytics and inter-node association endpoints."""
 
-import asyncio
-
 import orjson
 from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import Response
@@ -12,19 +10,9 @@ from analytics.trust import AdsReportEntry
 router = APIRouter()
 
 
-def _compute_analytics() -> bytes:
-    data = {
-        "nodes": state.node_analytics.get_all_summaries(),
-        "cross_node": state.node_analytics.get_cross_node_analysis(),
-    }
-    return orjson.dumps(data)
-
-
 @router.get("/api/radar/analytics")
 async def radar_analytics():
-    loop = asyncio.get_event_loop()
-    body = await loop.run_in_executor(None, _compute_analytics)
-    return Response(content=body, media_type="application/json")
+    return Response(content=state.latest_analytics_bytes, media_type="application/json")
 
 
 @router.get("/api/radar/analytics/{node_id}")
@@ -63,14 +51,7 @@ async def submit_adsb_report(body: dict = Body(...)):
 
 @router.get("/api/radar/association/overlaps")
 async def association_overlaps():
-    loop = asyncio.get_event_loop()
-    def _build():
-        return orjson.dumps({
-            "overlaps": state.node_associator.get_overlap_summary(),
-            "registered_nodes": list(state.node_associator.node_geometries.keys()),
-        })
-    body = await loop.run_in_executor(None, _build)
-    return Response(content=body, media_type="application/json")
+    return Response(content=state.latest_overlaps_bytes, media_type="application/json")
 
 
 @router.get("/api/radar/association/status")

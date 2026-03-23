@@ -1,6 +1,5 @@
 """Test network dashboard, ground-truth validation endpoints."""
 
-import asyncio
 import math
 import os
 import time
@@ -27,10 +26,7 @@ def init(pipeline):
 
 @router.get("/api/test/dashboard")
 async def test_network_dashboard():
-    loop = asyncio.get_event_loop()
-    def _build():
-        return _build_dashboard_data()
-    body = await loop.run_in_executor(None, _build)
+    body = _build_dashboard_data()
     return Response(content=body, media_type="application/json")
 
 
