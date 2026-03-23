@@ -288,7 +288,11 @@ async def _handle_heartbeat(msg: dict, node_id: str | None, writer):
             await _send_msg(writer, {"type": "CONFIG_REQUEST", "node_id": hb_node_id})
 
 
+_last_drop_log: float = 0.0     # monotonic timestamp of last drop warning
+
+
 def _enqueue_detection(msg: dict, node_id: str | None):
+    global _last_drop_log
     frame = msg.get("data", msg)
     # Signature verification is CPU-intensive — defer to the frame
     # processor thread pool instead of blocking the event loop.
@@ -304,7 +308,13 @@ def _enqueue_detection(msg: dict, node_id: str | None):
         state.frame_queue.put_nowait((node_id or "tcp-unknown", frame))
     except asyncio.QueueFull:
         state.frames_dropped += 1
-        logging.warning("Frame queue full, dropping TCP frame from %s", node_id)
+        # Rate-limit drop warnings to once per 30 s so logging doesn't
+        # block the event loop under heavy load (1000+ nodes).
+        import time as _t
+        now = _t.monotonic()
+        if now - _last_drop_log > 30:
+            _last_drop_log = now
+            logging.warning("Frame queue full – %d total drops", state.frames_dropped)
 
 
 def _apply_synthetic_adsb(msg: dict, node_id: str):
