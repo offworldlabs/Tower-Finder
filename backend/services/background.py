@@ -106,27 +106,39 @@ async def reputation_evaluator():
 # ── External ADS-B truth fetcher (30 s tick) ─────────────────────────────────
 
 async def adsb_truth_fetcher():
+    backoff = 0
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(120 + backoff)
+        backoff = 0
         try:
-            await _fetch_external_adsb()
+            rate_limited = await _fetch_external_adsb()
+            if rate_limited:
+                backoff = 300  # back off 5 min on 429
         except Exception:
             logging.debug("External ADS-B fetch skipped")
 
 
-async def _fetch_external_adsb():
-    """Fetch aircraft positions from OpenSky Network for cross-validation."""
+async def _fetch_external_adsb() -> bool:
+    """Fetch aircraft positions from OpenSky Network for cross-validation.
+
+    Returns True if rate-limited (HTTP 429), False otherwise.
+    """
     active_nodes = [
         info for info in state.connected_nodes.values()
         if info.get("status") != "disconnected" and info.get("config")
     ]
     if not active_nodes:
-        return
+        return False
+
+    # Skip OpenSky when all connected nodes are synthetic — no real ADS-B to validate against
+    if all(info.get("is_synthetic", False) for info in active_nodes):
+        logging.debug("All nodes synthetic — skipping OpenSky fetch")
+        return False
 
     lats = [n["config"].get("rx_lat", 0) for n in active_nodes]
     lons = [n["config"].get("rx_lon", 0) for n in active_nodes]
     if not lats or all(la == 0 for la in lats):
-        return
+        return False
 
     lamin, lamax = min(lats) - 1.0, max(lats) + 1.0
     lomin, lomax = min(lons) - 1.0, max(lons) + 1.0
@@ -138,15 +150,18 @@ async def _fetch_external_adsb():
                 "lamin": lamin, "lamax": lamax,
                 "lomin": lomin, "lomax": lomax,
             })
+            if resp.status_code == 429:
+                logging.debug("OpenSky rate-limited (429) — backing off")
+                return True
             if resp.status_code != 200:
-                return
+                return False
             data = resp.json()
     except Exception:
-        return
+        return False
 
     states = data.get("states", [])
     if not states:
-        return
+        return False
 
     now_cache = {}
     for s in states:
@@ -164,6 +179,7 @@ async def _fetch_external_adsb():
     state.external_adsb_cache = now_cache
     logging.debug("External ADS-B: cached %d aircraft positions", len(now_cache))
     _cross_validate_adsb_reports()
+    return False
 
 
 def _cross_validate_adsb_reports():

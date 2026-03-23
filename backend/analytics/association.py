@@ -393,7 +393,7 @@ class InterNodeAssociator:
     def get_overlap_summary(self) -> list[dict]:
         """Return summary of all overlap zones."""
         summaries = []
-        for (a_id, b_id), zone in self.overlap_zones.items():
+        for (a_id, b_id), zone in list(self.overlap_zones.items()):
             summaries.append({
                 "node_a": a_id,
                 "node_b": b_id,
