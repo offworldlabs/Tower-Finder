@@ -2,7 +2,8 @@ const BASE = "";
 
 async function request(path, opts = {}) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10000);
+  const timeoutMs = path === "/api/auth/me" ? 30000 : 10000;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`${BASE}${path}`, {
       credentials: "same-origin",

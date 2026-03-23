@@ -8,11 +8,27 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api
-      .me()
-      .then(setUser)
-      .catch(() => setUser(null))
-      .finally(() => setLoading(false));
+    let cancelled = false;
+
+    async function fetchUser() {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        try {
+          const u = await api.me();
+          if (!cancelled) { setUser(u); setLoading(false); }
+          return;
+        } catch (e) {
+          // client.js already redirects to /login on 401 — here we only
+          // land when there's a network/timeout error (server busy).
+          if (attempt < 3) {
+            await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+          }
+        }
+      }
+      if (!cancelled) { setUser(null); setLoading(false); }
+    }
+
+    fetchUser();
+    return () => { cancelled = true; };
   }, []);
 
   const logout = async () => {
