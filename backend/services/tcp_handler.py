@@ -6,10 +6,17 @@ Handles: HELLO → CONFIG → HEARTBEAT → DETECTION → chain-of-custody messa
 import asyncio
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from core import state
 from chain_of_custody.hash_chain import HashChainVerifier, HashChainEntry
+
+# Dedicated single-thread executor for node registration.
+# Registration is serialized by an internal lock anyway (O(n²) overlap zones),
+# so one thread is sufficient. Keeping it separate prevents registration from
+# starving the default executor used by frame processor workers.
+_registration_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="node-reg")
 
 # Lazy import to avoid circular dependency — routes.admin must be importable first
 def _log_event(category: str, message: str, severity: str = "info", meta: dict | None = None):
@@ -112,11 +119,11 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                         "server_version": RETINA_PROTOCOL_VERSION,
                         "server_capabilities": SERVER_CAPABILITIES,
                     })
-                    # Run registration in thread pool — register_node computes
-                    # O(n²) bistatic overlap zones and must NOT block the event loop.
+                    # Run registration in the dedicated single-thread executor so
+                    # it never starves the default executor used by frame workers.
                     loop = asyncio.get_event_loop()
                     await loop.run_in_executor(
-                        None,
+                        _registration_executor,
                         lambda: (
                             state.node_analytics.register_node(node_id, config_payload),
                             state.node_associator.register_node(node_id, config_payload),
