@@ -1,7 +1,6 @@
 """WebSocket and SSE live-streaming endpoints."""
 
 import asyncio
-import json
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -19,7 +18,7 @@ async def websocket_aircraft(ws: WebSocket):
     logging.info("WebSocket client connected (%d total)", len(state.ws_clients))
     try:
         if state.latest_aircraft_json.get("aircraft"):
-            await ws.send_text(json.dumps(state.latest_aircraft_json))
+            await ws.send_text(state.latest_aircraft_json_bytes.decode())
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:
@@ -39,7 +38,7 @@ async def sse_aircraft_stream():
             data = state.latest_aircraft_json
             current_hash = str(data.get("now", 0))
             if current_hash != last_hash:
-                yield f"data: {json.dumps(data)}\n\n"
+                yield b"data: " + state.latest_aircraft_json_bytes + b"\n\n"
                 last_hash = current_hash
             await asyncio.sleep(2)
 

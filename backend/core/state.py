@@ -53,6 +53,7 @@ external_adsb_cache: dict[str, dict] = {}
 from fastapi import WebSocket  # noqa: E402  (deferred to avoid import loops)
 ws_clients: set[WebSocket] = set()
 latest_aircraft_json: dict = {"now": 0, "aircraft": [], "messages": 0}
+latest_aircraft_json_bytes: bytes = b'{"now":0,"aircraft":[],"messages":0}'
 aircraft_dirty: bool = False
 
 # ── Async frame queue (TCP → processor) ──────────────────────────────────────

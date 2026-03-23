@@ -1,12 +1,15 @@
 """Test network dashboard, ground-truth validation endpoints."""
 
+import asyncio
 import math
 import os
 import time
 from collections import deque
 from datetime import datetime, timezone
 
+import orjson
 from fastapi import APIRouter, Body, HTTPException
+from fastapi.responses import Response
 
 from core import state
 from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex
@@ -24,6 +27,14 @@ def init(pipeline):
 
 @router.get("/api/test/dashboard")
 async def test_network_dashboard():
+    loop = asyncio.get_event_loop()
+    def _build():
+        return _build_dashboard_data()
+    body = await loop.run_in_executor(None, _build)
+    return Response(content=body, media_type="application/json")
+
+
+def _build_dashboard_data() -> bytes:
     now = time.time()
 
     total_nodes = len(state.connected_nodes)
@@ -52,7 +63,7 @@ async def test_network_dashboard():
     ws_clients = len(state.ws_clients)
     ext_adsb = len(state.external_adsb_cache)
 
-    return {
+    return orjson.dumps({
         "status": "running",
         "environment": os.getenv("RETINA_ENV", "production"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -104,7 +115,7 @@ async def test_network_dashboard():
             "aircraft_feed": "ok",
             "chain_of_custody": "ok" if len(state.node_identities) > 0 or total_nodes == 0 else "waiting",
         },
-    }
+    })
 
 
 @router.post("/api/test/validate")

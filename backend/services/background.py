@@ -14,6 +14,7 @@ import os
 import time
 
 import httpx
+import orjson
 
 from core import state
 from services.frame_processor import (
@@ -48,12 +49,13 @@ async def frame_processor_loop(default_pipeline):
 
 # ── Aircraft flush (2 s tick) ─────────────────────────────────────────────────
 
-async def broadcast_aircraft(aircraft_data: dict):
+async def broadcast_aircraft(aircraft_data: dict, aircraft_bytes: bytes):
     """Push updated aircraft data to all connected WebSocket clients."""
     state.latest_aircraft_json = aircraft_data
+    state.latest_aircraft_json_bytes = aircraft_bytes
     if not state.ws_clients:
         return
-    payload = json.dumps(aircraft_data)
+    payload = aircraft_bytes.decode()
     stale = set()
     for ws in state.ws_clients:
         try:
@@ -74,16 +76,17 @@ async def aircraft_flush_task(default_pipeline):
         try:
             # Run the heavy iteration in a thread — it walks 1000+ pipelines
             # and must NOT block the event loop (causes HTTP starvation).
-            aircraft_data = await loop.run_in_executor(
-                None, build_combined_aircraft_json, default_pipeline,
+            def _build_and_serialize():
+                data = build_combined_aircraft_json(default_pipeline)
+                data_bytes = orjson.dumps(data)
+                aircraft_path = os.path.join(_TAR1090_DATA_DIR, "aircraft.json")
+                with open(aircraft_path, "wb") as f:
+                    f.write(data_bytes)
+                return data, data_bytes
+            aircraft_data, aircraft_bytes = await loop.run_in_executor(
+                None, _build_and_serialize,
             )
-            state.latest_aircraft_json = aircraft_data
-            aircraft_path = os.path.join(_TAR1090_DATA_DIR, "aircraft.json")
-            def _write_json():
-                with open(aircraft_path, "w") as f:
-                    json.dump(aircraft_data, f)
-            await loop.run_in_executor(None, _write_json)
-            await broadcast_aircraft(aircraft_data)
+            await broadcast_aircraft(aircraft_data, aircraft_bytes)
         except Exception:
             logging.debug("Aircraft flush failed", exc_info=True)
 
@@ -102,10 +105,13 @@ async def archive_flush_task():
 
 
 async def reputation_evaluator():
+    loop = asyncio.get_event_loop()
     while True:
         await asyncio.sleep(60)
         try:
-            state.node_analytics.evaluate_reputations()
+            await loop.run_in_executor(
+                None, state.node_analytics.evaluate_reputations,
+            )
         except Exception:
             logging.exception("Reputation evaluation failed")
 

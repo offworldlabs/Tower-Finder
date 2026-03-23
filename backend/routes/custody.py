@@ -1,9 +1,12 @@
 """Chain of custody API endpoints."""
 
+import asyncio
 import os
 from datetime import datetime, timezone
 
+import orjson
 from fastapi import APIRouter, Body, HTTPException, Header
+from fastapi.responses import Response
 
 from core import state
 from chain_of_custody.crypto_backend import SignatureVerifier
@@ -110,27 +113,31 @@ async def custody_iq_commitment(
 
 @router.get("/api/custody/status")
 async def custody_status():
-    return {
-        "registered_nodes": len(state.node_identities),
-        "node_keys": {
-            nid: {
-                "fingerprint": ident.public_key_fingerprint,
-                "signing_mode": ident.signing_mode,
-                "serial_number": ident.serial_number,
-                "registered_at": ident.registered_at,
-            }
-            for nid, ident in state.node_identities.items()
-        },
-        "chain_entries": {
-            nid: {
-                "count": len(entries),
-                "latest_hour": entries[-1].get("hour_utc") if entries else None,
-                "latest_verified": entries[-1].get("_verified") if entries else None,
-            }
-            for nid, entries in state.chain_entries.items()
-        },
-        "iq_commitments": {nid: len(captures) for nid, captures in state.iq_commitments.items()},
-    }
+    loop = asyncio.get_event_loop()
+    def _build():
+        return orjson.dumps({
+            "registered_nodes": len(state.node_identities),
+            "node_keys": {
+                nid: {
+                    "fingerprint": ident.public_key_fingerprint,
+                    "signing_mode": ident.signing_mode,
+                    "serial_number": ident.serial_number,
+                    "registered_at": ident.registered_at,
+                }
+                for nid, ident in state.node_identities.items()
+            },
+            "chain_entries": {
+                nid: {
+                    "count": len(entries),
+                    "latest_hour": entries[-1].get("hour_utc") if entries else None,
+                    "latest_verified": entries[-1].get("_verified") if entries else None,
+                }
+                for nid, entries in state.chain_entries.items()
+            },
+            "iq_commitments": {nid: len(captures) for nid, captures in state.iq_commitments.items()},
+        })
+    body = await loop.run_in_executor(None, _build)
+    return Response(content=body, media_type="application/json")
 
 
 @router.get("/api/custody/chain/{node_id}")
