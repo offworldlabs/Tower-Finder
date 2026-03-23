@@ -1,10 +1,14 @@
 import { useState, useEffect } from "react";
 import { api } from "../../api/client";
 
+const PAGE_SIZE = 25;
+
 export default function LeaderboardPage() {
   const [data, setData] = useState(null);
   const [sortBy, setSortBy] = useState("detections");
   const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(0);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     api.leaderboard()
@@ -82,62 +86,97 @@ export default function LeaderboardPage() {
       )}
 
       {/* Sort control */}
-      <div style={{ marginBottom: 12, display: "flex", gap: 8, alignItems: "center" }}>
+      <div style={{ marginBottom: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ fontSize: 13, color: "var(--text-muted)" }}>Sort by:</span>
         {["detections", "uptime", "trust", "snr"].map((key) => (
           <button
             key={key}
             className={`btn ${sortBy === key ? "btn-primary" : "btn-secondary"} btn-sm`}
-            onClick={() => setSortBy(key)}
+            onClick={() => { setSortBy(key); setPage(0); }}
           >
             {key === "snr" ? "SNR" : key.charAt(0).toUpperCase() + key.slice(1)}
           </button>
         ))}
+        <input
+          type="text"
+          placeholder="Search…"
+          value={search}
+          onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+          style={{
+            marginLeft: "auto",
+            padding: "4px 10px",
+            borderRadius: 6,
+            border: "1px solid var(--border)",
+            background: "var(--bg-input)",
+            color: "var(--text-primary)",
+            fontSize: 12,
+            width: 160,
+          }}
+        />
       </div>
 
       <div className="card">
         <div className="card-header"><h3>Rankings</h3></div>
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Node</th>
-                <th>Status</th>
-                <th>Detections</th>
-                <th>Tracks</th>
-                <th>Uptime</th>
-                <th>Avg SNR</th>
-                <th>Trust</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map((entry, i) => (
-                <tr key={entry.node_id}>
-                  <td style={{ fontWeight: 600, color: "var(--text-primary)" }}>{i + 1}</td>
-                  <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
-                    {(entry.name || entry.node_id).slice(-12)}
-                  </td>
-                  <td>
-                    <span className={`badge ${entry.online ? "online" : "offline"}`}>
-                      {entry.online ? "Online" : "Offline"}
-                    </span>
-                  </td>
-                  <td>{entry.detections.toLocaleString()}</td>
-                  <td>{entry.tracks}</td>
-                  <td>{formatUptime(entry.uptime_s)}</td>
-                  <td>{entry.avg_snr.toFixed(1)} dB</td>
-                  <td>{(entry.trust_score * 100).toFixed(0)}%</td>
-                </tr>
-              ))}
-              {sorted.length === 0 && (
-                <tr>
-                  <td colSpan={8} style={{ textAlign: "center", padding: 32 }}>No nodes registered yet</td>
-                </tr>
+        {(() => {
+          const filtered = search
+            ? sorted.filter((e) => ((e.name || e.node_id || "")).toLowerCase().includes(search.toLowerCase()))
+            : sorted;
+          const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+          const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+          const offset = page * PAGE_SIZE;
+          return (
+            <>
+              <div className="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>Node</th>
+                      <th>Status</th>
+                      <th>Detections</th>
+                      <th>Tracks</th>
+                      <th>Uptime</th>
+                      <th>Avg SNR</th>
+                      <th>Trust</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paged.map((entry, i) => (
+                      <tr key={entry.node_id}>
+                        <td style={{ fontWeight: 600, color: "var(--text-primary)" }}>{offset + i + 1}</td>
+                        <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
+                          {(entry.name || entry.node_id).slice(-12)}
+                        </td>
+                        <td>
+                          <span className={`badge ${entry.online ? "online" : "offline"}`}>
+                            {entry.online ? "Online" : "Offline"}
+                          </span>
+                        </td>
+                        <td>{entry.detections.toLocaleString()}</td>
+                        <td>{entry.tracks}</td>
+                        <td>{formatUptime(entry.uptime_s)}</td>
+                        <td>{entry.avg_snr.toFixed(1)} dB</td>
+                        <td>{(entry.trust_score * 100).toFixed(0)}%</td>
+                      </tr>
+                    ))}
+                    {paged.length === 0 && (
+                      <tr>
+                        <td colSpan={8} style={{ textAlign: "center", padding: 32 }}>No nodes found</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              {totalPages > 1 && (
+                <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "12px 0" }}>
+                  <button className="btn btn-secondary btn-sm" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>← Prev</button>
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Page {page + 1} of {totalPages} ({filtered.length} nodes)</span>
+                  <button className="btn btn-secondary btn-sm" disabled={page >= totalPages - 1} onClick={() => setPage((p) => p + 1)}>Next →</button>
+                </div>
               )}
-            </tbody>
-          </table>
-        </div>
+            </>
+          );
+        })()}
       </div>
 
       {/* Community Links */}

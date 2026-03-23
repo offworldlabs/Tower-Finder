@@ -57,12 +57,12 @@ export default function RFEnvironmentPage() {
   const freq = selected?.frequency || selected?._analytics?.detection_area?.center_freq;
   const location = selected?.location || {};
 
-  // Build frequency utilization chart from all nodes
+  // Build frequency utilization chart from top 20 nodes by SNR
   const freqData = nodes.map((n) => ({
     name: (n.name || n.node_id || "").slice(-10),
     frequency: (n.frequency || n._analytics?.detection_area?.center_freq || 0) / 1e6,
     snr: n._analytics?.metrics?.avg_snr || 0,
-  }));
+  })).sort((a, b) => b.snr - a.snr).slice(0, 20);
 
   return (
     <>
@@ -71,7 +71,7 @@ export default function RFEnvironmentPage() {
         <p>Noise floor, signal strengths, and frequency utilization</p>
       </div>
 
-      <div style={{ marginBottom: 16 }}>
+      <div style={{ marginBottom: 16, display: "flex", alignItems: "center", gap: 12 }}>
         <select
           value={selectedNode}
           onChange={(e) => { setSelectedNode(e.target.value); setSnrHistory([]); }}
@@ -82,14 +82,16 @@ export default function RFEnvironmentPage() {
             fontSize: 13,
             background: "var(--bg-input)",
             color: "var(--text-primary)",
+            maxWidth: 300,
           }}
         >
           {nodes.map((n) => (
             <option key={n.node_id} value={n.node_id}>
-              {n.name || n.node_id}
+              {(n.name || n.node_id || "").slice(-16)}
             </option>
           ))}
         </select>
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{nodes.length} nodes</span>
       </div>
 
       <div className="stats-grid">
@@ -133,7 +135,10 @@ export default function RFEnvironmentPage() {
         </div>
 
         <div className="card">
-          <div className="card-header"><h3>Signal Strength by Node</h3></div>
+          <div className="card-header">
+            <h3>Signal Strength — Top 20</h3>
+            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{nodes.length} total nodes</span>
+          </div>
           <div className="card-body">
             <div className="chart-container">
               <ResponsiveContainer width="100%" height="100%">

@@ -1,9 +1,13 @@
 import { useState, useEffect } from "react";
 import { api } from "../../api/client";
 
+const PAGE_SIZE = 25;
+
 export default function TunnelLinkPage() {
   const [nodes, setNodes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(0);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     api.nodes()
@@ -46,56 +50,89 @@ export default function TunnelLinkPage() {
       <div className="card">
         <div className="card-header">
           <h3>My Nodes</h3>
+          <input
+            type="text"
+            placeholder="Search nodes…"
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+            style={{
+              padding: "4px 10px",
+              borderRadius: 6,
+              border: "1px solid var(--border)",
+              background: "var(--bg-input)",
+              color: "var(--text-primary)",
+              fontSize: 12,
+              width: 180,
+            }}
+          />
         </div>
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>Node</th>
-                <th>Status</th>
-                <th>Local Display</th>
-                <th>Tunnel Status</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {nodes.map((node) => {
-                const id = node.node_id;
-                const online = node.status !== "disconnected" && node.status != null;
-                return (
-                  <tr key={id}>
-                    <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
-                      {node.name || id}
-                    </td>
-                    <td>
-                      <span className={`badge ${online ? "online" : "offline"}`}>
-                        {online ? "Online" : "Offline"}
-                      </span>
-                    </td>
-                    <td style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                      {online ? "http://[node-ip]:8080" : "—"}
-                    </td>
-                    <td>
-                      <span className="badge warning">Not Yet Available</span>
-                    </td>
-                    <td>
-                      <button className="btn btn-outline btn-sm" disabled title="Coming soon">
-                        Enable Tunnel
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-              {nodes.length === 0 && (
-                <tr>
-                  <td colSpan={5} style={{ textAlign: "center", padding: 32 }}>
-                    No nodes connected yet
-                  </td>
-                </tr>
+        {(() => {
+          const filtered = search
+            ? nodes.filter((n) => ((n.name || n.node_id || "")).toLowerCase().includes(search.toLowerCase()))
+            : nodes;
+          const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+          const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+          return (
+            <>
+              <div className="table-wrapper">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Node</th>
+                      <th>Status</th>
+                      <th>Local Display</th>
+                      <th>Tunnel Status</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paged.map((node) => {
+                      const id = node.node_id;
+                      const online = node.status !== "disconnected" && node.status != null;
+                      return (
+                        <tr key={id}>
+                          <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
+                            {node.name || id}
+                          </td>
+                          <td>
+                            <span className={`badge ${online ? "online" : "offline"}`}>
+                              {online ? "Online" : "Offline"}
+                            </span>
+                          </td>
+                          <td style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                            {online ? "http://[node-ip]:8080" : "—"}
+                          </td>
+                          <td>
+                            <span className="badge warning">Not Yet Available</span>
+                          </td>
+                          <td>
+                            <button className="btn btn-outline btn-sm" disabled title="Coming soon">
+                              Enable Tunnel
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {filtered.length === 0 && (
+                      <tr>
+                        <td colSpan={5} style={{ textAlign: "center", padding: 32 }}>
+                          {search ? "No matching nodes" : "No nodes connected yet"}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              {totalPages > 1 && (
+                <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "12px 0" }}>
+                  <button className="btn btn-secondary btn-sm" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>← Prev</button>
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Page {page + 1} of {totalPages} ({filtered.length} nodes)</span>
+                  <button className="btn btn-secondary btn-sm" disabled={page >= totalPages - 1} onClick={() => setPage((p) => p + 1)}>Next →</button>
+                </div>
               )}
-            </tbody>
-          </table>
-        </div>
+            </>
+          );
+        })()}
       </div>
 
       <div className="card" style={{ marginTop: 16 }}>

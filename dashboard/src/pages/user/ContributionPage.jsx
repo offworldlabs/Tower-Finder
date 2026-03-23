@@ -4,11 +4,14 @@ import {
 } from "recharts";
 import { api } from "../../api/client";
 
+const PAGE_SIZE = 25;
+
 export default function ContributionPage() {
   const [analytics, setAnalytics] = useState(null);
   const [overlaps, setOverlaps] = useState([]);
   const [leaderboard, setLeaderboard] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [overlapPage, setOverlapPage] = useState(0);
 
   useEffect(() => {
     Promise.all([api.analytics(), api.overlaps(), api.leaderboard().catch(() => [])])
@@ -28,12 +31,13 @@ export default function ContributionPage() {
   const summaries = Array.isArray(rawNodes) ? rawNodes : Object.values(rawNodes);
   const crossNode = analytics?.cross_node || analytics?.cross_node_analysis || {};
 
-  // Build contribution chart
-  const chartData = summaries.map((n) => ({
+  // Build contribution chart — top 20 by detections
+  const chartDataAll = summaries.map((n) => ({
     name: (n.node_id || n.name || "").slice(-8),
     detections: n.metrics?.total_detections || n.detection_area?.n_detections || 0,
     trust: Math.round((n.trust?.trust_score || 0) * 100),
-  }));
+  })).sort((a, b) => b.detections - a.detections);
+  const chartData = chartDataAll.slice(0, 20);
 
   const totalDetections = summaries.reduce((s, n) => s + (n.metrics?.total_detections || n.detection_area?.n_detections || 0), 0);
   const avgTrust = summaries.length
@@ -69,7 +73,8 @@ export default function ContributionPage() {
       {chartData.length > 0 && (
         <div className="card" style={{ marginBottom: 24 }}>
           <div className="card-header">
-            <h3>Detections per Node</h3>
+            <h3>Detections per Node — Top 20</h3>
+            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{summaries.length} total nodes</span>
           </div>
           <div className="card-body">
             <div className="chart-container">
@@ -99,29 +104,45 @@ export default function ContributionPage() {
         <div className="card">
           <div className="card-header">
             <h3>Coverage Overlaps</h3>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{overlaps.length} pairs</span>
           </div>
-          <div className="table-wrapper">
-            <table>
-              <thead>
-                <tr>
-                  <th>Node A</th>
-                  <th>Node B</th>
-                  <th>Jaccard Index</th>
-                  <th>Shared Bins</th>
-                </tr>
-              </thead>
-              <tbody>
-                {overlaps.map((o, i) => (
-                  <tr key={i}>
-                    <td style={{ fontFamily: "monospace" }}>{(o.node_a || "").slice(-8)}</td>
-                    <td style={{ fontFamily: "monospace" }}>{(o.node_b || "").slice(-8)}</td>
-                    <td>{(o.jaccard || o.overlap || 0).toFixed(3)}</td>
-                    <td>{o.shared_bins || o.shared || "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {(() => {
+            const totalPages = Math.ceil(overlaps.length / PAGE_SIZE);
+            const paged = overlaps.slice(overlapPage * PAGE_SIZE, (overlapPage + 1) * PAGE_SIZE);
+            return (
+              <>
+                <div className="table-wrapper">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Node A</th>
+                        <th>Node B</th>
+                        <th>Jaccard Index</th>
+                        <th>Shared Bins</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {paged.map((o, i) => (
+                        <tr key={overlapPage * PAGE_SIZE + i}>
+                          <td style={{ fontFamily: "monospace" }}>{(o.node_a || "").slice(-8)}</td>
+                          <td style={{ fontFamily: "monospace" }}>{(o.node_b || "").slice(-8)}</td>
+                          <td>{(o.jaccard || o.overlap || 0).toFixed(3)}</td>
+                          <td>{o.shared_bins || o.shared || "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {totalPages > 1 && (
+                  <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "12px 0" }}>
+                    <button className="btn btn-secondary btn-sm" disabled={overlapPage === 0} onClick={() => setOverlapPage((p) => p - 1)}>← Prev</button>
+                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Page {overlapPage + 1} of {totalPages}</span>
+                    <button className="btn btn-secondary btn-sm" disabled={overlapPage >= totalPages - 1} onClick={() => setOverlapPage((p) => p + 1)}>Next →</button>
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
       )}
 

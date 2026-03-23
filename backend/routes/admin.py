@@ -125,17 +125,46 @@ _BACKEND_DIR = Path(__file__).resolve().parent.parent
 @router.get("/config/nodes")
 async def get_node_config(_admin=Depends(require_admin)):
     fp = _BACKEND_DIR / "nodes_config.json"
-    if not fp.exists():
-        return {}
-    return json.loads(fp.read_text())
+    if fp.exists():
+        return json.loads(fp.read_text())
+    # Generate live config summary from connected nodes
+    nodes_cfg = {}
+    for nid, info in state.connected_nodes.items():
+        cfg = info.get("config", {})
+        nodes_cfg[nid] = {
+            "name": cfg.get("name", nid),
+            "frequency": cfg.get("FC", cfg.get("frequency")),
+            "rx_lat": cfg.get("rx_lat"),
+            "rx_lon": cfg.get("rx_lon"),
+            "tx_lat": cfg.get("tx_lat"),
+            "tx_lon": cfg.get("tx_lon"),
+            "status": info.get("status"),
+        }
+    return {"_source": "live", "nodes": nodes_cfg, "total": len(nodes_cfg)}
 
 
 @router.get("/config/towers")
 async def get_tower_config(_admin=Depends(require_admin)):
     fp = _BACKEND_DIR / "tower_config.json"
-    if not fp.exists():
-        return {}
-    return json.loads(fp.read_text())
+    if fp.exists():
+        return json.loads(fp.read_text())
+    # Generate live tower config from unique TX locations
+    towers = {}
+    for nid, info in state.connected_nodes.items():
+        cfg = info.get("config", {})
+        tx_lat = cfg.get("tx_lat")
+        tx_lon = cfg.get("tx_lon")
+        if tx_lat and tx_lon:
+            key = f"{tx_lat:.4f},{tx_lon:.4f}"
+            if key not in towers:
+                towers[key] = {
+                    "lat": tx_lat,
+                    "lon": tx_lon,
+                    "frequency": cfg.get("FC", cfg.get("frequency")),
+                    "nodes_using": [],
+                }
+            towers[key]["nodes_using"].append(nid)
+    return {"_source": "live", "towers": towers, "total": len(towers)}
 
 
 class ConfigUpdate(BaseModel):
