@@ -304,6 +304,13 @@ def _enqueue_detection(msg: dict, node_id: str | None):
         return
     if node_id:
         frame["_node_id"] = node_id
+
+    # Fast-path: extract embedded ADS-B positions immediately, before the queue.
+    # This ensures aircraft positions are always captured regardless of queue fullness.
+    # The heavy processing (tracker, geolocator) still happens via the queue.
+    if node_id:
+        _apply_synthetic_adsb(msg, node_id)
+
     try:
         state.frame_queue.put_nowait((node_id or "tcp-unknown", frame))
     except asyncio.QueueFull:
