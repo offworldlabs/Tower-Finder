@@ -276,8 +276,21 @@ async def storage_stats(_admin=Depends(require_admin)):
 @router.get("/leaderboard")
 async def leaderboard(_user=Depends(get_current_user)):
     """Public leaderboard — rankings by detections, uptime, trust."""
-    loop = asyncio.get_event_loop()
-    summaries = await loop.run_in_executor(None, state.node_analytics.get_all_summaries)
+    import orjson
+    # Use the pre-computed analytics snapshot (refreshed every 30 s by the
+    # background task) to avoid holding the analytics lock in this handler.
+    raw = state.latest_analytics_bytes
+    summaries: dict = {}
+    if raw and raw != b'{}':
+        try:
+            summaries = orjson.loads(raw).get("nodes", {})
+        except Exception:
+            pass
+    # Fall back to live computation only if the snapshot is empty
+    if not summaries:
+        loop = asyncio.get_event_loop()
+        summaries = await loop.run_in_executor(None, state.node_analytics.get_all_summaries)
+
     entries = []
     for node_id, s in summaries.items():
         m = s.get("metrics", {})
