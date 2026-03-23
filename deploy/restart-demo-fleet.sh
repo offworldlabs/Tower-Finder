@@ -17,6 +17,7 @@ VALIDATION_URL="${VALIDATION_URL:-https://localhost}"
 # 200       200      8.0       25          tight on 2-core
 # 300       300     12.0       25          needs 4-core ideally
 # 500       500     20.0       25          needs 4+ core
+# 1000     1000     40.0       25          needs 4-core; overlap pre-filter required
 #
 PROFILE="${PROFILE:-demo}"
 case "$PROFILE" in
@@ -65,8 +66,17 @@ case "$PROFILE" in
     CONCURRENCY="${CONCURRENCY:-50}"
     FRAME_WORKERS="${FRAME_WORKERS:-8}"
     ;;
+  1000)
+    NODES="${NODES:-1000}"
+    INTERVAL="${INTERVAL:-40.0}"
+    TIME_SCALE="${TIME_SCALE:-4.0}"
+    MIN_AIRCRAFT="${MIN_AIRCRAFT:-60}"
+    MAX_AIRCRAFT="${MAX_AIRCRAFT:-100}"
+    CONCURRENCY="${CONCURRENCY:-80}"
+    FRAME_WORKERS="${FRAME_WORKERS:-8}"
+    ;;
   *)
-    echo "Unknown PROFILE=$PROFILE (use: demo, 100, 200, 300, 500)" >&2
+    echo "Unknown PROFILE=$PROFILE (use: demo, 100, 200, 300, 500, 1000)" >&2
     exit 1
     ;;
 esac

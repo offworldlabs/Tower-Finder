@@ -162,6 +162,20 @@ def compute_overlap_zone(geo_a: NodeGeometry, geo_b: NodeGeometry,
     and calculates the expected bistatic delay at each node for every
     grid point. These are used as association gates at runtime.
     """
+    # Fast geographic pre-filter: if the two RX sites are farther apart
+    # than the sum of their max ranges, NO point can lie in both beams.
+    # Skip the O(n²) grid computation for this pair entirely.
+    rx_sep = _haversine_km(geo_a.rx_lat, geo_a.rx_lon, geo_b.rx_lat, geo_b.rx_lon)
+    if rx_sep > geo_a.max_range_km + geo_b.max_range_km:
+        return OverlapZone(
+            node_a_id=geo_a.node_id,
+            node_b_id=geo_b.node_id,
+            grid_points=[],
+            delay_pairs=[],
+            delay_gate_us=delay_gate_us,
+            doppler_gate_hz=doppler_gate_hz,
+        )
+
     # Common reference point: midpoint of the two RX positions
     ref_lat = (geo_a.rx_lat + geo_b.rx_lat) / 2
     ref_lon = (geo_a.rx_lon + geo_b.rx_lon) / 2
