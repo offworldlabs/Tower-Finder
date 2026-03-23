@@ -15,6 +15,8 @@ from analytics.constants import YAGI_BEAM_WIDTH_DEG, YAGI_MAX_RANGE_KM
 class NodeAnalyticsManager:
     """Central analytics aggregator for all connected nodes."""
 
+    _ANALYSIS_CACHE_TTL = 30  # seconds
+
     def __init__(self, storage_dir: str = ""):
         self.trust_scores: dict[str, TrustScoreState] = {}
         self.detection_areas: dict[str, DetectionAreaState] = {}
@@ -24,6 +26,10 @@ class NodeAnalyticsManager:
         self._storage_dir = storage_dir
         self._last_save_time = 0.0
         self._save_interval_s = 300.0
+        self._cross_node_cache: dict | None = None
+        self._cross_node_cache_ts: float = 0.0
+        self._summaries_cache: dict | None = None
+        self._summaries_cache_ts: float = 0.0
         if storage_dir:
             self._load_coverage_maps()
 
@@ -130,11 +136,21 @@ class NodeAnalyticsManager:
         return result
 
     def get_all_summaries(self) -> dict:
+        now = time.monotonic()
+        if self._summaries_cache is not None and now - self._summaries_cache_ts < self._ANALYSIS_CACHE_TTL:
+            return self._summaries_cache
         all_nodes = (set(self.trust_scores) | set(self.detection_areas)
                      | set(self.metrics) | set(self.reputations))
-        return {nid: self.get_node_summary(nid) for nid in sorted(all_nodes)}
+        result = {nid: self.get_node_summary(nid) for nid in sorted(all_nodes)}
+        self._summaries_cache = result
+        self._summaries_cache_ts = now
+        return result
 
     def get_cross_node_analysis(self) -> dict:
+        now = time.monotonic()
+        if self._cross_node_cache is not None and now - self._cross_node_cache_ts < self._ANALYSIS_CACHE_TTL:
+            return self._cross_node_cache
+
         node_ids = sorted(self.detection_areas.keys())
         pair_overlaps = []
         for i, a_id in enumerate(node_ids):
@@ -164,11 +180,14 @@ class NodeAnalyticsManager:
             nid for nid, rep in self.reputations.items() if rep.blocked
         ]
 
-        return {
+        result = {
             "pair_overlaps": pair_overlaps,
             "coverage_suggestions": suggestions,
             "blocked_nodes": blocked,
         }
+        self._cross_node_cache = result
+        self._cross_node_cache_ts = now
+        return result
 
     # ── Persistent storage ────────────────────────────────────────────────
 

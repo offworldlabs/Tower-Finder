@@ -1,5 +1,7 @@
 """Node analytics and inter-node association endpoints."""
 
+import asyncio
+
 from fastapi import APIRouter, Body, HTTPException
 
 from core import state
@@ -8,12 +10,17 @@ from analytics.trust import AdsReportEntry
 router = APIRouter()
 
 
-@router.get("/api/radar/analytics")
-async def radar_analytics():
+def _compute_analytics() -> dict:
     return {
         "nodes": state.node_analytics.get_all_summaries(),
         "cross_node": state.node_analytics.get_cross_node_analysis(),
     }
+
+
+@router.get("/api/radar/analytics")
+async def radar_analytics():
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _compute_analytics)
 
 
 @router.get("/api/radar/analytics/{node_id}")
