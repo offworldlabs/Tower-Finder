@@ -1,12 +1,17 @@
 """Admin-only API routes — user management, events, config, leaderboard."""
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
 import time
 from collections import deque
 from pathlib import Path
+
+# Dedicated executor for blocking admin operations so they never compete with
+# the default thread pool used by frame processors.
+_admin_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="admin-io")
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -250,7 +255,7 @@ async def storage_stats(_admin=Depends(require_admin)):
     archive_dir = _BACKEND_DIR / "coverage_data" / "archive"
     loop = asyncio.get_event_loop()
     total_files, total_bytes, per_node = await loop.run_in_executor(
-        None, _scan_archive_dir, archive_dir
+        _admin_executor, _scan_archive_dir, archive_dir
     )
 
     b2_status = "not_configured"
@@ -289,7 +294,7 @@ async def leaderboard(_user=Depends(get_current_user)):
     # Fall back to live computation only if the snapshot is empty
     if not summaries:
         loop = asyncio.get_event_loop()
-        summaries = await loop.run_in_executor(None, state.node_analytics.get_all_summaries)
+        summaries = await loop.run_in_executor(_admin_executor, state.node_analytics.get_all_summaries)
 
     entries = []
     for node_id, s in summaries.items():
