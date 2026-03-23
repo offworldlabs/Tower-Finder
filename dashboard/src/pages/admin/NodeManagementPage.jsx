@@ -2,16 +2,19 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
 
+const PAGE_SIZE = 25;
+
 export default function NodeManagementPage() {
   const [nodes, setNodes] = useState([]);
   const [analytics, setAnalytics] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(0);
+  const [search, setSearch] = useState("");
   const navigate = useNavigate();
 
   useEffect(() => {
     Promise.all([api.nodes(), api.analytics()])
       .then(([n, a]) => {
-        // n.nodes is a dict {node_id: {status, ...}}
         const nodeMap = n.nodes || {};
         const nodeList = Object.entries(nodeMap).map(([id, info]) => ({ node_id: id, ...info }));
         setNodes(nodeList);
@@ -23,13 +26,16 @@ export default function NodeManagementPage() {
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
-  // analytics.nodes is a dict {node_id: summary}
   const rawSummaries = analytics?.nodes || {};
   const summaries = Array.isArray(rawSummaries) ? rawSummaries : Object.values(rawSummaries);
   const summaryMap = {};
-  summaries.forEach((s) => {
-    summaryMap[s.node_id] = s;
-  });
+  summaries.forEach((s) => { summaryMap[s.node_id] = s; });
+
+  const filtered = search
+    ? nodes.filter((n) => ((n.node_id || n.id || n.name || "")).toLowerCase().includes(search.toLowerCase()))
+    : nodes;
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+  const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
   return (
     <>
@@ -57,8 +63,21 @@ export default function NodeManagementPage() {
         </div>
       </div>
 
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <input
+          type="text"
+          placeholder="Search nodes…"
+          value={search}
+          onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+          style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid var(--border)", fontSize: 13, width: 260 }}
+        />
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          Showing {paged.length} of {filtered.length} nodes
+        </span>
+      </div>
+
       <div className="node-grid">
-        {nodes.map((node) => {
+        {paged.map((node) => {
           const id = node.node_id || node.id;
           const online = node.status !== "disconnected" && node.status != null;
           const summary = summaryMap[id] || {};
@@ -88,6 +107,14 @@ export default function NodeManagementPage() {
           );
         })}
       </div>
+
+      {totalPages > 1 && (
+        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 12, marginTop: 12 }}>
+          <button className="btn btn-sm" disabled={page === 0} onClick={() => setPage(page - 1)}>← Prev</button>
+          <span style={{ fontSize: 12 }}>Page {page + 1} of {totalPages}</span>
+          <button className="btn btn-sm" disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)}>Next →</button>
+        </div>
+      )}
     </>
   );
 }
