@@ -215,6 +215,11 @@ async def config_history(_admin=Depends(require_admin)):
 
 # ── Storage stats ─────────────────────────────────────────────────────────────
 
+_storage_cache: dict | None = None
+_storage_cache_ts: float = 0.0
+_STORAGE_CACHE_TTL = 300.0  # refresh at most every 5 minutes
+
+
 def _scan_archive_dir(archive_dir) -> tuple[int, int, dict]:
     """Blocking file walk — must run in a thread executor."""
     total_files = 0
@@ -237,6 +242,11 @@ def _scan_archive_dir(archive_dir) -> tuple[int, int, dict]:
 
 @router.get("/storage")
 async def storage_stats(_admin=Depends(require_admin)):
+    global _storage_cache, _storage_cache_ts
+    now = time.time()
+    if _storage_cache is not None and now - _storage_cache_ts < _STORAGE_CACHE_TTL:
+        return _storage_cache
+
     archive_dir = _BACKEND_DIR / "coverage_data" / "archive"
     loop = asyncio.get_event_loop()
     total_files, total_bytes, per_node = await loop.run_in_executor(
@@ -248,7 +258,7 @@ async def storage_stats(_admin=Depends(require_admin)):
     if b2_key_id:
         b2_status = "configured"
 
-    return {
+    result = {
         "archive_files": total_files,
         "archive_bytes": total_bytes,
         "archive_mb": round(total_bytes / (1024 * 1024), 2),
@@ -256,6 +266,9 @@ async def storage_stats(_admin=Depends(require_admin)):
         "b2_status": b2_status,
         "b2_bucket": os.getenv("B2_BUCKET_NAME", ""),
     }
+    _storage_cache = result
+    _storage_cache_ts = now
+    return result
 
 
 # ── Leaderboard ──────────────────────────────────────────────────────────────
