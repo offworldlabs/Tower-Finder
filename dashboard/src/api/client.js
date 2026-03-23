@@ -24,6 +24,10 @@ async function request(path, opts = {}) {
   }
 }
 
+export function downloadUrl(path) {
+  return `${BASE}${path}`;
+}
+
 export const api = {
   // Auth
   me: () => request("/api/auth/me"),
@@ -50,6 +54,10 @@ export const api = {
   // Test dashboard (fleet overview)
   fleetDashboard: () => request("/api/test/dashboard"),
 
+  // Leaderboard & alerts (user-facing)
+  leaderboard: () => request("/api/admin/leaderboard"),
+  alerts: () => request("/api/admin/alerts"),
+
   // Admin
   adminUsers: () => request("/api/admin/users"),
   adminSetRole: (uid, role) =>
@@ -57,8 +65,19 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ role }),
     }),
-  adminEvents: (limit = 100) => request(`/api/admin/events?limit=${limit}`),
+  adminEvents: (limit = 200) => request(`/api/admin/events?limit=${limit}`),
   adminNodeConfig: () => request("/api/admin/config/nodes"),
   adminTowerConfig: () => request("/api/admin/config/towers"),
+  adminUpdateNodeConfig: (config) =>
+    request("/api/admin/config/nodes", {
+      method: "PUT",
+      body: JSON.stringify({ config }),
+    }),
+  adminUpdateTowerConfig: (config) =>
+    request("/api/admin/config/towers", {
+      method: "PUT",
+      body: JSON.stringify({ config }),
+    }),
+  adminConfigHistory: () => request("/api/admin/config/history"),
   adminStorage: () => request("/api/admin/storage"),
 };

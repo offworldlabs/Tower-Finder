@@ -10,6 +10,11 @@ import DetectionsPage from "./pages/user/DetectionsPage";
 import ContributionPage from "./pages/user/ContributionPage";
 import DataExplorerPage from "./pages/user/DataExplorerPage";
 import SettingsPage from "./pages/user/SettingsPage";
+import RFEnvironmentPage from "./pages/user/RFEnvironmentPage";
+import AlertsPage from "./pages/user/AlertsPage";
+import LeaderboardPage from "./pages/user/LeaderboardPage";
+import KnowledgeBasePage from "./pages/user/KnowledgeBasePage";
+import TunnelLinkPage from "./pages/user/TunnelLinkPage";
 
 // Admin pages
 import NetworkHealthPage from "./pages/admin/NetworkHealthPage";
@@ -67,8 +72,13 @@ export default function App() {
                     <Route index element={<OverviewPage />} />
                     <Route path="nodes/:nodeId" element={<NodeDetailPage />} />
                     <Route path="detections" element={<DetectionsPage />} />
+                    <Route path="rf" element={<RFEnvironmentPage />} />
                     <Route path="contribution" element={<ContributionPage />} />
                     <Route path="data" element={<DataExplorerPage />} />
+                    <Route path="alerts" element={<AlertsPage />} />
+                    <Route path="leaderboard" element={<LeaderboardPage />} />
+                    <Route path="knowledge" element={<KnowledgeBasePage />} />
+                    <Route path="tunnel" element={<TunnelLinkPage />} />
                     <Route path="settings" element={<SettingsPage />} />
                   </>
                 )}

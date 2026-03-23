@@ -1,7 +1,19 @@
+import { useState, useEffect } from "react";
 import { useAuth } from "../../context/AuthContext";
+import { api } from "../../api/client";
 
 export default function SettingsPage() {
   const { user } = useAuth();
+  const [nodes, setNodes] = useState([]);
+
+  useEffect(() => {
+    api.nodes()
+      .then((n) => {
+        const nodeMap = n.nodes || {};
+        setNodes(Object.entries(nodeMap).map(([id, info]) => ({ node_id: id, ...info })));
+      })
+      .catch(console.error);
+  }, []);
 
   return (
     <>
@@ -52,9 +64,30 @@ export default function SettingsPage() {
             <h3>Kit & Hardware</h3>
           </div>
           <div className="card-body">
-            <div className="empty-state">
-              <p>Kit assignment and hardware information will be available once your node is provisioned.</p>
-            </div>
+            {nodes.length === 0 ? (
+              <div className="empty-state">
+                <p>Kit assignment and hardware information will be available once your node is provisioned.</p>
+              </div>
+            ) : (
+              <table>
+                <tbody>
+                  {nodes.map((n) => (
+                    <tr key={n.node_id}>
+                      <td style={{ color: "var(--text-muted)" }}>Node</td>
+                      <td style={{ fontFamily: "monospace", fontSize: 12 }}>{n.name || n.node_id}</td>
+                      <td style={{ color: "var(--text-muted)" }}>Frequency</td>
+                      <td>{n.frequency ? `${(n.frequency / 1e6).toFixed(1)} MHz` : "—"}</td>
+                      <td style={{ color: "var(--text-muted)" }}>Status</td>
+                      <td>
+                        <span className={`badge ${n.status !== "disconnected" && n.status != null ? "online" : "offline"}`}>
+                          {n.status !== "disconnected" && n.status != null ? "Online" : "Offline"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
       </div>

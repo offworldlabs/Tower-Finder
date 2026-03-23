@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { api } from "../../api/client";
+import { api, downloadUrl } from "../../api/client";
 
 const PAGE_SIZE = 50;
 
@@ -71,16 +71,17 @@ export default function DataExplorerPage() {
                 <th>Node</th>
                 <th>Size</th>
                 <th>Date</th>
+                <th>Download</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={4} style={{ textAlign: "center", padding: 32 }}>Loading…</td>
+                  <td colSpan={5} style={{ textAlign: "center", padding: 32 }}>Loading…</td>
                 </tr>
               ) : archives.length === 0 ? (
                 <tr>
-                  <td colSpan={4} style={{ textAlign: "center", padding: 32 }}>No archived data available</td>
+                  <td colSpan={5} style={{ textAlign: "center", padding: 32 }}>No archived data available</td>
                 </tr>
               ) : archives.map((file, i) => {
                 const key = typeof file === "string" ? file : (file.key || "");
@@ -96,6 +97,16 @@ export default function DataExplorerPage() {
                     <td style={{ fontFamily: "monospace", fontSize: 12 }}>{node}</td>
                     <td>{size}</td>
                     <td style={{ fontSize: 12 }}>{date}</td>
+                    <td>
+                      <a
+                        href={downloadUrl(`/api/data/archive/${encodeURIComponent(key)}`)}
+                        className="btn btn-outline btn-sm"
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Download
+                      </a>
+                    </td>
                   </tr>
                 );
               })}

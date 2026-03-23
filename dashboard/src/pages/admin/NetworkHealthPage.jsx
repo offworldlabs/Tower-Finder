@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
+import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import { api } from "../../api/client";
 
 export default function NetworkHealthPage() {
@@ -126,6 +127,53 @@ export default function NetworkHealthPage() {
           </div>
         </div>
       )}
+
+      {/* Node location map */}
+      {(() => {
+        const geoNodes = nodes.filter((n) => n.location?.rx_lat && n.location?.rx_lon);
+        if (geoNodes.length === 0) return null;
+        const avgLat = geoNodes.reduce((s, n) => s + n.location.rx_lat, 0) / geoNodes.length;
+        const avgLon = geoNodes.reduce((s, n) => s + n.location.rx_lon, 0) / geoNodes.length;
+        return (
+          <div className="card" style={{ marginBottom: 24 }}>
+            <div className="card-header">
+              <h3>Node Map</h3>
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                {geoNodes.length} nodes with location
+              </span>
+            </div>
+            <div className="card-body" style={{ padding: 0, height: 400 }}>
+              <MapContainer center={[avgLat, avgLon]} zoom={5} style={{ height: "100%", width: "100%", borderRadius: "0 0 8px 8px" }}>
+                <TileLayer
+                  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
+                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                />
+                {geoNodes.map((node) => {
+                  const id = node.node_id;
+                  const online = node.status !== "disconnected" && node.status != null;
+                  return (
+                    <CircleMarker
+                      key={id}
+                      center={[node.location.rx_lat, node.location.rx_lon]}
+                      radius={7}
+                      fillColor={online ? "#10b981" : "#ef4444"}
+                      color={online ? "#059669" : "#dc2626"}
+                      weight={2}
+                      fillOpacity={0.8}
+                    >
+                      <Popup>
+                        <strong>{node.name || id}</strong><br />
+                        Status: {online ? "Online" : "Offline"}<br />
+                        {node.frequency ? `Freq: ${(node.frequency / 1e6).toFixed(1)} MHz` : ""}
+                      </Popup>
+                    </CircleMarker>
+                  );
+                })}
+              </MapContainer>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Node status grid */}
       <div className="card">

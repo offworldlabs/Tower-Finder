@@ -5,8 +5,13 @@ import Header from "./Header";
 const pageTitles = {
   "/": { user: "Overview", admin: "Network Health" },
   "/detections": { user: "Detections" },
+  "/rf": { user: "RF Environment" },
   "/contribution": { user: "Network Contribution" },
   "/data": { user: "Data Explorer" },
+  "/alerts": { user: "Alerts & Notifications" },
+  "/leaderboard": { user: "Leaderboard" },
+  "/knowledge": { user: "Knowledge Base" },
+  "/tunnel": { user: "Tunnel & Local Display" },
   "/settings": { user: "Settings" },
   "/nodes": { admin: "Node Management" },
   "/analytics": { admin: "Analytics" },

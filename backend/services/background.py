@@ -53,11 +53,19 @@ def _refresh_analytics_and_nodes():
         "nodes": {
             nid: {
                 "status": info.get("status"),
+                "name": info.get("config", {}).get("name", nid),
                 "config_hash": info.get("config_hash"),
                 "last_heartbeat": info.get("last_heartbeat"),
                 "peer": info.get("peer"),
                 "is_synthetic": info.get("is_synthetic", is_synthetic_node(nid)),
                 "capabilities": info.get("capabilities", {}),
+                "frequency": info.get("config", {}).get("FC", info.get("config", {}).get("frequency")),
+                "location": {
+                    "rx_lat": info.get("config", {}).get("rx_lat"),
+                    "rx_lon": info.get("config", {}).get("rx_lon"),
+                    "tx_lat": info.get("config", {}).get("tx_lat"),
+                    "tx_lon": info.get("config", {}).get("tx_lon"),
+                },
             }
             for nid, info in state.connected_nodes.items()
         },
@@ -83,6 +91,9 @@ async def analytics_refresh_task():
     while True:
         try:
             await loop.run_in_executor(_analytics_executor, _refresh_analytics_and_nodes)
+            # Check for offline nodes and auto-log events
+            from routes.admin import check_node_health
+            check_node_health()
             logging.debug("Analytics refresh completed")
         except Exception:
             logging.debug("Analytics refresh failed", exc_info=True)

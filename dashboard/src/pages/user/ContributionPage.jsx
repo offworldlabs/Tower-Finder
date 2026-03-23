@@ -7,13 +7,15 @@ import { api } from "../../api/client";
 export default function ContributionPage() {
   const [analytics, setAnalytics] = useState(null);
   const [overlaps, setOverlaps] = useState([]);
+  const [leaderboard, setLeaderboard] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([api.analytics(), api.overlaps()])
-      .then(([a, o]) => {
+    Promise.all([api.analytics(), api.overlaps(), api.leaderboard().catch(() => [])])
+      .then(([a, o, lb]) => {
         setAnalytics(a);
         setOverlaps(Array.isArray(o) ? o : o.overlaps || []);
+        setLeaderboard(Array.isArray(lb) ? lb : lb.rankings || []);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -115,6 +117,36 @@ export default function ContributionPage() {
                     <td style={{ fontFamily: "monospace" }}>{(o.node_b || "").slice(-8)}</td>
                     <td>{(o.jaccard || o.overlap || 0).toFixed(3)}</td>
                     <td>{o.shared_bins || o.shared || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {leaderboard.length > 0 && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <div className="card-header">
+            <h3>Network Rankings</h3>
+          </div>
+          <div className="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Node</th>
+                  <th>Detections</th>
+                  <th>Trust</th>
+                </tr>
+              </thead>
+              <tbody>
+                {leaderboard.slice(0, 10).map((entry, i) => (
+                  <tr key={entry.node_id || i}>
+                    <td style={{ fontWeight: 600, color: i < 3 ? "var(--accent)" : "var(--text-muted)" }}>{i + 1}</td>
+                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(entry.node_id || "").slice(-12)}</td>
+                    <td>{(entry.detections || 0).toLocaleString()}</td>
+                    <td>{((entry.trust || 0) * 100).toFixed(0)}%</td>
                   </tr>
                 ))}
               </tbody>

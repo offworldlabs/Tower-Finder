@@ -56,6 +56,7 @@ export default function UserManagementPage() {
                 <th>Email</th>
                 <th>Provider</th>
                 <th>Role</th>
+                <th>Kit / Serial</th>
                 <th>Last Login</th>
                 <th>Actions</th>
               </tr>
@@ -81,6 +82,9 @@ export default function UserManagementPage() {
                       {user.role}
                     </span>
                   </td>
+                  <td style={{ fontFamily: "monospace", fontSize: 11, color: "var(--text-muted)" }}>
+                    {user.kit_serial || user.serial || "—"}
+                  </td>
                   <td>
                     {user.last_login
                       ? new Date(user.last_login * 1000).toLocaleString()
@@ -95,7 +99,7 @@ export default function UserManagementPage() {
               ))}
               {users.length === 0 && (
                 <tr>
-                  <td colSpan={6} style={{ textAlign: "center", padding: 32 }}>
+                  <td colSpan={7} style={{ textAlign: "center", padding: 32 }}>
                     No users registered yet
                   </td>
                 </tr>

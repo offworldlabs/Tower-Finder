@@ -1,7 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell,
+  PieChart, Pie, Cell, LineChart, Line,
 } from "recharts";
 import { api } from "../../api/client";
 
@@ -11,15 +11,34 @@ export default function AnalyticsPage() {
   const [analytics, setAnalytics] = useState(null);
   const [overlaps, setOverlaps] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [trend, setTrend] = useState([]);
+  const timerRef = useRef();
 
-  useEffect(() => {
+  const fetchData = () => {
     Promise.all([api.analytics(), api.overlaps()])
       .then(([a, o]) => {
         setAnalytics(a);
         setOverlaps(Array.isArray(o) ? o : o.overlaps || []);
+        const rawNodes = a?.nodes || {};
+        const summaries = Array.isArray(rawNodes) ? rawNodes : Object.values(rawNodes);
+        const totalDet = summaries.reduce((s, n) => s + (n.metrics?.total_detections || n.detection_area?.n_detections || 0), 0);
+        setTrend((prev) => [
+          ...prev,
+          {
+            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+            detections: totalDet,
+            nodes: summaries.length,
+          },
+        ].slice(-30));
       })
       .catch(console.error)
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    fetchData();
+    timerRef.current = setInterval(fetchData, 10000);
+    return () => clearInterval(timerRef.current);
   }, []);
 
   if (loading) return <div className="empty-state">Loading…</div>;
@@ -71,6 +90,38 @@ export default function AnalyticsPage() {
           <div className="stat-value">{overlaps.length}</div>
         </div>
       </div>
+
+      {trend.length > 1 && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header">
+            <h3>Detection Trend</h3>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              Updates every 10s
+            </span>
+          </div>
+          <div className="card-body">
+            <div className="chart-container">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={trend}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis dataKey="time" stroke="#94a3b8" tick={{ fontSize: 10 }} />
+                  <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} />
+                  <Tooltip
+                    contentStyle={{
+                      background: "#ffffff",
+                      border: "1px solid #e2e8f0",
+                      borderRadius: 6,
+                      fontSize: 12,
+                      color: "#0f172a",
+                    }}
+                  />
+                  <Line type="monotone" dataKey="detections" stroke="#3b82f6" strokeWidth={2} dot={false} name="Detections" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid-2">
         {/* Trust & reputation bar chart */}

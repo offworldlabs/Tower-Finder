@@ -138,6 +138,10 @@ export default function OverviewPage() {
                   <span>{formatUptime(node._analytics?.metrics?.uptime_s || 0)}</span>
                   <span className="meta-label">Avg SNR</span>
                   <span>{(node._analytics?.metrics?.avg_snr || 0).toFixed(1)} dB</span>
+                  <span className="meta-label">Heartbeat</span>
+                  <span>{formatRelativeTime(node.last_heartbeat)}</span>
+                  <span className="meta-label">Config</span>
+                  <span style={{ fontFamily: "monospace", fontSize: 11 }}>{node.config_hash ? node.config_hash.slice(0, 8) : "—"}</span>
                 </div>
               </div>
             );
@@ -157,4 +161,13 @@ function formatUptime(seconds) {
   const m = Math.floor((seconds % 3600) / 60);
   if (h > 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
   return `${h}h ${m}m`;
+}
+
+function formatRelativeTime(isoStr) {
+  if (!isoStr) return "—";
+  const diffS = Math.round((Date.now() - new Date(isoStr).getTime()) / 1000);
+  if (diffS < 5) return "just now";
+  if (diffS < 60) return `${diffS}s ago`;
+  if (diffS < 3600) return `${Math.floor(diffS / 60)}m ago`;
+  return `${Math.floor(diffS / 3600)}h ago`;
 }

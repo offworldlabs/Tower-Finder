@@ -6,13 +6,23 @@ const userNav = [
     items: [
       { to: "/", label: "Overview", icon: "home" },
       { to: "/detections", label: "Detections", icon: "radar" },
+      { to: "/rf", label: "RF Environment", icon: "activity" },
       { to: "/contribution", label: "Network", icon: "globe" },
+      { to: "/alerts", label: "Alerts", icon: "bell" },
     ],
   },
   {
     title: "Data",
     items: [
       { to: "/data", label: "Data Explorer", icon: "database" },
+      { to: "/tunnel", label: "Tunnel Link", icon: "link" },
+    ],
+  },
+  {
+    title: "Community",
+    items: [
+      { to: "/leaderboard", label: "Leaderboard", icon: "trophy" },
+      { to: "/knowledge", label: "Knowledge Base", icon: "book" },
     ],
   },
   {
@@ -141,6 +151,28 @@ const icons = {
       <circle cx="9" cy="7" r="4" />
       <path d="M23 21v-2a4 4 0 00-3-3.87" />
       <path d="M16 3.13a4 4 0 010 7.75" />
+    </svg>
+  ),
+  link: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" />
+      <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" />
+    </svg>
+  ),
+  trophy: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M6 9H4.5a2.5 2.5 0 010-5H6" />
+      <path d="M18 9h1.5a2.5 2.5 0 000-5H18" />
+      <path d="M4 22h16" />
+      <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22" />
+      <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22" />
+      <path d="M18 2H6v7a6 6 0 0012 0V2z" />
+    </svg>
+  ),
+  book: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 19.5A2.5 2.5 0 016.5 17H20" />
+      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
     </svg>
   ),
 };

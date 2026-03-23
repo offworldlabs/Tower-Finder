@@ -1,4 +1,4 @@
-"""Admin-only API routes — user management, events, config."""
+"""Admin-only API routes — user management, events, config, leaderboard."""
 
 import json
 import logging
@@ -10,14 +10,36 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from core.auth import require_admin, get_all_users, update_user_role
+from core.auth import require_admin, get_all_users, update_user_role, get_current_user
+from core import state
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
-# ── In-memory event log ──────────────────────────────────────────────────────
+# ── Persistent event log ─────────────────────────────────────────────────────
 
-_events: deque = deque(maxlen=500)
+_EVENTS_FILE = Path(__file__).resolve().parent.parent / "data" / "events.json"
+_events: deque = deque(maxlen=2000)
+
+
+def _load_events():
+    """Load events from disk on startup."""
+    if _EVENTS_FILE.exists():
+        try:
+            data = json.loads(_EVENTS_FILE.read_text())
+            for ev in data:
+                _events.append(ev)
+        except Exception:
+            pass
+
+
+def _save_events():
+    """Persist events to disk."""
+    _EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _EVENTS_FILE.write_text(json.dumps(list(_events), default=str))
+
+
+_load_events()
 
 
 def log_event(category: str, message: str, severity: str = "info", meta: dict | None = None):
@@ -28,6 +50,43 @@ def log_event(category: str, message: str, severity: str = "info", meta: dict | 
         "severity": severity,
         "meta": meta or {},
     })
+    # Persist every 10 events to avoid excessive I/O
+    if len(_events) % 10 == 0:
+        _save_events()
+
+
+# ── Node health monitoring (auto-detect offline nodes) ───────────────────────
+
+_OFFLINE_THRESHOLD_S = 120  # 2 minutes without heartbeat = offline
+_last_health_check = 0.0
+
+
+def check_node_health():
+    """Called periodically from background task to detect offline nodes."""
+    global _last_health_check
+    now = time.time()
+    if now - _last_health_check < 30:
+        return
+    _last_health_check = now
+
+    for node_id, info in state.connected_nodes.items():
+        hb = info.get("last_heartbeat")
+        if not hb:
+            continue
+        try:
+            from datetime import datetime, timezone
+            hb_time = datetime.fromisoformat(hb.replace("Z", "+00:00"))
+            age_s = (datetime.now(timezone.utc) - hb_time).total_seconds()
+        except Exception:
+            continue
+        if age_s > _OFFLINE_THRESHOLD_S and info.get("status") != "disconnected":
+            info["status"] = "disconnected"
+            log_event(
+                "node",
+                f"Node {node_id} went offline (no heartbeat for {int(age_s)}s)",
+                "warning",
+                {"node_id": node_id, "age_s": int(age_s)},
+            )
 
 
 # ── Users ─────────────────────────────────────────────────────────────────────
@@ -53,19 +112,19 @@ async def set_user_role(user_id: str, body: RoleUpdate, _admin=Depends(require_a
 # ── Events ────────────────────────────────────────────────────────────────────
 
 @router.get("/events")
-async def list_events(limit: int = 100, _admin=Depends(require_admin)):
+async def list_events(limit: int = 200, _admin=Depends(require_admin)):
     return list(_events)[:limit]
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+_CONFIG_DIR = Path(__file__).resolve().parent.parent / "data" / "config_history"
+_BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 
 @router.get("/config/nodes")
 async def get_node_config(_admin=Depends(require_admin)):
-    """Return contents of nodes_config.json."""
-    fp = Path(__file__).resolve().parent.parent / "nodes_config.json"
+    fp = _BACKEND_DIR / "nodes_config.json"
     if not fp.exists():
         return {}
     return json.loads(fp.read_text())
@@ -73,27 +132,133 @@ async def get_node_config(_admin=Depends(require_admin)):
 
 @router.get("/config/towers")
 async def get_tower_config(_admin=Depends(require_admin)):
-    fp = Path(__file__).resolve().parent.parent / "tower_config.json"
+    fp = _BACKEND_DIR / "tower_config.json"
     if not fp.exists():
         return {}
     return json.loads(fp.read_text())
+
+
+class ConfigUpdate(BaseModel):
+    config: dict
+
+
+@router.put("/config/nodes")
+async def update_node_config(body: ConfigUpdate, _admin=Depends(require_admin)):
+    fp = _BACKEND_DIR / "nodes_config.json"
+    # Save version history
+    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    ts = int(time.time())
+    if fp.exists():
+        history_fp = _CONFIG_DIR / f"nodes_{ts}.json"
+        history_fp.write_text(fp.read_text())
+    fp.write_text(json.dumps(body.config, indent=2))
+    log_event("config", "Node config updated", "info")
+    return {"status": "ok", "saved_at": ts}
+
+
+@router.put("/config/towers")
+async def update_tower_config(body: ConfigUpdate, _admin=Depends(require_admin)):
+    fp = _BACKEND_DIR / "tower_config.json"
+    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    ts = int(time.time())
+    if fp.exists():
+        history_fp = _CONFIG_DIR / f"towers_{ts}.json"
+        history_fp.write_text(fp.read_text())
+    fp.write_text(json.dumps(body.config, indent=2))
+    log_event("config", "Tower config updated", "info")
+    return {"status": "ok", "saved_at": ts}
+
+
+@router.get("/config/history")
+async def config_history(_admin=Depends(require_admin)):
+    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    files = sorted(_CONFIG_DIR.glob("*.json"), reverse=True)
+    result = []
+    for f in files[:50]:
+        name = f.stem  # e.g. "nodes_1711234567"
+        parts = name.rsplit("_", 1)
+        config_type = parts[0] if len(parts) > 1 else name
+        ts = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        result.append({"filename": f.name, "type": config_type, "timestamp": ts, "size": f.stat().st_size})
+    return result
 
 
 # ── Storage stats ─────────────────────────────────────────────────────────────
 
 @router.get("/storage")
 async def storage_stats(_admin=Depends(require_admin)):
-    """Basic storage usage stats."""
-    archive_dir = Path(__file__).resolve().parent.parent / "coverage_data" / "archive"
+    archive_dir = _BACKEND_DIR / "coverage_data" / "archive"
     total_files = 0
     total_bytes = 0
+    per_node: dict[str, dict] = {}
     if archive_dir.exists():
         for f in archive_dir.rglob("*"):
             if f.is_file():
                 total_files += 1
-                total_bytes += f.stat().st_size
+                sz = f.stat().st_size
+                total_bytes += sz
+                # Try to extract node_id from path
+                parts = f.relative_to(archive_dir).parts
+                node = parts[3] if len(parts) > 3 else "unknown"
+                if node not in per_node:
+                    per_node[node] = {"files": 0, "bytes": 0}
+                per_node[node]["files"] += 1
+                per_node[node]["bytes"] += sz
+
+    b2_status = "not_configured"
+    b2_key_id = os.getenv("B2_KEY_ID", "")
+    if b2_key_id:
+        b2_status = "configured"
+
     return {
         "archive_files": total_files,
         "archive_bytes": total_bytes,
         "archive_mb": round(total_bytes / (1024 * 1024), 2),
+        "per_node": per_node,
+        "b2_status": b2_status,
+        "b2_bucket": os.getenv("B2_BUCKET_NAME", ""),
     }
+
+
+# ── Leaderboard ──────────────────────────────────────────────────────────────
+
+@router.get("/leaderboard")
+async def leaderboard(_user=Depends(get_current_user)):
+    """Public leaderboard — rankings by detections, uptime, trust."""
+    summaries = state.node_analytics.get_all_summaries()
+    entries = []
+    for node_id, s in summaries.items():
+        m = s.get("metrics", {})
+        t = s.get("trust", {})
+        r = s.get("reputation", {})
+        entries.append({
+            "node_id": node_id,
+            "name": state.connected_nodes.get(node_id, {}).get("config", {}).get("name", node_id),
+            "detections": m.get("total_detections", 0),
+            "frames": m.get("total_frames", 0),
+            "tracks": m.get("total_tracks", 0),
+            "uptime_s": m.get("uptime_s", 0),
+            "avg_snr": m.get("avg_snr", 0),
+            "trust_score": t.get("trust_score", 0),
+            "reputation": r.get("reputation", 0),
+            "online": state.connected_nodes.get(node_id, {}).get("status") not in ("disconnected", None),
+        })
+    # Sort by detections descending
+    entries.sort(key=lambda e: e["detections"], reverse=True)
+    # Add rank
+    for i, e in enumerate(entries):
+        e["rank"] = i + 1
+    return {"leaderboard": entries, "total": len(entries)}
+
+
+# ── User alerts (public, non-admin) ─────────────────────────────────────────
+
+@router.get("/alerts")
+async def user_alerts(_user=Depends(get_current_user)):
+    """Return recent events visible to logged-in users."""
+    visible = [
+        e for e in _events
+        if e.get("severity") in ("warning", "error", "critical")
+        or e.get("category") in ("node", "config", "system")
+    ]
+    return visible[:100]
