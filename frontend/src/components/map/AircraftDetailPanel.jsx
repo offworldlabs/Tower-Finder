@@ -11,11 +11,16 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
 
   const isMultinode = ac.multinode;
   const hasAdsb = ac.type !== "tisb_other" && ac.type !== "multinode_solve";
+  const isAmbiguityArc = ac.position_source === "single_node_ellipse_arc";
   const sourceLabel = isMultinode
     ? `Multi-node (${ac.n_nodes}N)`
-    : hasAdsb
-      ? "ADS-B"
-      : ac.type || "Unknown";
+    : isAmbiguityArc
+      ? "Single-node ellipse arc"
+      : ac.position_source === "adsb_associated"
+        ? "ADS-B associated"
+        : hasAdsb
+          ? "ADS-B"
+          : ac.type || "Unknown";
   const sourceBadge = isMultinode ? "multinode" : hasAdsb ? "adsb" : "other";
   const isTruthOnly = !ac.type && !ac.flight;
 
@@ -52,8 +57,8 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
         {/* Position */}
         <div className="detail-section">
           <div className="detail-section-title">Position</div>
-          <Field label="Latitude" value={ac.lat?.toFixed(5) ?? "\u2014"} />
-          <Field label="Longitude" value={ac.lon?.toFixed(5) ?? "\u2014"} />
+          <Field label={isAmbiguityArc ? "Arc midpoint lat" : "Latitude"} value={ac.lat?.toFixed(5) ?? "\u2014"} />
+          <Field label={isAmbiguityArc ? "Arc midpoint lon" : "Longitude"} value={ac.lon?.toFixed(5) ?? "\u2014"} />
           <Field
             label="Altitude"
             value={
@@ -71,6 +76,12 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
                 label="Heading"
                 value={ac.track != null ? `${ac.track.toFixed(0)}\u00b0` : "\u2014"}
               />
+            </>
+          )}
+          {isAmbiguityArc && (
+            <>
+              <Field label="Display mode" value="Delay ellipse clipped to beam" />
+              <Field label="Latest delay" value={ac.delay_us != null ? `${ac.delay_us} μs` : "\u2014"} />
             </>
           )}
         </div>

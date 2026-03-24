@@ -91,7 +91,7 @@ class GeolocatedTrack:
 
     def __init__(self, track_id, lat, lon, alt_m, vel_east, vel_north, vel_up,
                  rms_delay, rms_doppler, n_detections, timestamp_ms,
-                 adsb_hex=None):
+                 adsb_hex=None, latest_delay_us=None):
         self.track_id = track_id
         self.hex_id = f"pr{abs(hash(track_id)) % 0xFFFF:04x}"
         self.lat = lat
@@ -105,6 +105,7 @@ class GeolocatedTrack:
         self.n_detections = n_detections
         self.last_update_ms = timestamp_ms
         self.adsb_hex = adsb_hex
+        self.latest_delay_us = latest_delay_us
 
     @property
     def speed_knots(self):
@@ -268,6 +269,7 @@ class PassiveRadarPipeline:
             n_detections=len(geo_detections),
             timestamp_ms=event["timestamp"],
             adsb_hex=event.get("adsb_hex"),
+            latest_delay_us=geo_detections[-1].delay if geo_detections else None,
         )
 
     def _run_geolocation(self):

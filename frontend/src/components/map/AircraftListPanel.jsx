@@ -96,6 +96,15 @@ export default function AircraftListPanel({
               const spd = ac.gs ? `${Math.round(ac.gs)}kt` : "—";
               const hdg = ac.track ? `${Math.round(ac.track)}°` : "";
               const isSelected = ac.hex === selectedHex;
+              const sourceLabel = !isSolved
+                ? "Truth"
+                : ac.multinode
+                  ? `Multi·${ac.n_nodes}N`
+                  : ac.position_source === "single_node_ellipse_arc"
+                    ? "Arc·1N"
+                    : ac.position_source === "adsb_associated"
+                      ? "ADS-B"
+                      : "Solver";
 
               return (
                 <div
@@ -123,11 +132,7 @@ export default function AircraftListPanel({
                   <div className="al-info">
                     <span className="al-callsign">{callsign}</span>
                     <span className="al-sub">
-                      {isSolved
-                        ? ac.multinode
-                          ? `Multi·${ac.n_nodes}N`
-                          : "ADS-B"
-                        : "Truth"}
+                      {sourceLabel}
                     </span>
                   </div>
                   <div className="al-stats">

@@ -1,5 +1,29 @@
 import { VIEWPORT_PAD_DEG, FOCUS_CLUSTER_LIMIT } from "./constants";
 
+export function getAircraftAnchorPoint(ac) {
+  if (ac?.lat != null && ac?.lon != null) {
+    return [ac.lat, ac.lon];
+  }
+  if (Array.isArray(ac?.ambiguity_arc) && ac.ambiguity_arc.length) {
+    return ac.ambiguity_arc[Math.floor(ac.ambiguity_arc.length / 2)];
+  }
+  return null;
+}
+
+export function getAircraftGeometryPoints(ac) {
+  if (Array.isArray(ac?.ambiguity_arc) && ac.ambiguity_arc.length >= 2) {
+    return ac.ambiguity_arc;
+  }
+  const anchor = getAircraftAnchorPoint(ac);
+  return anchor ? [anchor] : [];
+}
+
+export function isAircraftInViewport(ac, viewport, pad = VIEWPORT_PAD_DEG) {
+  const points = getAircraftGeometryPoints(ac);
+  if (!points.length) return false;
+  return points.some(([lat, lon]) => isPointInViewport(lat, lon, viewport, pad));
+}
+
 export function buildViewportSnapshot(bounds) {
   return {
     north: bounds.getNorth(),
@@ -21,19 +45,21 @@ export function isPointInViewport(lat, lon, viewport, pad = VIEWPORT_PAD_DEG) {
 
 export function getFocusPoints(aircraft, nodes, selectedHex) {
   if (selectedHex) {
-    const selected = aircraft.find((ac) => ac.hex === selectedHex && ac.lat && ac.lon);
-    return selected ? [[selected.lat, selected.lon]] : [];
+    const selected = aircraft.find((ac) => ac.hex === selectedHex);
+    return selected ? getAircraftGeometryPoints(selected) : [];
   }
 
-  const validAircraft = aircraft.filter((ac) => ac.lat && ac.lon);
+  const validAircraft = aircraft
+    .map((ac) => ({ ac, anchor: getAircraftAnchorPoint(ac) }))
+    .filter(({ anchor }) => Boolean(anchor));
   if (validAircraft.length > 0) {
-    let bestCenter = validAircraft[0];
+    let bestCenter = validAircraft[0].anchor;
     let bestScore = -1;
 
-    for (const center of validAircraft) {
+    for (const { anchor: center } of validAircraft) {
       let score = 0;
-      for (const ac of validAircraft) {
-        if (Math.abs(ac.lat - center.lat) <= 4 && Math.abs(ac.lon - center.lon) <= 6) {
+      for (const { anchor } of validAircraft) {
+        if (Math.abs(anchor[0] - center[0]) <= 4 && Math.abs(anchor[1] - center[1]) <= 6) {
           score += 1;
         }
       }
@@ -46,12 +72,12 @@ export function getFocusPoints(aircraft, nodes, selectedHex) {
     return validAircraft
       .slice()
       .sort((a, b) => {
-        const distA = Math.pow(a.lat - bestCenter.lat, 2) + Math.pow(a.lon - bestCenter.lon, 2);
-        const distB = Math.pow(b.lat - bestCenter.lat, 2) + Math.pow(b.lon - bestCenter.lon, 2);
+        const distA = Math.pow(a.anchor[0] - bestCenter[0], 2) + Math.pow(a.anchor[1] - bestCenter[1], 2);
+        const distB = Math.pow(b.anchor[0] - bestCenter[0], 2) + Math.pow(b.anchor[1] - bestCenter[1], 2);
         return distA - distB;
       })
       .slice(0, FOCUS_CLUSTER_LIMIT)
-      .map((ac) => [ac.lat, ac.lon]);
+      .flatMap(({ ac }) => getAircraftGeometryPoints(ac));
   }
 
   return nodes

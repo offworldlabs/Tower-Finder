@@ -8,6 +8,7 @@ import logging
 import math
 import time
 from collections import defaultdict, deque
+from typing import Optional
 
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
@@ -224,6 +225,81 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
     }
 
 
+def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    lat1r = math.radians(lat1)
+    lat2r = math.radians(lat2)
+    dlonr = math.radians(lon2 - lon1)
+    y = math.sin(dlonr) * math.cos(lat2r)
+    x = math.cos(lat1r) * math.sin(lat2r) - math.sin(lat1r) * math.cos(lat2r) * math.cos(dlonr)
+    return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+
+
+def _enu_to_lla(rx_lat: float, rx_lon: float, east_km: float, north_km: float) -> list[float]:
+    cos_lat = max(0.1, math.cos(math.radians(rx_lat)))
+    lat = rx_lat + north_km / 111.32
+    lon = rx_lon + east_km / (111.32 * cos_lat)
+    return [float(lat), float(lon)]
+
+
+def _build_single_node_arc(track, node_cfg: dict) -> Optional[list[list[float]]]:
+    delay_us = getattr(track, "latest_delay_us", None)
+    if delay_us is None or delay_us <= 0:
+        return None
+
+    rx_lat = node_cfg.get("rx_lat")
+    rx_lon = node_cfg.get("rx_lon")
+    tx_lat = node_cfg.get("tx_lat")
+    tx_lon = node_cfg.get("tx_lon")
+    if None in (rx_lat, rx_lon, tx_lat, tx_lon):
+        return None
+
+    beam_width_deg = float(node_cfg.get("beam_width_deg", 41.0) or 41.0)
+    max_range_km = float(node_cfg.get("max_range_km", 50.0) or 50.0)
+    beam_azimuth_deg = node_cfg.get("beam_azimuth_deg")
+    if beam_azimuth_deg is None:
+        beam_azimuth_deg = (_bearing_deg(rx_lat, rx_lon, tx_lat, tx_lon) + 90.0) % 360.0
+
+    cos_lat = max(0.1, math.cos(math.radians((rx_lat + tx_lat) / 2.0)))
+    tx_east_km = (tx_lon - rx_lon) * 111.32 * cos_lat
+    tx_north_km = (tx_lat - rx_lat) * 111.32
+    baseline_km = math.hypot(tx_east_km, tx_north_km)
+    differential_range_km = delay_us * 0.299792458
+
+    def _differential_at(range_km: float, bearing_deg: float) -> float:
+        bearing_rad = math.radians(bearing_deg)
+        east_km = math.sin(bearing_rad) * range_km
+        north_km = math.cos(bearing_rad) * range_km
+        tx_dist_km = math.hypot(east_km - tx_east_km, north_km - tx_north_km)
+        return tx_dist_km + range_km - baseline_km
+
+    points: list[list[float]] = []
+    steps = 36
+    half_beam_deg = beam_width_deg / 2.0
+    for step in range(steps + 1):
+        bearing_deg = beam_azimuth_deg - half_beam_deg + beam_width_deg * (step / steps)
+        lo = 0.0
+        hi = max_range_km
+        if _differential_at(hi, bearing_deg) < differential_range_km:
+            continue
+        for _ in range(32):
+            mid = (lo + hi) / 2.0
+            if _differential_at(mid, bearing_deg) < differential_range_km:
+                lo = mid
+            else:
+                hi = mid
+        bearing_rad = math.radians(bearing_deg)
+        points.append(_enu_to_lla(
+            rx_lat,
+            rx_lon,
+            hi * math.sin(bearing_rad),
+            hi * math.cos(bearing_rad),
+        ))
+
+    if len(points) < 2:
+        return None
+    return points
+
+
 # ── Combined aircraft.json builder ───────────────────────────────────────────
 
 def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict:
@@ -241,17 +317,30 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             return None
         return entry
 
-    def _track_entry(ac_hex, track):
+    def _track_entry(ac_hex, track, node_cfg):
         # Prefer live ADS-B position over potentially stale pipeline position.
         # The pipeline position can lag by queue_depth × processing_time when
         # the frame queue is saturated, but state.adsb_aircraft is updated on
         # every incoming TCP frame via the fast-path extractor.
         adsb = _fresh_adsb(ac_hex)
+        ambiguity_arc = None
+        position_source = "solver_single_node"
         lat = round(adsb["lat"] if adsb and adsb.get("lat") else track.lat, 6)
         lon = round(adsb["lon"] if adsb and adsb.get("lon") else track.lon, 6)
+        solver_lat = round(track.lat, 6)
+        solver_lon = round(track.lon, 6)
         alt_ft = adsb.get("alt_baro", track.alt_ft) if adsb else track.alt_ft
         gs = round(adsb.get("gs", track.speed_knots) if adsb else track.speed_knots, 1)
         heading = round(adsb.get("track", track.track_angle) if adsb else track.track_angle, 1)
+        if adsb and adsb.get("lat") and adsb.get("lon"):
+            position_source = "adsb_associated"
+        else:
+            ambiguity_arc = _build_single_node_arc(track, node_cfg)
+            if ambiguity_arc:
+                midpoint = ambiguity_arc[len(ambiguity_arc) // 2]
+                lat = round(midpoint[0], 6)
+                lon = round(midpoint[1], 6)
+                position_source = "single_node_ellipse_arc"
         append_track_history(ac_hex, lat, lon, alt_ft, now)
         return {
             "hex": ac_hex,
@@ -268,6 +357,13 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             "messages": track.n_detections,
             "rssi": -10.0,
             "category": "A3",
+            "multinode": False,
+            "position_source": position_source,
+            "ambiguity_arc": ambiguity_arc,
+            "solver_lat": solver_lat,
+            "solver_lon": solver_lon,
+            "delay_us": round(getattr(track, "latest_delay_us", 0.0) or 0.0, 3),
+            "node_id": node_cfg.get("node_id"),
             "recent_positions": list(state.track_histories.get(ac_hex, [])),
         }
 
@@ -278,7 +374,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             if ac_hex in seen_hex:
                 continue
             seen_hex.add(ac_hex)
-            aircraft.append(_track_entry(ac_hex, track))
+            aircraft.append(_track_entry(ac_hex, track, pipeline.config))
 
     # 2. Default pipeline
     for track in list(default_pipeline.geolocated_tracks.values()):
@@ -286,7 +382,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         if ac_hex in seen_hex:
             continue
         seen_hex.add(ac_hex)
-        aircraft.append(_track_entry(ac_hex, track))
+        aircraft.append(_track_entry(ac_hex, track, default_pipeline.config))
 
     # 3. Multi-node solver
     stale_mn = []

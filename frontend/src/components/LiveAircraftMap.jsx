@@ -16,12 +16,11 @@ import {
   STALE_AIRCRAFT_MS,
   interpolateBearing,
   easeInOutCubic,
-  isPointInViewport,
+  isAircraftInViewport,
   sampleTrailPositions,
   buildTrailSegments,
   makeAircraftIcon,
   nodeIcon,
-  bistaticOvalPositions,
   yagiSectorPositions,
   FitBounds,
   ViewportTracker,
@@ -152,7 +151,7 @@ export default function LiveAircraftMap() {
   }, [displayAircraft, searchQuery]);
 
   const visibleAircraft = useMemo(
-    () => filteredAircraft.filter((ac) => ac.hex === selectedHex || isPointInViewport(ac.lat, ac.lon, viewport)),
+    () => filteredAircraft.filter((ac) => ac.hex === selectedHex || isAircraftInViewport(ac, viewport)),
     [filteredAircraft, selectedHex, viewport],
   );
 
@@ -319,7 +318,20 @@ export default function LiveAircraftMap() {
 
             {/* Aircraft markers */}
             {visibleAircraft.map((ac) =>
-              ac.lat && ac.lon ? (
+              Array.isArray(ac.ambiguity_arc) && ac.ambiguity_arc.length >= 2 ? (
+                <Polyline
+                  key={ac.hex}
+                  positions={ac.ambiguity_arc}
+                  pathOptions={{
+                    color: ac.hex === selectedHex ? "#fbbf24" : "#2dd4bf",
+                    weight: ac.hex === selectedHex ? 4 : 3,
+                    opacity: 0.95,
+                    lineCap: "round",
+                    lineJoin: "round",
+                  }}
+                  eventHandlers={{ click: () => handleSelectAircraft(ac.hex) }}
+                />
+              ) : ac.lat && ac.lon ? (
                 <Marker
                   key={ac.hex}
                   position={[ac.lat, ac.lon]}
