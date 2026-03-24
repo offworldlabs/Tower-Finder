@@ -5,6 +5,7 @@
 - analytics_refresh_task  – pre-computes analytics/nodes/overlaps every 30 s
 - reputation_evaluator    – re-evaluates node reputations every 60 s
 - adsb_truth_fetcher      – fetches OpenSky positions every 30 s
+- start_solver_workers    – launches daemon threads that drain solver_queue
 """
 
 import asyncio
@@ -13,6 +14,8 @@ import json
 import logging
 import math
 import os
+import queue
+import threading
 import time
 
 import httpx
@@ -210,6 +213,42 @@ async def analytics_refresh_task():
         except Exception:
             logging.debug("Analytics refresh failed", exc_info=True)
         await asyncio.sleep(30)
+
+
+# ── Background multinode solver (solver_queue → solver threads) ──────────────
+
+_N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
+
+
+def _run_solver_worker():
+    """Drain state.solver_queue and run solve_multinode. Runs as a daemon thread.
+
+    Keeping the solver in its own threads lets scipy/numpy release the GIL and
+    use a second core while the frame-ingestion workers stay fast.
+    """
+    from retina_geolocator.multinode_solver import solve_multinode
+    while True:
+        try:
+            s_in, node_cfgs = state.solver_queue.get(timeout=1.0)
+        except queue.Empty:
+            continue
+        try:
+            result = solve_multinode(s_in, node_cfgs)
+        except Exception:
+            result = None
+        if result and result.get("success"):
+            key = f"mn-{result['timestamp_ms']}-{result['lat']:.3f}"
+            state.multinode_tracks[key] = result
+
+
+def start_solver_workers():
+    """Start N daemon threads that continuously drain the solver queue."""
+    for i in range(_N_SOLVER_WORKERS):
+        t = threading.Thread(
+            target=_run_solver_worker, daemon=True, name=f"solver-{i}",
+        )
+        t.start()
+    logging.info("Started %d multinode solver worker(s)", _N_SOLVER_WORKERS)
 
 
 # ── Frame processor (drain queue → thread-pool) ──────────────────────────────

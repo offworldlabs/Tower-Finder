@@ -29,6 +29,7 @@ from services.background import (
     analytics_refresh_task,
     reputation_evaluator,
     adsb_truth_fetcher,
+    start_solver_workers,
 )
 from routes.towers import router as towers_router
 from routes.stats import router as stats_router
@@ -70,6 +71,9 @@ async def lifespan(app: FastAPI):
     addrs = ", ".join(str(s.getsockname()) for s in server.sockets)
     logging.info("Radar TCP server listening on %s", addrs)
     async with server:
+        # Start background daemon threads for multinode LM solving.
+        # These drain solver_queue independently of frame workers.
+        start_solver_workers()
         # Run multiple parallel frame processor workers so the thread pool can
         # process frames concurrently (scipy/numpy release the GIL).
         _n_frame_workers = int(os.environ.get("FRAME_WORKERS", "4"))

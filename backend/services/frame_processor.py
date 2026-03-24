@@ -12,7 +12,6 @@ from typing import Optional
 
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
-from retina_geolocator.multinode_solver import solve_multinode
 from services.storage import archive_detections
 
 # ── Archive batching ──────────────────────────────────────────────────────────
@@ -157,13 +156,11 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
         for s_in in solver_inputs:
             if s_in["n_nodes"] < 2:
                 continue
+            # Off-load to background solver thread — keeps the hot path fast.
             try:
-                result = solve_multinode(s_in, node_cfgs)
+                state.solver_queue.put_nowait((s_in, node_cfgs))
             except Exception:
-                result = None
-            if result and result.get("success"):
-                key = f"mn-{result['timestamp_ms']}-{result['lat']:.3f}"
-                state.multinode_tracks[key] = result
+                pass  # queue.Full: drop candidate; solver is lagging
 
     # Extract embedded ADS-B
     adsb_list = frame.get("adsb")

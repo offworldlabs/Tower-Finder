@@ -65,6 +65,12 @@ latest_overlaps_bytes: bytes = b'{"overlaps":[],"registered_nodes":[]}'
 _FRAME_QUEUE_SIZE = int(os.getenv("FRAME_QUEUE_SIZE", "10000"))
 frame_queue: asyncio.Queue = asyncio.Queue(maxsize=_FRAME_QUEUE_SIZE)
 
+# ── Background multinode solver queue (frame workers → solver threads) ────────
+import queue as _stdlib_queue
+# Bounded: if solver threads can't keep up, excess candidates are dropped.
+_SOLVER_QUEUE_SIZE = int(os.getenv("SOLVER_QUEUE_SIZE", "200"))
+solver_queue: _stdlib_queue.Queue = _stdlib_queue.Queue(maxsize=_SOLVER_QUEUE_SIZE)
+
 # Monotonic counter for dropped frames (useful for monitoring)
 frames_dropped: int = 0
 
