@@ -557,6 +557,74 @@ async def _push_ground_truth_live(
             log.debug("Ground truth push failed: %s", e)
 
 
+async def _push_adsb_live(
+    orchestrator: FleetOrchestrator,
+    base_url: str,
+    interval_s: float = 1.0,
+):
+    """Push every aircraft's current ADS-B position to the server every interval_s.
+
+    This runs independently of the frame pipeline so each aircraft gets a
+    fresh position every second regardless of how many nodes observe it.
+    The server endpoint updates state.adsb_aircraft directly and marks it
+    dirty so the next 1-Hz WS broadcast includes the latest positions.
+    """
+    import urllib.request
+
+    log.info("ADS-B live push started (url=%s, interval=%.1fs)", base_url, interval_s)
+    url = f"{base_url}/api/sim/adsb/push"
+    loop = asyncio.get_event_loop()
+    ssl_context = None
+    if "localhost" in base_url or "127.0.0.1" in base_url:
+        import ssl as _ssl
+        ssl_context = _ssl._create_unverified_context()
+
+    while orchestrator._running:
+        await asyncio.sleep(interval_s)
+
+        if orchestrator.world is None:
+            continue
+
+        try:
+            aircraft_raw = orchestrator.world.get_aircraft_summary()
+            payload_aircraft = []
+            for ac in aircraft_raw:
+                if not ac.get("has_adsb"):
+                    continue
+                hex_code = ac.get("adsb_hex") or ""
+                if not hex_code:
+                    continue
+                speed_ms = ac.get("speed_ms", 0)
+                payload_aircraft.append({
+                    "hex": hex_code,
+                    "flight": "",
+                    "lat": round(ac["lat"], 5),
+                    "lon": round(ac["lon"], 5),
+                    "alt_baro": round(ac["alt_km"] * 1000 / 0.3048),
+                    "gs": round(speed_ms * 1.94384, 1),
+                    "track": round(ac.get("heading", 0), 1),
+                })
+
+            if not payload_aircraft:
+                continue
+
+            body = json.dumps({
+                "ts_ms": int(time.time() * 1000),
+                "aircraft": payload_aircraft,
+            }).encode()
+            req = urllib.request.Request(
+                url, data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            await loop.run_in_executor(
+                None,
+                lambda r=req, ctx=ssl_context: urllib.request.urlopen(r, timeout=3, context=ctx),
+            )
+        except Exception as e:
+            log.debug("ADS-B push failed: %s", e)
+
+
 async def _validate_against_server(
     orchestrator: FleetOrchestrator,
     base_url: str,
@@ -673,6 +741,14 @@ async def main_async(args):
 
     # Start validation loop if requested
     tasks = [orchestrator.run_simulation_loop(duration_s=args.duration)]
+
+    # Always push per-aircraft ADS-B positions every second so every aircraft
+    # has a fresh position in state.adsb_aircraft regardless of node visibility.
+    if args.validation_url:
+        tasks.append(_push_adsb_live(
+            orchestrator, args.validation_url, interval_s=1.0,
+        ))
+
     if args.validate and args.validation_url:
         tasks.append(_validate_against_server(
             orchestrator, args.validation_url, interval_s=30.0,

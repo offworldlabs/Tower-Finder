@@ -222,6 +222,45 @@ async def push_ground_truth_snapshot(body: dict = Body(...)):
     return {"status": "ok", "received": len(aircraft_list), "tracked_hex": len(state.ground_truth_trails)}
 
 
+@router.post("/api/sim/adsb/push")
+async def sim_push_adsb_positions(body: dict = Body(...)):
+    """Simulator pushes live ADS-B positions every second directly into state.adsb_aircraft.
+
+    This keeps each aircraft's position current at 1 Hz regardless of how many
+    nodes happen to observe it in a given frame interval.
+    """
+    ts_ms = body.get("ts_ms", int(time.time() * 1000))
+    aircraft_list = body.get("aircraft", [])
+    if not isinstance(aircraft_list, list):
+        raise HTTPException(status_code=400, detail="aircraft list required")
+
+    updated = 0
+    for ac in aircraft_list:
+        hex_code = normalize_hex_key(ac.get("hex") or "")
+        if not hex_code:
+            continue
+        lat = ac.get("lat")
+        lon = ac.get("lon")
+        if not lat or not lon:
+            continue
+        state.adsb_aircraft[hex_code] = {
+            "hex": hex_code,
+            "flight": ac.get("flight", ""),
+            "lat": lat,
+            "lon": lon,
+            "alt_baro": ac.get("alt_baro", 0),
+            "gs": ac.get("gs", 0),
+            "track": ac.get("track", 0),
+            "last_seen_ms": ts_ms,
+        }
+        updated += 1
+
+    if updated:
+        state.aircraft_dirty = True
+
+    return {"status": "ok", "updated": updated}
+
+
 @router.get("/api/test/ground-truth/{hex_code}")
 async def get_ground_truth_trail(hex_code: str):
     norm_hex = normalize_hex_key(hex_code)
