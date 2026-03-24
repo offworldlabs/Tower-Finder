@@ -16,6 +16,7 @@ import {
   STALE_AIRCRAFT_MS,
   interpolateBearing,
   easeInOutCubic,
+  isPointInViewport,
   isAircraftInViewport,
   sampleTrailPositions,
   buildTrailSegments,
