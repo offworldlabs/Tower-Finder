@@ -10,7 +10,7 @@ from analytics.metrics import NodeMetrics
 from analytics.reputation import NodeReputation
 from analytics.coverage import HistoricalCoverageMap
 from analytics.cross_node import compute_delay_bin_overlap, coverage_suggestion
-from analytics.constants import YAGI_BEAM_WIDTH_DEG, YAGI_MAX_RANGE_KM, haversine_km
+from analytics.constants import YAGI_BEAM_WIDTH_DEG, YAGI_MAX_RANGE_KM, haversine_km, bearing_deg
 
 
 class NodeAnalyticsManager:
@@ -39,13 +39,20 @@ class NodeAnalyticsManager:
         if node_id not in self.trust_scores:
             self.trust_scores[node_id] = TrustScoreState(node_id=node_id)
 
+        rx_lat = config.get("rx_lat", 0)
+        rx_lon = config.get("rx_lon", 0)
+        tx_lat = config.get("tx_lat", 0)
+        tx_lon = config.get("tx_lon", 0)
+        # Yagi points broadside — perpendicular to RX→TX baseline
+        beam_az = (bearing_deg(rx_lat, rx_lon, tx_lat, tx_lon) + 90.0) % 360.0
         self.detection_areas[node_id] = DetectionAreaState(
             node_id=node_id,
-            rx_lat=config.get("rx_lat", 0),
-            rx_lon=config.get("rx_lon", 0),
-            tx_lat=config.get("tx_lat", 0),
-            tx_lon=config.get("tx_lon", 0),
+            rx_lat=rx_lat,
+            rx_lon=rx_lon,
+            tx_lat=tx_lat,
+            tx_lon=tx_lon,
             fc_hz=config.get("fc_hz", config.get("FC", 195e6)),
+            beam_azimuth_deg=beam_az,
             beam_width_deg=config.get("beam_width_deg", YAGI_BEAM_WIDTH_DEG),
             max_range_km=config.get("max_range_km", YAGI_MAX_RANGE_KM),
         )
