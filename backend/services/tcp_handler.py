@@ -342,6 +342,7 @@ def _enqueue_detection(msg: dict, node_id: str | None):
 def _apply_synthetic_adsb(msg: dict, node_id: str):
     """Fast-path for synthetic nodes: store ADS-B positions directly in state."""
     import time as _time
+    import math as _math
     frame = msg.get("data", msg)
     adsb_list = frame.get("adsb")
     if not adsb_list:
@@ -353,11 +354,15 @@ def _apply_synthetic_adsb(msg: dict, node_id: str):
         hex_code = entry.get("hex")
         if not hex_code:
             continue
+        lat = entry.get("lat", 0)
+        lon = entry.get("lon", 0)
+        if not lat or not lon or not _math.isfinite(lat) or not _math.isfinite(lon):
+            continue
         state.adsb_aircraft[hex_code] = {
             "hex": hex_code,
             "flight": entry.get("flight", ""),
-            "lat": entry.get("lat", 0),
-            "lon": entry.get("lon", 0),
+            "lat": lat,
+            "lon": lon,
             "alt_baro": entry.get("alt_baro", 0),
             "gs": entry.get("gs", 0),
             "track": entry.get("track", 0),

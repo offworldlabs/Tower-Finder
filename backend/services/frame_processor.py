@@ -174,11 +174,15 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             hex_code = entry.get("hex")
             if not hex_code:
                 continue
+            lat = entry.get("lat", 0)
+            lon = entry.get("lon", 0)
+            if not lat or not lon or not math.isfinite(lat) or not math.isfinite(lon):
+                continue
             state.adsb_aircraft[hex_code] = {
                 "hex": hex_code,
                 "flight": entry.get("flight", ""),
-                "lat": entry.get("lat", 0),
-                "lon": entry.get("lon", 0),
+                "lat": lat,
+                "lon": lon,
                 "alt_baro": entry.get("alt_baro", 0),
                 "gs": entry.get("gs", 0),
                 "track": entry.get("track", 0),
@@ -311,7 +315,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             stale_adsb.append(hex_code)
             continue
         lat, lon = entry.get("lat", 0), entry.get("lon", 0)
-        if not lat or not lon:
+        if not lat or not lon or not math.isfinite(lat) or not math.isfinite(lon):
             continue
         seen_hex.add(hex_code)
         append_track_history(hex_code, lat, lon, entry.get("alt_baro", 0), now)
