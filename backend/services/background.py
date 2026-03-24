@@ -254,7 +254,7 @@ async def aircraft_flush_task(default_pipeline):
     """Write aircraft.json to disk and broadcast via WS at ~2 Hz."""
     loop = asyncio.get_event_loop()
     while True:
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1.0)
         if not state.aircraft_dirty:
             continue
         state.aircraft_dirty = False
