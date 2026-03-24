@@ -267,7 +267,7 @@ async def aircraft_flush_task(default_pipeline):
             )
             await broadcast_aircraft(aircraft_data, aircraft_bytes)
         except Exception:
-            logging.debug("Aircraft flush failed", exc_info=True)
+            logging.exception("Aircraft flush failed")
 
 
 # ── Reputation evaluator (60 s tick) ─────────────────────────────────────────
