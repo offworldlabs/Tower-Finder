@@ -55,7 +55,7 @@ def _refresh_analytics_and_nodes():
         "nodes": state.node_analytics.get_all_summaries(),
         "cross_node": state.node_analytics.get_cross_node_analysis(),
     }
-    state.latest_analytics_bytes = orjson.dumps(analytics_data)
+    state.latest_analytics_bytes = orjson.dumps(analytics_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
     # Nodes — snapshot once to avoid RuntimeError from concurrent TCP handler mutations
     _nodes_snapshot = list(state.connected_nodes.items())
@@ -93,14 +93,14 @@ def _refresh_analytics_and_nodes():
         "total": len(_nodes_snapshot),
         "synthetic": sum(1 for _, n in _nodes_snapshot if n.get("is_synthetic")),
     }
-    state.latest_nodes_bytes = orjson.dumps(nodes_data)
+    state.latest_nodes_bytes = orjson.dumps(nodes_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
     # Overlaps — only include zones with actual overlap to keep payload small
     overlaps_data = {
         "overlaps": [z for z in state.node_associator.get_overlap_summary() if z["has_overlap"]],
         "registered_nodes": list(state.node_associator.node_geometries.keys()),
     }
-    state.latest_overlaps_bytes = orjson.dumps(overlaps_data)
+    state.latest_overlaps_bytes = orjson.dumps(overlaps_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
     # Synthetic chain-of-custody entries for connected nodes that lack them
     _ensure_custody_data()
@@ -263,7 +263,7 @@ async def aircraft_flush_task(default_pipeline):
             # default pool used by FRAME_WORKERS so flush is never starved.
             def _build_and_serialize():
                 data = build_combined_aircraft_json(default_pipeline)
-                data_bytes = orjson.dumps(data)
+                data_bytes = orjson.dumps(data, option=orjson.OPT_SERIALIZE_NUMPY)
                 aircraft_path = os.path.join(_TAR1090_DATA_DIR, "aircraft.json")
                 with open(aircraft_path, "wb") as f:
                     f.write(data_bytes)
