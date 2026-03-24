@@ -125,7 +125,7 @@ export function useAircraftFeed() {
           /* ignore transient network errors */
         }
       }
-    }, 3000);
+    }, 1000);
     return () => {
       clearInterval(interval);
       controller.abort();

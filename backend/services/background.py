@@ -34,6 +34,12 @@ _analytics_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="analytics-bg",
 )
 
+# Dedicated single-thread executor for aircraft flush — isolated from the
+# default pool used by frame workers so flush is never starved under load.
+_aircraft_flush_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="aircraft-flush",
+)
+
 # Persistent httpx client reused across OpenSky fetches — preserves connection pooling
 _opensky_client: httpx.AsyncClient | None = None
 
@@ -245,16 +251,16 @@ async def broadcast_aircraft(aircraft_data: dict, aircraft_bytes: bytes):
 
 
 async def aircraft_flush_task(default_pipeline):
-    """Write aircraft.json to disk and broadcast via WS at most every 1 s."""
+    """Write aircraft.json to disk and broadcast via WS at ~2 Hz."""
     loop = asyncio.get_event_loop()
     while True:
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
         if not state.aircraft_dirty:
             continue
         state.aircraft_dirty = False
         try:
-            # Run the heavy iteration in a thread — it walks 1000+ pipelines
-            # and must NOT block the event loop (causes HTTP starvation).
+            # Run the heavy iteration in a dedicated thread — isolated from the
+            # default pool used by FRAME_WORKERS so flush is never starved.
             def _build_and_serialize():
                 data = build_combined_aircraft_json(default_pipeline)
                 data_bytes = orjson.dumps(data)
@@ -263,7 +269,7 @@ async def aircraft_flush_task(default_pipeline):
                     f.write(data_bytes)
                 return data, data_bytes
             aircraft_data, aircraft_bytes = await loop.run_in_executor(
-                None, _build_and_serialize,
+                _aircraft_flush_executor, _build_and_serialize,
             )
             await broadcast_aircraft(aircraft_data, aircraft_bytes)
         except Exception:
