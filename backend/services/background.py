@@ -202,10 +202,10 @@ async def broadcast_aircraft(aircraft_data: dict, aircraft_bytes: bytes):
 
 
 async def aircraft_flush_task(default_pipeline):
-    """Write aircraft.json to disk and broadcast via WS at most every 2 s."""
+    """Write aircraft.json to disk and broadcast via WS at most every 1 s."""
     loop = asyncio.get_event_loop()
     while True:
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
         if not state.aircraft_dirty:
             continue
         state.aircraft_dirty = False

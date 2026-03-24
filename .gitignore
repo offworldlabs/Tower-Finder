@@ -14,3 +14,7 @@ tar1090/
 tar1090_data/
 coverage_data/
 other/
+
+# Local-only agent customizations (server credentials, ops, private prompts — never push)
+.github/instructions/
+.github/prompts/

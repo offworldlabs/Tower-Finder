@@ -245,11 +245,12 @@ class SimulationWorld:
     def add_node(self, config: NodeConfig):
         """Register a synthetic node in the simulation."""
         self.nodes[config.node_id] = config
-        # Auto-set beam azimuth to point from RX toward TX
-        config.beam_azimuth_deg = _bearing_deg(
+        # Auto-set beam azimuth perpendicular to the RX→TX baseline.
+        # Yagi antennas point broadside to maximise aircraft cross-coverage.
+        config.beam_azimuth_deg = (_bearing_deg(
             config.rx_lat, config.rx_lon,
             config.tx_lat, config.tx_lon,
-        )
+        ) + 90.0) % 360.0
 
     def _spawn_aircraft(self, mode: str = "detection") -> SimulatedAircraft:
         """Spawn a new aircraft along a realistic flight corridor."""
@@ -266,12 +267,17 @@ class SimulationWorld:
         # no nodes are registered yet.
         if self.nodes:
             anchor = random.choice(list(self.nodes.values()))
-            # Spawn along the RX→TX baseline: the beam points this direction,
-            # so the aircraft is guaranteed to be inside at least the anchor
-            # node's detection cone.
-            frac = random.uniform(0.1, 0.6)   # 10-60% of the way to the TX
-            anchor_lat = anchor.rx_lat + frac * (anchor.tx_lat - anchor.rx_lat)
-            anchor_lon = anchor.rx_lon + frac * (anchor.tx_lon - anchor.rx_lon)
+            # Spawn broadside to the baseline so the aircraft is guaranteed to
+            # be inside the anchor node's Yagi beam (which points perpendicular
+            # to the RX→TX baseline).
+            baseline_bearing = _bearing_deg(
+                anchor.rx_lat, anchor.rx_lon, anchor.tx_lat, anchor.tx_lon
+            )
+            perp_rad = math.radians((baseline_bearing + 90.0) % 360.0)
+            dist_km = random.uniform(5.0, anchor.max_range_km * 0.7)
+            anchor_lat = anchor.rx_lat + (dist_km * math.cos(perp_rad)) / 111.32
+            cos_lat = math.cos(math.radians(anchor.rx_lat))
+            anchor_lon = anchor.rx_lon + (dist_km * math.sin(perp_rad)) / (111.32 * max(cos_lat, 1e-6))
         else:
             anchor_lat, anchor_lon = self.center_lat, self.center_lon
 

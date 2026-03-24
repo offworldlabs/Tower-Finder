@@ -354,10 +354,12 @@ class InterNodeAssociator:
             max_range_km=config.get("max_range_km", 50),
         )
 
-        # Compute beam azimuth (RX → TX)
-        geo.beam_azimuth_deg = _bearing_deg(
+        # Compute beam azimuth: perpendicular to the RX→TX baseline.
+        # Yagi antennas point broadside (90° from the baseline) to maximise
+        # cross-coverage of aircraft transiting the bistatic zone.
+        geo.beam_azimuth_deg = (_bearing_deg(
             geo.rx_lat, geo.rx_lon, geo.tx_lat, geo.tx_lon
-        )
+        ) + 90.0) % 360.0
 
         # Pre-compute overlap zones with existing nodes (serialised to avoid
         # RuntimeError: dictionary changed size during iteration when multiple

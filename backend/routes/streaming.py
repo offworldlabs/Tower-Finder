@@ -40,7 +40,7 @@ async def sse_aircraft_stream():
             if current_hash != last_hash:
                 yield b"data: " + state.latest_aircraft_json_bytes + b"\n\n"
                 last_hash = current_hash
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
 
     return StreamingResponse(
         _generate(),

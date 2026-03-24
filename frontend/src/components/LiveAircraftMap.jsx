@@ -22,6 +22,7 @@ import {
   makeAircraftIcon,
   nodeIcon,
   bistaticOvalPositions,
+  yagiSectorPositions,
   FitBounds,
   ViewportTracker,
   useAircraftFeed,
@@ -279,12 +280,18 @@ export default function LiveAircraftMap() {
             <ViewportTracker onChange={handleViewportChange} />
             <FitBounds aircraft={displayAircraft} nodes={nodes} selectedHex={selectedHex} focusNonce={focusNonce} />
 
-            {/* Coverage zones */}
+            {/* Coverage zones — Yagi beam sectors (broadside to TX-RX baseline) */}
             {showCoverage && visibleNodes.map((n) => (
               <Polygon
-                key={`oval-${n.node_id}`}
-                positions={bistaticOvalPositions(n.rx_lat, n.rx_lon, n.tx_lat, n.tx_lon, n.max_range_km)}
-                pathOptions={{ color: "#ef4444", fillColor: "#ef4444", fillOpacity: 0.07, weight: 1, dashArray: "4 4" }}
+                key={`beam-${n.node_id}`}
+                positions={yagiSectorPositions(
+                  n.rx_lat, n.rx_lon,
+                  n.tx_lat, n.tx_lon,
+                  n.beam_azimuth_deg,
+                  n.beam_width_deg ?? 42,
+                  n.max_range_km ?? 50,
+                )}
+                pathOptions={{ color: "#ef4444", fillColor: "#ef4444", fillOpacity: 0.1, weight: 1.5, dashArray: "4 4" }}
               />
             ))}
 

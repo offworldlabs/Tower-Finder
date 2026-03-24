@@ -60,16 +60,59 @@ export function getFocusPoints(aircraft, nodes, selectedHex) {
 }
 
 /**
- * Bistatic oval (ellipse) for passive radar coverage.
+ * Yagi antenna beam sector for passive radar coverage.
  *
- * The detection zone of a bistatic RX/TX pair is an ellipse whose foci are
- * the receiver and the transmitter.  Every point on the boundary satisfies
- * d_rx + d_tx = L + maxRangeKm  (where L = baseline distance).
+ * The detection zone of a single node is modelled as a pie-slice sector
+ * centred on the receiver (RX), pointing at `beamAzimuthDeg` (degrees from
+ * north, clockwise) with a total angular spread of `beamWidthDeg`.
  *
- * Semi-major  a = (L + maxRangeKm) / 2
- * Semi-minor  b = sqrt(a² − (L/2)²)
- * Center      = midpoint of RX–TX
- * Tilt        = bearing along the RX→TX axis
+ * In practice the Yagi points broadside — perpendicular to the TX-RX
+ * baseline — to maximise coverage of aircraft transiting the bistatic zone.
+ * `beamAzimuthDeg` is already the correct perpendicular bearing supplied by
+ * the analytics API; no extra rotation is needed here.
+ */
+function _geoOffset(lat, lon, bearingDeg, distKm) {
+  const R = 6371; // Earth radius km
+  const d = distKm / R;
+  const latR = lat * Math.PI / 180;
+  const lonR = lon * Math.PI / 180;
+  const bearR = bearingDeg * Math.PI / 180;
+  const lat2 = Math.asin(
+    Math.sin(latR) * Math.cos(d) + Math.cos(latR) * Math.sin(d) * Math.cos(bearR),
+  );
+  const lon2 = lonR + Math.atan2(
+    Math.sin(bearR) * Math.sin(d) * Math.cos(latR),
+    Math.cos(d) - Math.sin(latR) * Math.sin(lat2),
+  );
+  return [lat2 * 180 / Math.PI, lon2 * 180 / Math.PI];
+}
+
+export function yagiSectorPositions(rxLat, rxLon, txLat, txLon, beamAzimuthDeg, beamWidthDeg, maxRangeKm) {
+  // Fallback: if beam azimuth is not provided, compute perpendicular to the
+  // RX→TX baseline (same convention used by the backend).
+  let azimuth = beamAzimuthDeg;
+  if (azimuth == null || Number.isNaN(azimuth)) {
+    const cosLat = Math.cos(((rxLat + txLat) / 2) * (Math.PI / 180));
+    const dx = (txLon - rxLon) * cosLat;
+    const dy = txLat - rxLat;
+    azimuth = (Math.atan2(dx, dy) * 180 / Math.PI + 90 + 360) % 360;
+  }
+  const halfWidth = (beamWidthDeg ?? 42) / 2;
+  const range = maxRangeKm ?? 50;
+  const steps = 32;
+  const points = [[rxLat, rxLon]];
+  for (let i = 0; i <= steps; i++) {
+    const bearing = azimuth - halfWidth + (beamWidthDeg ?? 42) * (i / steps);
+    points.push(_geoOffset(rxLat, rxLon, bearing, range));
+  }
+  points.push([rxLat, rxLon]);
+  return points;
+}
+
+/**
+ * @deprecated Use yagiSectorPositions instead.
+ * Kept for reference — the bistatic ellipse no longer reflects the actual
+ * Yagi beam pattern used in the field.
  */
 export function bistaticOvalPositions(rxLat, rxLon, txLat, txLon, maxRangeKm) {
   const cosLat = Math.cos(((rxLat + txLat) / 2) * (Math.PI / 180));
