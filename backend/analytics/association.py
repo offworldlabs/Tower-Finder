@@ -384,6 +384,11 @@ class InterNodeAssociator:
         Returns association candidates found with any other node's latest frame.
         """
         self._pending_frames[node_id] = frame
+
+        # No detections → no possible associations from this frame
+        if not frame.get("delay"):
+            return []
+
         all_candidates = []
 
         for other_id, other_frame in list(self._pending_frames.items()):
@@ -392,7 +397,7 @@ class InterNodeAssociator:
 
             pair_key = tuple(sorted([node_id, other_id]))
             zone = self.overlap_zones.get(pair_key)
-            if zone is None:
+            if zone is None or not zone.delay_pairs:
                 continue
 
             # Ensure frame_a corresponds to zone.node_a_id

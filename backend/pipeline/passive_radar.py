@@ -59,7 +59,8 @@ class InMemoryEventWriter:
     """Captures track events in memory instead of writing to file."""
 
     def __init__(self):
-        self.events = {}  # track_id → latest event dict
+        self.events = {}   # track_id → latest event dict
+        self._dirty: set = set()  # track_ids written since last get_new_events()
 
     def write_event(self, track_id, timestamp, length, detections,
                     adsb_hex=None, adsb_initialized=False,
@@ -74,9 +75,22 @@ class InMemoryEventWriter:
             "is_anomalous": is_anomalous,
             "max_velocity_ms": max_velocity_ms,
         }
+        self._dirty.add(track_id)
 
     def get_events(self):
         return self.events
+
+    def get_new_events(self) -> dict:
+        """Return only events updated since the last call; clears the dirty set.
+
+        This avoids re-running the expensive LM solver for tracks that have
+        not received new detections in the current frame.
+        """
+        if not self._dirty:
+            return {}
+        result = {tid: self.events[tid] for tid in self._dirty if tid in self.events}
+        self._dirty.clear()
+        return result
 
 
 def _enu_to_lla(enu_km, rx_lat, rx_lon, rx_alt):
@@ -299,8 +313,8 @@ class PassiveRadarPipeline:
         )
 
     def _run_geolocation(self):
-        """Run geolocation on all track events from the event writer."""
-        for track_id, event in self.event_writer.get_events().items():
+        """Run geolocation only on tracks that received new data this frame."""
+        for track_id, event in self.event_writer.get_new_events().items():
             result = self._geolocate_track_event(track_id, event)
             if result is not None:
                 self.geolocated_tracks[track_id] = result
