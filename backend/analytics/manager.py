@@ -32,6 +32,7 @@ class NodeAnalyticsManager:
         self._summaries_cache: dict | None = None
         self._summaries_cache_ts: float = 0.0
         self._analytics_lock = threading.Lock()
+        self._save_lock = threading.Lock()
         if storage_dir:
             self._load_coverage_maps()
 
@@ -245,5 +246,18 @@ class NodeAnalyticsManager:
         self._last_save_time = time.time()
 
     def maybe_auto_save(self):
-        if self._storage_dir and (time.time() - self._last_save_time) > self._save_interval_s:
+        if not self._storage_dir:
+            return
+        if (time.time() - self._last_save_time) <= self._save_interval_s:
+            return
+        # Non-blocking: only one thread runs the save; others skip immediately.
+        if not self._save_lock.acquire(blocking=False):
+            return
+        try:
+            # Double-check interval after acquiring lock (another thread may have
+            # already updated _last_save_time inside save_coverage_maps).
+            if (time.time() - self._last_save_time) <= self._save_interval_s:
+                return
             self.save_coverage_maps()
+        finally:
+            self._save_lock.release()
