@@ -417,6 +417,15 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             stale_mn.append(key)
             continue
         ac = multinode_to_aircraft(key, r)
+        # Dead-reckon position using solver velocity (vel_east/vel_north in m/s)
+        ts_fix = r.get("timestamp_ms", 0) / 1000.0
+        elapsed = min(now - ts_fix, 60.0)
+        vel_east_m_s = r.get("vel_east", 0.0)
+        vel_north_m_s = r.get("vel_north", 0.0)
+        if elapsed > 0.0 and (vel_east_m_s != 0.0 or vel_north_m_s != 0.0):
+            cos_lat = math.cos(math.radians(ac["lat"])) or 1e-9
+            ac["lat"] = round(ac["lat"] + (vel_north_m_s / 111_320.0) * elapsed, 5)
+            ac["lon"] = round(ac["lon"] + (vel_east_m_s / (111_320.0 * cos_lat)) * elapsed, 5)
         if ac["hex"] not in seen_hex:
             seen_hex.add(ac["hex"])
             append_track_history(ac["hex"], ac["lat"], ac["lon"], ac["alt_baro"], now)
