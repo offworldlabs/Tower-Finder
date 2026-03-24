@@ -32,6 +32,7 @@ Duplicate frames (same timestamp) are silently skipped.
 import argparse
 import hashlib
 import json
+import select
 import socket
 import sys
 import threading
@@ -51,7 +52,7 @@ _UA = "retnode-poller/1.0"
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 RETINA_VERSION = "1.0"
-HEARTBEAT_INTERVAL_S = 60
+HEARTBEAT_INTERVAL_S = 30
 CONFIG_ACK_TIMEOUT_S = 10
 FT_PER_M = 3.28084
 
@@ -176,9 +177,14 @@ def _tcp_connect(host: str, port: int) -> socket.socket:
             time.sleep(wait)
 
 
+_sock_lock: threading.Lock = threading.Lock()
+
+
 def _send_msg(sock: socket.socket, msg: dict) -> None:
-    """Send a newline-delimited JSON message."""
-    sock.sendall((json.dumps(msg) + "\n").encode("utf-8"))
+    """Send a newline-delimited JSON message. Thread-safe via _sock_lock."""
+    data = (json.dumps(msg) + "\n").encode("utf-8")
+    with _sock_lock:
+        sock.sendall(data)
 
 
 def _recv_msg(sock: socket.socket, timeout: float = CONFIG_ACK_TIMEOUT_S) -> Optional[dict]:
@@ -283,13 +289,20 @@ def _listener_loop(
     stop_event: threading.Event,
 ) -> None:
     """Handle server-initiated messages (CONFIG_REQUEST, etc.)."""
-    sock.settimeout(1.0)
+    # Use select() with a 1s timeout instead of sock.settimeout() so we don't
+    # interfere with sendall() calls on the same socket from other threads.
+    buf = b""
     while not stop_event.is_set():
         try:
+            ready, _, _ = select.select([sock], [], [], 1.0)
+            if not ready:
+                continue
             chunk = sock.recv(4096)
             if not chunk:
                 break
-            for line in chunk.split(b"\n"):
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
                 line = line.strip()
                 if not line:
                     continue
@@ -308,8 +321,6 @@ def _listener_loop(
                         })
                     except (BrokenPipeError, ConnectionResetError, OSError):
                         break
-        except socket.timeout:
-            continue
         except (ConnectionResetError, OSError):
             break
 
