@@ -86,12 +86,20 @@ def _enu_to_lla(enu_km, rx_lat, rx_lon, rx_alt):
     return Geometry.ecef2lla(ecef[0], ecef[1], ecef[2])
 
 
+# Target profile constants
+_DRONE_ALTITUDE_BOUNDS = [0, 500]       # metres ASL
+_DRONE_VELOCITY_BOUNDS = [-60, 60]      # m/s per component
+_DRONE_INITIAL_ALT_M   = 80             # initial guess altitude
+_DRONE_MAX_SPEED_MS    = 60.0           # classification threshold
+_DRONE_MAX_ALT_M       = 600.0          # classification threshold
+
+
 class GeolocatedTrack:
     """A track that has been geolocated by the LM solver."""
 
     def __init__(self, track_id, lat, lon, alt_m, vel_east, vel_north, vel_up,
                  rms_delay, rms_doppler, n_detections, timestamp_ms,
-                 adsb_hex=None, latest_delay_us=None):
+                 adsb_hex=None, latest_delay_us=None, target_class=None):
         self.track_id = track_id
         self.hex_id = f"pr{abs(hash(track_id)) % 0xFFFF:04x}"
         self.lat = lat
@@ -106,6 +114,7 @@ class GeolocatedTrack:
         self.last_update_ms = timestamp_ms
         self.adsb_hex = adsb_hex
         self.latest_delay_us = latest_delay_us
+        self.target_class = target_class  # "aircraft", "drone", or None
 
     @property
     def speed_knots(self):
@@ -189,6 +198,13 @@ class PassiveRadarPipeline:
         else:
             self.geo_config = None
 
+        # Apply target-profile overrides to solver initial-guess bounds
+        self.target_profile = config.get("target_profile", "aircraft")
+        if self.target_profile == "drone" and self.geo_config is not None:
+            self.geo_config.altitude_bounds = list(_DRONE_ALTITUDE_BOUNDS)
+            self.geo_config.velocity_bounds = list(_DRONE_VELOCITY_BOUNDS)
+            self.geo_config.initial_altitude_m = _DRONE_INITIAL_ALT_M
+
     def _geolocate_track_event(self, track_id, event):
         """Run LM solver on a track event to get lat/lon/alt/velocity."""
         detections_data = event.get("detections", [])
@@ -256,6 +272,15 @@ class PassiveRadarPipeline:
         final_enu_km = result["state"][:3]
         lat, lon, alt = _enu_to_lla(final_enu_km, *self.rx_lla)
 
+        # Classify target based on profile and solved kinematics
+        speed_ms = math.sqrt(result["state"][3] ** 2 + result["state"][4] ** 2)
+        if self.target_profile == "drone":
+            target_class = "drone"
+        elif self.target_profile == "aircraft":
+            target_class = "aircraft"
+        else:  # "auto"
+            target_class = "drone" if speed_ms <= _DRONE_MAX_SPEED_MS and alt <= _DRONE_MAX_ALT_M else "aircraft"
+
         return GeolocatedTrack(
             track_id=track_id,
             lat=lat,
@@ -270,6 +295,7 @@ class PassiveRadarPipeline:
             timestamp_ms=event["timestamp"],
             adsb_hex=event.get("adsb_hex"),
             latest_delay_us=geo_detections[-1].delay if geo_detections else None,
+            target_class=target_class,
         )
 
     def _run_geolocation(self):

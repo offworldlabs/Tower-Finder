@@ -4,6 +4,21 @@ import L from "leaflet";
 export const PLANE_PATH =
   "M16,2 C15.3,5.5 14.7,9 14.7,13 L3,20 L3,23 L14.7,19 L14.7,26 L11.5,28 L11.5,30.5 L16,29 L20.5,30.5 L20.5,28 L17.3,26 L17.3,19 L29,23 L29,20 L17.3,13 C17.3,9 16.7,5.5 16,2Z";
 
+// Quadrotor drone SVG — simple X-frame with four motor circles
+export const DRONE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24"
+  style="display:block;filter:drop-shadow(0 1px 4px rgba(0,0,0,0.7));">
+  <!-- arms -->
+  <line x1="4" y1="4" x2="20" y2="20" stroke="#f59e0b" stroke-width="2.2" stroke-linecap="round"/>
+  <line x1="20" y1="4" x2="4" y2="20" stroke="#f59e0b" stroke-width="2.2" stroke-linecap="round"/>
+  <!-- motor circles -->
+  <circle cx="4"  cy="4"  r="3" fill="none" stroke="#f59e0b" stroke-width="1.5"/>
+  <circle cx="20" cy="4"  r="3" fill="none" stroke="#f59e0b" stroke-width="1.5"/>
+  <circle cx="4"  cy="20" r="3" fill="none" stroke="#f59e0b" stroke-width="1.5"/>
+  <circle cx="20" cy="20" r="3" fill="none" stroke="#f59e0b" stroke-width="1.5"/>
+  <!-- center hub -->
+  <circle cx="12" cy="12" r="2.5" fill="#f59e0b"/>
+</svg>`;
+
 export function getAircraftColor(ac) {
   if (ac.multinode) return "#a78bfa";
   if (ac.type !== "tisb_other" && ac.type !== "multinode_solve") return "#38bdf8";
@@ -39,6 +54,26 @@ export function makeAircraftIcon(ac, showLabel, isSelected) {
     html: `<div style="display:flex;flex-direction:column;align-items:center;">${svgHtml}${labelHtml}</div>`,
     iconSize: [90, 44],
     iconAnchor: [45, Math.round(size / 2)],
+  });
+}
+
+export function makeDroneIcon(ac, showLabel, isSelected) {
+  const label = ac.flight?.trim() || ac.hex?.slice(-6)?.toUpperCase() || "";
+  const glowFilter = isSelected
+    ? "filter:drop-shadow(0 0 7px #fbbf24);"
+    : "";
+
+  const droneHtml = `<div style="${glowFilter}">${DRONE_SVG}</div>`;
+  const labelHtml =
+    showLabel && label
+      ? `<div class="aircraft-label" style="color:#f59e0b;">${label}</div>`
+      : "";
+
+  return L.divIcon({
+    className: "aircraft-marker",
+    html: `<div style="display:flex;flex-direction:column;align-items:center;">${droneHtml}${labelHtml}</div>`,
+    iconSize: [90, 40],
+    iconAnchor: [45, 11],
   });
 }
 

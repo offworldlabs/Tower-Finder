@@ -364,6 +364,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             "solver_lon": solver_lon,
             "delay_us": round(getattr(track, "latest_delay_us", 0.0) or 0.0, 3),
             "node_id": node_cfg.get("node_id"),
+            "target_class": getattr(track, "target_class", None),
             "recent_positions": list(state.track_histories.get(ac_hex, [])),
         }
 

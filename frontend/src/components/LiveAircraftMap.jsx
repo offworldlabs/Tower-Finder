@@ -21,6 +21,7 @@ import {
   sampleTrailPositions,
   buildTrailSegments,
   makeAircraftIcon,
+  makeDroneIcon,
   nodeIcon,
   yagiSectorPositions,
   FitBounds,
@@ -306,41 +307,78 @@ export default function LiveAircraftMap() {
               </Marker>
             ))}
 
-            {/* Selected trail — gradient fade */}
-            {showTrails && selectedTrailPositions.length >= 2 &&
-              buildTrailSegments(selectedTrailPositions).map((seg, i) => (
+            {/* Selected trail — gradient fade; dashed for arc-type tracks */}
+            {showTrails && selectedTrailPositions.length >= 2 && (() => {
+              const isArcTrack = selectedAc?.position_source === "single_node_ellipse_arc";
+              return buildTrailSegments(selectedTrailPositions).map((seg, i) => (
                 <Polyline
                   key={`trail-${selectedHex}-seg${i}-${trailTick}`}
                   positions={seg.positions}
-                  pathOptions={{ color: "#f59e0b", weight: seg.weight, opacity: seg.opacity, lineCap: "round", lineJoin: "round" }}
-                />
-              ))
-            }
-
-            {/* Aircraft markers */}
-            {visibleAircraft.map((ac) =>
-              Array.isArray(ac.ambiguity_arc) && ac.ambiguity_arc.length >= 2 ? (
-                <Polyline
-                  key={ac.hex}
-                  positions={ac.ambiguity_arc}
                   pathOptions={{
-                    color: ac.hex === selectedHex ? "#fbbf24" : "#2dd4bf",
-                    weight: ac.hex === selectedHex ? 4 : 3,
-                    opacity: 0.95,
+                    color: "#f59e0b",
+                    weight: seg.weight,
+                    opacity: isArcTrack ? seg.opacity * 0.6 : seg.opacity,
                     lineCap: "round",
                     lineJoin: "round",
+                    dashArray: isArcTrack ? "5 7" : undefined,
                   }}
-                  eventHandlers={{ click: () => handleSelectAircraft(ac.hex) }}
                 />
-              ) : ac.lat && ac.lon ? (
-                <Marker
-                  key={ac.hex}
-                  position={[ac.lat, ac.lon]}
-                  icon={makeAircraftIcon(ac, showLabels, ac.hex === selectedHex)}
-                  eventHandlers={{ click: () => handleSelectAircraft(ac.hex) }}
-                />
-              ) : null,
-            )}
+              ));
+            })()}
+
+            {/* Aircraft markers */}
+            {visibleAircraft.map((ac) => {
+              const isSelected = ac.hex === selectedHex;
+              // 1. Ellipse arc — single-node with delay constraint
+              if (Array.isArray(ac.ambiguity_arc) && ac.ambiguity_arc.length >= 2) {
+                return (
+                  <Polyline
+                    key={ac.hex}
+                    positions={ac.ambiguity_arc}
+                    pathOptions={{
+                      color: isSelected ? "#fbbf24" : (ac.target_class === "drone" ? "#fb923c" : "#2dd4bf"),
+                      weight: isSelected ? 4 : 3,
+                      opacity: 0.95,
+                      lineCap: "round",
+                      lineJoin: "round",
+                    }}
+                    eventHandlers={{ click: () => handleSelectAircraft(ac.hex) }}
+                  />
+                );
+              }
+              // 2. Solver-only position (no verified arc) — dimmed uncertainty marker
+              if (ac.position_source === "solver_single_node" && ac.lat && ac.lon) {
+                return (
+                  <CircleMarker
+                    key={ac.hex}
+                    center={[ac.lat, ac.lon]}
+                    radius={isSelected ? 9 : 6}
+                    pathOptions={{
+                      color: isSelected ? "#fbbf24" : "#64748b",
+                      fillColor: isSelected ? "#fbbf24" : "#94a3b8",
+                      fillOpacity: isSelected ? 0.6 : 0.35,
+                      weight: isSelected ? 2.5 : 1.5,
+                    }}
+                    eventHandlers={{ click: () => handleSelectAircraft(ac.hex) }}
+                  />
+                );
+              }
+              // 3. Normal marker (ADS-B associated or multinode)
+              if (ac.lat && ac.lon) {
+                const icon = ac.target_class === "drone"
+                  ? makeDroneIcon(ac, showLabels, isSelected)
+                  : makeAircraftIcon(ac, showLabels, isSelected);
+                return (
+                  <Marker
+                    key={ac.hex}
+                    position={[ac.lat, ac.lon]}
+                    icon={icon}
+                    eventHandlers={{ click: () => handleSelectAircraft(ac.hex) }}
+                  />
+                );
+              }
+              return null;
+            })}
 
             {/* Ground-truth-only markers */}
             {showGroundTruth && visibleTruthOnlyAircraft.map((ac) => (

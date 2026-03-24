@@ -102,9 +102,12 @@ export default function AircraftListPanel({
                   ? `Multi·${ac.n_nodes}N`
                   : ac.position_source === "single_node_ellipse_arc"
                     ? "Arc·1N"
-                    : ac.position_source === "adsb_associated"
-                      ? "ADS-B"
-                      : "Solver";
+                    : ac.position_source === "solver_single_node"
+                      ? "Solver·1N"
+                      : ac.position_source === "adsb_associated"
+                        ? "ADS-B"
+                        : "Solver";
+              const isDrone = ac.target_class === "drone";
 
               return (
                 <div
@@ -118,16 +121,26 @@ export default function AircraftListPanel({
                   <div className="al-indicator" style={{ background: color }} />
                   <svg
                     className="al-icon"
-                    viewBox="0 0 32 32"
-                    fill={color}
+                    viewBox={isDrone ? "0 0 24 24" : "0 0 32 32"}
+                    fill={isDrone ? "none" : color}
+                    stroke={isDrone ? color : "none"}
+                    strokeWidth={isDrone ? 2 : 0}
                     style={{
-                      transform: `rotate(${ac.track ?? 0}deg)`,
+                      transform: isDrone ? undefined : `rotate(${ac.track ?? 0}deg)`,
                       width: 13,
                       height: 13,
                       flexShrink: 0,
                     }}
                   >
-                    <path d={PLANE_PATH} />
+                    {isDrone ? (
+                      <>
+                        <line x1="4" y1="4" x2="20" y2="20" strokeLinecap="round"/>
+                        <line x1="20" y1="4" x2="4" y2="20" strokeLinecap="round"/>
+                        <circle cx="12" cy="12" r="2.5" fill={color} stroke="none"/>
+                      </>
+                    ) : (
+                      <path d={PLANE_PATH} />
+                    )}
                   </svg>
                   <div className="al-info">
                     <span className="al-callsign">{callsign}</span>

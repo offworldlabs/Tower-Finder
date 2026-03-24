@@ -12,15 +12,19 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
   const isMultinode = ac.multinode;
   const hasAdsb = ac.type !== "tisb_other" && ac.type !== "multinode_solve";
   const isAmbiguityArc = ac.position_source === "single_node_ellipse_arc";
+  const isSolverOnly = ac.position_source === "solver_single_node";
+  const isDrone = ac.target_class === "drone";
   const sourceLabel = isMultinode
     ? `Multi-node (${ac.n_nodes}N)`
     : isAmbiguityArc
       ? "Single-node ellipse arc"
-      : ac.position_source === "adsb_associated"
-        ? "ADS-B associated"
-        : hasAdsb
-          ? "ADS-B"
-          : ac.type || "Unknown";
+      : isSolverOnly
+        ? "Single-node solver (uncertain)"
+        : ac.position_source === "adsb_associated"
+          ? "ADS-B associated"
+          : hasAdsb
+            ? "ADS-B"
+            : ac.type || "Unknown";
   const sourceBadge = isMultinode ? "multinode" : hasAdsb ? "adsb" : "other";
   const isTruthOnly = !ac.type && !ac.flight;
 
@@ -44,6 +48,16 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
                 label="Source"
                 value={<span className={`detail-source-badge ${sourceBadge}`}>{sourceLabel}</span>}
               />
+              {ac.target_class && (
+                <Field
+                  label="Target class"
+                  value={
+                    <span style={{ color: isDrone ? "#f59e0b" : "#38bdf8", fontWeight: 600 }}>
+                      {isDrone ? "\u{1F6F8} Drone" : "\u2708\uFE0F Aircraft"}
+                    </span>
+                  }
+                />
+              )}
             </>
           )}
           {isTruthOnly && (
@@ -83,6 +97,12 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
               <Field label="Display mode" value="Delay ellipse clipped to beam" />
               <Field label="Latest delay" value={ac.delay_us != null ? `${ac.delay_us} μs` : "\u2014"} />
             </>
+          )}
+          {isSolverOnly && (
+            <Field
+              label="Note"
+              value={<span style={{ color: "#94a3b8", fontStyle: "italic" }}>Position uncertain — single node, no arc</span>}
+            />
           )}
         </div>
 
