@@ -50,7 +50,7 @@ export function makeAircraftIcon(ac, showLabel, isSelected) {
       : "";
 
   return L.divIcon({
-    className: "aircraft-marker",
+    className: `aircraft-marker ac-hex-${ac.hex}`,
     html: `<div style="display:flex;flex-direction:column;align-items:center;">${svgHtml}${labelHtml}</div>`,
     iconSize: [90, 44],
     iconAnchor: [45, Math.round(size / 2)],

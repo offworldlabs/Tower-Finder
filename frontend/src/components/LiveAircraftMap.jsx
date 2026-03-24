@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo, memo } from "react";
 import {
   MapContainer,
   TileLayer,
@@ -38,6 +38,21 @@ L.Icon.Default.mergeOptions({
     "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
   iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
   shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+});
+
+/* ── AircraftMarker: memoized — icon only rebuilds on selection/label/altitude changes,
+      NOT on track/position changes (track is updated via direct DOM in the rAF loop) ── */
+const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels, onSelect }) {
+  const altBand = Math.floor((ac.alt_baro ?? 0) / 5000);
+  const icon = useMemo(
+    () => ac.target_class === "drone"
+      ? makeDroneIcon(ac, showLabels, isSelected)
+      : makeAircraftIcon(ac, showLabels, isSelected),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [ac.hex, isSelected, showLabels, ac.flight, ac.target_class, altBand],
+  );
+  const handlers = useMemo(() => ({ click: () => onSelect(ac.hex) }), [ac.hex, onSelect]);
+  return <Marker position={[ac.lat, ac.lon]} icon={icon} eventHandlers={handlers} />;
 });
 
 /* ── Main component ───────────────────────────────────────────── */
@@ -133,6 +148,11 @@ export default function LiveAircraftMap() {
         const sTrack = (prevTrack + dTrack * alpha + 360) % 360;
 
         smoothRef.current[fix.hex] = { lat: sLat, lon: sLon, track: sTrack };
+
+        // Update rotation directly on the DOM — avoids setIcon() every frame
+        const svgEl = document.querySelector(`.ac-hex-${fix.hex} svg`);
+        if (svgEl) svgEl.style.transform = `rotate(${sTrack.toFixed(1)}deg)`;
+
         result.push({ ...fix, lat: sLat, lon: sLon, track: sTrack });
       }
 
@@ -384,15 +404,13 @@ export default function LiveAircraftMap() {
               }
               // 3. Normal marker (ADS-B associated or multinode)
               if (ac.lat && ac.lon) {
-                const icon = ac.target_class === "drone"
-                  ? makeDroneIcon(ac, showLabels, isSelected)
-                  : makeAircraftIcon(ac, showLabels, isSelected);
                 return (
-                  <Marker
+                  <AircraftMarker
                     key={ac.hex}
-                    position={[ac.lat, ac.lon]}
-                    icon={icon}
-                    eventHandlers={{ click: () => handleSelectAircraft(ac.hex) }}
+                    ac={ac}
+                    isSelected={isSelected}
+                    showLabels={showLabels}
+                    onSelect={handleSelectAircraft}
                   />
                 );
               }
