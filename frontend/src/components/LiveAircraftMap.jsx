@@ -12,10 +12,7 @@ import L from "leaflet";
 import "./LiveAircraftMap.css";
 
 import {
-  ANIMATION_MS,
   STALE_AIRCRAFT_MS,
-  interpolateBearing,
-  easeInOutCubic,
   isPointInViewport,
   isAircraftInViewport,
   sampleTrailPositions,
@@ -74,57 +71,55 @@ export default function LiveAircraftMap() {
 
   const animationFrameRef = useRef(null);
   const displayedAircraftRef = useRef({});
+  const fixesRef = useRef({}); // hex → last server fix + _fixLat/_fixLon/_fixTs
 
-  /* ── Animation: smoothly interpolate aircraft positions ───── */
+  /* ── Record server fixes when new WS data arrives ───────────── */
   useEffect(() => {
-    cancelAnimationFrame(animationFrameRef.current);
-
-    if (!aircraft.length) {
-      const existing = Object.values(displayedAircraftRef.current || {});
-      if (!existing.length) { setDisplayAircraft([]); return; }
-
-      const now = Date.now();
-      const fresh = existing.filter((ac) => now - (ac._updatedAt ?? now) < STALE_AIRCRAFT_MS);
-      displayedAircraftRef.current = Object.fromEntries(fresh.map((ac) => [ac.hex, ac]));
-      setDisplayAircraft(fresh);
-      return;
+    const now = Date.now();
+    for (const ac of aircraft) {
+      if (!ac.lat || !ac.lon) continue;
+      fixesRef.current[ac.hex] = { ...ac, _fixLat: ac.lat, _fixLon: ac.lon, _fixTs: now, _updatedAt: now };
     }
+    // Drop stale entries no longer in the feed
+    for (const hex of Object.keys(fixesRef.current)) {
+      if (now - (fixesRef.current[hex]._updatedAt ?? 0) > STALE_AIRCRAFT_MS) {
+        delete fixesRef.current[hex];
+      }
+    }
+  }, [aircraft]);
 
-    const startByHex = displayedAircraftRef.current;
-    const startTs = performance.now();
-    const nextByHex = Object.fromEntries(
-      aircraft.map((ac) => [ac.hex, { ...ac, _updatedAt: Date.now() }]),
-    );
+  /* ── Continuous 60fps dead-reckoning animation loop ─────────── */
+  useEffect(() => {
+    const DEG_PER_M = 1 / 111_320;
+    const KNOTS_TO_MS = 0.514444;
 
-    const animate = (now) => {
-      const progress = Math.min(1, (now - startTs) / ANIMATION_MS);
-      const eased = easeInOutCubic(progress);
-
-      const nextAircraft = Object.values(nextByHex).map((ac) => {
-        const start = startByHex[ac.hex] || ac;
-        const startLat = start.lat ?? ac.lat;
-        const startLon = start.lon ?? ac.lon;
-        return {
-          ...ac,
-          lat: startLat + ((ac.lat ?? startLat) - startLat) * eased,
-          lon: startLon + ((ac.lon ?? startLon) - startLon) * eased,
-          track: interpolateBearing(start.track, ac.track, eased),
-        };
-      });
-
-      Object.values(startByHex).forEach((ac) => {
-        if (nextByHex[ac.hex]) return;
-        if (Date.now() - (ac._updatedAt ?? 0) < STALE_AIRCRAFT_MS) nextAircraft.push(ac);
-      });
-
-      displayedAircraftRef.current = Object.fromEntries(nextAircraft.map((ac) => [ac.hex, ac]));
-      setDisplayAircraft(nextAircraft);
-      if (progress < 1) animationFrameRef.current = requestAnimationFrame(animate);
+    const tick = () => {
+      const now = Date.now();
+      const result = [];
+      for (const fix of Object.values(fixesRef.current)) {
+        const elapsed = Math.min((now - fix._fixTs) / 1000, 60);
+        const gs = fix.gs || 0;
+        if (elapsed > 0 && gs > 0) {
+          const gs_m_s = gs * KNOTS_TO_MS;
+          const track_rad = (fix.track || 0) * (Math.PI / 180);
+          const cos_lat = Math.cos(fix._fixLat * (Math.PI / 180)) || 1e-9;
+          result.push({
+            ...fix,
+            lat: fix._fixLat + gs_m_s * Math.cos(track_rad) * DEG_PER_M * elapsed,
+            lon: fix._fixLon + (gs_m_s * Math.sin(track_rad)) / (111_320 * cos_lat) * elapsed,
+          });
+        } else {
+          result.push(fix);
+        }
+      }
+      displayedAircraftRef.current = Object.fromEntries(result.map((ac) => [ac.hex, ac]));
+      setDisplayAircraft(result);
+      animationFrameRef.current = requestAnimationFrame(tick);
     };
 
-    animationFrameRef.current = requestAnimationFrame(animate);
+    animationFrameRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animationFrameRef.current);
-  }, [aircraft]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ── Derived: truth-only aircraft ───────────────────────────── */
   const matchedTruthHexes = new Set(
