@@ -71,7 +71,9 @@ export default function LiveAircraftMap() {
 
   const animationFrameRef = useRef(null);
   const displayedAircraftRef = useRef({});
-  const fixesRef = useRef({}); // hex → last server fix + _fixLat/_fixLon/_fixTs
+  const fixesRef = useRef({});   // hex → last server fix
+  const smoothRef = useRef({});  // hex → { lat, lon, track } — smoothed render position
+  const prevTsRef = useRef(null);
 
   /* ── Record server fixes when new WS data arrives ───────────── */
   useEffect(() => {
@@ -84,34 +86,56 @@ export default function LiveAircraftMap() {
     for (const hex of Object.keys(fixesRef.current)) {
       if (now - (fixesRef.current[hex]._updatedAt ?? 0) > STALE_AIRCRAFT_MS) {
         delete fixesRef.current[hex];
+        delete smoothRef.current[hex];
       }
     }
   }, [aircraft]);
 
-  /* ── Continuous 60fps dead-reckoning animation loop ─────────── */
+  /* ── Continuous 60fps glide loop (dead-reckoning + exponential smoothing) ── */
   useEffect(() => {
     const DEG_PER_M = 1 / 111_320;
     const KNOTS_TO_MS = 0.514444;
+    // Smoothing time constant: lower = snappier, higher = more glide (seconds)
+    const TAU = 0.55;
 
-    const tick = () => {
+    const tick = (ts) => {
+      const dt = prevTsRef.current !== null ? Math.min((ts - prevTsRef.current) / 1000, 0.1) : 0;
+      prevTsRef.current = ts;
+      const alpha = dt > 0 ? 1 - Math.exp(-dt / TAU) : 1;
+
       const now = Date.now();
       const result = [];
+
       for (const fix of Object.values(fixesRef.current)) {
         const elapsed = Math.min((now - fix._fixTs) / 1000, 60);
         const gs = fix.gs || 0;
+
+        // 1. Dead-reckon the physics target
+        let targetLat = fix._fixLat;
+        let targetLon = fix._fixLon;
         if (elapsed > 0 && gs > 0) {
           const gs_m_s = gs * KNOTS_TO_MS;
           const track_rad = (fix.track || 0) * (Math.PI / 180);
           const cos_lat = Math.cos(fix._fixLat * (Math.PI / 180)) || 1e-9;
-          result.push({
-            ...fix,
-            lat: fix._fixLat + gs_m_s * Math.cos(track_rad) * DEG_PER_M * elapsed,
-            lon: fix._fixLon + (gs_m_s * Math.sin(track_rad)) / (111_320 * cos_lat) * elapsed,
-          });
-        } else {
-          result.push(fix);
+          targetLat = fix._fixLat + gs_m_s * Math.cos(track_rad) * DEG_PER_M * elapsed;
+          targetLon = fix._fixLon + (gs_m_s * Math.sin(track_rad)) / (111_320 * cos_lat) * elapsed;
         }
+
+        // 2. Exponential smoothing toward the target (glide / inertia effect)
+        const prev = smoothRef.current[fix.hex];
+        const sLat = prev ? prev.lat + (targetLat - prev.lat) * alpha : targetLat;
+        const sLon = prev ? prev.lon + (targetLon - prev.lon) * alpha : targetLon;
+
+        // Smooth heading with wrap-around handling
+        const targetTrack = fix.track || 0;
+        const prevTrack = prev ? prev.track : targetTrack;
+        const dTrack = ((targetTrack - prevTrack + 540) % 360) - 180;
+        const sTrack = (prevTrack + dTrack * alpha + 360) % 360;
+
+        smoothRef.current[fix.hex] = { lat: sLat, lon: sLon, track: sTrack };
+        result.push({ ...fix, lat: sLat, lon: sLon, track: sTrack });
       }
+
       displayedAircraftRef.current = Object.fromEntries(result.map((ac) => [ac.hex, ac]));
       setDisplayAircraft(result);
       animationFrameRef.current = requestAnimationFrame(tick);
