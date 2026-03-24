@@ -16,6 +16,7 @@ export function useAircraftFeed() {
 
   const wsRef = useRef(null);
   const reconnectTimer = useRef(null);
+  const reconnectAttempts = useRef(0);
   const pausedRef = useRef(false);
   const historyRef = useRef([]);
 
@@ -68,7 +69,10 @@ export function useAircraftFeed() {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${proto}//${window.location.host}/ws/aircraft`);
 
-    ws.onopen = () => setConnected(true);
+    ws.onopen = () => {
+      setConnected(true);
+      reconnectAttempts.current = 0;  // reset backoff on successful connect
+    };
 
     ws.onmessage = (evt) => {
       try {
@@ -82,7 +86,10 @@ export function useAircraftFeed() {
     ws.onclose = () => {
       setConnected(false);
       wsRef.current = null;
-      reconnectTimer.current = setTimeout(connectWs, 3000);
+      // Exponential backoff: 3s, 6s, 12s … capped at 30s
+      const delay = Math.min(3000 * Math.pow(2, reconnectAttempts.current), 30000);
+      reconnectAttempts.current += 1;
+      reconnectTimer.current = setTimeout(connectWs, delay);
     };
 
     ws.onerror = () => ws.close();
@@ -103,18 +110,26 @@ export function useAircraftFeed() {
   // --- HTTP polling fallback ---
   useEffect(() => {
     if (connected) return;
+    const controller = new AbortController();
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${API_BASE}/radar/data/aircraft.json`);
+        const res = await fetch(`${API_BASE}/radar/data/aircraft.json`, {
+          signal: controller.signal,
+        });
         if (res.ok) {
           const data = await res.json();
           ingestAircraft(data.aircraft || [], data.ground_truth);
         }
-      } catch {
-        /* ignore */
+      } catch (err) {
+        if (err.name !== "AbortError") {
+          /* ignore transient network errors */
+        }
       }
     }, 3000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      controller.abort();
+    };
   }, [connected, ingestAircraft]);
 
   return {

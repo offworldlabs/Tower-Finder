@@ -34,6 +34,9 @@ _analytics_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="analytics-bg",
 )
 
+# Persistent httpx client reused across OpenSky fetches — preserves connection pooling
+_opensky_client: httpx.AsyncClient | None = None
+
 
 # ── Analytics / nodes / overlaps pre-computation (30 s tick) ──────────────────
 
@@ -48,7 +51,8 @@ def _refresh_analytics_and_nodes():
     }
     state.latest_analytics_bytes = orjson.dumps(analytics_data)
 
-    # Nodes
+    # Nodes — snapshot once to avoid RuntimeError from concurrent TCP handler mutations
+    _nodes_snapshot = list(state.connected_nodes.items())
     nodes_data = {
         "nodes": {
             nid: {
@@ -67,11 +71,11 @@ def _refresh_analytics_and_nodes():
                     "tx_lon": info.get("config", {}).get("tx_lon"),
                 },
             }
-            for nid, info in state.connected_nodes.items()
+            for nid, info in _nodes_snapshot
         },
-        "connected": sum(1 for n in state.connected_nodes.values() if n.get("status") not in ("disconnected",)),
-        "total": len(state.connected_nodes),
-        "synthetic": sum(1 for n in state.connected_nodes.values() if n.get("is_synthetic")),
+        "connected": sum(1 for _, n in _nodes_snapshot if n.get("status") not in ("disconnected",)),
+        "total": len(_nodes_snapshot),
+        "synthetic": sum(1 for _, n in _nodes_snapshot if n.get("is_synthetic")),
     }
     state.latest_nodes_bytes = orjson.dumps(nodes_data)
 
@@ -84,6 +88,8 @@ def _refresh_analytics_and_nodes():
 
     # Synthetic chain-of-custody entries for connected nodes that lack them
     _ensure_custody_data()
+    # Evict PassiveRadarPipeline instances for long-disconnected nodes to free RAM
+    _evict_stale_pipelines(_nodes_snapshot)
 
 
 def _ensure_custody_data():
@@ -98,7 +104,7 @@ def _ensure_custody_data():
     now_iso = datetime.now(timezone.utc).isoformat()
     hour_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:00:00Z")
 
-    for nid, info in state.connected_nodes.items():
+    for nid, info in list(state.connected_nodes.items()):
         if info.get("status") == "disconnected":
             continue
 
@@ -120,6 +126,9 @@ def _ensure_custody_data():
             state.chain_entries[nid] = []
 
         entries = state.chain_entries[nid]
+        # Trim to last 168 entries (7 days) to prevent unbounded RAM growth
+        if len(entries) > 168:
+            state.chain_entries[nid] = entries = entries[-168:]
         if not entries or entries[-1].get("hour_utc") != hour_utc:
             prev_hash = entries[-1].get("entry_hash", "0" * 64) if entries else "0" * 64
             content_hash = hashlib.sha256(f"{nid}:{hour_utc}".encode()).hexdigest()
@@ -144,6 +153,30 @@ def _ensure_custody_data():
                 "sha256": hashlib.sha256(f"iq:{nid}".encode()).hexdigest(),
                 "_received_at": now_iso,
             })
+
+
+def _evict_stale_pipelines(nodes_snapshot: list):
+    """Remove PassiveRadarPipeline for nodes disconnected > 2 h. Frees tracker/geolocator RAM."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    stale = []
+    for nid, info in nodes_snapshot:
+        if info.get("status") != "disconnected":
+            continue
+        hb = info.get("last_heartbeat")
+        if not hb:
+            stale.append(nid)
+            continue
+        try:
+            hb_time = datetime.fromisoformat(hb.replace("Z", "+00:00"))
+            if (now - hb_time).total_seconds() > 7200:
+                stale.append(nid)
+        except Exception:
+            pass
+    for nid in stale:
+        state.node_pipelines.pop(nid, None)
+    if stale:
+        logging.debug("Evicted %d stale node pipelines", len(stale))
 
 
 async def analytics_refresh_task():
@@ -193,9 +226,9 @@ async def broadcast_aircraft(aircraft_data: dict, aircraft_bytes: bytes):
         return
     payload = aircraft_bytes.decode()
     stale = set()
-    for ws in state.ws_clients:
+    for ws in list(state.ws_clients):  # snapshot to avoid set-changed-during-iteration
         try:
-            await ws.send_text(payload)
+            await asyncio.wait_for(ws.send_text(payload), timeout=5.0)
         except Exception:
             stale.add(ws)
     state.ws_clients.difference_update(stale)
@@ -293,19 +326,22 @@ async def _fetch_external_adsb() -> bool:
     lomin, lomax = min(lons) - 1.0, max(lons) + 1.0
 
     url = "https://opensky-network.org/api/states/all"
+    global _opensky_client
+    if _opensky_client is None or _opensky_client.is_closed:
+        _opensky_client = httpx.AsyncClient(timeout=15.0)
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(url, params={
-                "lamin": lamin, "lamax": lamax,
-                "lomin": lomin, "lomax": lomax,
-            })
-            if resp.status_code == 429:
-                logging.debug("OpenSky rate-limited (429) — backing off")
-                return True
-            if resp.status_code != 200:
-                return False
-            data = resp.json()
+        resp = await _opensky_client.get(url, params={
+            "lamin": lamin, "lamax": lamax,
+            "lomin": lomin, "lomax": lomax,
+        })
+        if resp.status_code == 429:
+            logging.debug("OpenSky rate-limited (429) — backing off")
+            return True
+        if resp.status_code != 200:
+            return False
+        data = resp.json()
     except Exception:
+        _opensky_client = None  # reset on error; recreated on next call
         return False
 
     states = data.get("states", [])

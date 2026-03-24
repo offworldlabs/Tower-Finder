@@ -1,30 +1,31 @@
+import { lazy, Suspense } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { useAuth } from "./context/AuthContext";
 import LoginPage from "./pages/LoginPage";
 import DashboardLayout from "./components/DashboardLayout";
 
-// User pages
-import OverviewPage from "./pages/user/OverviewPage";
-import NodeDetailPage from "./pages/user/NodeDetailPage";
-import DetectionsPage from "./pages/user/DetectionsPage";
-import ContributionPage from "./pages/user/ContributionPage";
-import DataExplorerPage from "./pages/user/DataExplorerPage";
-import SettingsPage from "./pages/user/SettingsPage";
-import RFEnvironmentPage from "./pages/user/RFEnvironmentPage";
-import AlertsPage from "./pages/user/AlertsPage";
-import LeaderboardPage from "./pages/user/LeaderboardPage";
-import KnowledgeBasePage from "./pages/user/KnowledgeBasePage";
-import TunnelLinkPage from "./pages/user/TunnelLinkPage";
+// User pages — lazy-loaded so each chunk is only downloaded when first visited
+const OverviewPage = lazy(() => import("./pages/user/OverviewPage"));
+const NodeDetailPage = lazy(() => import("./pages/user/NodeDetailPage"));
+const DetectionsPage = lazy(() => import("./pages/user/DetectionsPage"));
+const ContributionPage = lazy(() => import("./pages/user/ContributionPage"));
+const DataExplorerPage = lazy(() => import("./pages/user/DataExplorerPage"));
+const SettingsPage = lazy(() => import("./pages/user/SettingsPage"));
+const RFEnvironmentPage = lazy(() => import("./pages/user/RFEnvironmentPage"));
+const AlertsPage = lazy(() => import("./pages/user/AlertsPage"));
+const LeaderboardPage = lazy(() => import("./pages/user/LeaderboardPage"));
+const KnowledgeBasePage = lazy(() => import("./pages/user/KnowledgeBasePage"));
+const TunnelLinkPage = lazy(() => import("./pages/user/TunnelLinkPage"));
 
-// Admin pages
-import NetworkHealthPage from "./pages/admin/NetworkHealthPage";
-import NodeManagementPage from "./pages/admin/NodeManagementPage";
-import AnalyticsPage from "./pages/admin/AnalyticsPage";
-import EventsPage from "./pages/admin/EventsPage";
-import StoragePage from "./pages/admin/StoragePage";
-import CustodyPage from "./pages/admin/CustodyPage";
-import UserManagementPage from "./pages/admin/UserManagementPage";
-import ConfigPage from "./pages/admin/ConfigPage";
+// Admin pages — lazy-loaded
+const NetworkHealthPage = lazy(() => import("./pages/admin/NetworkHealthPage"));
+const NodeManagementPage = lazy(() => import("./pages/admin/NodeManagementPage"));
+const AnalyticsPage = lazy(() => import("./pages/admin/AnalyticsPage"));
+const EventsPage = lazy(() => import("./pages/admin/EventsPage"));
+const StoragePage = lazy(() => import("./pages/admin/StoragePage"));
+const CustodyPage = lazy(() => import("./pages/admin/CustodyPage"));
+const UserManagementPage = lazy(() => import("./pages/admin/UserManagementPage"));
+const ConfigPage = lazy(() => import("./pages/admin/ConfigPage"));
 
 const isAdminSite =
   window.location.hostname.startsWith("admin.") ||
@@ -54,35 +55,37 @@ export default function App() {
         element={
           <RequireAuth>
             <DashboardLayout isAdmin={isAdminSite}>
-              <Routes>
-                {isAdminSite ? (
-                  <>
-                    <Route index element={<NetworkHealthPage />} />
-                    <Route path="nodes" element={<NodeManagementPage />} />
-                    <Route path="nodes/:nodeId" element={<NodeDetailPage />} />
-                    <Route path="analytics" element={<AnalyticsPage />} />
-                    <Route path="events" element={<EventsPage />} />
-                    <Route path="storage" element={<StoragePage />} />
-                    <Route path="custody" element={<CustodyPage />} />
-                    <Route path="users" element={<UserManagementPage />} />
-                    <Route path="config" element={<ConfigPage />} />
-                  </>
-                ) : (
-                  <>
-                    <Route index element={<OverviewPage />} />
-                    <Route path="nodes/:nodeId" element={<NodeDetailPage />} />
-                    <Route path="detections" element={<DetectionsPage />} />
-                    <Route path="rf" element={<RFEnvironmentPage />} />
-                    <Route path="contribution" element={<ContributionPage />} />
-                    <Route path="data" element={<DataExplorerPage />} />
-                    <Route path="alerts" element={<AlertsPage />} />
-                    <Route path="leaderboard" element={<LeaderboardPage />} />
-                    <Route path="knowledge" element={<KnowledgeBasePage />} />
-                    <Route path="tunnel" element={<TunnelLinkPage />} />
-                    <Route path="settings" element={<SettingsPage />} />
-                  </>
-                )}
-              </Routes>
+              <Suspense fallback={<div className="loading-screen">Loading…</div>}>
+                <Routes>
+                  {isAdminSite ? (
+                    <>
+                      <Route index element={<NetworkHealthPage />} />
+                      <Route path="nodes" element={<NodeManagementPage />} />
+                      <Route path="nodes/:nodeId" element={<NodeDetailPage />} />
+                      <Route path="analytics" element={<AnalyticsPage />} />
+                      <Route path="events" element={<EventsPage />} />
+                      <Route path="storage" element={<StoragePage />} />
+                      <Route path="custody" element={<CustodyPage />} />
+                      <Route path="users" element={<UserManagementPage />} />
+                      <Route path="config" element={<ConfigPage />} />
+                    </>
+                  ) : (
+                    <>
+                      <Route index element={<OverviewPage />} />
+                      <Route path="nodes/:nodeId" element={<NodeDetailPage />} />
+                      <Route path="detections" element={<DetectionsPage />} />
+                      <Route path="rf" element={<RFEnvironmentPage />} />
+                      <Route path="contribution" element={<ContributionPage />} />
+                      <Route path="data" element={<DataExplorerPage />} />
+                      <Route path="alerts" element={<AlertsPage />} />
+                      <Route path="leaderboard" element={<LeaderboardPage />} />
+                      <Route path="knowledge" element={<KnowledgeBasePage />} />
+                      <Route path="tunnel" element={<TunnelLinkPage />} />
+                      <Route path="settings" element={<SettingsPage />} />
+                    </>
+                  )}
+                </Routes>
+              </Suspense>
             </DashboardLayout>
           </RequireAuth>
         }

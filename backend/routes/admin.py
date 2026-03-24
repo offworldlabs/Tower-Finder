@@ -14,7 +14,10 @@ from pathlib import Path
 _admin_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="admin-io")
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
+
+import orjson
 
 from core.auth import require_admin, get_all_users, update_user_role, get_current_user
 from core import state
@@ -75,7 +78,7 @@ def check_node_health():
         return
     _last_health_check = now
 
-    for node_id, info in state.connected_nodes.items():
+    for node_id, info in list(state.connected_nodes.items()):
         hb = info.get("last_heartbeat")
         if not hb:
             continue
@@ -130,12 +133,16 @@ _BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 @router.get("/config/nodes")
 async def get_node_config(_admin=Depends(require_admin)):
+    global _nodes_config_cache
     fp = _BACKEND_DIR / "nodes_config.json"
     if fp.exists():
-        return json.loads(fp.read_text())
-    # Generate live config summary from connected nodes
+        return Response(content=fp.read_bytes(), media_type="application/json")
+    # Live fallback with TTL cache — iterating 1000 nodes is O(n)
+    now = time.time()
+    if _nodes_config_cache is not None and now - _nodes_config_cache[0] < _CONFIG_LIVE_CACHE_TTL:
+        return Response(content=_nodes_config_cache[1], media_type="application/json")
     nodes_cfg = {}
-    for nid, info in state.connected_nodes.items():
+    for nid, info in list(state.connected_nodes.items()):
         cfg = info.get("config", {})
         nodes_cfg[nid] = {
             "name": cfg.get("name", nid),
@@ -146,17 +153,23 @@ async def get_node_config(_admin=Depends(require_admin)):
             "tx_lon": cfg.get("tx_lon"),
             "status": info.get("status"),
         }
-    return {"_source": "live", "nodes": nodes_cfg, "total": len(nodes_cfg)}
+    result_bytes = orjson.dumps({"_source": "live", "nodes": nodes_cfg, "total": len(nodes_cfg)})
+    _nodes_config_cache = (now, result_bytes)
+    return Response(content=result_bytes, media_type="application/json")
 
 
 @router.get("/config/towers")
 async def get_tower_config(_admin=Depends(require_admin)):
+    global _towers_config_cache
     fp = _BACKEND_DIR / "tower_config.json"
     if fp.exists():
-        return json.loads(fp.read_text())
-    # Generate live tower config from unique TX locations
+        return Response(content=fp.read_bytes(), media_type="application/json")
+    # Live fallback with TTL cache
+    now = time.time()
+    if _towers_config_cache is not None and now - _towers_config_cache[0] < _CONFIG_LIVE_CACHE_TTL:
+        return Response(content=_towers_config_cache[1], media_type="application/json")
     towers = {}
-    for nid, info in state.connected_nodes.items():
+    for nid, info in list(state.connected_nodes.items()):
         cfg = info.get("config", {})
         tx_lat = cfg.get("tx_lat")
         tx_lon = cfg.get("tx_lon")
@@ -170,7 +183,9 @@ async def get_tower_config(_admin=Depends(require_admin)):
                     "nodes_using": [],
                 }
             towers[key]["nodes_using"].append(nid)
-    return {"_source": "live", "towers": towers, "total": len(towers)}
+    result_bytes = orjson.dumps({"_source": "live", "towers": towers, "total": len(towers)})
+    _towers_config_cache = (now, result_bytes)
+    return Response(content=result_bytes, media_type="application/json")
 
 
 class ConfigUpdate(BaseModel):
@@ -179,6 +194,8 @@ class ConfigUpdate(BaseModel):
 
 @router.put("/config/nodes")
 async def update_node_config(body: ConfigUpdate, _admin=Depends(require_admin)):
+    global _nodes_config_cache
+    _nodes_config_cache = None  # invalidate live cache
     fp = _BACKEND_DIR / "nodes_config.json"
     # Save version history
     _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -193,6 +210,8 @@ async def update_node_config(body: ConfigUpdate, _admin=Depends(require_admin)):
 
 @router.put("/config/towers")
 async def update_tower_config(body: ConfigUpdate, _admin=Depends(require_admin)):
+    global _towers_config_cache
+    _towers_config_cache = None  # invalidate live cache
     fp = _BACKEND_DIR / "tower_config.json"
     _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
@@ -223,6 +242,11 @@ async def config_history(_admin=Depends(require_admin)):
 _storage_cache: dict | None = None
 _storage_cache_ts: float = 0.0
 _STORAGE_CACHE_TTL = 300.0  # refresh at most every 5 minutes
+
+# TTL cache for live-generated node/tower config (active when JSON files absent)
+_nodes_config_cache: tuple | None = None
+_towers_config_cache: tuple | None = None
+_CONFIG_LIVE_CACHE_TTL = 60.0  # seconds
 
 
 def _scan_archive_dir(archive_dir) -> tuple[int, int, dict]:

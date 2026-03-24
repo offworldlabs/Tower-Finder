@@ -33,8 +33,13 @@ def init(pipeline: PassiveRadarPipeline):
 def _check_rate_limit(ip: str) -> None:
     now = time.monotonic()
     bucket = state.rate_buckets[ip]
-    state.rate_buckets[ip] = [t for t in bucket if now - t < _RATE_WINDOW]
-    if len(state.rate_buckets[ip]) >= _RATE_LIMIT:
+    recent = [t for t in bucket if now - t < _RATE_WINDOW]
+    if recent:
+        state.rate_buckets[ip] = recent
+    else:
+        # All timestamps expired — free the key; defaultdict recreates on next append
+        del state.rate_buckets[ip]
+    if len(recent) >= _RATE_LIMIT:
         raise HTTPException(status_code=429, detail="Rate limit exceeded — slow down")
     state.rate_buckets[ip].append(now)
 
