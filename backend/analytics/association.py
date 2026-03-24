@@ -337,6 +337,9 @@ class InterNodeAssociator:
 
         Thread-safe: acquires an internal lock so concurrent registrations
         (e.g. from multiple run_in_executor calls) cannot corrupt iteration.
+
+        Reconnecting nodes skip the expensive O(n²) overlap recomputation
+        as long as their geometry (RX/TX position) hasn't changed.
         """
         rx_alt_km = config.get("rx_alt_ft", 0) * 0.3048 / 1000.0
         tx_alt_km = config.get("tx_alt_ft", 0) * 0.3048 / 1000.0
@@ -361,10 +364,21 @@ class InterNodeAssociator:
             geo.rx_lat, geo.rx_lon, geo.tx_lat, geo.tx_lon
         ) + 90.0) % 360.0
 
-        # Pre-compute overlap zones with existing nodes (serialised to avoid
-        # RuntimeError: dictionary changed size during iteration when multiple
-        # nodes register concurrently from a thread-pool executor).
         with self._register_lock:
+            existing = self.node_geometries.get(node_id)
+            if existing is not None and (
+                abs(existing.rx_lat - geo.rx_lat) < 1e-6
+                and abs(existing.rx_lon - geo.rx_lon) < 1e-6
+                and abs(existing.tx_lat - geo.tx_lat) < 1e-6
+                and abs(existing.tx_lon - geo.tx_lon) < 1e-6
+                and abs(existing.max_range_km - geo.max_range_km) < 1e-4
+            ):
+                # Same geometry — overlap zones are still valid; skip O(n²) recompute.
+                return
+
+            # Pre-compute overlap zones with existing nodes (serialised to avoid
+            # RuntimeError: dictionary changed size during iteration when multiple
+            # nodes register concurrently from a thread-pool executor).
             for existing_id, existing_geo in list(self.node_geometries.items()):
                 pair_key = tuple(sorted([node_id, existing_id]))
                 zone = compute_overlap_zone(
