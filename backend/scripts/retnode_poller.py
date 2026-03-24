@@ -268,6 +268,7 @@ def _heartbeat_loop(
     stop_event: threading.Event,
 ) -> None:
     """Send periodic HEARTBEAT messages on a background thread."""
+    print(f"[poller] heartbeat thread started (interval={HEARTBEAT_INTERVAL_S}s)", file=sys.stderr)
     while not stop_event.wait(HEARTBEAT_INTERVAL_S):
         try:
             _send_msg(sock, {
@@ -277,8 +278,11 @@ def _heartbeat_loop(
                 "config_hash": cfg_hash,
                 "status": "active",
             })
-        except (BrokenPipeError, ConnectionResetError, OSError):
+            print(f"[poller]   → HEARTBEAT sent", file=sys.stderr)
+        except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+            print(f"[poller] heartbeat error: {exc}", file=sys.stderr)
             break
+    print(f"[poller] heartbeat thread stopped", file=sys.stderr)
 
 
 def _listener_loop(
