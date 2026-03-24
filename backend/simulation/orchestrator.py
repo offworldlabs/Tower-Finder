@@ -371,52 +371,71 @@ class FleetOrchestrator:
             self._stats["errors"] += 1
 
     async def run_simulation_loop(self, duration_s: float = 0):
-        """Main simulation loop — step world, generate frames, send to nodes.
+        """Main simulation loop — step world continuously, send frames staggered.
 
-        Args:
-            duration_s: How long to run (0 = forever until Ctrl-C).
+        The world now advances every ``tick_dt=1s`` (multiplied by time_scale)
+        regardless of ``frame_interval``.  Node frames are staggered evenly
+        across ``frame_interval`` so the total frame rate stays the same
+        (n_nodes / frame_interval per second) but aircraft positions update
+        every real second instead of every ``frame_interval`` seconds.
+        This prevents the "stationary then teleport" issue when frame_interval
+        is large (e.g. 40 s).
         """
         self._running = True
         self._stats["start_time"] = time.monotonic()
-        dt = self.frame_interval
-        frame_count = 0
+        tick_dt = 1.0  # world advances this many real-seconds per loop iteration
         report_interval = 10  # log stats every N seconds
         last_report = time.monotonic()
 
+        # Stagger per-node send times evenly across frame_interval so we never
+        # send to all nodes at once.
+        now_init = time.monotonic()
+        node_ids = list(self.connections.keys())
+        n_nodes = max(len(node_ids), 1)
+        next_send: dict[str, float] = {}
+        for i, nid in enumerate(node_ids):
+            next_send[nid] = now_init + i * (self.frame_interval / n_nodes)
+
         log.info(
-            "Starting simulation loop (dt=%.1fs, time_scale=%.1fx, mode=%s, duration=%s)",
-            dt, self.time_scale, self.mode, f"{duration_s}s" if duration_s else "infinite",
+            "Starting simulation loop (tick=%.1fs, frame_interval=%.1fs, "
+            "time_scale=%.1fx, mode=%s, duration=%s, ~%.1f frames/s)",
+            tick_dt, self.frame_interval, self.time_scale, self.mode,
+            f"{duration_s}s" if duration_s else "infinite",
+            n_nodes / self.frame_interval,
         )
 
         try:
             while self._running:
                 loop_start = time.monotonic()
 
-                # Step the simulation
-                self.world.step(dt * self.time_scale, mode=self.mode)
+                # Advance the simulation world by one tick
+                self.world.step(tick_dt * self.time_scale, mode=self.mode)
                 timestamp_ms = int(time.time() * 1000)
 
-                # Record ground truth
+                # Record ground truth on every world step
                 self._record_ground_truth(timestamp_ms)
 
-                # Generate and send frames for all connected nodes
+                # Send frames only to nodes whose per-node cooldown has elapsed
+                now_t = time.monotonic()
                 send_tasks = []
                 for node_id, conn in self.connections.items():
                     if not conn.connected:
                         continue
+                    if now_t < next_send.get(node_id, 0.0):
+                        continue
                     frame = self.world.generate_detections_for_node(node_id, timestamp_ms)
                     if frame.get("delay"):  # only send non-empty frames
                         send_tasks.append(self._send_frame_to_node(node_id, frame))
+                    # Schedule next send regardless of whether frame was non-empty
+                    next_send[node_id] = now_t + self.frame_interval
 
                 if send_tasks:
                     await asyncio.gather(*send_tasks)
 
-                frame_count += 1
-
                 # Periodic stats report
-                now = time.monotonic()
-                if now - last_report >= report_interval:
-                    elapsed = now - self._stats["start_time"]
+                now_t = time.monotonic()
+                if now_t - last_report >= report_interval:
+                    elapsed = now_t - self._stats["start_time"]
                     active = sum(1 for c in self.connections.values() if c.connected)
                     fps = self._stats["total_frames"] / max(elapsed, 1)
                     dps = self._stats["total_detections"] / max(elapsed, 1)
@@ -428,16 +447,16 @@ class FleetOrchestrator:
                         self._stats["errors"],
                         len(self.world.aircraft) if self.world else 0,
                     )
-                    last_report = now
+                    last_report = now_t
 
                 # Check duration limit
-                if duration_s > 0 and (now - self._stats["start_time"]) >= duration_s:
+                if duration_s > 0 and (now_t - self._stats["start_time"]) >= duration_s:
                     log.info("Duration limit reached (%.0fs), stopping", duration_s)
                     break
 
-                # Pace the loop
+                # Pace the loop to tick_dt
                 elapsed_loop = time.monotonic() - loop_start
-                sleep_time = max(0, dt - elapsed_loop)
+                sleep_time = max(0, tick_dt - elapsed_loop)
                 if sleep_time > 0:
                     await asyncio.sleep(sleep_time)
 
