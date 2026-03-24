@@ -63,12 +63,22 @@ def _refresh_analytics_and_nodes():
                 "peer": info.get("peer"),
                 "is_synthetic": info.get("is_synthetic", is_synthetic_node(nid)),
                 "capabilities": info.get("capabilities", {}),
-                "frequency": info.get("config", {}).get("FC", info.get("config", {}).get("frequency")),
+                "frequency": (
+                    info.get("config", {}).get("FC")
+                    or info.get("config", {}).get("fc_hz")
+                    or info.get("config", {}).get("frequency")
+                ),
+                "sample_rate": (
+                    info.get("config", {}).get("Fs")
+                    or info.get("config", {}).get("fs_hz")
+                ),
                 "location": {
                     "rx_lat": info.get("config", {}).get("rx_lat"),
                     "rx_lon": info.get("config", {}).get("rx_lon"),
+                    "rx_alt_ft": info.get("config", {}).get("rx_alt_ft"),
                     "tx_lat": info.get("config", {}).get("tx_lat"),
                     "tx_lon": info.get("config", {}).get("tx_lon"),
+                    "tx_alt_ft": info.get("config", {}).get("tx_alt_ft"),
                 },
             }
             for nid, info in _nodes_snapshot

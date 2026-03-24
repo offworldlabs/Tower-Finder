@@ -9,11 +9,15 @@ export default function NodeDetailPage() {
   const { nodeId } = useParams();
   const navigate = useNavigate();
   const [data, setData] = useState(null);
+  const [nodeInfo, setNodeInfo] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.nodeAnalytics(nodeId)
-      .then(setData)
+    Promise.all([api.nodeAnalytics(nodeId), api.nodes()])
+      .then(([analytics, nodeData]) => {
+        setData(analytics);
+        setNodeInfo((nodeData.nodes || {})[nodeId] || null);
+      })
       .catch(() => setData(null))
       .finally(() => setLoading(false));
   }, [nodeId]);
@@ -126,6 +130,45 @@ export default function NodeDetailPage() {
                 <tr><td>Estimated Range</td><td>{(data.detection_area.estimated_range_km || 0).toFixed(1)} km</td></tr>
                 <tr><td>Beam Width</td><td>{(data.detection_area.beam_width_deg || 0).toFixed(1)}°</td></tr>
                 <tr><td>ADS-B Validated Positions</td><td>{data.detection_area.validated_positions || 0}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* RF Configuration */}
+      {nodeInfo && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header"><h3>RF Configuration</h3></div>
+          <div className="card-body">
+            <table>
+              <tbody>
+                <tr>
+                  <td>Center Frequency</td>
+                  <td>{nodeInfo.frequency ? `${(nodeInfo.frequency / 1e6).toFixed(3)} MHz` : "—"}</td>
+                </tr>
+                <tr>
+                  <td>Sample Rate</td>
+                  <td>{nodeInfo.sample_rate ? `${(nodeInfo.sample_rate / 1e6).toFixed(2)} MSps` : "—"}</td>
+                </tr>
+                <tr>
+                  <td>RX Location</td>
+                  <td>
+                    {nodeInfo.location?.rx_lat != null
+                      ? `${nodeInfo.location.rx_lat.toFixed(5)}, ${nodeInfo.location.rx_lon.toFixed(5)}`
+                      : "—"}
+                    {nodeInfo.location?.rx_alt_ft != null ? ` / ${nodeInfo.location.rx_alt_ft} ft` : ""}
+                  </td>
+                </tr>
+                <tr>
+                  <td>TX Location</td>
+                  <td>
+                    {nodeInfo.location?.tx_lat != null
+                      ? `${nodeInfo.location.tx_lat.toFixed(5)}, ${nodeInfo.location.tx_lon.toFixed(5)}`
+                      : "—"}
+                    {nodeInfo.location?.tx_alt_ft != null ? ` / ${nodeInfo.location.tx_alt_ft} ft` : ""}
+                  </td>
+                </tr>
               </tbody>
             </table>
           </div>

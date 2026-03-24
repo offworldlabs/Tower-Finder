@@ -90,6 +90,8 @@ export default function NodeManagementPage() {
                 {node.name || id}
               </div>
               <div className="node-meta">
+                <span className="meta-label">Frequency</span>
+                <span>{node.frequency ? `${(node.frequency / 1e6).toFixed(2)} MHz` : "—"}</span>
                 <span className="meta-label">Detections</span>
                 <span>{(summary.metrics?.total_detections || summary.detection_area?.n_detections || 0).toLocaleString()}</span>
                 <span className="meta-label">Frames</span>
