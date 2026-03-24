@@ -305,6 +305,27 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     seen_hex: set[str] = set()
     aircraft: list[dict] = []
 
+    def _dead_reckon(entry: dict, ts: float):
+        """Return dead-reckoned (lat, lon) from the last ADS-B fix.
+
+        Uses stored gs (knots) and track (degrees from north) to extrapolate
+        the aircraft's current position since the last fix.  Capped at 60s to
+        avoid large extrapolation errors.
+        """
+        lat_fix = entry.get("lat", 0.0)
+        lon_fix = entry.get("lon", 0.0)
+        elapsed = min(ts - entry.get("last_seen_ms", 0) / 1000.0, 60.0)
+        gs_knots = entry.get("gs", 0.0)
+        track_deg = entry.get("track", 0.0)
+        if elapsed <= 0.0 or gs_knots <= 0.0:
+            return lat_fix, lon_fix
+        gs_m_s = gs_knots * 0.514444
+        track_rad = math.radians(track_deg)
+        cos_lat = math.cos(math.radians(lat_fix)) or 1e-9
+        lat_dr = lat_fix + (gs_m_s * math.cos(track_rad) / 111_320.0) * elapsed
+        lon_dr = lon_fix + (gs_m_s * math.sin(track_rad) / (111_320.0 * cos_lat)) * elapsed
+        return lat_dr, lon_dr
+
     def _fresh_adsb(ac_hex: str):
         """Return state.adsb_aircraft entry if it's recent (< 60 s), else None."""
         entry = state.adsb_aircraft.get(ac_hex)
@@ -322,8 +343,14 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         adsb = _fresh_adsb(ac_hex)
         ambiguity_arc = None
         position_source = "solver_single_node"
-        lat = round(adsb["lat"] if adsb and adsb.get("lat") else track.lat, 6)
-        lon = round(adsb["lon"] if adsb and adsb.get("lon") else track.lon, 6)
+        if adsb and adsb.get("lat") and adsb.get("lon"):
+            # Dead-reckon from the last ADS-B fix to now for smooth animation.
+            dr_lat, dr_lon = _dead_reckon(adsb, now)
+            lat = round(dr_lat, 6)
+            lon = round(dr_lon, 6)
+        else:
+            lat = round(track.lat, 6)
+            lon = round(track.lon, 6)
         solver_lat = round(track.lat, 6)
         solver_lon = round(track.lon, 6)
         alt_ft = adsb.get("alt_baro", track.alt_ft) if adsb else track.alt_ft
@@ -408,9 +435,12 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         if age_s > 60:
             stale_adsb.append(hex_code)
             continue
-        lat, lon = entry.get("lat", 0), entry.get("lon", 0)
-        if not lat or not lon or not math.isfinite(lat) or not math.isfinite(lon):
+        lat_fix, lon_fix = entry.get("lat", 0), entry.get("lon", 0)
+        if not lat_fix or not lon_fix or not math.isfinite(lat_fix) or not math.isfinite(lon_fix):
             continue
+        # Dead-reckon to current time so WS clients see smooth 1 Hz movement
+        # even when the source only sends frames every 20-40 s.
+        lat, lon = _dead_reckon(entry, now)
         seen_hex.add(hex_code)
         append_track_history(hex_code, lat, lon, entry.get("alt_baro", 0), now)
         aircraft.append({
