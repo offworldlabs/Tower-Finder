@@ -410,7 +410,12 @@ class FleetOrchestrator:
 
                 # Advance the simulation world by one tick
                 self.world.step(tick_dt * self.time_scale, mode=self.mode)
-                timestamp_ms = int(time.time() * 1000)
+                # Use simulation time (not wall clock) so the LM solver sees
+                # timestamps that are consistent with the delay/Doppler physics.
+                # With time_scale>1, wall-clock dt is compressed but position
+                # changes are proportionally larger, causing the solver to
+                # estimate velocities that exceed its bounds and return None.
+                timestamp_ms = int(self.world._time * 1000)
 
                 # Record ground truth on every world step
                 self._record_ground_truth(timestamp_ms)
