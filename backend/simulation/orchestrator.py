@@ -751,13 +751,16 @@ async def main_async(args):
             orchestrator, args.validation_url, interval_s=1.0,
         ))
 
+    # Always push ground truth when we have a validation_url — needed for
+    # anomaly detection and the frontend map overlay, not just validation.
+    if args.validation_url:
+        tasks.append(_push_ground_truth_live(
+            orchestrator, args.validation_url, interval_s=2.0,
+        ))
+
     if args.validate and args.validation_url:
         tasks.append(_validate_against_server(
             orchestrator, args.validation_url, interval_s=30.0,
-        ))
-        # Push live ground truth to server for map overlay comparison
-        tasks.append(_push_ground_truth_live(
-            orchestrator, args.validation_url, interval_s=2.0,
         ))
 
     try:
