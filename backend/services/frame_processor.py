@@ -348,6 +348,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             dr_lat, dr_lon = _dead_reckon(adsb, now)
             lat = round(dr_lat, 6)
             lon = round(dr_lon, 6)
+            position_source = "adsb_associated"
         else:
             lat = round(track.lat, 6)
             lon = round(track.lon, 6)
@@ -356,15 +357,14 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         alt_ft = adsb.get("alt_baro", track.alt_ft) if adsb else track.alt_ft
         gs = round(adsb.get("gs", track.speed_knots) if adsb else track.speed_knots, 1)
         heading = round(adsb.get("track", track.track_angle) if adsb else track.track_angle, 1)
-        if adsb and adsb.get("lat") and adsb.get("lon"):
-            position_source = "adsb_associated"
-        else:
-            ambiguity_arc = _build_single_node_arc(track, node_cfg)
-            if ambiguity_arc:
-                midpoint = ambiguity_arc[len(ambiguity_arc) // 2]
-                lat = round(midpoint[0], 6)
-                lon = round(midpoint[1], 6)
-                position_source = "single_node_ellipse_arc"
+        # Always build the bistatic arc — it's the primary passive-radar visual even
+        # when the position is known from ADS-B. Doppler coloring requires the arc.
+        ambiguity_arc = _build_single_node_arc(track, node_cfg)
+        if ambiguity_arc and position_source == "single_node_ellipse_arc":
+            midpoint = ambiguity_arc[len(ambiguity_arc) // 2]
+            lat = round(midpoint[0], 6)
+            lon = round(midpoint[1], 6)
+            position_source = "single_node_ellipse_arc"
         append_track_history(ac_hex, lat, lon, alt_ft, now)
         return {
             "hex": ac_hex,
