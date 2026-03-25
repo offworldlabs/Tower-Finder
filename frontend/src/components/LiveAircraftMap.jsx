@@ -445,10 +445,8 @@ export default function LiveAircraftMap() {
               const isSelected = ac.hex === selectedHex;
               // 1. Ellipse arc — single-node with delay constraint
               if (Array.isArray(ac.ambiguity_arc) && ac.ambiguity_arc.length >= 2) {
-                // Smooth Doppler gradient: dark blue (approach) → grey (neutral) → dark red (recede)
-                const arcColor = isSelected
-                  ? "#fbbf24"
-                  : ac.target_class === "drone"
+                // Keep the Doppler hue visible when selected; selection is shown via stroke emphasis.
+                const arcColor = ac.target_class === "drone"
                   ? "#fb923c"
                   : dopplerColor(ac.doppler_hz ?? 0);
                 return (
@@ -457,8 +455,8 @@ export default function LiveAircraftMap() {
                     positions={ac.ambiguity_arc}
                     pathOptions={{
                       color: arcColor,
-                      weight: isSelected ? 4 : 3,
-                      opacity: 0.95,
+                      weight: isSelected ? 5 : 3,
+                      opacity: isSelected ? 1 : 0.95,
                       lineCap: "round",
                       lineJoin: "round",
                     }}
