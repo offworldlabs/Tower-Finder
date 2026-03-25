@@ -21,6 +21,7 @@ import numpy as np
 
 from retina_tracker.tracker import Tracker as RetinaTracker
 from retina_tracker.output import TrackEventWriter
+from retina_tracker.config import set_config as _set_tracker_global_config
 
 from retina_geolocator import (
     Geometry,
@@ -170,6 +171,10 @@ class PassiveRadarPipeline:
         if os.path.exists(tracker_config_path):
             with open(tracker_config_path, "r") as f:
                 tracker_config = yaml.safe_load(f)
+            # Propagate to the global config so MIN_SNR() / M_THRESHOLD() etc.
+            # read the correct values (they use a module-level singleton, not
+            # the per-instance config dict stored on the Tracker object).
+            _set_tracker_global_config(tracker_config)
 
         self.tracker = RetinaTracker(
             event_writer=self.event_writer,
