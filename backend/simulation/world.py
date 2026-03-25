@@ -326,7 +326,9 @@ class SimulationWorld:
             speed_km_s = random.uniform(0.12, 0.27)  # 120-270 m/s → typical jet
             alt_km = random.uniform(5.0, 12.0)       # 16k-40k ft
 
-        if mode in ("adsb", "anomalous") and not is_anomalous and object_type != "drone" and roll >= 0.30:
+        # Anomalous objects also get ADS-B — anomalous means unusual flight
+        # behaviour (speed/altitude/heading changes), NOT transponder absence.
+        if mode in ("adsb", "anomalous") and object_type != "drone" and roll >= 0.30 or is_anomalous:
             has_adsb = True
             adsb_hex = f"{random.randint(0x100000, 0xFFFFFF):06x}"
             letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
