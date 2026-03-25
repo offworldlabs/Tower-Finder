@@ -360,7 +360,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         # Always build the bistatic arc — it's the primary passive-radar visual even
         # when the position is known from ADS-B. Doppler coloring requires the arc.
         ambiguity_arc = _build_single_node_arc(track, node_cfg)
-        if ambiguity_arc and position_source == "single_node_ellipse_arc":
+        if ambiguity_arc and position_source == "solver_single_node":
             midpoint = ambiguity_arc[len(ambiguity_arc) // 2]
             lat = round(midpoint[0], 6)
             lon = round(midpoint[1], 6)
