@@ -3,16 +3,64 @@ import "./PhysicsSettings.css";
 
 const API = "/api";
 
-// Object type definitions — colors match LiveAircraftMap rendering
+// Same plane path used by LiveAircraftMap for pixel-perfect icon matching
+const PLANE_PATH =
+  "M16,2 C15.3,5.5 14.7,9 14.7,13 L3,20 L3,23 L14.7,19 L14.7,26 L11.5,28 L11.5,30.5 L16,29 L20.5,30.5 L20.5,28 L17.3,26 L17.3,19 L29,23 L29,20 L17.3,13 C17.3,9 16.7,5.5 16,2Z";
+
+// SVG icon components — colours match map rendering exactly
+function PlaneIcon({ color = "#38bdf8", size = 26 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" style={{ display: "block", filter: `drop-shadow(0 0 4px ${color}55)` }}>
+      <path d={PLANE_PATH} fill={color} />
+    </svg>
+  );
+}
+
+function DarkPlaneIcon({ size = 26 }) {
+  // Grey plane with a diagonal "no-signal" bar — conveys ADS-B-off
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" style={{ display: "block" }}>
+      <path d={PLANE_PATH} fill="#94a3b8" opacity="0.5" />
+      <line x1="6" y1="6" x2="26" y2="26" stroke="#64748b" strokeWidth="2.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function DroneIcon({ size = 26 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" style={{ display: "block", filter: "drop-shadow(0 0 4px rgba(245,158,11,0.4))" }}>
+      <line x1="4" y1="4" x2="20" y2="20" stroke="#f59e0b" strokeWidth="2.2" strokeLinecap="round" />
+      <line x1="20" y1="4" x2="4" y2="20" stroke="#f59e0b" strokeWidth="2.2" strokeLinecap="round" />
+      <circle cx="4"  cy="4"  r="3" fill="none" stroke="#f59e0b" strokeWidth="1.5" />
+      <circle cx="20" cy="4"  r="3" fill="none" stroke="#f59e0b" strokeWidth="1.5" />
+      <circle cx="4"  cy="20" r="3" fill="none" stroke="#f59e0b" strokeWidth="1.5" />
+      <circle cx="20" cy="20" r="3" fill="none" stroke="#f59e0b" strokeWidth="1.5" />
+      <circle cx="12" cy="12" r="2.5" fill="#f59e0b" />
+    </svg>
+  );
+}
+
+function AnomalousIcon({ size = 26 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" style={{ display: "block", filter: "drop-shadow(0 0 4px rgba(244,63,94,0.5))" }}>
+      <circle cx="12" cy="12" r="9"  fill="none" stroke="#f43f5e" strokeWidth="1.5" strokeDasharray="4 2" />
+      <circle cx="12" cy="12" r="5.5" fill="none" stroke="#f43f5e" strokeWidth="1" opacity="0.5" />
+      <line  x1="12" y1="7.5" x2="12" y2="13.5" stroke="#f43f5e" strokeWidth="1.8" strokeLinecap="round" />
+      <circle cx="12" cy="16" r="1" fill="#f43f5e" />
+    </svg>
+  );
+}
+
+// Object type definitions — colours and SVG icons match LiveAircraftMap rendering precisely
 const OBJECT_TYPES = [
   {
     key: "frac_anomalous",
     label: "Anomalous",
     countKey: "anomalous",
     color: "#f43f5e",
-    border: "#e11d48",
-    icon: "⚠",
+    Icon: AnomalousIcon,
     description: "Erratic flight — irregular altitude, speed, and heading changes.",
+    mapNote: "Pulsing red ring on map",
     maxPct: 30,
   },
   {
@@ -20,9 +68,9 @@ const OBJECT_TYPES = [
     label: "Drone",
     countKey: "drone",
     color: "#f59e0b",
-    border: "#d97706",
-    icon: "✦",
+    Icon: DroneIcon,
     description: "Low-altitude, slow-moving quadrotor — no ADS-B transponder.",
+    mapNote: "Amber X-frame icon on map",
     maxPct: 40,
   },
   {
@@ -30,9 +78,9 @@ const OBJECT_TYPES = [
     label: "Dark Aircraft",
     countKey: "dark",
     color: "#94a3b8",
-    border: "#64748b",
-    icon: "●",
+    Icon: DarkPlaneIcon,
     description: "Commercial aircraft without ADS-B — radar-only detection.",
+    mapNote: "Grey bistatic arc only (no ADS-B icon)",
     maxPct: 50,
   },
 ];
@@ -40,35 +88,26 @@ const OBJECT_TYPES = [
 function pct(v) { return Math.round(v * 100); }
 function frac(p) { return Math.round(p) / 100; }
 
-function LiveBadge({ count }) {
-  if (count == null) return null;
-  return (
-    <span className="ps-live-badge">{count} live</span>
-  );
-}
-
 export default function PhysicsSettings() {
   const [config, setConfig] = useState(null);
-  const [draft, setDraft] = useState(null);    // values being edited
+  const [draft, setDraft] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState(null);
   const [error, setError] = useState(null);
 
-  // Fetch current config (includes ground_truth_counts)
   const fetchConfig = useCallback(async () => {
     try {
       const res = await fetch(`${API}/simulation/config`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setConfig(data);
-      // Only reset draft on first load or if no pending edits
       setDraft(prev => prev ? prev : {
         frac_anomalous: data.frac_anomalous,
-        frac_drone: data.frac_drone,
-        frac_dark: data.frac_dark,
-        max_range_km: data.max_range_km,
-        min_aircraft: data.min_aircraft,
-        max_aircraft: data.max_aircraft,
+        frac_drone:     data.frac_drone,
+        frac_dark:      data.frac_dark,
+        max_range_km:   data.max_range_km,
+        min_aircraft:   data.min_aircraft,
+        max_aircraft:   data.max_aircraft,
       });
     } catch (e) {
       setError(e.message);
@@ -111,95 +150,145 @@ export default function PhysicsSettings() {
   if (!draft) {
     return (
       <div className="ps-container ps-loading">
-        {error ? <span className="ps-error">{error}</span> : <span>Loading simulation config…</span>}
+        {error
+          ? <span className="ps-error">{error}</span>
+          : <span className="ps-loading-text">Loading simulation config…</span>}
       </div>
     );
   }
 
-  const counts = config?.ground_truth_counts ?? {};
-  const totalGt = counts.total ?? 0;
-
-  // Commercial = total - anomalous - drone - aircraft-type-dark
-  // Note: in ground_truth_meta "aircraft" bucket = dark + commercial combined.
-  // We surface the raw count and note it covers both.
+  const counts        = config?.ground_truth_counts ?? {};
+  const totalGt       = counts.total ?? 0;
   const fracCommercial = Math.max(0, 1 - draft.frac_anomalous - draft.frac_drone - draft.frac_dark);
-
-  // Validate: sum must not exceed 1
-  const fracSum = draft.frac_anomalous + draft.frac_drone + draft.frac_dark;
-  const overLimit = fracSum > 1.0;
+  const fracSum        = draft.frac_anomalous + draft.frac_drone + draft.frac_dark;
+  const overLimit      = fracSum > 1.0;
 
   return (
     <div className="ps-container">
+
+      {/* ── Header ──────────────────────────────────────────────────── */}
       <div className="ps-header">
         <h2>Physics Object Layer</h2>
         <p className="ps-subtitle">
           Adjust the mix of synthetic aircraft types spawned by the fleet simulator.
-          Changes take effect for newly spawned aircraft (every ~40 s).
+          Changes apply to newly-spawned objects (next spawn cycle ~40 s).
         </p>
       </div>
 
-      {/* Live count summary bar */}
-      <div className="ps-counts-bar">
-        <span className="ps-counts-label">Live objects</span>
-        <span className="ps-count-chip" style={{ background: "#f43f5ebb" }}>
-          ⚠ {counts.anomalous ?? 0} anomalous
-        </span>
-        <span className="ps-count-chip" style={{ background: "#f59e0bbb" }}>
-          ✦ {counts.drone ?? 0} drone
-        </span>
-        <span className="ps-count-chip" style={{ background: "#64748bbb" }}>
-          ● {counts.aircraft ?? 0} aircraft
-        </span>
-        <span className="ps-count-chip ps-count-total">
-          {totalGt} total
-        </span>
+      {/* ── Live Count Grid ──────────────────────────────────────────── */}
+      <div className="ps-count-grid">
+        <div className="ps-count-card" style={{ "--accent": "#f43f5e" }}>
+          <AnomalousIcon size={28} />
+          <span className="ps-count-num">{counts.anomalous ?? 0}</span>
+          <span className="ps-count-lbl">Anomalous</span>
+        </div>
+        <div className="ps-count-card" style={{ "--accent": "#f59e0b" }}>
+          <DroneIcon size={28} />
+          <span className="ps-count-num">{counts.drone ?? 0}</span>
+          <span className="ps-count-lbl">Drones</span>
+        </div>
+        <div className="ps-count-card" style={{ "--accent": "#94a3b8" }}>
+          <PlaneIcon color="#94a3b8" size={28} />
+          <span className="ps-count-num">{counts.aircraft ?? 0}</span>
+          <span className="ps-count-lbl">Aircraft</span>
+        </div>
+        <div className="ps-count-card ps-count-total" style={{ "--accent": "#38bdf8" }}>
+          <PlaneIcon color="#38bdf8" size={28} />
+          <span className="ps-count-num">{totalGt}</span>
+          <span className="ps-count-lbl">Total Live</span>
+        </div>
       </div>
 
-      {/* Fraction sliders */}
-      <div className="ps-sliders">
-        {OBJECT_TYPES.map(({ key, label, countKey, color, icon, description, maxPct }) => (
-          <div key={key} className="ps-slider-row">
-            <div className="ps-type-label" style={{ borderLeftColor: color }}>
-              <span className="ps-type-icon" style={{ color }}>{icon}</span>
-              <div className="ps-type-text">
-                <span className="ps-type-name">{label}</span>
-                <span className="ps-type-desc">{description}</span>
-              </div>
-              <LiveBadge count={countKey === "dark" ? null : counts[countKey]} />
-            </div>
-            <div className="ps-slider-track">
-              <input
-                type="range"
-                min={0}
-                max={maxPct}
-                step={1}
-                value={pct(draft[key])}
-                onChange={e => handleSlider(key, Number(e.target.value))}
-                style={{ "--thumb-color": color }}
-                className="ps-range"
-              />
-              <span className="ps-pct-label">{pct(draft[key])}%</span>
-            </div>
-          </div>
-        ))}
+      {/* ── Composition Bar ─────────────────────────────────────────── */}
+      <div className="ps-comp-section">
+        <div className="ps-comp-label">Fleet composition</div>
+        <div className="ps-comp-bar">
+          {draft.frac_anomalous > 0 && (
+            <div className="ps-comp-seg" style={{ flex: draft.frac_anomalous, background: "#f43f5e" }} />
+          )}
+          {draft.frac_drone > 0 && (
+            <div className="ps-comp-seg" style={{ flex: draft.frac_drone, background: "#f59e0b" }} />
+          )}
+          {draft.frac_dark > 0 && (
+            <div className="ps-comp-seg" style={{ flex: draft.frac_dark, background: "#64748b" }} />
+          )}
+          {fracCommercial > 0 && (
+            <div className="ps-comp-seg" style={{ flex: fracCommercial, background: "#38bdf8" }} />
+          )}
+        </div>
+        <div className="ps-comp-legend">
+          <span style={{ color: "#f43f5e" }}>■ {pct(draft.frac_anomalous)}% anomalous</span>
+          <span style={{ color: "#f59e0b" }}>■ {pct(draft.frac_drone)}% drone</span>
+          <span style={{ color: "#64748b" }}>■ {pct(draft.frac_dark)}% dark</span>
+          <span style={{ color: "#38bdf8" }}>■ {pct(fracCommercial)}% commercial</span>
+        </div>
+      </div>
 
-        {/* Commercial (derived) */}
-        <div className="ps-slider-row ps-commercial">
-          <div className="ps-type-label" style={{ borderLeftColor: "#38bdf8" }}>
-            <span className="ps-type-icon" style={{ color: "#38bdf8" }}>✈</span>
-            <div className="ps-type-text">
+      {/* ── Type Sliders ────────────────────────────────────────────── */}
+      <div className="ps-sliders">
+        {OBJECT_TYPES.map(({ key, label, countKey, color, Icon, description, mapNote, maxPct }) => {
+          const fillPct = (pct(draft[key]) / maxPct) * 100;
+          return (
+            <div key={key} className="ps-type-card" style={{ "--accent": color }}>
+              <div className="ps-type-header">
+                <div className="ps-type-icon-wrap">
+                  <Icon size={24} />
+                </div>
+                <div className="ps-type-meta">
+                  <span className="ps-type-name">{label}</span>
+                  <span className="ps-type-note">{mapNote}</span>
+                </div>
+                <div className="ps-type-badge" style={{ background: color + "22", color }}>
+                  {counts[countKey] ?? 0} live
+                </div>
+              </div>
+              <p className="ps-type-desc">{description}</p>
+              <div className="ps-slider-row">
+                <input
+                  type="range"
+                  min={0}
+                  max={maxPct}
+                  step={1}
+                  value={pct(draft[key])}
+                  onChange={e => handleSlider(key, Number(e.target.value))}
+                  className="ps-range"
+                  style={{
+                    "--thumb-color": color,
+                    "--fill-pct":    `${fillPct}%`,
+                  }}
+                />
+                <span className="ps-pct-val" style={{ color }}>{pct(draft[key])}%</span>
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Commercial — derived, read-only */}
+        <div className="ps-type-card ps-commercial" style={{ "--accent": "#38bdf8" }}>
+          <div className="ps-type-header">
+            <div className="ps-type-icon-wrap">
+              <PlaneIcon color="#38bdf8" size={24} />
+            </div>
+            <div className="ps-type-meta">
               <span className="ps-type-name">Commercial</span>
-              <span className="ps-type-desc">Standard aircraft with ADS-B transponder.</span>
+              <span className="ps-type-note">Sky-blue aircraft icon · ADS-B transponder</span>
+            </div>
+            <div className="ps-type-badge" style={{ background: "#38bdf822", color: "#38bdf8" }}>
+              derived
             </div>
           </div>
-          <div className="ps-slider-track">
-            <div className="ps-derived-bar">
+          <p className="ps-type-desc">Standard aircraft with ADS-B. Remainder of fleet after anomalous + drone + dark.</p>
+          <div className="ps-slider-row">
+            <div className="ps-derived-track">
               <div
                 className="ps-derived-fill"
-                style={{ width: `${pct(fracCommercial)}%`, background: "#38bdf8" }}
+                style={{
+                  width:      `${overLimit ? 0 : pct(fracCommercial)}%`,
+                  background: "#38bdf8",
+                }}
               />
             </div>
-            <span className="ps-pct-label" style={{ color: overLimit ? "#ef4444" : undefined }}>
+            <span className="ps-pct-val" style={{ color: overLimit ? "#ef4444" : "#38bdf8" }}>
               {overLimit ? "—" : `${pct(fracCommercial)}%`}
             </span>
           </div>
@@ -208,15 +297,15 @@ export default function PhysicsSettings() {
 
       {overLimit && (
         <div className="ps-warn">
-          Sum of anomalous + drone + dark exceeds 100%. Reduce one slider before applying.
+          Anomalous + drone + dark exceeds 100%. Reduce a slider before applying.
         </div>
       )}
 
-      {/* Max range / aircraft count */}
-      <div className="ps-misc">
-        <label className="ps-misc-field">
-          <span>Max detection range</span>
-          <div className="ps-misc-input-row">
+      {/* ── Settings ────────────────────────────────────────────────── */}
+      <div className="ps-settings-grid">
+        <div className="ps-settings-card">
+          <div className="ps-settings-label">Max detection range</div>
+          <div className="ps-slider-row">
             <input
               type="range"
               min={40}
@@ -225,34 +314,48 @@ export default function PhysicsSettings() {
               value={draft.max_range_km}
               onChange={e => setDraft(prev => ({ ...prev, max_range_km: Number(e.target.value) }))}
               className="ps-range"
+              style={{
+                "--thumb-color": "#38bdf8",
+                "--fill-pct":    `${((draft.max_range_km - 40) / 260) * 100}%`,
+              }}
             />
-            <span className="ps-pct-label">{draft.max_range_km} km</span>
+            <span className="ps-pct-val" style={{ color: "#38bdf8", minWidth: "4.5rem" }}>
+              {draft.max_range_km} km
+            </span>
           </div>
-        </label>
-        <label className="ps-misc-field">
-          <span>Aircraft count window</span>
-          <div className="ps-misc-input-row">
-            <input
-              type="number"
-              min={1}
-              max={500}
-              value={draft.min_aircraft}
-              onChange={e => setDraft(prev => ({ ...prev, min_aircraft: Number(e.target.value) }))}
-              className="ps-number-input"
-            />
-            <span className="ps-misc-sep">–</span>
-            <input
-              type="number"
-              min={1}
-              max={500}
-              value={draft.max_aircraft}
-              onChange={e => setDraft(prev => ({ ...prev, max_aircraft: Number(e.target.value) }))}
-              className="ps-number-input"
-            />
+        </div>
+
+        <div className="ps-settings-card">
+          <div className="ps-settings-label">Aircraft count window</div>
+          <div className="ps-count-inputs">
+            <div className="ps-count-field">
+              <span className="ps-count-field-lbl">Min</span>
+              <input
+                type="number"
+                min={1}
+                max={500}
+                value={draft.min_aircraft}
+                onChange={e => setDraft(prev => ({ ...prev, min_aircraft: Number(e.target.value) }))}
+                className="ps-number-input"
+              />
+            </div>
+            <span className="ps-count-sep">—</span>
+            <div className="ps-count-field">
+              <span className="ps-count-field-lbl">Max</span>
+              <input
+                type="number"
+                min={1}
+                max={500}
+                value={draft.max_aircraft}
+                onChange={e => setDraft(prev => ({ ...prev, max_aircraft: Number(e.target.value) }))}
+                className="ps-number-input"
+              />
+            </div>
           </div>
-        </label>
+        </div>
       </div>
 
+      {/* ── Apply ───────────────────────────────────────────────────── */}
       <div className="ps-actions">
         <button
           className="ps-apply-btn"
@@ -268,28 +371,31 @@ export default function PhysicsSettings() {
         )}
       </div>
 
-      {/* Legend */}
-      <div className="ps-legend">
-        <div className="ps-legend-title">Map rendering key</div>
-        <div className="ps-legend-items">
-          <div className="ps-legend-item">
-            <span className="ps-legend-dot" style={{ background: "#f43f5e" }} />
-            <span>Anomalous — pulsing red ring on map</span>
-          </div>
-          <div className="ps-legend-item">
-            <span className="ps-legend-dot ps-legend-drone" style={{ background: "#f59e0b" }} />
-            <span>Drone — amber X-frame icon</span>
-          </div>
-          <div className="ps-legend-item">
-            <span className="ps-legend-dot" style={{ background: "#94a3b8" }} />
-            <span>Dark aircraft — grey bistatic arc only (no ADS-B)</span>
-          </div>
-          <div className="ps-legend-item">
-            <span className="ps-legend-dot" style={{ background: "#38bdf8" }} />
-            <span>Commercial — sky-blue aircraft icon with ADS-B</span>
-          </div>
+      {/* ── Doppler Arc Guide ───────────────────────────────────────── */}
+      <div className="ps-doppler-guide">
+        <div className="ps-doppler-title">
+          <svg width="14" height="14" viewBox="0 0 24 24" style={{ display:"inline-block", verticalAlign:"middle", marginRight:6 }}>
+            <path d="M12 2 Q20 12 12 22 Q4 12 12 2Z" fill="none" stroke="#60a5fa" strokeWidth="1.5" />
+            <ellipse cx="12" cy="12" rx="4" ry="8" fill="none" stroke="#60a5fa" strokeWidth="1" opacity="0.5" />
+          </svg>
+          Doppler Bistatic Arcs
         </div>
+        <p className="ps-doppler-body">
+          Single-node aircraft (detected by only one radar node) render a
+          coloured bistatic arc on the Live Radar map instead of a position fix.
+          The arc colour encodes the Doppler shift measured by that node.
+        </p>
+        <div className="ps-doppler-gradient-row">
+          <span className="ps-doppler-end">← Approaching</span>
+          <div className="ps-doppler-bar" />
+          <span className="ps-doppler-end">Receding →</span>
+        </div>
+        <p className="ps-doppler-hint">
+          <strong>Where to find them:</strong> Live Radar tab → zoom into SE United States (Florida / Gulf Coast)
+          → look for curved coloured lines instead of aircraft icons. Solo nodes there produce the most arcs.
+        </p>
       </div>
+
     </div>
   );
 }
