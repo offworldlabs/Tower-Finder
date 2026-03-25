@@ -75,7 +75,7 @@ def resolve_ground_truth_hex(
 
     best_hex = None
     best_distance = max_distance_km
-    for gt_hex, trail in state.ground_truth_trails.items():
+    for gt_hex, trail in list(state.ground_truth_trails.items()):
         if not trail:
             continue
         last = trail[-1]
@@ -474,7 +474,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
 
     gt_snapshot = {
         h: list(trail)[-30:]
-        for h, trail in state.ground_truth_trails.items()
+        for h, trail in list(state.ground_truth_trails.items())
         if trail
     }
 
