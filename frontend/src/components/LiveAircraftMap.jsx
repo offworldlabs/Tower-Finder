@@ -13,6 +13,7 @@ import "./LiveAircraftMap.css";
 
 import {
   STALE_AIRCRAFT_MS,
+  dopplerColor,
   isPointInViewport,
   isAircraftInViewport,
   sampleTrailPositions,
@@ -444,26 +445,12 @@ export default function LiveAircraftMap() {
               const isSelected = ac.hex === selectedHex;
               // 1. Ellipse arc — single-node with delay constraint
               if (Array.isArray(ac.ambiguity_arc) && ac.ambiguity_arc.length >= 2) {
-                // Doppler-based color: dark blue (approaching) → grey (0) → dark red (receding)
-                const dop = ac.doppler_hz ?? 0;
-                const maxDop = 200; // Hz — clamp range
-                const t = Math.max(-1, Math.min(1, dop / maxDop));
-                let arcColor;
-                if (isSelected) {
-                  arcColor = "#fbbf24";
-                } else if (ac.target_class === "drone") {
-                  arcColor = "#fb923c";
-                } else if (t < -0.5) {
-                  arcColor = "#1e3a8a"; // dark blue — strong approach
-                } else if (t < -0.1) {
-                  arcColor = "#60a5fa"; // light blue — mild approach
-                } else if (t < 0.1) {
-                  arcColor = "#94a3b8"; // grey — near zero
-                } else if (t < 0.5) {
-                  arcColor = "#f87171"; // light red — mild receding
-                } else {
-                  arcColor = "#991b1b"; // dark red — strong receding
-                }
+                // Smooth Doppler gradient: dark blue (approach) → grey (neutral) → dark red (recede)
+                const arcColor = isSelected
+                  ? "#fbbf24"
+                  : ac.target_class === "drone"
+                  ? "#fb923c"
+                  : dopplerColor(ac.doppler_hz ?? 0);
                 return (
                   <Polyline
                     key={ac.hex}
