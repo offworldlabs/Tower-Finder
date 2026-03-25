@@ -4,6 +4,8 @@
   margin: 0 auto;
   padding: 2rem 1.5rem 3rem;
   color: #e2e8f0;
+  background: #060d18;
+  min-height: 100%;
 }
 
 .ps-loading {

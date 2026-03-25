@@ -91,6 +91,13 @@ body {
   max-width: 1360px;
   width: 100%;
   margin: 0 auto;
+  overflow-y: auto;
+}
+
+.app-body.physics-active {
+  background: #060d18;
+  max-width: none;
+  padding: 0;
 }
 
 .app-body.live-active {

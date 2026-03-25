@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useState, lazy, Suspense } from "react";
 import SearchForm from "./components/SearchForm";
 import ResultsTable from "./components/ResultsTable";
 import TowerMap from "./components/TowerMap";
-import LiveAircraftMap from "./components/LiveAircraftMap";
 import PhysicsSettings from "./components/PhysicsSettings";
+
+// Leaflet is ~300 KB — only load it when the Live Radar tab is first opened
+const LiveAircraftMap = lazy(() => import("./components/LiveAircraftMap"));
 import { fetchTowers } from "./api";
 
 function SummaryStrip({ towers }) {
@@ -62,6 +64,9 @@ export default function App() {
     }
   }
 
+  // Keep the map mounted once it has been opened so it doesn't re-initialise
+  const [liveEverOpened, setLiveEverOpened] = useState(false);
+
   return (
     <div className="app">
       <header className="app-header">
@@ -83,14 +88,14 @@ export default function App() {
           </button>
           <button
             className={`tab-btn ${activeTab === "live" ? "active" : ""}`}
-            onClick={() => setActiveTab("live")}
+            onClick={() => { setActiveTab("live"); setLiveEverOpened(true); }}
           >
             Live Radar
           </button>
         </nav>
       </header>
 
-      <main className={`app-body${activeTab === "live" ? " live-active" : ""}`}>
+      <main className={`app-body${activeTab === "live" ? " live-active" : ""}${activeTab === "physics" ? " physics-active" : ""}`}>
         {activeTab === "towers" && (
           <>
             <div className="top-section">
@@ -133,7 +138,12 @@ export default function App() {
           </>
         )}
 
-        {activeTab === "live" && <LiveAircraftMap />}
+        {/* Live map: mounted once ever, hidden when inactive to preserve WebSocket state */}
+        <Suspense fallback={<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100%",color:"#94a3b8",fontSize:"0.9rem"}}>Loading map…</div>}>
+          <div style={{ display: activeTab === "live" ? "contents" : "none" }}>
+            {liveEverOpened && <LiveAircraftMap />}
+          </div>
+        </Suspense>
         {activeTab === "physics" && <PhysicsSettings />}
       </main>
     </div>
