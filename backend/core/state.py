@@ -38,6 +38,7 @@ TRACK_HISTORY_MAX = 60
 
 # ── Ground truth trails from fleet_orchestrator ──────────────────────────────
 ground_truth_trails: dict[str, deque] = {}
+ground_truth_meta: dict[str, dict] = {}   # hex → {object_type, is_anomalous}
 GROUND_TRUTH_MAX = 120
 
 # ── Chain of Custody ──────────────────────────────────────────────────────────
@@ -45,6 +46,11 @@ sig_verifier = SignatureVerifier()
 node_identities: dict[str, NodeIdentity] = {}
 chain_entries: dict[str, list[dict]] = {}   # node_id → append-only list
 iq_commitments: dict[str, list[dict]] = {}
+
+# ── Anomaly flagging ─────────────────────────────────────────────────────────
+anomaly_log: list[dict] = []               # append-only timestamped anomaly events
+anomaly_hexes: set[str] = set()            # hex codes currently flagged as anomalous
+ANOMALY_LOG_MAX = 500
 
 # ── External ADS-B truth (OpenSky cache) ──────────────────────────────────────
 external_adsb_cache: dict[str, dict] = {}

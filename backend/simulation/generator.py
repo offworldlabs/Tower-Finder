@@ -106,6 +106,22 @@ _TOWERS_AU = [
     (-33.42990, 149.10050, 860, 209_250_000, "Orange CBN-8"),
 ]
 
+# ── Rural / isolated towers for "solo node" testing ──────────────────────────
+# Intentionally far from metro areas and other towers, useful for single-node
+# ellipse-arc testing where no overlapping detection zones are expected.
+_TOWERS_SOLO_US = [
+    (44.07500, -103.22830, 1100, 551_000_000, "KEVN-Rapid City"),     # SD
+    (46.87190, -113.99300, 1050, 563_000_000, "KPAX-Missoula"),       # MT
+    (43.03540, -108.05270, 1000, 539_000_000, "KCWY-Casper"),         # WY
+    (48.23000, -101.29600, 980,  575_000_000, "KMOT-Minot"),          # ND
+    (38.81130, -99.32640,  960,  551_000_000, "KAYS-Hays"),           # KS
+    (35.19900, -111.65100, 1200, 563_000_000, "KNAZ-Flagstaff"),      # AZ
+    (40.83870, -115.76270, 920,  539_000_000, "KELK-Elko"),           # NV
+    (44.52020, -109.05630, 1100, 575_000_000, "KCOD-Cody"),           # WY
+    (47.04770, -109.46340, 980,  551_000_000, "KLWT-Lewistown"),      # MT
+    (32.44180, -104.22840, 900,  563_000_000, "KCAV-Carlsbad"),       # NM
+]
+
 
 @dataclass
 class GeneratedNodeConfig:
@@ -134,6 +150,7 @@ def generate_fleet(
     n_nodes: int = 200,
     regions: Optional[list[str]] = None,
     seed: int = 42,
+    solo_fraction: float = 0.05,
 ) -> list[dict]:
     """Generate a fleet of synthetic node configurations.
 
@@ -141,10 +158,15 @@ def generate_fleet(
     with a nearby broadcast tower as its illumination source. Receivers
     are placed 5-40 km from the tower (realistic for passive radar).
 
+    A fraction of nodes (solo_fraction, default 5%) are placed at isolated
+    rural towers far from any other nodes, useful for testing single-node
+    ellipse-arc function without overlapping detection zones.
+
     Args:
         n_nodes: Total nodes to generate (100-1000).
         regions: List of regions to distribute across ["us", "eu", "au"].
         seed: Random seed for reproducibility.
+        solo_fraction: Fraction of nodes allocated as solo/isolated (0.0-1.0).
 
     Returns:
         List of node config dicts ready for fleet_config.json.
@@ -160,6 +182,9 @@ def generate_fleet(
         "au": _TOWERS_AU,
     }
 
+    # Solo towers — only available for US region (where rural towers are defined)
+    solo_towers = _TOWERS_SOLO_US if "us" in regions else []
+
     # Distribute nodes across regions proportionally to tower count
     available_towers = []
     for region in regions:
@@ -170,17 +195,19 @@ def generate_fleet(
     if not available_towers:
         raise ValueError(f"No towers available for regions: {regions}")
 
+    # Allocate solo node count
+    n_solo = max(1, round(n_nodes * solo_fraction)) if solo_towers else 0
+    n_metro = n_nodes - n_solo
+
     nodes = []
-    for i in range(n_nodes):
-        # Pick a random tower (weighted toward having multiple nodes per tower)
+    # --- Metro nodes (clustered near metro towers) ---
+    for i in range(n_metro):
         region, tower = random.choice(available_towers)
         tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign = tower
 
-        # Place receiver 5-40 km from tower at random bearing
         distance_km = random.uniform(5, 40)
         bearing_rad = random.uniform(0, 2 * math.pi)
 
-        # Convert distance and bearing to lat/lon offset
         R = 6371.0
         dlat = (distance_km * math.cos(bearing_rad)) / R
         dlon = (distance_km * math.sin(bearing_rad)) / (
@@ -189,13 +216,9 @@ def generate_fleet(
 
         rx_lat = tx_lat + math.degrees(dlat)
         rx_lon = tx_lon + math.degrees(dlon)
-        # Receiver altitude: ground level with some variation (100-2000 ft)
         rx_alt_ft = random.uniform(100, 2000)
 
-        # Some frequency variation (+/- 500 kHz jitter to model different channels)
         node_fc = fc_hz + random.choice([-500000, 0, 0, 0, 500000])
-
-        # Beam width varies by antenna type (30-60 deg for Yagi)
         beam_width = random.uniform(30, 60)
         max_range = random.uniform(30, 70)
 
@@ -215,6 +238,48 @@ def generate_fleet(
             beam_width_deg=round(beam_width, 1),
             max_range_km=round(max_range, 1),
             region=region,
+            tx_callsign=callsign,
+        )
+        nodes.append(asdict(node))
+
+    # --- Solo nodes (isolated, one per rural tower, never share a tower) ---
+    solo_pool = list(solo_towers)
+    random.shuffle(solo_pool)
+    for j in range(n_solo):
+        tower = solo_pool[j % len(solo_pool)]
+        tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign = tower
+
+        distance_km = random.uniform(8, 35)
+        bearing_rad = random.uniform(0, 2 * math.pi)
+
+        R = 6371.0
+        dlat = (distance_km * math.cos(bearing_rad)) / R
+        dlon = (distance_km * math.sin(bearing_rad)) / (
+            R * math.cos(math.radians(tx_lat))
+        )
+
+        rx_lat = tx_lat + math.degrees(dlat)
+        rx_lon = tx_lon + math.degrees(dlon)
+        rx_alt_ft = random.uniform(100, 1500)
+
+        beam_width = random.uniform(35, 55)
+        max_range = random.uniform(40, 80)
+
+        node_id = f"synth-SOLO-{j + 1:04d}"
+
+        node = GeneratedNodeConfig(
+            node_id=node_id,
+            rx_lat=round(rx_lat, 6),
+            rx_lon=round(rx_lon, 6),
+            rx_alt_ft=round(rx_alt_ft, 1),
+            tx_lat=tx_lat,
+            tx_lon=tx_lon,
+            tx_alt_ft=tx_alt_ft,
+            fc_hz=fc_hz,
+            fs_hz=2_000_000,
+            beam_width_deg=round(beam_width, 1),
+            max_range_km=round(max_range, 1),
+            region="us",
             tx_callsign=callsign,
         )
         nodes.append(asdict(node))

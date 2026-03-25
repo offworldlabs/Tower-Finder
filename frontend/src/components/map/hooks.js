@@ -12,6 +12,8 @@ export function useAircraftFeed() {
 
   const trailsRef = useRef({});
   const groundTruthRef = useRef({});
+  const groundTruthMetaRef = useRef({});
+  const anomalyHexesRef = useRef(new Set());
   const [trailTick, setTrailTick] = useState(0);
 
   const wsRef = useRef(null);
@@ -50,13 +52,19 @@ export function useAircraftFeed() {
 
   // Shared history + state update
   const ingestAircraft = useCallback(
-    (newAircraft, groundTruth) => {
+    (newAircraft, groundTruth, groundTruthMeta, anomalyHexes) => {
       historyRef.current.push({ aircraft: newAircraft, ts: Date.now() });
       if (historyRef.current.length > MAX_HISTORY) historyRef.current.shift();
 
       if (!pausedRef.current) setAircraft(newAircraft);
       if (groundTruth && typeof groundTruth === "object") {
         groundTruthRef.current = groundTruth;
+      }
+      if (groundTruthMeta && typeof groundTruthMeta === "object") {
+        groundTruthMetaRef.current = groundTruthMeta;
+      }
+      if (Array.isArray(anomalyHexes)) {
+        anomalyHexesRef.current = new Set(anomalyHexes);
       }
       updateTrails(newAircraft);
     },
@@ -77,7 +85,7 @@ export function useAircraftFeed() {
     ws.onmessage = (evt) => {
       try {
         const data = JSON.parse(evt.data);
-        ingestAircraft(data.aircraft || [], data.ground_truth);
+        ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes);
       } catch {
         /* ignore */
       }
@@ -118,7 +126,7 @@ export function useAircraftFeed() {
         });
         if (res.ok) {
           const data = await res.json();
-          ingestAircraft(data.aircraft || [], data.ground_truth);
+          ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes);
         }
       } catch (err) {
         if (err.name !== "AbortError") {
@@ -137,6 +145,8 @@ export function useAircraftFeed() {
     connected,
     trailsRef,
     groundTruthRef,
+    groundTruthMetaRef,
+    anomalyHexesRef,
     trailTick,
     historyRef,
     setPaused,

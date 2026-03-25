@@ -64,6 +64,8 @@ export default function LiveAircraftMap() {
     connected,
     trailsRef,
     groundTruthRef,
+    groundTruthMetaRef,
+    anomalyHexesRef,
     trailTick,
     historyRef,
     setPaused: setFeedPaused,
@@ -78,6 +80,7 @@ export default function LiveAircraftMap() {
   const [showGroundTruth, setShowGroundTruth] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
   const [selectedHex, setSelectedHex] = useState(null);
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [focusNonce, setFocusNonce] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [paused, setPaused] = useState(false);
@@ -174,7 +177,8 @@ export default function LiveAircraftMap() {
     .filter(([hex, positions]) => !matchedTruthHexes.has(hex) && Array.isArray(positions) && positions.length > 0)
     .map(([hex, positions]) => {
       const last = positions[positions.length - 1];
-      return { hex, lat: last[0], lon: last[1], alt_m: last[2], points: positions.length };
+      const meta = groundTruthMetaRef.current[hex] || {};
+      return { hex, lat: last[0], lon: last[1], alt_m: last[2], points: positions.length, object_type: meta.object_type, is_anomalous: meta.is_anomalous };
     });
 
   const debugTruthOnlyAircraft = useMemo(
@@ -336,15 +340,85 @@ export default function LiveAircraftMap() {
             ))}
 
             {/* Node markers */}
-            {visibleNodes.map((n) => (
-              <Marker key={`node-${n.node_id}`} position={[n.rx_lat, n.rx_lon]} icon={nodeIcon}>
-                <Popup>
-                  <strong>{n.node_id}</strong><br />
-                  Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
-                  Range: {n.max_range_km} km
-                </Popup>
-              </Marker>
-            ))}
+            {visibleNodes.map((n) => {
+              const isNodeSelected = selectedNodeId === n.node_id;
+              return (
+                <Marker
+                  key={`node-${n.node_id}`}
+                  position={[n.rx_lat, n.rx_lon]}
+                  icon={nodeIcon}
+                  eventHandlers={{ click: () => setSelectedNodeId((prev) => (prev === n.node_id ? null : n.node_id)) }}
+                >
+                  <Popup>
+                    <strong>{n.node_id}</strong><br />
+                    Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
+                    Range: {n.max_range_km} km
+                  </Popup>
+                </Marker>
+              );
+            })}
+
+            {/* Selected node: detection cone + TX tower + aircraft highlights */}
+            {selectedNodeId && (() => {
+              const sn = visibleNodes.find((n) => n.node_id === selectedNodeId) || nodes.find((n) => n.node_id === selectedNodeId);
+              if (!sn) return null;
+              const conePositions = yagiSectorPositions(
+                sn.rx_lat, sn.rx_lon,
+                sn.tx_lat, sn.tx_lon,
+                sn.beam_azimuth_deg,
+                sn.beam_width_deg ?? 42,
+                sn.max_range_km ?? 50,
+              );
+              // Find aircraft detected by this node (those whose node_id matches)
+              const nodeAircraft = displayAircraft.filter((ac) => ac.node_id === selectedNodeId);
+              return (
+                <>
+                  {/* Detection cone */}
+                  <Polygon
+                    positions={conePositions}
+                    pathOptions={{ color: "#fbbf24", fillColor: "#fbbf24", fillOpacity: 0.15, weight: 2, dashArray: "6 3" }}
+                  />
+                  {/* TX tower marker */}
+                  {sn.tx_lat && sn.tx_lon && (
+                    <CircleMarker
+                      center={[sn.tx_lat, sn.tx_lon]}
+                      radius={8}
+                      pathOptions={{ color: "#f59e0b", weight: 2.5, fillColor: "#fbbf24", fillOpacity: 0.7 }}
+                    >
+                      <Popup><strong>TX Tower</strong><br />{sn.tx_lat.toFixed(4)}, {sn.tx_lon.toFixed(4)}</Popup>
+                    </CircleMarker>
+                  )}
+                  {/* RX→TX baseline */}
+                  <Polyline
+                    positions={[[sn.rx_lat, sn.rx_lon], [sn.tx_lat, sn.tx_lon]]}
+                    pathOptions={{ color: "#f59e0b", weight: 1.5, opacity: 0.6, dashArray: "4 6" }}
+                  />
+                  {/* Highlight arcs/markers for aircraft detected by this node */}
+                  {nodeAircraft.map((ac) => {
+                    if (Array.isArray(ac.ambiguity_arc) && ac.ambiguity_arc.length >= 2) {
+                      return (
+                        <Polyline
+                          key={`node-det-${ac.hex}`}
+                          positions={ac.ambiguity_arc}
+                          pathOptions={{ color: "#fbbf24", weight: 5, opacity: 0.55, lineCap: "round" }}
+                        />
+                      );
+                    }
+                    if (ac.lat && ac.lon) {
+                      return (
+                        <CircleMarker
+                          key={`node-det-${ac.hex}`}
+                          center={[ac.lat, ac.lon]}
+                          radius={12}
+                          pathOptions={{ color: "#fbbf24", weight: 2, fillOpacity: 0, dashArray: "4 4" }}
+                        />
+                      );
+                    }
+                    return null;
+                  })}
+                </>
+              );
+            })()}
 
             {/* Selected trail — gradient fade; dashed for arc-type tracks */}
             {showTrails && selectedTrailPositions.length >= 2 && (() => {
@@ -370,12 +444,32 @@ export default function LiveAircraftMap() {
               const isSelected = ac.hex === selectedHex;
               // 1. Ellipse arc — single-node with delay constraint
               if (Array.isArray(ac.ambiguity_arc) && ac.ambiguity_arc.length >= 2) {
+                // Doppler-based color: dark blue (approaching) → grey (0) → dark red (receding)
+                const dop = ac.doppler_hz ?? 0;
+                const maxDop = 200; // Hz — clamp range
+                const t = Math.max(-1, Math.min(1, dop / maxDop));
+                let arcColor;
+                if (isSelected) {
+                  arcColor = "#fbbf24";
+                } else if (ac.target_class === "drone") {
+                  arcColor = "#fb923c";
+                } else if (t < -0.5) {
+                  arcColor = "#1e3a8a"; // dark blue — strong approach
+                } else if (t < -0.1) {
+                  arcColor = "#60a5fa"; // light blue — mild approach
+                } else if (t < 0.1) {
+                  arcColor = "#94a3b8"; // grey — near zero
+                } else if (t < 0.5) {
+                  arcColor = "#f87171"; // light red — mild receding
+                } else {
+                  arcColor = "#991b1b"; // dark red — strong receding
+                }
                 return (
                   <Polyline
                     key={ac.hex}
                     positions={ac.ambiguity_arc}
                     pathOptions={{
-                      color: isSelected ? "#fbbf24" : (ac.target_class === "drone" ? "#fb923c" : "#2dd4bf"),
+                      color: arcColor,
                       weight: isSelected ? 4 : 3,
                       opacity: 0.95,
                       lineCap: "round",
@@ -417,16 +511,41 @@ export default function LiveAircraftMap() {
               return null;
             })}
 
-            {/* Ground-truth-only markers */}
-            {showGroundTruth && visibleTruthOnlyAircraft.map((ac) => (
-              <CircleMarker
-                key={`truth-only-${ac.hex}`}
-                center={[ac.lat, ac.lon]}
-                radius={6}
-                pathOptions={{ color: "#67e8f9", weight: 2, fillColor: "#22d3ee", fillOpacity: 0.35 }}
-                eventHandlers={{ click: () => handleSelectAircraft(ac.hex) }}
-              />
-            ))}
+            {/* Anomaly flag rings — pulsing red circle around flagged aircraft */}
+            {visibleAircraft
+              .filter((ac) => anomalyHexesRef.current.has(ac.ground_truth_hex || ac.hex) && ac.lat && ac.lon)
+              .map((ac) => (
+                <CircleMarker
+                  key={`anomaly-${ac.hex}`}
+                  center={[ac.lat, ac.lon]}
+                  radius={16}
+                  pathOptions={{
+                    color: "#f43f5e",
+                    weight: 2.5,
+                    fillOpacity: 0,
+                    dashArray: "5 5",
+                    className: "anomaly-ring",
+                  }}
+                />
+              ))}
+
+            {/* Ground-truth-only markers — color by object type */}
+            {showGroundTruth && visibleTruthOnlyAircraft.map((ac) => {
+              const meta = groundTruthMetaRef.current[ac.hex] || {};
+              const isAnomGT = meta.is_anomalous;
+              const isDroneGT = meta.object_type === "drone";
+              const gtColor = isAnomGT ? "#f43f5e" : isDroneGT ? "#f59e0b" : "#22d3ee";
+              const gtBorder = isAnomGT ? "#e11d48" : isDroneGT ? "#d97706" : "#67e8f9";
+              return (
+                <CircleMarker
+                  key={`truth-only-${ac.hex}`}
+                  center={[ac.lat, ac.lon]}
+                  radius={isDroneGT ? 5 : isAnomGT ? 7 : 6}
+                  pathOptions={{ color: gtBorder, weight: 2, fillColor: gtColor, fillOpacity: 0.45 }}
+                  eventHandlers={{ click: () => handleSelectAircraft(ac.hex) }}
+                />
+              );
+            })}
           </MapContainer>
 
           {selectedAc && (

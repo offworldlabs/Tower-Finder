@@ -91,9 +91,10 @@ class SimulatedAircraft:
     # Heading (degrees from north, clockwise)
     heading_deg: float
     speed_km_s: float
-    # Type
+    # Type and classification
     has_adsb: bool = False
     is_anomalous: bool = False
+    object_type: str = "aircraft"  # "aircraft", "drone", "anomalous"
     adsb_hex: Optional[str] = None
     adsb_callsign: Optional[str] = None
     # Lifecycle
@@ -253,7 +254,14 @@ class SimulationWorld:
         ) + 90.0) % 360.0
 
     def _spawn_aircraft(self, mode: str = "detection") -> SimulatedAircraft:
-        """Spawn a new aircraft along a realistic flight corridor."""
+        """Spawn a new aircraft along a realistic flight corridor.
+
+        Object types are selected probabilistically:
+          - 70% commercial aircraft (with ADS-B in adsb/anomalous modes)
+          - 15% dark aircraft (no ADS-B transponder)
+          - 10% drones (low/slow)
+          -  5% anomalous objects (erratic behavior)
+        """
         oid = f"obj-{self._next_id:05d}"
         self._next_id += 1
 
@@ -261,6 +269,19 @@ class SimulationWorld:
         has_adsb = False
         adsb_hex = None
         adsb_callsign = None
+        object_type = "aircraft"
+
+        # Roll object type
+        roll = random.random()
+        if roll < 0.05:
+            object_type = "anomalous"
+            is_anomalous = True
+        elif roll < 0.15:
+            object_type = "drone"
+        elif roll < 0.30:
+            object_type = "aircraft"  # dark aircraft — no ADS-B
+        else:
+            object_type = "aircraft"  # commercial — will get ADS-B in adsb modes
 
         # Anchor near a random node (if any exist) so aircraft spawn within
         # detection range of actual nodes.  Fall back to the world centre when
@@ -292,13 +313,20 @@ class SimulationWorld:
 
         if mode == "anomalous" and random.random() < 0.2:
             is_anomalous = True
+            object_type = "anomalous"
             speed_km_s = random.uniform(0.01, 0.5)  # 10-500 m/s
             alt_km = random.uniform(0.3, 15.0)
+        elif object_type == "anomalous":
+            speed_km_s = random.uniform(0.01, 0.5)
+            alt_km = random.uniform(0.3, 15.0)
+        elif object_type == "drone":
+            speed_km_s = random.uniform(0.01, 0.06)  # 10-60 m/s — small UAS
+            alt_km = random.uniform(0.05, 0.5)        # 50-500m AGL
         else:
             speed_km_s = random.uniform(0.12, 0.27)  # 120-270 m/s → typical jet
             alt_km = random.uniform(5.0, 12.0)       # 16k-40k ft
 
-        if mode in ("adsb", "anomalous") and not is_anomalous:
+        if mode in ("adsb", "anomalous") and not is_anomalous and object_type != "drone" and roll >= 0.30:
             has_adsb = True
             adsb_hex = f"{random.randint(0x100000, 0xFFFFFF):06x}"
             letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -319,9 +347,10 @@ class SimulationWorld:
             vel_east=vel_east, vel_north=vel_north, vel_up=vel_up,
             heading_deg=heading, speed_km_s=speed_km_s,
             has_adsb=has_adsb, is_anomalous=is_anomalous,
+            object_type=object_type,
             adsb_hex=adsb_hex, adsb_callsign=adsb_callsign,
             created_at=self._time,
-            lifetime_s=random.uniform(180, 900),
+            lifetime_s=random.uniform(180, 900) if object_type != "drone" else random.uniform(60, 300),
             waypoints=route,
             waypoint_idx=1,
         )
@@ -457,14 +486,21 @@ class SimulationWorld:
             delay = _bistatic_delay(target_enu, tx_enu, rx_enu)
             doppler = _bistatic_doppler(target_enu, vel_enu, tx_enu, rx_enu, node.fc_hz)
 
-            # Add measurement noise
-            delay += random.gauss(0, 0.3)
-            doppler += random.gauss(0, 2.0)
-
-            # SNR depends on distance
+            # SNR depends on distance — compute before noise/miss decisions
             dist = _norm(target_enu)
             base_snr = 25 - 10 * math.log10(max(dist, 1))
             snr = max(base_snr + random.gauss(0, 2), 4.0)
+
+            # SNR-dependent missed detection: weaker signals are harder to detect.
+            # P(miss) rises from ~5% at SNR 20+ to ~40% near detection threshold SNR 5.
+            p_miss = max(0.0, min(0.5, 0.05 + 0.35 * (1 - (snr - 4) / 18)))
+            if random.random() < p_miss:
+                continue
+
+            # Add measurement noise — scales inversely with SNR
+            noise_scale = max(0.5, 2.0 - (snr - 4) / 18)
+            delay += random.gauss(0, 0.3 * noise_scale)
+            doppler += random.gauss(0, 2.0 * noise_scale)
 
             delays.append(round(delay, 2))
             dopplers.append(round(doppler, 2))
@@ -486,12 +522,16 @@ class SimulationWorld:
             else:
                 adsb_list.append(None)
 
-        # Add clutter/false alarm detections
-        n_clutter = random.randint(0, 3)
+        # Clutter/false alarm detections — Poisson-distributed count (mean ~2)
+        # with range-biased delays (more clutter at shorter ranges).
+        n_clutter = min(int(random.expovariate(0.5)), 6)
         for _ in range(n_clutter):
-            delays.append(round(random.uniform(0, 60), 2))
+            # Bias toward shorter delays (near-range ground clutter)
+            clutter_delay = random.expovariate(0.05)
+            clutter_delay = min(clutter_delay, 60.0)
+            delays.append(round(clutter_delay, 2))
             dopplers.append(round(random.uniform(node.doppler_min, node.doppler_max), 2))
-            snrs.append(round(random.uniform(4, 7), 2))
+            snrs.append(round(random.uniform(4, 8), 2))
             adsb_list.append(None)
 
         frame = {
@@ -525,6 +565,7 @@ class SimulationWorld:
                 "speed_ms": round(ac.speed_km_s * 1000, 1),
                 "has_adsb": ac.has_adsb,
                 "is_anomalous": ac.is_anomalous,
+                "object_type": ac.object_type,
                 "adsb_hex": ac.adsb_hex,
             }
             for ac in self.aircraft

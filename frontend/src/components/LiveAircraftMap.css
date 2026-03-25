@@ -612,3 +612,12 @@
   background: rgba(100, 180, 255, 0.15);
   border-radius: 2px;
 }
+
+/* Anomaly flag ring — pulsing animation */
+@keyframes anomaly-pulse {
+  0%, 100% { opacity: 0.7; stroke-width: 2.5; }
+  50% { opacity: 0.3; stroke-width: 1.5; }
+}
+.anomaly-ring {
+  animation: anomaly-pulse 1.5s ease-in-out infinite;
+}

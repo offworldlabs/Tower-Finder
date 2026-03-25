@@ -537,6 +537,8 @@ async def _push_ground_truth_live(
                     "alt_m": ac["alt_km"] * 1000,
                     "heading": ac.get("heading", 0),
                     "speed_ms": ac.get("speed_ms", 0),
+                    "object_type": ac.get("object_type", "aircraft"),
+                    "is_anomalous": ac.get("is_anomalous", False),
                 })
 
             if payload_aircraft:

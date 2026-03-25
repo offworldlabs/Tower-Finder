@@ -218,6 +218,29 @@ async def push_ground_truth_snapshot(body: dict = Body(...)):
             if dlat < 0.00005 and dlon < 0.00005:
                 continue
         trail.append([round(lat, 6), round(lon, 6), round(alt_m, 0), round(ts, 1)])
+        # Store/update metadata for this ground truth object
+        state.ground_truth_meta[hex_code] = {
+            "object_type": ac.get("object_type", "aircraft"),
+            "is_anomalous": ac.get("is_anomalous", False),
+        }
+        # Flag anomalous objects and log events
+        if ac.get("is_anomalous"):
+            if hex_code not in state.anomaly_hexes:
+                state.anomaly_hexes.add(hex_code)
+                event = {
+                    "hex": hex_code,
+                    "ts": round(ts, 1),
+                    "lat": round(lat, 5),
+                    "lon": round(lon, 5),
+                    "reason": "anomalous_behavior",
+                    "object_type": ac.get("object_type", "unknown"),
+                    "flagged_at": datetime.now(timezone.utc).isoformat(),
+                }
+                state.anomaly_log.append(event)
+                if len(state.anomaly_log) > state.ANOMALY_LOG_MAX:
+                    state.anomaly_log = state.anomaly_log[-state.ANOMALY_LOG_MAX:]
+        else:
+            state.anomaly_hexes.discard(hex_code)
 
     return {"status": "ok", "received": len(aircraft_list), "tracked_hex": len(state.ground_truth_trails)}
 
@@ -294,3 +317,16 @@ async def get_ground_truth_trail(hex_code: str):
         "ground_truth_points": len(gt_trail),
         "solved_points": len(solved_trail),
     }
+
+
+@router.get("/api/test/anomalies")
+async def get_anomaly_log():
+    """Return the anomaly event log and currently flagged hex codes."""
+    return Response(
+        content=orjson.dumps({
+            "flagged_count": len(state.anomaly_hexes),
+            "flagged_hexes": sorted(state.anomaly_hexes),
+            "events": state.anomaly_log[-100:],
+        }),
+        media_type="application/json",
+    )

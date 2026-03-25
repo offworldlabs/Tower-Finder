@@ -387,6 +387,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             "solver_lat": solver_lat,
             "solver_lon": solver_lon,
             "delay_us": round(getattr(track, "latest_delay_us", 0.0) or 0.0, 3),
+            "doppler_hz": round(getattr(track, "latest_doppler_hz", 0.0) or 0.0, 2),
             "node_id": node_cfg.get("node_id"),
             "target_class": getattr(track, "target_class", None),
             "recent_positions": list(state.track_histories.get(ac_hex, [])),
@@ -477,9 +478,13 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         if trail
     }
 
+    gt_meta = dict(state.ground_truth_meta)
+
     return {
         "now": now,
         "messages": len(aircraft),
         "aircraft": aircraft,
         "ground_truth": gt_snapshot,
+        "ground_truth_meta": gt_meta,
+        "anomaly_hexes": sorted(state.anomaly_hexes),
     }
