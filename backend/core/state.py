@@ -82,3 +82,15 @@ frames_dropped: int = 0
 
 # ── Rate limiter buckets ──────────────────────────────────────────────────────
 rate_buckets: dict[str, list] = defaultdict(list)
+
+# ── Simulation physics config (read by fleet orchestrator, written by UI) ─────
+simulation_config: dict = {
+    "frac_anomalous": 0.05,
+    "frac_drone": 0.10,
+    "frac_dark": 0.15,
+    # aircraft (commercial) fraction = 1 - sum of above
+    "max_range_km": 140,
+    "min_aircraft": 60,
+    "max_aircraft": 100,
+    "_updated_at": 0.0,
+}

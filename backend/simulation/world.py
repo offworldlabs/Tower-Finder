@@ -242,6 +242,11 @@ class SimulationWorld:
         # Target count range
         self.min_aircraft = 5
         self.max_aircraft = 15
+        # Object type spawn fractions (adjustable at runtime)
+        self.frac_anomalous: float = 0.05
+        self.frac_drone: float = 0.10
+        self.frac_dark: float = 0.15
+        # remaining fraction = commercial aircraft with ADS-B
 
     def add_node(self, config: NodeConfig):
         """Register a synthetic node in the simulation."""
@@ -271,14 +276,14 @@ class SimulationWorld:
         adsb_callsign = None
         object_type = "aircraft"
 
-        # Roll object type
+        # Roll object type using instance fractions (adjustable at runtime)
         roll = random.random()
-        if roll < 0.05:
+        if roll < self.frac_anomalous:
             object_type = "anomalous"
             is_anomalous = True
-        elif roll < 0.15:
+        elif roll < self.frac_anomalous + self.frac_drone:
             object_type = "drone"
-        elif roll < 0.30:
+        elif roll < self.frac_anomalous + self.frac_drone + self.frac_dark:
             object_type = "aircraft"  # dark aircraft — no ADS-B
         else:
             object_type = "aircraft"  # commercial — will get ADS-B in adsb modes

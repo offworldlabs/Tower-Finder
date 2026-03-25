@@ -330,3 +330,64 @@ async def get_anomaly_log():
         }),
         media_type="application/json",
     )
+
+
+# ── Simulation physics config ─────────────────────────────────────────────────
+
+@router.get("/api/simulation/config")
+async def get_simulation_config():
+    """Return current simulation physics configuration plus live object-type counts."""
+    counts: dict[str, int] = {"anomalous": 0, "drone": 0, "aircraft": 0, "total": 0}
+    for meta in state.ground_truth_meta.values():
+        counts["total"] += 1
+        if meta.get("is_anomalous"):
+            counts["anomalous"] += 1
+        elif meta.get("object_type") == "drone":
+            counts["drone"] += 1
+        else:
+            counts["aircraft"] += 1
+    return Response(
+        content=orjson.dumps({**state.simulation_config, "ground_truth_counts": counts}),
+        media_type="application/json",
+    )
+
+
+@router.put("/api/simulation/config")
+async def put_simulation_config(body: dict = Body(...)):
+    """Update simulation physics fractions.
+
+    Accepted keys: frac_anomalous, frac_drone, frac_dark (0.0–1.0 each).
+    Sum of the three must not exceed 1.0 — the remainder is commercial aircraft.
+    Optional: max_range_km (10–400), min_aircraft (1–500), max_aircraft (1–500).
+    """
+    allowed = {"frac_anomalous", "frac_drone", "frac_dark", "max_range_km",
+               "min_aircraft", "max_aircraft"}
+    updated = {}
+    for k in allowed:
+        if k in body:
+            v = body[k]
+            if k.startswith("frac_"):
+                if not isinstance(v, (int, float)) or not (0.0 <= v <= 1.0):
+                    raise HTTPException(400, detail=f"{k} must be 0.0–1.0")
+            elif k in ("max_range_km",):
+                if not isinstance(v, (int, float)) or not (10 <= v <= 400):
+                    raise HTTPException(400, detail=f"{k} must be 10–400")
+            elif k in ("min_aircraft", "max_aircraft"):
+                if not isinstance(v, int) or not (1 <= v <= 500):
+                    raise HTTPException(400, detail=f"{k} must be int 1–500")
+            updated[k] = v
+
+    total_frac = (
+        updated.get("frac_anomalous", state.simulation_config["frac_anomalous"])
+        + updated.get("frac_drone", state.simulation_config["frac_drone"])
+        + updated.get("frac_dark", state.simulation_config["frac_dark"])
+    )
+    if total_frac > 1.0:
+        raise HTTPException(400, detail="Sum of frac_anomalous + frac_drone + frac_dark must be ≤ 1.0")
+
+    state.simulation_config.update(updated)
+    state.simulation_config["_updated_at"] = time.time()
+    return Response(
+        content=orjson.dumps({"ok": True, "config": state.simulation_config}),
+        media_type="application/json",
+    )

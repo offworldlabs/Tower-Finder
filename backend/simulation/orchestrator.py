@@ -559,6 +559,51 @@ async def _push_ground_truth_live(
             log.debug("Ground truth push failed: %s", e)
 
 
+async def _poll_simulation_config(
+    orchestrator: FleetOrchestrator,
+    base_url: str,
+    interval_s: float = 5.0,
+):
+    """Poll /api/simulation/config every interval_s and apply updated spawn fractions to world."""
+    import urllib.request
+
+    log.info("Simulation config polling started (url=%s, interval=%.1fs)", base_url, interval_s)
+    url = f"{base_url}/api/simulation/config"
+    loop = asyncio.get_event_loop()
+    ssl_context = ssl._create_unverified_context() if (
+        "localhost" in base_url or "127.0.0.1" in base_url
+    ) else None
+    last_updated_at = 0.0
+
+    while orchestrator._running:
+        await asyncio.sleep(interval_s)
+
+        if orchestrator.world is None:
+            continue
+
+        try:
+            def _fetch():
+                import json as _json
+                with urllib.request.urlopen(url, context=ssl_context, timeout=5) as resp:
+                    return _json.loads(resp.read())
+
+            cfg = await loop.run_in_executor(None, _fetch)
+            updated_at = cfg.get("_updated_at", 0.0)
+            if updated_at > last_updated_at:
+                orchestrator.world.frac_anomalous = float(cfg.get("frac_anomalous", 0.05))
+                orchestrator.world.frac_drone     = float(cfg.get("frac_drone",     0.10))
+                orchestrator.world.frac_dark      = float(cfg.get("frac_dark",      0.15))
+                last_updated_at = updated_at
+                log.info(
+                    "Simulation fractions updated: anomalous=%.2f drone=%.2f dark=%.2f",
+                    orchestrator.world.frac_anomalous,
+                    orchestrator.world.frac_drone,
+                    orchestrator.world.frac_dark,
+                )
+        except Exception as e:
+            log.debug("Config poll failed: %s", e)
+
+
 async def _push_adsb_live(
     orchestrator: FleetOrchestrator,
     base_url: str,
@@ -756,6 +801,12 @@ async def main_async(args):
     if args.validation_url:
         tasks.append(_push_ground_truth_live(
             orchestrator, args.validation_url, interval_s=2.0,
+        ))
+
+    # Poll server for updated simulation physics fractions (set from frontend UI).
+    if args.validation_url:
+        tasks.append(_poll_simulation_config(
+            orchestrator, args.validation_url, interval_s=5.0,
         ))
 
     if args.validate and args.validation_url:

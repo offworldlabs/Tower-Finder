@@ -3,6 +3,7 @@ import SearchForm from "./components/SearchForm";
 import ResultsTable from "./components/ResultsTable";
 import TowerMap from "./components/TowerMap";
 import LiveAircraftMap from "./components/LiveAircraftMap";
+import PhysicsSettings from "./components/PhysicsSettings";
 import { fetchTowers } from "./api";
 
 function SummaryStrip({ towers }) {
@@ -75,6 +76,12 @@ export default function App() {
             Tower Search
           </button>
           <button
+            className={`tab-btn ${activeTab === "physics" ? "active" : ""}`}
+            onClick={() => setActiveTab("physics")}
+          >
+            Physics Layer
+          </button>
+          <button
             className={`tab-btn ${activeTab === "live" ? "active" : ""}`}
             onClick={() => setActiveTab("live")}
           >
@@ -127,6 +134,7 @@ export default function App() {
         )}
 
         {activeTab === "live" && <LiveAircraftMap />}
+        {activeTab === "physics" && <PhysicsSettings />}
       </main>
     </div>
   );
