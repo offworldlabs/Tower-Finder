@@ -92,6 +92,12 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
               />
             </>
           )}
+          {isTruthOnly && (
+            <>
+              <Field label="Speed" value={ac.speed_ms != null && ac.speed_ms > 0 ? `${(ac.speed_ms * 1.94384).toFixed(0)} kts (${ac.speed_ms.toFixed(0)} m/s)` : ac.gs != null ? `${ac.gs} kts` : "\u2014"} />
+              <Field label="Heading" value={ac.heading != null && ac.heading > 0 ? `${ac.heading.toFixed(0)}\u00b0` : ac.track != null ? `${ac.track.toFixed(0)}\u00b0` : "\u2014"} />
+            </>
+          )}
           {isAmbiguityArc && (
             <>
               <Field label="Display mode" value="Delay ellipse clipped to beam" />
