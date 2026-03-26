@@ -237,17 +237,118 @@ def _jitter(val: float, sigma: float) -> float:
     return val + random.gauss(0, sigma)
 
 
+# ── Water / ocean rejection ──────────────────────────────────────────────────
+# Simple bounding-box check for known US water bodies.  Positions inside any
+# of these boxes are rejected so synthetic receiver sites don't end up in the
+# ocean, Great Lakes, or large bays.
+
+_WATER_BOXES: list[tuple[float, float, float, float]] = [
+    # (lat_min, lat_max, lon_min, lon_max)
+    # Great Lakes
+    (41.5, 49.0, -92.5, -76.0),   # approximate Great Lakes bounding box
+    # Gulf of Mexico (open water)
+    (18.0, 30.5, -98.0, -81.0),
+    # Atlantic Ocean (east of US coast — rough offshore strip)
+    (25.0, 45.0, -70.0, -60.0),
+    # Pacific Ocean (west of US coast — rough offshore strip)
+    (32.0, 49.0, -130.0, -125.0),
+    # Chesapeake Bay
+    (36.8, 39.5, -76.5, -75.8),
+    # Puget Sound
+    (47.0, 48.8, -123.5, -122.0),
+    # San Francisco Bay
+    (37.4, 38.2, -122.5, -121.9),
+    # Long Island Sound
+    (40.8, 41.4, -73.8, -71.8),
+]
+
+# Known land points near coasts — locations within the water bounding boxes
+# that are actually on land (e.g. cities on Great Lakes shores).
+# If an RX position is within 5 km of a land point, it's allowed.
+_COASTAL_LAND_POINTS: list[tuple[float, float]] = [
+    # Great Lakes cities
+    (41.88, -87.63),   # Chicago
+    (42.33, -83.05),   # Detroit
+    (41.50, -81.69),   # Cleveland
+    (43.16, -79.24),   # Niagara Falls
+    (42.89, -78.88),   # Buffalo
+    (44.98, -93.27),   # Minneapolis
+    (43.04, -87.91),   # Milwaukee
+    (42.96, -85.67),   # Grand Rapids
+    (46.79, -92.10),   # Duluth
+    # Gulf Coast cities
+    (29.76, -95.36),   # Houston
+    (30.27, -97.74),   # Austin
+    (30.45, -91.19),   # Baton Rouge
+    (30.00, -90.07),   # New Orleans
+    (27.95, -82.46),   # Tampa
+    (25.76, -80.19),   # Miami
+    (28.54, -81.38),   # Orlando
+    (30.33, -81.66),   # Jacksonville
+    (27.77, -82.64),   # St. Petersburg
+    (29.42, -98.49),   # San Antonio
+    (30.39, -87.69),   # Pensacola
+    (30.22, -92.02),   # Lafayette
+    # Eastern seaboard
+    (38.91, -77.04),   # Washington DC
+    (39.95, -75.16),   # Philadelphia
+    (40.71, -74.01),   # New York
+    (42.36, -71.06),   # Boston
+    (36.85, -75.98),   # Norfolk
+]
+
+
+def _is_on_water(lat: float, lon: float) -> bool:
+    """Heuristic check if a position is likely on water (ocean, lakes, bays)."""
+    for lat_min, lat_max, lon_min, lon_max in _WATER_BOXES:
+        if lat_min <= lat <= lat_max and lon_min <= lon <= lon_max:
+            # Check if near a known coastal land point
+            for land_lat, land_lon in _COASTAL_LAND_POINTS:
+                if _haversine_km(lat, lon, land_lat, land_lon) < 8.0:
+                    return False
+            return True
+    return False
+
+
+def _place_rx_on_land(
+    tx_lat: float, tx_lon: float,
+    dist_min_km: float = 5.0, dist_max_km: float = 40.0,
+    max_attempts: int = 20,
+) -> tuple[float, float]:
+    """Place an RX position near a tower, rejecting water locations."""
+    R = 6371.0
+    for _ in range(max_attempts):
+        distance_km = random.uniform(dist_min_km, dist_max_km)
+        bearing_rad = random.uniform(0, 2 * math.pi)
+        dlat = (distance_km * math.cos(bearing_rad)) / R
+        dlon = (distance_km * math.sin(bearing_rad)) / (
+            R * math.cos(math.radians(tx_lat))
+        )
+        rx_lat = tx_lat + math.degrees(dlat)
+        rx_lon = tx_lon + math.degrees(dlon)
+        if not _is_on_water(rx_lat, rx_lon):
+            return (round(rx_lat, 6), round(rx_lon, 6))
+    # Fallback: return last attempt even if on water
+    return (round(rx_lat, 6), round(rx_lon, 6))
+
+
 def generate_fleet(
     n_nodes: int = 200,
     regions: Optional[list[str]] = None,
     seed: int = 42,
     solo_fraction: float = 0.10,
+    use_tower_api: bool = True,
 ) -> list[dict]:
     """Generate a fleet of synthetic node configurations.
 
     Nodes are distributed across the requested regions, each associated
     with a nearby broadcast tower as its illumination source. Receivers
     are placed 5-40 km from the tower (realistic for passive radar).
+
+    When use_tower_api is True (default), each metro area queries the
+    Tower Search API (towers.retina.fm) to get multiple real towers,
+    so nodes in the same city use DIFFERENT towers. Falls back to the
+    hardcoded tower list when the API is unreachable or returns no results.
 
     A fraction of nodes (solo_fraction, default 10%) are placed at isolated
     rural towers far from any other nodes, useful for testing single-node
@@ -258,6 +359,7 @@ def generate_fleet(
         regions: List of regions to distribute across ["us", "eu", "au"].
         seed: Random seed for reproducibility.
         solo_fraction: Fraction of nodes allocated as solo/isolated (0.0-1.0).
+        use_tower_api: Query towers.retina.fm for diverse per-node towers.
 
     Returns:
         List of node config dicts ready for fleet_config.json.
@@ -286,9 +388,38 @@ def generate_fleet(
     if not available_towers:
         raise ValueError(f"No towers available for regions: {regions}")
 
+    # ── Pre-fetch real towers from Tower API for metro areas ──────────────────
+    # Each metro area gets multiple real towers so nodes in the same city
+    # use DIFFERENT transmitters instead of all sharing the same one.
+    metro_api_towers: dict[str, list[dict]] = {}
+    _cache_key = lambda lat, lon: f"{lat:.4f},{lon:.4f}"
+    if use_tower_api:
+        try:
+            try:
+                from simulation.tower_resolver import lookup_metro_towers
+            except ImportError:
+                from tower_resolver import lookup_metro_towers
+            all_metro_centers = []
+            for region in regions:
+                for t in tower_db.get(region, []):
+                    all_metro_centers.append(t)
+            metro_api_towers_raw = lookup_metro_towers(all_metro_centers, radius_km=80, limit=50)
+            # Map back to (lat, lon) → tower list
+            for t in all_metro_centers:
+                key = _cache_key(t[0], t[1])
+                if key in metro_api_towers_raw and metro_api_towers_raw[key]:
+                    metro_api_towers[key] = metro_api_towers_raw[key]
+        except Exception as exc:
+            import logging
+            logging.warning("Tower API lookup failed, using hardcoded towers: %s", exc)
+
     # Allocate solo node count
     n_solo = max(1, round(n_nodes * solo_fraction)) if solo_towers else 0
     n_metro = n_nodes - n_solo
+
+    # Track how many times each API tower has been used (per metro) for
+    # round-robin distribution — avoids all nodes sharing one tower.
+    _metro_tower_idx: dict[str, int] = {}
 
     nodes = []
     # --- Metro nodes (clustered near metro towers) ---
@@ -296,17 +427,21 @@ def generate_fleet(
         region, tower = random.choice(available_towers)
         tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign = tower
 
-        distance_km = random.uniform(5, 40)
-        bearing_rad = random.uniform(0, 2 * math.pi)
+        # Try to use a DIFFERENT real tower from the Tower API for this node
+        key = _cache_key(tx_lat, tx_lon)
+        api_towers = metro_api_towers.get(key, [])
+        if api_towers:
+            idx = _metro_tower_idx.get(key, 0)
+            t = api_towers[idx % len(api_towers)]
+            _metro_tower_idx[key] = idx + 1
+            tx_lat = t["tx_lat"]
+            tx_lon = t["tx_lon"]
+            tx_alt_ft = t["tx_alt_ft"]
+            fc_hz = t["fc_hz"]
+            callsign = t["tx_callsign"]
 
-        R = 6371.0
-        dlat = (distance_km * math.cos(bearing_rad)) / R
-        dlon = (distance_km * math.sin(bearing_rad)) / (
-            R * math.cos(math.radians(tx_lat))
-        )
-
-        rx_lat = tx_lat + math.degrees(dlat)
-        rx_lon = tx_lon + math.degrees(dlon)
+        # Place RX on land (rejects water positions)
+        rx_lat, rx_lon = _place_rx_on_land(tx_lat, tx_lon, dist_min_km=5, dist_max_km=40)
         rx_alt_ft = random.uniform(100, 2000)
 
         node_fc = fc_hz + random.choice([-500000, 0, 0, 0, 500000])
@@ -318,8 +453,8 @@ def generate_fleet(
 
         node = GeneratedNodeConfig(
             node_id=node_id,
-            rx_lat=round(rx_lat, 6),
-            rx_lon=round(rx_lon, 6),
+            rx_lat=rx_lat,
+            rx_lon=rx_lon,
             rx_alt_ft=round(rx_alt_ft, 1),
             tx_lat=tx_lat,
             tx_lon=tx_lon,
@@ -356,17 +491,8 @@ def generate_fleet(
             tower = solo_pool[j]          # strict: never re-use a tower index
             tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign = tower
 
-            distance_km = random.uniform(8, 35)
-            bearing_rad = random.uniform(0, 2 * math.pi)
-
-            R = 6371.0
-            dlat = (distance_km * math.cos(bearing_rad)) / R
-            dlon = (distance_km * math.sin(bearing_rad)) / (
-                R * math.cos(math.radians(tx_lat))
-            )
-
-            rx_lat = tx_lat + math.degrees(dlat)
-            rx_lon = tx_lon + math.degrees(dlon)
+            # Place RX on land (rejects water positions)
+            rx_lat, rx_lon = _place_rx_on_land(tx_lat, tx_lon, dist_min_km=8, dist_max_km=35)
             rx_alt_ft = random.uniform(100, 1500)
 
             beam_width = random.uniform(35, 55)

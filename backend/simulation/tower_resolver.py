@@ -23,6 +23,24 @@ Cache format::
         ...
     }
 
+Metro tower cache file: ``<simulation_dir>/metro_tower_cache.json``
+
+Metro tower cache format::
+
+    {
+        "lat,lon": [
+            {
+                "tx_lat": float,
+                "tx_lon": float,
+                "tx_alt_ft": float,
+                "fc_hz": float,
+                "tx_callsign": str
+            },
+            ...
+        ],
+        ...
+    }
+
 Usage (from orchestrator or CLI)::
 
     assignments = resolve_towers(fleet_nodes)
@@ -38,13 +56,18 @@ import math
 import os
 import sys
 import time
+import urllib.request
 
 log = logging.getLogger(__name__)
 
 _CACHE_PATH = os.path.join(os.path.dirname(__file__), "tower_assignments.json")
+_METRO_CACHE_PATH = os.path.join(os.path.dirname(__file__), "metro_tower_cache.json")
 _LOOKUP_RADIUS_KM = 80
 _MIN_FREQ_HZ = 80_000_000   # ignore sub-80 MHz (below FM band — not useful for PR)
 _MAX_FREQ_HZ = 900_000_000  # ignore > 900 MHz (above UHF TV)
+
+# ── Tower API base URL ────────────────────────────────────────────────────────
+_TOWER_API_URL = os.getenv("TOWER_API_URL", "https://towers.retina.fm/api/towers")
 
 
 def _load_cache() -> dict:
@@ -62,6 +85,108 @@ def _save_cache(cache: dict) -> None:
     with open(tmp, "w") as f:
         json.dump(cache, f, indent=2)
     os.replace(tmp, _CACHE_PATH)
+
+
+# ── Metro tower cache (per-area multi-tower results from Tower API) ───────────
+
+def _load_metro_cache() -> dict:
+    if os.path.exists(_METRO_CACHE_PATH):
+        try:
+            with open(_METRO_CACHE_PATH, "r") as f:
+                return json.load(f)
+        except Exception:
+            log.warning("Could not load metro tower cache; starting fresh.")
+    return {}
+
+
+def _save_metro_cache(cache: dict) -> None:
+    tmp = _METRO_CACHE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cache, f, indent=2)
+    os.replace(tmp, _METRO_CACHE_PATH)
+
+
+def _metro_cache_key(lat: float, lon: float) -> str:
+    return f"{lat:.4f},{lon:.4f}"
+
+
+def _query_tower_api(lat: float, lon: float, radius_km: int = 80, limit: int = 50) -> list[dict]:
+    """Query the Tower Search API (towers.retina.fm) for real towers near a location.
+
+    Returns a list of tower dicts: [{tx_lat, tx_lon, tx_alt_ft, fc_hz, tx_callsign}, ...]
+    """
+    try:
+        url = f"{_TOWER_API_URL}?lat={lat}&lon={lon}&radius_km={radius_km}&limit={limit}&source=auto"
+        req = urllib.request.Request(url, headers={"User-Agent": "retina-fleet-gen/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        towers_raw = data.get("towers", [])
+        results = []
+        for t in towers_raw:
+            freq_mhz = t.get("frequency_mhz") or 0
+            freq_hz = round(freq_mhz * 1_000_000)
+            if not (_MIN_FREQ_HZ <= freq_hz <= _MAX_FREQ_HZ):
+                continue
+            tx_lat = t.get("latitude")
+            tx_lon = t.get("longitude")
+            if tx_lat is None or tx_lon is None:
+                continue
+            alt_m = t.get("altitude_m") or t.get("elevation_m")
+            results.append({
+                "tx_lat": round(float(tx_lat), 6),
+                "tx_lon": round(float(tx_lon), 6),
+                "tx_alt_ft": _m_to_ft(alt_m),
+                "fc_hz": freq_hz,
+                "tx_callsign": (t.get("callsign") or "").strip(),
+            })
+        return results
+    except Exception as exc:
+        log.warning("Tower API query failed for (%.4f, %.4f): %s", lat, lon, exc)
+        return []
+
+
+def lookup_metro_towers(
+    metro_centers: list[tuple[float, float, float, float, str]],
+    radius_km: int = 80,
+    limit: int = 50,
+) -> dict[str, list[dict]]:
+    """Query the Tower Search API for real towers around each metro center.
+
+    Uses a persistent cache so repeated runs don't re-query the API.
+
+    Args:
+        metro_centers: List of (lat, lon, alt_ft, freq_hz, callsign) metro tower tuples.
+        radius_km: Search radius per metro center.
+        limit: Max towers to return per metro center.
+
+    Returns:
+        dict mapping cache_key → list of tower dicts [{tx_lat, tx_lon, tx_alt_ft, fc_hz, tx_callsign}]
+    """
+    cache = _load_metro_cache()
+    updated = False
+
+    for center in metro_centers:
+        lat, lon = center[0], center[1]
+        key = _metro_cache_key(lat, lon)
+        if key in cache and len(cache[key]) > 0:
+            continue
+        log.info("  Querying Tower API for metro (%.4f, %.4f)…", lat, lon)
+        towers = _query_tower_api(lat, lon, radius_km=radius_km, limit=limit)
+        if towers:
+            cache[key] = towers
+            updated = True
+            log.info("    → %d towers found", len(towers))
+        else:
+            log.debug("    → no towers from API, will use hardcoded fallback")
+        time.sleep(0.3)  # rate-limit API calls
+
+    if updated:
+        _save_metro_cache(cache)
+        log.info("Metro tower cache updated (%d metro areas).", len(cache))
+    else:
+        log.info("Metro tower cache up to date (%d areas cached).", len(cache))
+
+    return cache
 
 
 def _m_to_ft(metres: float | None) -> float:

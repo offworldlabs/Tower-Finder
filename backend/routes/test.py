@@ -222,6 +222,8 @@ async def push_ground_truth_snapshot(body: dict = Body(...)):
         state.ground_truth_meta[hex_code] = {
             "object_type": ac.get("object_type", "aircraft"),
             "is_anomalous": ac.get("is_anomalous", False),
+            "speed_ms": ac.get("speed_ms", 0),
+            "heading": ac.get("heading", 0),
         }
         # Flag anomalous objects and log events
         if ac.get("is_anomalous"):
@@ -427,6 +429,8 @@ async def get_simulation_ground_truth():
             "alt_m": alt_m,
             "gs": gs_knots,
             "track": track_deg,
+            "speed_ms": meta.get("speed_ms", 0),
+            "heading": meta.get("heading", 0),
             "ts": round(ts, 3),
             "object_type": meta.get("object_type", "aircraft"),
             "is_anomalous": meta.get("is_anomalous", False),
@@ -438,27 +442,37 @@ async def get_simulation_ground_truth():
 
     # Latest aircraft solved by the pipeline (what the map shows)
     solved_aircraft = state.latest_aircraft_json.get("aircraft", [])
-    detected_count = len(solved_aircraft)
 
-    # Position error: compare latest solved position vs GT trail for matching hexes
-    pos_errors: list[float] = []
+    # Build solved-hex lookup (direct hex match + ground_truth_hex link)
     solved_by_hex: dict[str, list] = {}
     for ac in solved_aircraft:
         hx = ac.get("hex", "")
         if hx and "lat" in ac and "lon" in ac:
             solved_by_hex[hx] = [ac["lat"], ac["lon"]]
+        gt_hx = ac.get("ground_truth_hex")
+        if gt_hx and gt_hx not in solved_by_hex and "lat" in ac and "lon" in ac:
+            solved_by_hex[gt_hx] = [ac["lat"], ac["lon"]]
 
-    for hx, trail in list(state.ground_truth_trails.items()):
-        if hx not in solved_by_hex or not trail:
-            continue
-        gt_last = list(trail)[-1]          # [lat, lon, alt_m, ts]
-        sol = solved_by_hex[hx]
-        dlat = (sol[0] - gt_last[0]) * 111.0
-        dlon = (sol[1] - gt_last[1]) * 111.0 * math.cos(math.radians(gt_last[0]))
-        pos_errors.append(math.sqrt(dlat ** 2 + dlon ** 2))
-        if len(pos_errors) >= 200:          # cap iterations for performance
-            break
+    # Count unique GT objects that have at least one matching solved position
+    # (by direct hex match or ground_truth_hex proximity link).
+    # This avoids double-counting: multiple per-node tracks for the same
+    # physical aircraft, or ADS-B + solver entries for the same target.
+    matched_gt_hexes: set[str] = set()
+    pos_errors: list[float] = []
+    for hx in gt_hex_set:
+        if hx in solved_by_hex:
+            matched_gt_hexes.add(hx)
+            trail = state.ground_truth_trails.get(hx)
+            if trail:
+                gt_last = list(trail)[-1]
+                sol = solved_by_hex[hx]
+                dlat = (sol[0] - gt_last[0]) * 111.0
+                dlon = (sol[1] - gt_last[1]) * 111.0 * math.cos(math.radians(gt_last[0]))
+                pos_errors.append(math.sqrt(dlat ** 2 + dlon ** 2))
+            if len(pos_errors) >= 200:
+                break
 
+    detected_count = len(matched_gt_hexes)
     avg_err = round(sum(pos_errors) / len(pos_errors), 2) if pos_errors else None
 
     return Response(

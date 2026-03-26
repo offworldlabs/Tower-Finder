@@ -13,6 +13,8 @@ digital_ocean.pub
 tar1090/
 tar1090_data/
 coverage_data/
+metro_tower_cache.json
+tower_assignments.json
 other/
 
 # Local-only agent customizations (server credentials, ops, private prompts — never push)
