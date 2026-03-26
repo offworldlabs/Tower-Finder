@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { MapContainer, TileLayer, CircleMarker, Tooltip } from "react-leaflet";
 import "./PhysicsSettings.css";
 
 const API = "/api";
@@ -94,6 +95,7 @@ export default function PhysicsSettings() {
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState(null);
   const [error, setError] = useState(null);
+  const [gtData, setGtData] = useState(null);
 
   const fetchConfig = useCallback(async () => {
     try {
@@ -119,6 +121,23 @@ export default function PhysicsSettings() {
     const id = setInterval(fetchConfig, 3000);
     return () => clearInterval(id);
   }, [fetchConfig]);
+
+  const fetchGt = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/simulation/ground-truth`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setGtData(data);
+    } catch {
+      // non-fatal — GT section just stays empty
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchGt();
+    const id = setInterval(fetchGt, 5000);
+    return () => clearInterval(id);
+  }, [fetchGt]);
 
   async function handleApply() {
     setSaving(true);
@@ -370,6 +389,98 @@ export default function PhysicsSettings() {
           </span>
         )}
       </div>
+
+      {/* ── Ground Truth Map ────────────────────────────────────────── */}
+      {gtData && gtData.aircraft.length > 0 && (() => {
+        const ac = gtData.aircraft;
+        const centerLat = ac.reduce((s, a) => s + a.lat, 0) / ac.length;
+        const centerLon = ac.reduce((s, a) => s + a.lon, 0) / ac.length;
+
+        function acColor(a) {
+          if (a.is_anomalous)           return "#f43f5e";
+          if (a.object_type === "drone") return "#f59e0b";
+          if (a.object_type === "dark")  return "#64748b";
+          return "#38bdf8";
+        }
+
+        return (
+          <div className="ps-gt-section">
+            <div className="ps-gt-header">
+              <span className="ps-gt-title">Ground Truth Map</span>
+              <span className="ps-gt-count">{ac.length} objects</span>
+            </div>
+            <div className="ps-gt-map">
+              <MapContainer
+                center={[centerLat, centerLon]}
+                zoom={6}
+                style={{ width: "100%", height: "100%" }}
+                zoomControl={false}
+                attributionControl={false}
+              >
+                <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
+                {ac.map(a => (
+                  <CircleMarker
+                    key={a.hex}
+                    center={[a.lat, a.lon]}
+                    radius={a.object_type === "drone" ? 4 : 5}
+                    pathOptions={{
+                      color:       acColor(a),
+                      fillColor:   acColor(a),
+                      fillOpacity: 0.85,
+                      weight:      a.is_anomalous ? 2 : 1,
+                    }}
+                  >
+                    <Tooltip>{a.object_type}{a.is_anomalous ? " ⚠ anomalous" : ""} · {Math.round(a.alt_m)} m</Tooltip>
+                  </CircleMarker>
+                ))}
+              </MapContainer>
+            </div>
+            <div className="ps-gt-legend">
+              <span style={{ color: "#38bdf8" }}>● Commercial</span>
+              <span style={{ color: "#94a3b8" }}>● Dark</span>
+              <span style={{ color: "#f59e0b" }}>● Drone</span>
+              <span style={{ color: "#f43f5e" }}>● Anomalous</span>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Solver Performance ──────────────────────────────────────── */}
+      {gtData?.performance && (
+        <div className="ps-perf-section">
+          <div className="ps-perf-title">Solver Performance</div>
+          <div className="ps-perf-grid">
+            <div className="ps-perf-card">
+              <span className="ps-perf-val">{gtData.performance.gt_total}</span>
+              <span className="ps-perf-lbl">GT Objects</span>
+            </div>
+            <div className="ps-perf-card">
+              <span className="ps-perf-val">{gtData.performance.detected}</span>
+              <span className="ps-perf-lbl">Detected</span>
+            </div>
+            <div className="ps-perf-card ps-perf-rate">
+              <span className="ps-perf-val">{gtData.performance.detection_rate_pct}%</span>
+              <span className="ps-perf-lbl">Detection Rate</span>
+            </div>
+            <div className="ps-perf-card">
+              <span className="ps-perf-val">
+                {gtData.performance.avg_position_error_km != null
+                  ? `${gtData.performance.avg_position_error_km} km`
+                  : "—"}
+              </span>
+              <span className="ps-perf-lbl">Avg Position Error</span>
+            </div>
+            <div className="ps-perf-card">
+              <span className="ps-perf-val">{gtData.performance.multinode_tracks}</span>
+              <span className="ps-perf-lbl">Multinode Tracks</span>
+            </div>
+            <div className="ps-perf-card">
+              <span className="ps-perf-val">{gtData.performance.tracked_with_error}</span>
+              <span className="ps-perf-lbl">Positions Compared</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Doppler Arc Guide ───────────────────────────────────────── */}
       <div className="ps-doppler-guide">

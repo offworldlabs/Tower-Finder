@@ -451,3 +451,113 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ── Ground Truth Map ────────────────────────────────────────── */
+.ps-gt-section {
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  padding: 18px;
+  margin-bottom: 16px;
+}
+
+.ps-gt-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.ps-gt-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #cbd5e1;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.ps-gt-count {
+  font-size: 0.75rem;
+  color: #475569;
+}
+
+.ps-gt-map {
+  width: 100%;
+  height: 320px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #1e293b;
+}
+
+.ps-gt-legend {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  font-size: 0.73rem;
+  color: #94a3b8;
+}
+
+/* ── Solver Performance ──────────────────────────────────────── */
+.ps-perf-section {
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  padding: 18px;
+  margin-bottom: 16px;
+}
+
+.ps-perf-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #cbd5e1;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 14px;
+}
+
+.ps-perf-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+@media (max-width: 600px) {
+  .ps-perf-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.ps-perf-card {
+  background: #1e293b;
+  border-radius: 8px;
+  padding: 12px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.ps-perf-rate {
+  background: #172554;
+  border: 1px solid #1e40af44;
+}
+
+.ps-perf-val {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: #e2e8f0;
+  line-height: 1;
+}
+
+.ps-perf-rate .ps-perf-val {
+  color: #60a5fa;
+}
+
+.ps-perf-lbl {
+  font-size: 0.7rem;
+  color: #475569;
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}

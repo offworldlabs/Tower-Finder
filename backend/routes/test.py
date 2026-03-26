@@ -391,3 +391,72 @@ async def put_simulation_config(body: dict = Body(...)):
         content=orjson.dumps({"ok": True, "config": state.simulation_config}),
         media_type="application/json",
     )
+
+
+@router.get("/api/simulation/ground-truth")
+async def get_simulation_ground_truth():
+    """Return current ground truth aircraft positions (last known fix, max 30 s old)
+    plus a lightweight solver-performance summary computed from server state.
+    """
+    now = time.time()
+    gt_aircraft = []
+    for hx, trail in list(state.ground_truth_trails.items()):
+        if not trail:
+            continue
+        lat, lon, alt_m, ts = list(trail)[-1]
+        if now - ts > 30:
+            continue
+        meta = state.ground_truth_meta.get(hx, {})
+        gt_aircraft.append({
+            "hex": hx,
+            "lat": lat,
+            "lon": lon,
+            "alt_m": alt_m,
+            "object_type": meta.get("object_type", "aircraft"),
+            "is_anomalous": meta.get("is_anomalous", False),
+        })
+
+    # ── solver performance ────────────────────────────────────────────────────
+    gt_hex_set = {a["hex"] for a in gt_aircraft}
+    gt_total = len(gt_hex_set)
+
+    # Latest aircraft solved by the pipeline (what the map shows)
+    solved_aircraft = state.latest_aircraft_json.get("aircraft", [])
+    detected_count = len(solved_aircraft)
+
+    # Position error: compare latest solved position vs GT trail for matching hexes
+    pos_errors: list[float] = []
+    solved_by_hex: dict[str, list] = {}
+    for ac in solved_aircraft:
+        hx = ac.get("hex", "")
+        if hx and "lat" in ac and "lon" in ac:
+            solved_by_hex[hx] = [ac["lat"], ac["lon"]]
+
+    for hx, trail in list(state.ground_truth_trails.items()):
+        if hx not in solved_by_hex or not trail:
+            continue
+        gt_last = list(trail)[-1]          # [lat, lon, alt_m, ts]
+        sol = solved_by_hex[hx]
+        dlat = (sol[0] - gt_last[0]) * 111.0
+        dlon = (sol[1] - gt_last[1]) * 111.0 * math.cos(math.radians(gt_last[0]))
+        pos_errors.append(math.sqrt(dlat ** 2 + dlon ** 2))
+        if len(pos_errors) >= 200:          # cap iterations for performance
+            break
+
+    avg_err = round(sum(pos_errors) / len(pos_errors), 2) if pos_errors else None
+
+    return Response(
+        content=orjson.dumps({
+            "aircraft": gt_aircraft,
+            "total": gt_total,
+            "performance": {
+                "gt_total": gt_total,
+                "detected": detected_count,
+                "detection_rate_pct": round(detected_count / gt_total * 100, 1) if gt_total else 0.0,
+                "avg_position_error_km": avg_err,
+                "multinode_tracks": len(state.multinode_tracks),
+                "tracked_with_error": len(pos_errors),
+            },
+        }),
+        media_type="application/json",
+    )

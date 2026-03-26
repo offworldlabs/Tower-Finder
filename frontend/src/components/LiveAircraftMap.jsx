@@ -377,6 +377,7 @@ export default function LiveAircraftMap() {
             {selectedNodeId && (() => {
               const sn = visibleNodes.find((n) => n.node_id === selectedNodeId) || nodes.find((n) => n.node_id === selectedNodeId);
               if (!sn) return null;
+              const hasEmpirical = Array.isArray(sn.empirical_polygon) && sn.empirical_polygon.length >= 3;
               const conePositions = yagiSectorPositions(
                 sn.rx_lat, sn.rx_lon,
                 sn.tx_lat, sn.tx_lon,
@@ -388,10 +389,23 @@ export default function LiveAircraftMap() {
               const nodeAircraft = displayAircraft.filter((ac) => ac.node_id === selectedNodeId);
               return (
                 <>
-                  {/* Detection cone */}
+                  {/* Empirical detection area — shown when calibration data is available (green solid) */}
+                  {hasEmpirical && (
+                    <Polygon
+                      positions={sn.empirical_polygon}
+                      pathOptions={{ color: "#22c55e", fillColor: "#22c55e", fillOpacity: 0.22, weight: 2 }}
+                    />
+                  )}
+                  {/* Theoretical Yagi cone — faint reference behind empirical; full highlight when no empirical data */}
                   <Polygon
                     positions={conePositions}
-                    pathOptions={{ color: "#fbbf24", fillColor: "#fbbf24", fillOpacity: 0.15, weight: 2, dashArray: "6 3" }}
+                    pathOptions={{
+                      color: "#fbbf24",
+                      fillColor: "#fbbf24",
+                      fillOpacity: hasEmpirical ? 0.04 : 0.15,
+                      weight: hasEmpirical ? 1 : 2,
+                      dashArray: "6 3",
+                    }}
                   />
                   {/* TX tower marker */}
                   {sn.tx_lat && sn.tx_lon && (
