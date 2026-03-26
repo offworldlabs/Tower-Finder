@@ -339,6 +339,8 @@ def generate_fleet(
         # Avoid positions: metro towers only.  Named solo towers are gated
         # inside _extend_solo_pool with the same min_sep check so they are
         # also enforced to be at least min_sep_km from each other.
+        # 400 km > 2 × 140 km fleet range → solo coverage circles never
+        # touch each other or any metro cluster, making them visually isolated.
         us_metro_occ: list[tuple[float, float]] = [
             (t[0], t[1]) for t in _TOWERS_US
         ]
@@ -346,7 +348,7 @@ def generate_fleet(
             list(solo_towers),
             n_solo,
             avoid_positions=us_metro_occ,
-            min_sep_km=300.0,
+            min_sep_km=400.0,
         )
         random.shuffle(solo_pool)
 
