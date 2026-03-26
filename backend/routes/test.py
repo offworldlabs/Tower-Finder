@@ -403,15 +403,31 @@ async def get_simulation_ground_truth():
     for hx, trail in list(state.ground_truth_trails.items()):
         if not trail:
             continue
-        lat, lon, alt_m, ts = list(trail)[-1]
+        trail_list = list(trail)
+        lat, lon, alt_m, ts = trail_list[-1]
         if now - ts > 30:
             continue
+        # Derive heading/speed from last 2 trail points for frontend dead-reckoning
+        gs_knots = 0.0
+        track_deg = 0.0
+        if len(trail_list) >= 2:
+            p1, p2 = trail_list[-2], trail_list[-1]
+            dt = p2[3] - p1[3]
+            if dt > 0.1:
+                dlat_m = (p2[0] - p1[0]) * 111_320
+                dlon_m = (p2[1] - p1[1]) * 111_320 * math.cos(math.radians(p1[0] or 1e-9))
+                dist_m = math.hypot(dlat_m, dlon_m)
+                gs_knots = round(dist_m / dt * 1.94384, 1)
+                track_deg = round(math.degrees(math.atan2(dlon_m, dlat_m)) % 360, 1)
         meta = state.ground_truth_meta.get(hx, {})
         gt_aircraft.append({
             "hex": hx,
             "lat": lat,
             "lon": lon,
             "alt_m": alt_m,
+            "gs": gs_knots,
+            "track": track_deg,
+            "ts": round(ts, 3),
             "object_type": meta.get("object_type", "aircraft"),
             "is_anomalous": meta.get("is_anomalous", False),
         })

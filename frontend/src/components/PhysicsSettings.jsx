@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { MapContainer, TileLayer, CircleMarker, Tooltip } from "react-leaflet";
 import "./PhysicsSettings.css";
 
@@ -97,6 +97,10 @@ export default function PhysicsSettings() {
   const [error, setError] = useState(null);
   const [gtData, setGtData] = useState(null);
 
+  // Dead-reckoning animation state for the GT map
+  const fixesRef = useRef({});
+  const [animatedAircraft, setAnimatedAircraft] = useState([]);
+
   const fetchConfig = useCallback(async () => {
     try {
       const res = await fetch(`${API}/simulation/config`);
@@ -127,6 +131,12 @@ export default function PhysicsSettings() {
       const res = await fetch(`${API}/simulation/ground-truth`);
       if (!res.ok) return;
       const data = await res.json();
+      // Store fixes for dead-reckoning
+      const newFixes = {};
+      for (const ac of data.aircraft) {
+        newFixes[ac.hex] = { ...ac };
+      }
+      fixesRef.current = newFixes;
       setGtData(data);
     } catch {
       // non-fatal — GT section just stays empty
@@ -135,9 +145,34 @@ export default function PhysicsSettings() {
 
   useEffect(() => {
     fetchGt();
-    const id = setInterval(fetchGt, 5000);
+    const id = setInterval(fetchGt, 2000);
     return () => clearInterval(id);
   }, [fetchGt]);
+
+  // Dead-reckoning animation — smooth position updates at 250 ms
+  useEffect(() => {
+    const KNOTS_TO_MS = 0.514444;
+    const DEG_PER_M = 1 / 111_320;
+    const id = setInterval(() => {
+      const now = Date.now() / 1000;
+      const result = Object.values(fixesRef.current).map((fix) => {
+        const elapsed = Math.min(now - (fix.ts || now), 60);
+        const gs_ms = (fix.gs || 0) * KNOTS_TO_MS;
+        if (elapsed > 0 && gs_ms > 0) {
+          const track_rad = ((fix.track || 0) * Math.PI) / 180;
+          const cos_lat = Math.cos((fix.lat * Math.PI) / 180) || 1e-9;
+          return {
+            ...fix,
+            lat: fix.lat + gs_ms * Math.cos(track_rad) * DEG_PER_M * elapsed,
+            lon: fix.lon + (gs_ms * Math.sin(track_rad)) / (111_320 * cos_lat) * elapsed,
+          };
+        }
+        return fix;
+      });
+      setAnimatedAircraft(result);
+    }, 250);
+    return () => clearInterval(id);
+  }, []);
 
   async function handleApply() {
     setSaving(true);
@@ -391,10 +426,11 @@ export default function PhysicsSettings() {
       </div>
 
       {/* ── Ground Truth Map ────────────────────────────────────────── */}
-      {gtData && gtData.aircraft.length > 0 && (() => {
-        const ac = gtData.aircraft;
-        const centerLat = ac.reduce((s, a) => s + a.lat, 0) / ac.length;
-        const centerLon = ac.reduce((s, a) => s + a.lon, 0) / ac.length;
+      {(animatedAircraft.length > 0 || (gtData && gtData.aircraft.length > 0)) && (() => {
+        const ac = animatedAircraft.length > 0 ? animatedAircraft : gtData.aircraft;
+        const centerSrc = (gtData && gtData.aircraft.length > 0) ? gtData.aircraft : ac;
+        const centerLat = centerSrc.reduce((s, a) => s + a.lat, 0) / centerSrc.length;
+        const centerLon = centerSrc.reduce((s, a) => s + a.lon, 0) / centerSrc.length;
 
         function acColor(a) {
           if (a.is_anomalous)           return "#f43f5e";

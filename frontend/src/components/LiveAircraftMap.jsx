@@ -169,10 +169,16 @@ export default function LiveAircraftMap() {
     return () => cancelAnimationFrame(animationFrameRef.current);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /* ── Derived: radar-detected only (exclude pure ADS-B not seen by radar) ── */
+  const radarAircraft = useMemo(
+    () => displayAircraft.filter((ac) => ac.position_source || ac.multinode),
+    [displayAircraft],
+  );
+
   /* ── Derived: truth-only aircraft ───────────────────────────── */
   const matchedTruthHexes = useMemo(
-    () => new Set(displayAircraft.map((ac) => ac.ground_truth_hex || ac.hex).filter(Boolean)),
-    [displayAircraft],
+    () => new Set(radarAircraft.map((ac) => ac.ground_truth_hex || ac.hex).filter(Boolean)),
+    [radarAircraft],
   );
 
   // trailTick invalidates this when groundTruthRef.current is updated
@@ -190,12 +196,12 @@ export default function LiveAircraftMap() {
 
   /* ── Derived: viewport culling ──────────────────────────────── */
   const filteredAircraft = useMemo(() => {
-    if (!searchQuery.trim()) return displayAircraft;
+    if (!searchQuery.trim()) return radarAircraft;
     const q = searchQuery.trim().toLowerCase();
-    return displayAircraft.filter(
+    return radarAircraft.filter(
       (ac) => (ac.hex || "").toLowerCase().includes(q) || (ac.flight || "").toLowerCase().includes(q),
     );
-  }, [displayAircraft, searchQuery]);
+  }, [radarAircraft, searchQuery]);
 
   const visibleAircraft = useMemo(
     () => filteredAircraft.filter((ac) => ac.hex === selectedHex || isAircraftInViewport(ac, viewport)),
@@ -237,7 +243,7 @@ export default function LiveAircraftMap() {
   }, [selectedHex, visibleTrailEntries]);
 
   const selectedAc = selectedHex
-    ? displayAircraft.find((ac) => ac.hex === selectedHex) || truthOnlyAircraft.find((ac) => ac.hex === selectedHex)
+    ? radarAircraft.find((ac) => ac.hex === selectedHex) || truthOnlyAircraft.find((ac) => ac.hex === selectedHex)
     : null;
 
   /* ── Side-effects ───────────────────────────────────────────── */
@@ -293,7 +299,7 @@ export default function LiveAircraftMap() {
       <Toolbar
         connected={connected}
         paused={paused}
-        aircraftCount={displayAircraft.length + (showGroundTruth ? truthOnlyAircraft.length : 0)}
+        aircraftCount={radarAircraft.length + (showGroundTruth ? truthOnlyAircraft.length : 0)}
         showCoverage={showCoverage}
         showLabels={showLabels}
         showTrails={showTrails}
@@ -308,7 +314,7 @@ export default function LiveAircraftMap() {
 
       <div className="live-map-body">
         <AircraftListPanel
-          allAircraft={displayAircraft}
+          allAircraft={radarAircraft}
           truthOnly={showGroundTruth ? truthOnlyAircraft : []}
           selectedHex={selectedHex}
           onSelect={handleSelectAircraft}
@@ -326,7 +332,7 @@ export default function LiveAircraftMap() {
             />
 
             <ViewportTracker onChange={handleViewportChange} />
-            <FitBounds aircraft={displayAircraft} nodes={nodes} selectedHex={selectedHex} focusNonce={focusNonce} />
+            <FitBounds aircraft={radarAircraft} nodes={nodes} selectedHex={selectedHex} focusNonce={focusNonce} />
 
             {/* Coverage zones — empirical polygon when available, else theoretical Yagi sector */}
             {showCoverage && visibleNodes.map((n) => {
@@ -386,7 +392,7 @@ export default function LiveAircraftMap() {
                 sn.max_range_km ?? 50,
               );
               // Find aircraft detected by this node (those whose node_id matches)
-              const nodeAircraft = displayAircraft.filter((ac) => ac.node_id === selectedNodeId);
+              const nodeAircraft = radarAircraft.filter((ac) => ac.node_id === selectedNodeId);
               return (
                 <>
                   {/* Empirical detection area — shown when calibration data is available (green solid) */}
@@ -484,23 +490,24 @@ export default function LiveAircraftMap() {
               ));
             })()}
 
-            {/* Aircraft markers */}
-            {visibleAircraft.map((ac) => {
-              const isSelected = ac.hex === selectedHex;
-              // 1. Ellipse arc — single-node with delay constraint
-              if (Array.isArray(ac.ambiguity_arc) && ac.ambiguity_arc.length >= 2) {
-                // Keep the Doppler hue visible when selected; selection is shown via stroke emphasis.
+            {/* Detection arcs — fade based on age since last detection update */}
+            {visibleAircraft
+              .filter((ac) => Array.isArray(ac.ambiguity_arc) && ac.ambiguity_arc.length >= 2)
+              .map((ac) => {
+                const isSelected = ac.hex === selectedHex;
+                const arcAge = Date.now() - (ac._fixTs || 0);
+                const arcOpacity = Math.max(0.05, Math.min(0.95, 1 - Math.max(0, arcAge - 1500) / 5000));
                 const arcColor = ac.target_class === "drone"
                   ? "#fb923c"
                   : dopplerColor(ac.doppler_hz ?? 0);
                 return (
                   <Polyline
-                    key={ac.hex}
+                    key={`arc-${ac.hex}`}
                     positions={ac.ambiguity_arc}
                     pathOptions={{
                       color: arcColor,
                       weight: isSelected ? 5 : 3,
-                      opacity: isSelected ? 1 : 0.95,
+                      opacity: isSelected ? 1 : arcOpacity,
                       lineCap: "round",
                       lineJoin: "round",
                     }}
@@ -510,12 +517,15 @@ export default function LiveAircraftMap() {
                     }}}
                   />
                 );
-              }
-              // 2. Solver-only position (no verified arc) — dimmed uncertainty marker
+              })
+            }
+            {/* Aircraft position markers — ADS-B aided (teal icon+arc), multinode (purple icon), uncertain solo (dimmed circle) */}
+            {visibleAircraft.map((ac) => {
+              const isSelected = ac.hex === selectedHex;
               if (ac.position_source === "solver_single_node" && ac.lat && ac.lon) {
                 return (
                   <CircleMarker
-                    key={ac.hex}
+                    key={`icon-${ac.hex}`}
                     center={[ac.lat, ac.lon]}
                     radius={isSelected ? 9 : 6}
                     pathOptions={{
@@ -528,11 +538,10 @@ export default function LiveAircraftMap() {
                   />
                 );
               }
-              // 3. Normal marker (ADS-B associated or multinode)
-              if (ac.lat && ac.lon) {
+              if (ac.lat && ac.lon && (ac.position_source === "adsb_associated" || ac.multinode)) {
                 return (
                   <AircraftMarker
-                    key={ac.hex}
+                    key={`icon-${ac.hex}`}
                     ac={ac}
                     isSelected={isSelected}
                     showLabels={showLabels}
