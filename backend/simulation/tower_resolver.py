@@ -54,6 +54,7 @@ import json
 import logging
 import math
 import os
+import ssl
 import sys
 import time
 import urllib.request
@@ -118,7 +119,13 @@ def _query_tower_api(lat: float, lon: float, radius_km: int = 80, limit: int = 5
     try:
         url = f"{_TOWER_API_URL}?lat={lat}&lon={lon}&radius_km={radius_km}&limit={limit}&source=auto"
         req = urllib.request.Request(url, headers={"User-Agent": "retina-fleet-gen/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        # Skip SSL verification for local/IP addresses (server calling itself)
+        ctx = None
+        if "localhost" in _TOWER_API_URL or "127.0.0.1" in _TOWER_API_URL or "157.245." in _TOWER_API_URL:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
             data = json.loads(resp.read())
         towers_raw = data.get("towers", [])
         results = []
