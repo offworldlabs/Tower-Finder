@@ -111,30 +111,97 @@ _TOWERS_AU = [
 # Each is at least ~150 km from the nearest _TOWERS_US entry, so nodes here
 # can never share coverage with a metro node and will always produce solo arcs.
 _TOWERS_SOLO_US = [
-    # Great Plains / High Plains — genuinely isolated
+    # Great Plains / High Plains
     (44.07500, -103.22830, 1100, 551_000_000, "KEVN-Rapid City"),     # SD
     (46.87190, -113.99300, 1050, 563_000_000, "KPAX-Missoula"),       # MT
     (43.03540, -108.05270, 1000, 539_000_000, "KCWY-Casper"),         # WY
-    (48.23000, -101.29600, 980,  575_000_000, "KMOT-Minot"),          # ND
-    (38.81130, -99.32640,  960,  551_000_000, "KAYS-Hays"),           # KS central
-    (47.04770, -109.46340, 980,  551_000_000, "KLWT-Lewistown"),      # MT
-    (32.44180, -104.22840, 900,  563_000_000, "KCAV-Carlsbad"),       # NM SE
-    (45.78880, -108.50620, 970,  539_000_000, "KTVQ-Billings"),       # MT
-    (46.80500, -100.78400, 960,  563_000_000, "KFYR-Bismarck"),       # ND
-    (41.14120, -104.81540, 1000, 551_000_000, "KCHEYENNE"),           # WY Cheyenne
-    # Desert Southwest — sparse population, no intersecting beams
+    (48.23000, -101.29600,  980, 575_000_000, "KMOT-Minot"),          # ND
+    (38.81130,  -99.32640,  960, 551_000_000, "KAYS-Hays"),           # KS central
+    (32.44180, -104.22840,  900, 563_000_000, "KCAV-Carlsbad"),       # NM SE
+    # Desert Southwest
     (35.19900, -111.65100, 1200, 563_000_000, "KNAZ-Flagstaff"),      # AZ
-    (40.83870, -115.76270, 920,  539_000_000, "KELK-Elko"),           # NV
-    (44.52020, -109.05630, 1100, 575_000_000, "KCOD-Cody"),           # WY
-    (31.87220, -106.42920, 880,  539_000_000, "KTSM-El Paso"),        # TX border
-    (34.74020, -92.28990,  920,  563_000_000, "KATV-Little Rock"),    # AR (no nearby node)
-    (37.68610, -97.33010,  940,  551_000_000, "KWCH-Wichita"),        # KS (gap)
-    # Rural Midwest / Appalachia — suburban but no overlapping detection
-    (46.48730, -84.35670,  900,  563_000_000, "KBSF-Sault Ste Marie"),# MI UP
-    (46.78650, -92.10350,  940,  551_000_000, "KDLH-Duluth"),         # MN far north
-    (47.92500, -97.03260,  920,  563_000_000, "WDAY-Fargo"),          # ND (far from MSP)
-    (43.54960, -96.72960,  930,  539_000_000, "KSFY-Sioux Falls"),    # SD (gap node)
+    (40.83870, -115.76270,  920, 539_000_000, "KELK-Elko"),           # NV
+    (31.87220, -106.42920,  880, 539_000_000, "KTSM-El Paso"),        # TX border
+    (36.90000, -111.50000, 1100, 539_000_000, "KPGE-Page-AZ"),        # AZ NE
+    (39.50000, -119.80000,  950, 551_000_000, "KRNV-Reno"),           # NV
+    # South / Central
+    (34.74020,  -92.28990,  920, 563_000_000, "KATV-Little Rock"),    # AR
+    (37.68610,  -97.33010,  940, 551_000_000, "KWCH-Wichita"),        # KS
+    # Pacific NW interior
+    (42.55000, -114.46000,  980, 575_000_000, "KXTF-Twin Falls"),     # ID
+    # Rural Midwest / Great Lakes
+    (46.48730,  -84.35670,  900, 563_000_000, "KBSF-Sault Ste Marie"),# MI UP
+    (46.78650,  -92.10350,  940, 551_000_000, "KDLH-Duluth"),         # MN
+    (47.92500,  -97.03260,  920, 563_000_000, "WDAY-Fargo"),          # ND
+    (43.54960,  -96.72960,  930, 539_000_000, "KSFY-Sioux Falls"),    # SD
+    (46.37000,  -94.87000,  920, 539_000_000, "KBRJ-Brainerd"),       # MN lakes
+    (45.00000,  -85.50000,  880, 563_000_000, "WPBN-Traverse"),       # MI north
+    # East
+    (44.06000,  -76.15000,  850, 563_000_000, "WWTI-Watertown"),      # NY
+    (37.30000,  -79.50000,  880, 563_000_000, "WSLS-Roanoke"),        # VA
 ]
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Return great-circle distance in km between two lat/lon points."""
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
+         * math.sin(dlon / 2) ** 2)
+    return R * 2 * math.asin(math.sqrt(max(0.0, min(1.0, a))))
+
+
+# Rural US bounding boxes used when the named solo pool needs extending.
+# Each box: (lat_min, lat_max, lon_min, lon_max)
+_RURAL_BOXES_US = [
+    (38.0, 49.0, -116.0, -96.0),   # Northern Great Plains (MT/ND/SD/NE/WY)
+    (32.0, 42.0, -108.0, -96.0),   # Southern Great Plains (KS/OK/TX panhandle/NM)
+    (32.0, 42.0, -117.0, -108.0),  # Desert Southwest (AZ/NV/UT/western NM)
+    (40.0, 50.0, -122.0, -111.0),  # Pacific NW interior (eastern OR/WA/ID)
+    (35.0, 46.0, -111.0, -103.0),  # Rockies (CO/WY/MT eastern slope)
+    (38.0, 47.0, -99.0,  -88.0),   # Rural Midwest (IA/MN/WI/IL away from cities)
+]
+_RURAL_FREQS = [539_000_000, 551_000_000, 563_000_000, 575_000_000, 585_000_000]
+
+
+def _extend_solo_pool(
+    current_pool: list,
+    n_needed: int,
+    avoid_positions: list[tuple[float, float]],
+    min_sep_km: float = 180.0,
+    max_attempts: int = 200_000,
+) -> list:
+    """Extend *current_pool* to at least *n_needed* entries.
+
+    New towers are placed in rural US bounding boxes, rejection-sampled so
+    every new position is at least *min_sep_km* from all positions in
+    *avoid_positions* and from already-accepted new positions.
+    Returns the (possibly extended) pool.
+    """
+    pool = list(current_pool)
+    busy = list(avoid_positions)          # positions already taken
+
+    attempts = 0
+    while len(pool) < n_needed and attempts < max_attempts:
+        box = random.choice(_RURAL_BOXES_US)
+        lat = random.uniform(box[0], box[1])
+        lon = random.uniform(box[2], box[3])
+
+        # Reject if too close to any known position
+        if any(_haversine_km(lat, lon, p[0], p[1]) < min_sep_km for p in busy):
+            attempts += 1
+            continue
+
+        alt_ft = random.uniform(800, 1400)
+        fc = random.choice(_RURAL_FREQS)
+        callsign = f"RURAL-{len(pool) + 1:04d}"
+        pool.append((lat, lon, alt_ft, fc, callsign))
+        busy.append((lat, lon))
+        attempts += 1
+
+    return pool
 
 
 @dataclass
@@ -256,47 +323,59 @@ def generate_fleet(
         )
         nodes.append(asdict(node))
 
-    # --- Solo nodes (isolated, one per rural tower, never share a tower) ---
-    solo_pool = list(solo_towers)
-    random.shuffle(solo_pool)
-    for j in range(n_solo):
-        tower = solo_pool[j % len(solo_pool)]
-        tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign = tower
-
-        distance_km = random.uniform(8, 35)
-        bearing_rad = random.uniform(0, 2 * math.pi)
-
-        R = 6371.0
-        dlat = (distance_km * math.cos(bearing_rad)) / R
-        dlon = (distance_km * math.sin(bearing_rad)) / (
-            R * math.cos(math.radians(tx_lat))
+    # --- Solo nodes (isolated — strictly one node per unique tower position) ---
+    if n_solo > 0:
+        # All US positions that must be avoided when extending the pool
+        us_occupied: list[tuple[float, float]] = (
+            [(t[0], t[1]) for t in _TOWERS_US]
+            + [(t[0], t[1]) for t in _TOWERS_SOLO_US]
         )
-
-        rx_lat = tx_lat + math.degrees(dlat)
-        rx_lon = tx_lon + math.degrees(dlon)
-        rx_alt_ft = random.uniform(100, 1500)
-
-        beam_width = random.uniform(35, 55)
-        max_range = random.uniform(40, 80)
-
-        node_id = f"synth-SOLO-{j + 1:04d}"
-
-        node = GeneratedNodeConfig(
-            node_id=node_id,
-            rx_lat=round(rx_lat, 6),
-            rx_lon=round(rx_lon, 6),
-            rx_alt_ft=round(rx_alt_ft, 1),
-            tx_lat=tx_lat,
-            tx_lon=tx_lon,
-            tx_alt_ft=tx_alt_ft,
-            fc_hz=fc_hz,
-            fs_hz=2_000_000,
-            beam_width_deg=round(beam_width, 1),
-            max_range_km=round(max_range, 1),
-            region="us",
-            tx_callsign=callsign,
+        solo_pool = _extend_solo_pool(
+            list(solo_towers),
+            n_solo,
+            avoid_positions=us_occupied,
+            min_sep_km=180.0,
         )
-        nodes.append(asdict(node))
+        random.shuffle(solo_pool)
+
+        for j in range(min(n_solo, len(solo_pool))):
+            tower = solo_pool[j]          # strict: never re-use a tower index
+            tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign = tower
+
+            distance_km = random.uniform(8, 35)
+            bearing_rad = random.uniform(0, 2 * math.pi)
+
+            R = 6371.0
+            dlat = (distance_km * math.cos(bearing_rad)) / R
+            dlon = (distance_km * math.sin(bearing_rad)) / (
+                R * math.cos(math.radians(tx_lat))
+            )
+
+            rx_lat = tx_lat + math.degrees(dlat)
+            rx_lon = tx_lon + math.degrees(dlon)
+            rx_alt_ft = random.uniform(100, 1500)
+
+            beam_width = random.uniform(35, 55)
+            max_range = random.uniform(40, 80)
+
+            node_id = f"synth-SOLO-{j + 1:04d}"
+
+            node = GeneratedNodeConfig(
+                node_id=node_id,
+                rx_lat=round(rx_lat, 6),
+                rx_lon=round(rx_lon, 6),
+                rx_alt_ft=round(rx_alt_ft, 1),
+                tx_lat=tx_lat,
+                tx_lon=tx_lon,
+                tx_alt_ft=tx_alt_ft,
+                fc_hz=fc_hz,
+                fs_hz=2_000_000,
+                beam_width_deg=round(beam_width, 1),
+                max_range_km=round(max_range, 1),
+                region="us",
+                tx_callsign=callsign,
+            )
+            nodes.append(asdict(node))
 
     return nodes
 
