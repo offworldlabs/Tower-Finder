@@ -234,6 +234,7 @@ def solve_multinode(solver_input, node_configs):
         "rms_delay": rms_delay,
         "rms_doppler": rms_doppler,
         "n_nodes": len(node_setups),
+        "contributing_node_ids": list({m.node_id for m in measurements}),
         "n_measurements": len(measurements),
         "cost": float(result.cost),
         "timestamp_ms": solver_input.get("timestamp_ms", 0),

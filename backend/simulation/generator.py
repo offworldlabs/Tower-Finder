@@ -107,19 +107,33 @@ _TOWERS_AU = [
 ]
 
 # ── Rural / isolated towers for "solo node" testing ──────────────────────────
-# Intentionally far from metro areas and other towers, useful for single-node
-# ellipse-arc testing where no overlapping detection zones are expected.
+# These are real US broadcast transmitters in areas with no nearby metro clusters.
+# Each is at least ~150 km from the nearest _TOWERS_US entry, so nodes here
+# can never share coverage with a metro node and will always produce solo arcs.
 _TOWERS_SOLO_US = [
+    # Great Plains / High Plains — genuinely isolated
     (44.07500, -103.22830, 1100, 551_000_000, "KEVN-Rapid City"),     # SD
     (46.87190, -113.99300, 1050, 563_000_000, "KPAX-Missoula"),       # MT
     (43.03540, -108.05270, 1000, 539_000_000, "KCWY-Casper"),         # WY
     (48.23000, -101.29600, 980,  575_000_000, "KMOT-Minot"),          # ND
-    (38.81130, -99.32640,  960,  551_000_000, "KAYS-Hays"),           # KS
+    (38.81130, -99.32640,  960,  551_000_000, "KAYS-Hays"),           # KS central
+    (47.04770, -109.46340, 980,  551_000_000, "KLWT-Lewistown"),      # MT
+    (32.44180, -104.22840, 900,  563_000_000, "KCAV-Carlsbad"),       # NM SE
+    (45.78880, -108.50620, 970,  539_000_000, "KTVQ-Billings"),       # MT
+    (46.80500, -100.78400, 960,  563_000_000, "KFYR-Bismarck"),       # ND
+    (41.14120, -104.81540, 1000, 551_000_000, "KCHEYENNE"),           # WY Cheyenne
+    # Desert Southwest — sparse population, no intersecting beams
     (35.19900, -111.65100, 1200, 563_000_000, "KNAZ-Flagstaff"),      # AZ
     (40.83870, -115.76270, 920,  539_000_000, "KELK-Elko"),           # NV
     (44.52020, -109.05630, 1100, 575_000_000, "KCOD-Cody"),           # WY
-    (47.04770, -109.46340, 980,  551_000_000, "KLWT-Lewistown"),      # MT
-    (32.44180, -104.22840, 900,  563_000_000, "KCAV-Carlsbad"),       # NM
+    (31.87220, -106.42920, 880,  539_000_000, "KTSM-El Paso"),        # TX border
+    (34.74020, -92.28990,  920,  563_000_000, "KATV-Little Rock"),    # AR (no nearby node)
+    (37.68610, -97.33010,  940,  551_000_000, "KWCH-Wichita"),        # KS (gap)
+    # Rural Midwest / Appalachia — suburban but no overlapping detection
+    (46.48730, -84.35670,  900,  563_000_000, "KBSF-Sault Ste Marie"),# MI UP
+    (46.78650, -92.10350,  940,  551_000_000, "KDLH-Duluth"),         # MN far north
+    (47.92500, -97.03260,  920,  563_000_000, "WDAY-Fargo"),          # ND (far from MSP)
+    (43.54960, -96.72960,  930,  539_000_000, "KSFY-Sioux Falls"),    # SD (gap node)
 ]
 
 
@@ -150,7 +164,7 @@ def generate_fleet(
     n_nodes: int = 200,
     regions: Optional[list[str]] = None,
     seed: int = 42,
-    solo_fraction: float = 0.05,
+    solo_fraction: float = 0.10,
 ) -> list[dict]:
     """Generate a fleet of synthetic node configurations.
 
@@ -158,7 +172,7 @@ def generate_fleet(
     with a nearby broadcast tower as its illumination source. Receivers
     are placed 5-40 km from the tower (realistic for passive radar).
 
-    A fraction of nodes (solo_fraction, default 5%) are placed at isolated
+    A fraction of nodes (solo_fraction, default 10%) are placed at isolated
     rural towers far from any other nodes, useful for testing single-node
     ellipse-arc function without overlapping detection zones.
 

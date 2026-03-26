@@ -170,21 +170,22 @@ export default function LiveAircraftMap() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ── Derived: truth-only aircraft ───────────────────────────── */
-  const matchedTruthHexes = new Set(
-    displayAircraft.map((ac) => ac.ground_truth_hex || ac.hex).filter(Boolean),
+  const matchedTruthHexes = useMemo(
+    () => new Set(displayAircraft.map((ac) => ac.ground_truth_hex || ac.hex).filter(Boolean)),
+    [displayAircraft],
   );
 
-  const truthOnlyAircraft = Object.entries(groundTruthRef.current)
-    .filter(([hex, positions]) => !matchedTruthHexes.has(hex) && Array.isArray(positions) && positions.length > 0)
-    .map(([hex, positions]) => {
-      const last = positions[positions.length - 1];
-      const meta = groundTruthMetaRef.current[hex] || {};
-      return { hex, lat: last[0], lon: last[1], alt_m: last[2], points: positions.length, object_type: meta.object_type, is_anomalous: meta.is_anomalous };
-    });
-
-  const debugTruthOnlyAircraft = useMemo(
-    () => (showGroundTruth ? truthOnlyAircraft : []),
-    [showGroundTruth, truthOnlyAircraft],
+  // trailTick invalidates this when groundTruthRef.current is updated
+  const truthOnlyAircraft = useMemo(
+    () => Object.entries(groundTruthRef.current)
+      .filter(([hex, positions]) => !matchedTruthHexes.has(hex) && Array.isArray(positions) && positions.length > 0)
+      .map(([hex, positions]) => {
+        const last = positions[positions.length - 1];
+        const meta = groundTruthMetaRef.current[hex] || {};
+        return { hex, lat: last[0], lon: last[1], alt_m: last[2], points: positions.length, object_type: meta.object_type, is_anomalous: meta.is_anomalous };
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [matchedTruthHexes, trailTick],
   );
 
   /* ── Derived: viewport culling ──────────────────────────────── */
@@ -202,8 +203,10 @@ export default function LiveAircraftMap() {
   );
 
   const visibleTruthOnlyAircraft = useMemo(
-    () => debugTruthOnlyAircraft.filter((ac) => ac.hex === selectedHex || isPointInViewport(ac.lat, ac.lon, viewport)),
-    [debugTruthOnlyAircraft, selectedHex, viewport],
+    () => showGroundTruth
+      ? truthOnlyAircraft.filter((ac) => ac.hex === selectedHex || isPointInViewport(ac.lat, ac.lon, viewport))
+      : [],
+    [showGroundTruth, truthOnlyAircraft, selectedHex, viewport],
   );
 
   const visibleNodes = useMemo(
@@ -234,7 +237,7 @@ export default function LiveAircraftMap() {
   }, [selectedHex, visibleTrailEntries]);
 
   const selectedAc = selectedHex
-    ? displayAircraft.find((ac) => ac.hex === selectedHex) || debugTruthOnlyAircraft.find((ac) => ac.hex === selectedHex)
+    ? displayAircraft.find((ac) => ac.hex === selectedHex) || truthOnlyAircraft.find((ac) => ac.hex === selectedHex)
     : null;
 
   /* ── Side-effects ───────────────────────────────────────────── */
@@ -290,7 +293,7 @@ export default function LiveAircraftMap() {
       <Toolbar
         connected={connected}
         paused={paused}
-        aircraftCount={displayAircraft.length + debugTruthOnlyAircraft.length}
+        aircraftCount={displayAircraft.length + (showGroundTruth ? truthOnlyAircraft.length : 0)}
         showCoverage={showCoverage}
         showLabels={showLabels}
         showTrails={showTrails}
@@ -306,7 +309,7 @@ export default function LiveAircraftMap() {
       <div className="live-map-body">
         <AircraftListPanel
           allAircraft={displayAircraft}
-          truthOnly={debugTruthOnlyAircraft}
+          truthOnly={showGroundTruth ? truthOnlyAircraft : []}
           selectedHex={selectedHex}
           onSelect={handleSelectAircraft}
           collapsed={sidebarCollapsed}
@@ -325,20 +328,31 @@ export default function LiveAircraftMap() {
             <ViewportTracker onChange={handleViewportChange} />
             <FitBounds aircraft={displayAircraft} nodes={nodes} selectedHex={selectedHex} focusNonce={focusNonce} />
 
-            {/* Coverage zones — Yagi beam sectors (broadside to TX-RX baseline) */}
-            {showCoverage && visibleNodes.map((n) => (
-              <Polygon
-                key={`beam-${n.node_id}`}
-                positions={yagiSectorPositions(
-                  n.rx_lat, n.rx_lon,
-                  n.tx_lat, n.tx_lon,
-                  n.beam_azimuth_deg,
-                  n.beam_width_deg ?? 42,
-                  n.max_range_km ?? 50,
-                )}
-                pathOptions={{ color: "#ef4444", fillColor: "#ef4444", fillOpacity: 0.1, weight: 1.5, dashArray: "4 4" }}
-              />
-            ))}
+            {/* Coverage zones — empirical polygon when available, else theoretical Yagi sector */}
+            {showCoverage && visibleNodes.map((n) => {
+              if (n.empirical_polygon && n.empirical_polygon.length >= 3) {
+                return (
+                  <Polygon
+                    key={`beam-${n.node_id}`}
+                    positions={n.empirical_polygon}
+                    pathOptions={{ color: "#22c55e", fillColor: "#22c55e", fillOpacity: 0.12, weight: 1.5 }}
+                  />
+                );
+              }
+              return (
+                <Polygon
+                  key={`beam-${n.node_id}`}
+                  positions={yagiSectorPositions(
+                    n.rx_lat, n.rx_lon,
+                    n.tx_lat, n.tx_lon,
+                    n.beam_azimuth_deg,
+                    n.beam_width_deg ?? 42,
+                    n.max_range_km ?? 50,
+                  )}
+                  pathOptions={{ color: "#ef4444", fillColor: "#ef4444", fillOpacity: 0.1, weight: 1.5, dashArray: "4 4" }}
+                />
+              );
+            })}
 
             {/* Node markers */}
             {visibleNodes.map((n) => {
@@ -421,6 +435,22 @@ export default function LiveAircraftMap() {
               );
             })()}
 
+            {/* Contributing node rings — shown when a multinode-solved aircraft is selected */}
+            {selectedAc?.multinode && Array.isArray(selectedAc.contributing_node_ids) &&
+              selectedAc.contributing_node_ids.map((nid) => {
+                const cn = nodes.find((n) => n.node_id === nid);
+                if (!cn) return null;
+                return (
+                  <CircleMarker
+                    key={`contrib-${nid}`}
+                    center={[cn.rx_lat, cn.rx_lon]}
+                    radius={14}
+                    pathOptions={{ color: "#a78bfa", weight: 2.5, fillOpacity: 0, dashArray: "5 3" }}
+                  />
+                );
+              })
+            }
+
             {/* Selected trail — gradient fade; dashed for arc-type tracks */}
             {showTrails && selectedTrailPositions.length >= 2 && (() => {
               const isArcTrack = selectedAc?.position_source === "single_node_ellipse_arc";
@@ -460,7 +490,10 @@ export default function LiveAircraftMap() {
                       lineCap: "round",
                       lineJoin: "round",
                     }}
-                    eventHandlers={{ click: () => handleSelectAircraft(ac.hex) }}
+                    eventHandlers={{ click: () => {
+                      handleSelectAircraft(ac.hex);
+                      if (ac.node_id) setSelectedNodeId(ac.node_id);
+                    }}}
                   />
                 );
               }

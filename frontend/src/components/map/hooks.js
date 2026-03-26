@@ -168,6 +168,7 @@ export function useNodes() {
         const nodeList = [];
         for (const [id, info] of Object.entries(data.nodes || {})) {
           const da = info.detection_area;
+          const ec = info.empirical_coverage;
           if (da) {
             nodeList.push({
               node_id: id,
@@ -178,6 +179,8 @@ export function useNodes() {
               beam_azimuth_deg: da.beam_azimuth_deg,
               beam_width_deg: da.beam_width_deg,
               max_range_km: da.max_range_km,
+              empirical_polygon: ec?.polygon ?? null,
+              empirical_n_points: ec?.n_points ?? 0,
             });
           }
         }

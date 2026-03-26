@@ -217,6 +217,7 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
         "rssi": -round(1.0 / max(r.get("rms_delay", 1), 0.01), 1),
         "multinode": True,
         "n_nodes": r["n_nodes"],
+        "contributing_node_ids": r.get("contributing_node_ids", []),
         "rms_delay": round(r["rms_delay"], 3),
         "rms_doppler": round(r["rms_doppler"], 2),
     }
@@ -366,6 +367,11 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             lon = round(midpoint[1], 6)
             position_source = "single_node_ellipse_arc"
         append_track_history(ac_hex, lat, lon, alt_ft, now)
+        # Record ADS-B-verified positions as calibration points for empirical coverage.
+        if position_source == "adsb_associated":
+            nid = node_cfg.get("node_id")
+            if nid:
+                state.node_analytics.record_calibration_point(nid, lat, lon)
         return {
             "hex": ac_hex,
             "ground_truth_hex": resolve_ground_truth_hex(ac_hex, lat, lon),

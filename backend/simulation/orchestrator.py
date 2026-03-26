@@ -42,6 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from simulation.world import SimulationWorld, NodeConfig
 from simulation.generator import generate_fleet, fleet_summary
+from simulation.tower_resolver import resolve_towers, apply_tower_assignments
 
 logging.basicConfig(
     level=logging.INFO,
@@ -748,6 +749,13 @@ async def main_async(args):
         regions = [r.strip() for r in args.regions.split(",")]
         all_nodes = generate_fleet(n_nodes=args.nodes, regions=regions, seed=args.seed)
 
+    # Resolve real TX towers for each node (skip for non-US regions — FCC-only)
+    if getattr(args, "use_real_towers", False):
+        log.info("Resolving real TX towers via FCC API (cached)…")
+        assignments = resolve_towers(all_nodes)
+        updated = apply_tower_assignments(all_nodes, assignments)
+        log.info("Real tower assignments applied to %d / %d nodes.", updated, len(all_nodes))
+
     # Limit to requested number
     if args.nodes and args.nodes < len(all_nodes):
         all_nodes = all_nodes[:args.nodes]
@@ -869,6 +877,8 @@ def main():
                         help="Max concurrent TCP connections during setup")
     parser.add_argument("--connect-retries", type=int, default=3,
                         help="How many retry rounds to use for failed handshakes")
+    parser.add_argument("--use-real-towers", action="store_true",
+                        help="Resolve real TX towers via FCC API (persistent cache; US only)")
     parser.add_argument("--validate", action="store_true",
                         help="Enable validation against server API")
     parser.add_argument("--validation-url", type=str, default="http://localhost:8000",

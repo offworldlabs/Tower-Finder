@@ -9,6 +9,7 @@ from analytics.detection_area import DetectionAreaState
 from analytics.metrics import NodeMetrics
 from analytics.reputation import NodeReputation
 from analytics.coverage import HistoricalCoverageMap
+from analytics.empirical_coverage import EmpiricalCoverageState
 from analytics.cross_node import compute_delay_bin_overlap, coverage_suggestion
 from analytics.constants import YAGI_BEAM_WIDTH_DEG, YAGI_MAX_RANGE_KM, haversine_km, bearing_deg
 
@@ -24,6 +25,7 @@ class NodeAnalyticsManager:
         self.metrics: dict[str, NodeMetrics] = {}
         self.reputations: dict[str, NodeReputation] = {}
         self.coverage_maps: dict[str, HistoricalCoverageMap] = {}
+        self.empirical_coverages: dict[str, EmpiricalCoverageState] = {}
         self._storage_dir = storage_dir
         self._last_save_time = 0.0
         self._save_interval_s = 300.0
@@ -69,9 +71,20 @@ class NodeAnalyticsManager:
         if node_id not in self.coverage_maps:
             self.coverage_maps[node_id] = HistoricalCoverageMap(node_id=node_id)
 
+        if node_id not in self.empirical_coverages:
+            self.empirical_coverages[node_id] = EmpiricalCoverageState(
+                rx_lat=rx_lat, rx_lon=rx_lon,
+            )
+
     def is_node_blocked(self, node_id: str) -> bool:
         rep = self.reputations.get(node_id)
         return rep.blocked if rep else False
+
+    def record_calibration_point(self, node_id: str, lat: float, lon: float) -> None:
+        """Record a confirmed detection at a known target position (ADS-B or multinode)."""
+        ec = self.empirical_coverages.get(node_id)
+        if ec is not None:
+            ec.add_point(lat, lon)
 
     def record_detection_frame(self, node_id: str, frame: dict):
         if self.is_node_blocked(node_id):
@@ -147,6 +160,13 @@ class NodeAnalyticsManager:
             result["reputation"] = self.reputations[node_id].summary()
         if node_id in self.coverage_maps:
             result["coverage_map"] = self.coverage_maps[node_id].summary()
+        ec = self.empirical_coverages.get(node_id)
+        if ec is not None:
+            result["empirical_coverage"] = {
+                "n_points": ec.n_points,
+                "n_filled_bins": ec.n_filled_bins,
+                "polygon": ec.to_polygon(),
+            }
         return result
 
     def get_all_summaries(self) -> dict:
@@ -224,6 +244,10 @@ class NodeAnalyticsManager:
         safe_id = node_id.replace("/", "_").replace("\\", "_")
         return os.path.join(self._storage_dir, f"coverage_{safe_id}.json")
 
+    def _empirical_path(self, node_id: str) -> str:
+        safe_id = node_id.replace("/", "_").replace("\\", "_")
+        return os.path.join(self._storage_dir, f"empirical_{safe_id}.json")
+
     def _load_coverage_maps(self):
         if not self._storage_dir or not os.path.isdir(self._storage_dir):
             return
@@ -235,6 +259,15 @@ class NodeAnalyticsManager:
                     self.coverage_maps[cmap.node_id] = cmap
                 except Exception:
                     pass
+            elif fname.startswith("empirical_") and fname.endswith(".json"):
+                try:
+                    path = os.path.join(self._storage_dir, fname)
+                    ec = EmpiricalCoverageState.load_from_file(path)
+                    # Derive node_id from filename: empirical_<safe_id>.json
+                    node_id = fname[len("empirical_"):-len(".json")]
+                    self.empirical_coverages[node_id] = ec
+                except Exception:
+                    pass
 
     def save_coverage_maps(self):
         if not self._storage_dir:
@@ -243,6 +276,9 @@ class NodeAnalyticsManager:
         for node_id, cmap in self.coverage_maps.items():
             if cmap.entries:
                 cmap.save_to_file(self._coverage_map_path(node_id))
+        for node_id, ec in self.empirical_coverages.items():
+            if ec.n_points > 0:
+                ec.save_to_file(self._empirical_path(node_id))
         self._last_save_time = time.time()
 
     def maybe_auto_save(self):

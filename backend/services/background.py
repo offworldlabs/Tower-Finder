@@ -237,6 +237,12 @@ def _run_solver_worker():
         except Exception:
             result = None
         if result and result.get("success"):
+            # Record the solved position as a calibration point for each
+            # contributing node — multinode solutions are high-confidence.
+            for nid in result.get("contributing_node_ids", []):
+                state.node_analytics.record_calibration_point(
+                    nid, result["lat"], result["lon"]
+                )
             key = f"mn-{result['timestamp_ms']}-{result['lat']:.3f}"
             state.multinode_tracks[key] = result
 
