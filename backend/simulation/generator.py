@@ -175,13 +175,23 @@ def _extend_solo_pool(
 ) -> list:
     """Extend *current_pool* to at least *n_needed* entries.
 
-    New towers are placed in rural US bounding boxes, rejection-sampled so
-    every new position is at least *min_sep_km* from all positions in
-    *avoid_positions* and from already-accepted new positions.
+    Named towers in *current_pool* are gated with the same *min_sep_km* check
+    against *avoid_positions* and each other before being accepted.  New
+    synthetic towers are then placed in rural US bounding boxes via
+    rejection-sampling so every accepted position is at least *min_sep_km*
+    from all others.
     Returns the (possibly extended) pool.
     """
-    pool = list(current_pool)
+    pool = []
     busy = list(avoid_positions)          # positions already taken
+
+    # Gate named entries — apply the same minimum-separation rule so named
+    # towers that are too close to each other or to metro positions are skipped.
+    for item in current_pool:
+        lat, lon = item[0], item[1]
+        if not any(_haversine_km(lat, lon, p[0], p[1]) < min_sep_km for p in busy):
+            pool.append(item)
+            busy.append((lat, lon))
 
     attempts = 0
     while len(pool) < n_needed and attempts < max_attempts:
@@ -326,15 +336,17 @@ def generate_fleet(
     # --- Solo nodes (isolated — strictly one node per unique tower position) ---
     if n_solo > 0:
         # All US positions that must be avoided when extending the pool
-        us_occupied: list[tuple[float, float]] = (
-            [(t[0], t[1]) for t in _TOWERS_US]
-            + [(t[0], t[1]) for t in _TOWERS_SOLO_US]
-        )
+        # Avoid positions: metro towers only.  Named solo towers are gated
+        # inside _extend_solo_pool with the same min_sep check so they are
+        # also enforced to be at least min_sep_km from each other.
+        us_metro_occ: list[tuple[float, float]] = [
+            (t[0], t[1]) for t in _TOWERS_US
+        ]
         solo_pool = _extend_solo_pool(
             list(solo_towers),
             n_solo,
-            avoid_positions=us_occupied,
-            min_sep_km=180.0,
+            avoid_positions=us_metro_occ,
+            min_sep_km=300.0,
         )
         random.shuffle(solo_pool)
 
