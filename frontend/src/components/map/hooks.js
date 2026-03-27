@@ -21,6 +21,9 @@ export function useAircraftFeed() {
   const reconnectAttempts = useRef(0);
   const pausedRef = useRef(false);
   const historyRef = useRef([]);
+  // Watchdog: timestamp of last received WS message — detects zombie connections
+  // where the server has dropped us but onclose never fires (dead TCP, no FIN)
+  const lastMsgRef = useRef(Date.now());
 
   const setPaused = useCallback((val) => {
     pausedRef.current = val;
@@ -96,9 +99,11 @@ export function useAircraftFeed() {
     ws.onopen = () => {
       setConnected(true);
       reconnectAttempts.current = 0;  // reset backoff on successful connect
+      lastMsgRef.current = Date.now(); // reset watchdog so we don't misfire on slow first message
     };
 
     ws.onmessage = (evt) => {
+      lastMsgRef.current = Date.now(); // keep watchdog alive
       try {
         const data = JSON.parse(evt.data);
         ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes);
@@ -130,6 +135,24 @@ export function useAircraftFeed() {
       }
     };
   }, [connectWs]);
+
+  // --- Zombie-connection watchdog ---
+  // Server sends aircraft data every ~2s. If we've had no message for 12s while
+  // the WS appears OPEN, the connection is a zombie (server dropped us, TCP
+  // still "open" with no FIN — onclose never fires). Force-close to trigger
+  // the reconnect path and restart HTTP polling fallback.
+  useEffect(() => {
+    const WATCHDOG_MS = 12_000;
+    const id = setInterval(() => {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        if (Date.now() - lastMsgRef.current > WATCHDOG_MS) {
+          ws.close(); // triggers onclose → reconnect + HTTP fallback
+        }
+      }
+    }, 5_000);
+    return () => clearInterval(id);
+  }, []);
 
   // --- HTTP polling fallback ---
   useEffect(() => {
