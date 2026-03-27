@@ -473,6 +473,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             "seen": 0,
             "messages": 1,
             "rssi": -15.0,
+            "position_source": "adsb_node_report",
             "recent_positions": list(state.track_histories.get(hex_code, [])),
         })
     for k in stale_adsb:

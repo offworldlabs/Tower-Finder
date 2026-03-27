@@ -538,7 +538,7 @@ export default function LiveAircraftMap() {
                   />
                 );
               }
-              if (ac.lat && ac.lon && (ac.position_source === "adsb_associated" || ac.multinode)) {
+              if (ac.lat && ac.lon && (ac.position_source === "adsb_associated" || ac.position_source === "adsb_node_report" || ac.multinode)) {
                 return (
                   <AircraftMarker
                     key={`icon-${ac.hex}`}
