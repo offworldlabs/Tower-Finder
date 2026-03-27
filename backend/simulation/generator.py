@@ -255,6 +255,20 @@ _WATER_BOXES: list[tuple[float, float, float, float]] = [
     (24.0, 47.5, -72.0, -60.0),
     # Pacific Ocean — truly offshore strip (cities are east of -117°W)
     (32.0, 49.0, -130.0, -125.0),
+    # Tampa Bay (Gulf box doesn't have enough land-point density to cover the ~30km width)
+    (27.35, 28.1, -82.85, -82.2),
+    # Charlotte Harbor / Pine Island Sound FL
+    (26.5, 27.1, -82.35, -81.85),
+    # Sarasota Bay / Little Sarasota Bay FL
+    (27.1, 27.55, -82.75, -82.5),
+    # Lake Pontchartrain LA (35km wide — nearby land points can't bridge it)
+    (30.05, 30.45, -90.55, -89.65),
+    # Corpus Christi Bay TX
+    (27.7, 27.95, -97.5, -97.05),
+    # Matagorda Bay TX
+    (28.45, 28.8, -96.75, -96.15),
+    # Pamlico Sound / Albemarle Sound NC
+    (35.0, 36.1, -76.85, -75.65),
     # Chesapeake Bay
     (36.8, 39.5, -76.5, -75.8),
     # Puget Sound
@@ -311,6 +325,45 @@ _COASTAL_LAND_POINTS: list[tuple[float, float]] = [
     (30.69, -88.04),   # Mobile AL
     (29.70, -95.01),   # Pasadena TX
     (29.55, -95.13),   # League City TX
+    # Tampa Bay shores (box: 27.35-28.1°N, -82.85 to -82.4°W)
+    # NOTE: only inland / peninsula cities — do NOT add right-on-shore suburbs
+    # (Ruskin, Apollo Beach, Gibsonton) because at any positive radius their
+    # circle extends into the bay and exempts mid-bay positions.
+    (27.97, -82.80),   # Clearwater FL
+    (28.02, -82.77),   # Dunedin FL
+    (27.99, -82.69),   # Safety Harbor FL
+    (27.94, -82.29),   # Brandon FL
+    (27.87, -82.33),   # Riverview FL
+    (27.52, -82.57),   # Palmetto FL
+    (27.50, -82.57),   # Bradenton FL
+    (27.34, -82.54),   # Sarasota FL
+    # Charlotte Harbor shores (box: 26.5-27.1°N, -82.35 to -81.85°W)
+    (27.09, -82.43),   # Venice FL (north edge)
+    (26.93, -82.05),   # Port Charlotte FL
+    (26.63, -81.87),   # Cape Coral FL (east)
+    (26.71, -81.93),   # Punta Gorda FL
+    # Sarasota Bay (box: 27.1-27.55°N, -82.75 to -82.5°W)
+    (27.34, -82.54),   # Sarasota FL (already above, reuses)
+    (27.48, -82.57),   # North Port FL
+    # Lake Pontchartrain shores (box: 30.05-30.45°N, -90.55 to -89.65°W)
+    (30.07, -89.93),   # Slidell LA (east shore)
+    (30.43, -90.10),   # Mandeville LA (north shore)
+    (30.20, -90.23),   # Metairie / Kenner LA (south shore)
+    (30.18, -89.75),   # Bay St. Louis MS
+    # Corpus Christi Bay (box: 27.7-27.95°N, -97.5 to -97.05°W)
+    (27.80, -97.40),   # Corpus Christi TX
+    (27.73, -97.14),   # Portland TX
+    (27.86, -97.08),   # Ingleside TX
+    # Matagorda Bay (box: 28.45-28.8°N, -96.75 to -96.15°W)
+    (28.69, -96.00),   # El Campo / Bay City TX
+    (28.60, -96.10),   # Palacios TX
+    (28.72, -96.67),   # Bay City area
+    # Pamlico / Albemarle Sound (box: 35.0-36.1°N, -76.85 to -75.65°W)
+    (35.54, -77.07),   # Greenville NC (west)
+    (35.10, -76.89),   # New Bern NC (southwest)
+    (36.07, -76.77),   # Elizabeth City NC (north)
+    (36.00, -75.68),   # Kill Devil Hills / OBX NC (east shore)
+    (35.26, -75.71),   # Ocracoke Island NC (southeast)
     # Florida Atlantic coast cities (for FL Atlantic water box)
     (26.12, -80.14),   # Fort Lauderdale FL
     (26.36, -80.08),   # Boca Raton FL
@@ -371,9 +424,10 @@ def _is_on_water(lat: float, lon: float) -> bool:
     """Heuristic check if a position is likely on water (ocean, lakes, bays)."""
     for lat_min, lat_max, lon_min, lon_max in _WATER_BOXES:
         if lat_min <= lat <= lat_max and lon_min <= lon <= lon_max:
-            # Check if near a known coastal land point (12 km radius)
+            # Check if near a known coastal land point.
+            # 6km radius: tight enough that shore-city circles don't bridge wide bays.
             for land_lat, land_lon in _COASTAL_LAND_POINTS:
-                if _haversine_km(lat, lon, land_lat, land_lon) < 12.0:
+                if _haversine_km(lat, lon, land_lat, land_lon) < 6.0:
                     return False
             return True
     return False
@@ -386,6 +440,7 @@ def _place_rx_on_land(
 ) -> tuple[float, float]:
     """Place an RX position near a tower, rejecting water locations."""
     R = 6371.0
+    last_rx_lat, last_rx_lon = tx_lat, tx_lon
     for _ in range(max_attempts):
         distance_km = random.uniform(dist_min_km, dist_max_km)
         bearing_rad = random.uniform(0, 2 * math.pi)
@@ -395,11 +450,25 @@ def _place_rx_on_land(
         )
         rx_lat = tx_lat + math.degrees(dlat)
         rx_lon = tx_lon + math.degrees(dlon)
+        last_rx_lat, last_rx_lon = rx_lat, rx_lon
         if not _is_on_water(rx_lat, rx_lon):
             return (round(rx_lat, 6), round(rx_lon, 6))
-    # Fallback: TX tower is guaranteed on land — place RX there with a tiny inland jitter
-    # rather than returning a water position
-    return (round(tx_lat + random.gauss(0, 0.005), 6), round(tx_lon + random.gauss(0, 0.005), 6))
+    # All attempts landed in water. Walk inland from the TX in 4 cardinal
+    # directions (N, E, S, W) at 5km steps up to 100km — guaranteed to find
+    # land unless the TX tower itself is on a tiny offshore island.
+    for step_km in range(5, 105, 5):
+        for bearing_deg in (0, 90, 180, 270, 45, 135, 225, 315):
+            bearing_rad = math.radians(bearing_deg)
+            dlat = (step_km * math.cos(bearing_rad)) / R
+            dlon = (step_km * math.sin(bearing_rad)) / (
+                R * math.cos(math.radians(tx_lat))
+            )
+            rx_lat = tx_lat + math.degrees(dlat)
+            rx_lon = tx_lon + math.degrees(dlon)
+            if not _is_on_water(rx_lat, rx_lon):
+                return (round(rx_lat, 6), round(rx_lon, 6))
+    # Absolute last resort: return last random attempt even if on water
+    return (round(last_rx_lat, 6), round(last_rx_lon, 6))
 
 
 def generate_fleet(
