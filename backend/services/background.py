@@ -285,7 +285,14 @@ async def broadcast_aircraft(aircraft_data: dict, aircraft_bytes: bytes):
     state.latest_aircraft_json_bytes = aircraft_bytes
     if not state.ws_clients:
         return
-    payload = aircraft_bytes.decode()
+    # Build a slim WS payload — ground_truth trails can be 20+ MB (full history
+    # of 900+ aircraft) which causes send timeouts and leaves clients connected
+    # but receiving nothing.  WS clients only need the last position per GT
+    # aircraft for the map overlay; full trails are available via HTTP.
+    gt_full = aircraft_data.get("ground_truth") or {}
+    gt_slim = {hex_code: [positions[-1]] for hex_code, positions in gt_full.items() if positions}
+    slim_data = {**aircraft_data, "ground_truth": gt_slim}
+    payload = orjson.dumps(slim_data).decode()
     stale = set()
     for ws in list(state.ws_clients):  # snapshot to avoid set-changed-during-iteration
         try:
@@ -293,6 +300,13 @@ async def broadcast_aircraft(aircraft_data: dict, aircraft_bytes: bytes):
         except Exception:
             stale.add(ws)
     state.ws_clients.difference_update(stale)
+    # Close stale connections so the frontend's onclose fires and triggers
+    # reconnect (otherwise the socket appears open but receives nothing).
+    for ws in stale:
+        try:
+            await ws.close()
+        except Exception:
+            pass
 
 
 async def aircraft_flush_task(default_pipeline):
