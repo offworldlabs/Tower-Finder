@@ -26,6 +26,9 @@ export function useAircraftFeed() {
     pausedRef.current = val;
   }, []);
 
+  // Prune trails for aircraft gone > 5 minutes — keeps memory bounded over long sessions
+  const trailPruneRef = useRef(0);
+
   // Shared trail update logic used by both WS and HTTP polling
   const updateTrails = useCallback((newAircraft) => {
     const trails = trailsRef.current;
@@ -45,6 +48,19 @@ export function useAircraftFeed() {
         ) {
           trails[hex] = [...existing, [ac.lat, ac.lon, ac.alt_baro || 0, now]];
         }
+      }
+    }
+    // Prune stale trail entries every 60 updates (~60s) to prevent unbounded growth
+    trailPruneRef.current += 1;
+    if (trailPruneRef.current >= 60) {
+      trailPruneRef.current = 0;
+      const activeHexes = new Set(newAircraft.map((ac) => ac.hex));
+      const cutoff = now - 300; // 5 minutes
+      for (const hex of Object.keys(trails)) {
+        if (activeHexes.has(hex)) continue;
+        const trail = trails[hex];
+        const lastTs = trail?.[trail.length - 1]?.[3] ?? 0;
+        if (lastTs < cutoff) delete trails[hex];
       }
     }
     setTrailTick((t) => t + 1);

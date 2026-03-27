@@ -93,6 +93,7 @@ export default function LiveAircraftMap() {
   const fixesRef = useRef({});   // hex → last server fix
   const smoothRef = useRef({});  // hex → { lat, lon, track } — smoothed render position
   const prevTsRef = useRef(null);
+  const svgElemsRef = useRef({}); // hex → cached SVG DOM element (avoids querySelector every frame)
 
   /* ── Record server fixes when new WS data arrives ───────────── */
   useEffect(() => {
@@ -118,6 +119,7 @@ export default function LiveAircraftMap() {
       if (now - (fixesRef.current[hex]._updatedAt ?? 0) > STALE_AIRCRAFT_MS) {
         delete fixesRef.current[hex];
         delete smoothRef.current[hex];
+        delete svgElemsRef.current[hex];
       }
     }
   }, [aircraft]);
@@ -166,7 +168,13 @@ export default function LiveAircraftMap() {
         smoothRef.current[fix.hex] = { lat: sLat, lon: sLon, track: sTrack };
 
         // Update rotation directly on the DOM — avoids setIcon() every frame
-        const svgEl = document.querySelector(`.ac-hex-${fix.hex} svg`);
+        // Cache element reference to avoid querySelector on every 16ms frame
+        let svgEl = svgElemsRef.current[fix.hex];
+        if (!svgEl || !svgEl.isConnected) {
+          svgEl = document.querySelector(`.ac-hex-${fix.hex} svg`);
+          if (svgEl) svgElemsRef.current[fix.hex] = svgEl;
+          else delete svgElemsRef.current[fix.hex];
+        }
         if (svgEl) svgEl.style.transform = `rotate(${sTrack.toFixed(1)}deg)`;
 
         result.push({ ...fix, lat: sLat, lon: sLon, track: sTrack });

@@ -1,3 +1,5 @@
+const MAX_TRAIL_POINTS = 400;
+
 export function mergeTrailPositions(existing = [], incoming = []) {
   if (!incoming.length) return existing;
 
@@ -6,7 +8,7 @@ export function mergeTrailPositions(existing = [], incoming = []) {
     .slice()
     .sort((a, b) => (a[3] || 0) - (b[3] || 0));
 
-  if (!existing.length) return normalizedIncoming;
+  if (!existing.length) return normalizedIncoming.slice(-MAX_TRAIL_POINTS);
 
   const merged = [...existing];
   let last = merged[merged.length - 1];
@@ -31,7 +33,8 @@ export function mergeTrailPositions(existing = [], incoming = []) {
     lastTs = pointTs;
   }
 
-  return merged;
+  // Cap trail length — keep most recent points
+  return merged.length > MAX_TRAIL_POINTS ? merged.slice(-MAX_TRAIL_POINTS) : merged;
 }
 
 export function sampleTrailPositions(positions, maxPoints = 240) {
