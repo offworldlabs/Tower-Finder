@@ -99,7 +99,18 @@ export default function LiveAircraftMap() {
     const now = Date.now();
     for (const ac of aircraft) {
       if (!ac.lat || !ac.lon) continue;
-      fixesRef.current[ac.hex] = { ...ac, _fixLat: ac.lat, _fixLon: ac.lon, _fixTs: now, _updatedAt: now };
+      const prev = fixesRef.current[ac.hex];
+      const posChanged = !prev || prev._fixLat !== ac.lat || prev._fixLon !== ac.lon;
+      fixesRef.current[ac.hex] = {
+        ...ac,
+        _fixLat: ac.lat,
+        _fixLon: ac.lon,
+        // Only reset the position-anchor timestamp when the fix actually moved.
+        // If the server re-broadcasts the same lat/lon (between solve cycles),
+        // preserve _fixTs so dead-reckoning keeps projecting forward.
+        _fixTs: posChanged ? now : (prev._fixTs ?? now),
+        _updatedAt: now,
+      };
     }
     // Drop stale entries no longer in the feed (skip truth-only — managed by their own effect)
     for (const hex of Object.keys(fixesRef.current)) {
