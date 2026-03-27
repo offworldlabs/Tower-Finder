@@ -248,8 +248,11 @@ _WATER_BOXES: list[tuple[float, float, float, float]] = [
     (41.5, 49.0, -92.5, -76.0),   # approximate Great Lakes bounding box
     # Gulf of Mexico (open water — broad nearshore strip)
     (18.0, 30.5, -98.0, -80.0),
-    # Atlantic Ocean — open ocean east of Cape Cod only (cities are ~west of -70°W)
-    (25.0, 47.5, -72.0, -60.0),
+    # Atlantic east of Florida / Florida Straits / Bahamas
+    # Closes the -80W→-72W gap that makes nodes appear in the ocean near Miami
+    (24.0, 31.0, -81.0, -72.0),
+    # Atlantic Ocean — open ocean east of the eastern seaboard
+    (24.0, 47.5, -72.0, -60.0),
     # Pacific Ocean — truly offshore strip (cities are east of -117°W)
     (32.0, 49.0, -130.0, -125.0),
     # Chesapeake Bay
@@ -308,6 +311,19 @@ _COASTAL_LAND_POINTS: list[tuple[float, float]] = [
     (30.69, -88.04),   # Mobile AL
     (29.70, -95.01),   # Pasadena TX
     (29.55, -95.13),   # League City TX
+    # Florida Atlantic coast cities (for FL Atlantic water box)
+    (26.12, -80.14),   # Fort Lauderdale FL
+    (26.36, -80.08),   # Boca Raton FL
+    (26.72, -80.05),   # West Palm Beach FL
+    (27.20, -80.25),   # Stuart / Treasure Coast FL
+    (27.64, -80.40),   # Vero Beach FL
+    (28.08, -80.61),   # Melbourne / Brevard County FL
+    (28.45, -80.79),   # Cocoa / Rockledge FL
+    (28.61, -80.82),   # Titusville / Merritt Island FL
+    (29.03, -80.93),   # New Smyrna Beach FL
+    (29.21, -81.00),   # Daytona Beach FL
+    (29.89, -81.31),   # St. Augustine FL
+    (30.28, -81.39),   # Jacksonville Beach FL
     # Eastern seaboard
     (38.91, -77.04),   # Washington DC
     (39.95, -75.16),   # Philadelphia
@@ -355,9 +371,9 @@ def _is_on_water(lat: float, lon: float) -> bool:
     """Heuristic check if a position is likely on water (ocean, lakes, bays)."""
     for lat_min, lat_max, lon_min, lon_max in _WATER_BOXES:
         if lat_min <= lat <= lat_max and lon_min <= lon <= lon_max:
-            # Check if near a known coastal land point
+            # Check if near a known coastal land point (12 km radius)
             for land_lat, land_lon in _COASTAL_LAND_POINTS:
-                if _haversine_km(lat, lon, land_lat, land_lon) < 8.0:
+                if _haversine_km(lat, lon, land_lat, land_lon) < 12.0:
                     return False
             return True
     return False
@@ -366,7 +382,7 @@ def _is_on_water(lat: float, lon: float) -> bool:
 def _place_rx_on_land(
     tx_lat: float, tx_lon: float,
     dist_min_km: float = 5.0, dist_max_km: float = 40.0,
-    max_attempts: int = 50,
+    max_attempts: int = 80,
 ) -> tuple[float, float]:
     """Place an RX position near a tower, rejecting water locations."""
     R = 6371.0
@@ -381,8 +397,9 @@ def _place_rx_on_land(
         rx_lon = tx_lon + math.degrees(dlon)
         if not _is_on_water(rx_lat, rx_lon):
             return (round(rx_lat, 6), round(rx_lon, 6))
-    # Fallback: return last attempt even if on water
-    return (round(rx_lat, 6), round(rx_lon, 6))
+    # Fallback: TX tower is guaranteed on land — place RX there with a tiny inland jitter
+    # rather than returning a water position
+    return (round(tx_lat + random.gauss(0, 0.005), 6), round(tx_lon + random.gauss(0, 0.005), 6))
 
 
 def generate_fleet(
