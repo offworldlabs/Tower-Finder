@@ -248,10 +248,10 @@ _WATER_BOXES: list[tuple[float, float, float, float]] = [
     (41.5, 49.0, -92.5, -76.0),   # approximate Great Lakes bounding box
     # Gulf of Mexico (open water — broad nearshore strip)
     (18.0, 30.5, -98.0, -80.0),
-    # Atlantic Ocean — nearshore (right up to the coast)
-    (25.0, 47.5, -77.5, -60.0),
-    # Pacific Ocean — nearshore California / Oregon / Washington coast
-    (32.0, 49.0, -130.0, -117.0),
+    # Atlantic Ocean — open ocean east of Cape Cod only (cities are ~west of -70°W)
+    (25.0, 47.5, -72.0, -60.0),
+    # Pacific Ocean — truly offshore strip (cities are east of -117°W)
+    (32.0, 49.0, -130.0, -125.0),
     # Chesapeake Bay
     (36.8, 39.5, -76.5, -75.8),
     # Puget Sound
