@@ -101,8 +101,9 @@ export default function LiveAircraftMap() {
       if (!ac.lat || !ac.lon) continue;
       fixesRef.current[ac.hex] = { ...ac, _fixLat: ac.lat, _fixLon: ac.lon, _fixTs: now, _updatedAt: now };
     }
-    // Drop stale entries no longer in the feed
+    // Drop stale entries no longer in the feed (skip truth-only — managed by their own effect)
     for (const hex of Object.keys(fixesRef.current)) {
+      if (fixesRef.current[hex]._isTruth) continue;
       if (now - (fixesRef.current[hex]._updatedAt ?? 0) > STALE_AIRCRAFT_MS) {
         delete fixesRef.current[hex];
         delete smoothRef.current[hex];
@@ -188,11 +189,44 @@ export default function LiveAircraftMap() {
       .map(([hex, positions]) => {
         const last = positions[positions.length - 1];
         const meta = groundTruthMetaRef.current[hex] || {};
-        return { hex, lat: last[0], lon: last[1], alt_m: last[2], points: positions.length, object_type: meta.object_type, is_anomalous: meta.is_anomalous };
+        return {
+          hex,
+          lat: last[0], lon: last[1], alt_m: last[2],
+          alt_baro: Math.round(last[2] / 0.3048),
+          gs: Math.round((meta.speed_ms || 0) * 1.94384 * 10) / 10,
+          track: meta.heading || 0,
+          points: positions.length,
+          object_type: meta.object_type,
+          is_anomalous: meta.is_anomalous,
+          _isTruth: true,
+        };
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [matchedTruthHexes, trailTick],
   );
+
+  /* ── Feed truth-only aircraft into fixesRef so the rAF loop dead-reckons them ── */
+  useEffect(() => {
+    const now = Date.now();
+    const truthHexSet = new Set(truthOnlyAircraft.map((a) => a.hex));
+    for (const ac of truthOnlyAircraft) {
+      if (!ac.lat || !ac.lon) continue;
+      const cur = fixesRef.current[ac.hex];
+      if (!cur || cur._fixLat !== ac.lat || cur._fixLon !== ac.lon) {
+        // New GT position arrived — reset the fix so dead-reckoning starts fresh
+        fixesRef.current[ac.hex] = { ...ac, _fixLat: ac.lat, _fixLon: ac.lon, _fixTs: now, _updatedAt: now };
+      } else {
+        cur._updatedAt = now; // keep alive; position unchanged between GT pushes
+      }
+    }
+    // Remove truth entries that are no longer unmatched
+    for (const [hex, fix] of Object.entries(fixesRef.current)) {
+      if (fix._isTruth && !truthHexSet.has(hex)) {
+        delete fixesRef.current[hex];
+        delete smoothRef.current[hex];
+      }
+    }
+  }, [truthOnlyAircraft]);
 
   /* ── Derived: viewport culling ──────────────────────────────── */
   const filteredAircraft = useMemo(() => {
@@ -213,6 +247,18 @@ export default function LiveAircraftMap() {
       ? truthOnlyAircraft.filter((ac) => ac.hex === selectedHex || isPointInViewport(ac.lat, ac.lon, viewport))
       : [],
     [showGroundTruth, truthOnlyAircraft, selectedHex, viewport],
+  );
+
+  // Smooth (dead-reckoned at 60fps) version of truth-only aircraft for rendering
+  const visibleSmoothTruth = useMemo(
+    () => showGroundTruth
+      ? displayAircraft.filter(
+          (ac) => ac._isTruth &&
+                  !matchedTruthHexes.has(ac.hex) &&
+                  (ac.hex === selectedHex || isPointInViewport(ac.lat, ac.lon, viewport))
+        )
+      : [],
+    [showGroundTruth, displayAircraft, matchedTruthHexes, selectedHex, viewport],
   );
 
   const visibleNodes = useMemo(
@@ -570,11 +616,10 @@ export default function LiveAircraftMap() {
                 />
               ))}
 
-            {/* Ground-truth-only markers — color by object type */}
-            {showGroundTruth && visibleTruthOnlyAircraft.map((ac) => {
-              const meta = groundTruthMetaRef.current[ac.hex] || {};
-              const isAnomGT = meta.is_anomalous;
-              const isDroneGT = meta.object_type === "drone";
+            {/* Ground-truth-only markers — animated via dead-reckoning, color by object type */}
+            {showGroundTruth && visibleSmoothTruth.map((ac) => {
+              const isAnomGT = ac.is_anomalous;
+              const isDroneGT = ac.object_type === "drone";
               const gtColor = isAnomGT ? "#f43f5e" : isDroneGT ? "#f59e0b" : "#22d3ee";
               const gtBorder = isAnomGT ? "#e11d48" : isDroneGT ? "#d97706" : "#67e8f9";
               return (
