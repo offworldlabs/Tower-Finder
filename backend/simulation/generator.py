@@ -246,12 +246,12 @@ _WATER_BOXES: list[tuple[float, float, float, float]] = [
     # (lat_min, lat_max, lon_min, lon_max)
     # Great Lakes
     (41.5, 49.0, -92.5, -76.0),   # approximate Great Lakes bounding box
-    # Gulf of Mexico (open water)
-    (18.0, 30.5, -98.0, -81.0),
-    # Atlantic Ocean (east of US coast — rough offshore strip)
-    (25.0, 45.0, -70.0, -60.0),
-    # Pacific Ocean (west of US coast — rough offshore strip)
-    (32.0, 49.0, -130.0, -125.0),
+    # Gulf of Mexico (open water — broad nearshore strip)
+    (18.0, 30.5, -98.0, -80.0),
+    # Atlantic Ocean — nearshore (right up to the coast)
+    (25.0, 47.5, -77.5, -60.0),
+    # Pacific Ocean — nearshore California / Oregon / Washington coast
+    (32.0, 49.0, -130.0, -117.0),
     # Chesapeake Bay
     (36.8, 39.5, -76.5, -75.8),
     # Puget Sound
@@ -260,6 +260,12 @@ _WATER_BOXES: list[tuple[float, float, float, float]] = [
     (37.4, 38.2, -122.5, -121.9),
     # Long Island Sound
     (40.8, 41.4, -73.8, -71.8),
+    # Delaware Bay
+    (38.7, 39.6, -75.6, -74.9),
+    # Mobile Bay / Pensacola Bay
+    (30.0, 30.8, -88.2, -87.3),
+    # Galveston Bay / Houston Ship Channel
+    (29.3, 29.9, -95.1, -94.4),
 ]
 
 # Known land points near coasts — locations within the water bounding boxes
@@ -276,6 +282,15 @@ _COASTAL_LAND_POINTS: list[tuple[float, float]] = [
     (43.04, -87.91),   # Milwaukee
     (42.96, -85.67),   # Grand Rapids
     (46.79, -92.10),   # Duluth
+    (43.05, -89.40),   # Madison WI
+    (44.51, -88.01),   # Green Bay WI
+    (42.96, -82.45),   # Port Huron MI
+    (44.27, -85.60),   # Cadillac MI
+    (42.26, -85.59),   # Kalamazoo MI
+    (41.66, -83.56),   # Toledo OH / Maumee Bay
+    (43.96, -77.96),   # Oswego NY
+    (44.70, -75.48),   # Ogdensburg NY
+    (43.45, -76.51),   # Oswego / Pulaski NY
     # Gulf Coast cities
     (29.76, -95.36),   # Houston
     (30.27, -97.74),   # Austin
@@ -289,12 +304,50 @@ _COASTAL_LAND_POINTS: list[tuple[float, float]] = [
     (29.42, -98.49),   # San Antonio
     (30.39, -87.69),   # Pensacola
     (30.22, -92.02),   # Lafayette
+    (29.95, -90.07),   # New Orleans Lakeshore
+    (30.69, -88.04),   # Mobile AL
+    (29.70, -95.01),   # Pasadena TX
+    (29.55, -95.13),   # League City TX
     # Eastern seaboard
     (38.91, -77.04),   # Washington DC
     (39.95, -75.16),   # Philadelphia
     (40.71, -74.01),   # New York
     (42.36, -71.06),   # Boston
     (36.85, -75.98),   # Norfolk
+    (32.78, -79.93),   # Charleston SC
+    (34.22, -77.91),   # Wilmington NC
+    (33.45, -75.96),   # outer banks NC (off coast; excluded)
+    (38.32, -75.09),   # Ocean City MD
+    (39.94, -74.07),   # Toms River NJ
+    (40.92, -72.64),   # Long Island NY (east)
+    (41.27, -72.89),   # New Haven CT
+    (41.46, -71.31),   # Providence RI
+    (43.66, -70.25),   # Portland ME
+    (44.80, -68.77),   # Bangor ME
+    (44.42, -73.14),   # Burlington VT (Lake Champlain)
+    (43.09, -76.15),   # Syracuse NY
+    (42.45, -76.51),   # Ithaca NY
+    (44.18, -76.49),   # Kingston ON / Wolfe Island
+    # Pacific coast
+    (34.05, -118.24),  # Los Angeles
+    (37.77, -122.42),  # San Francisco
+    (47.61, -122.33),  # Seattle
+    (45.52, -122.68),  # Portland
+    (33.45, -117.61),  # San Clemente
+    (32.72, -117.16),  # San Diego
+    (36.60, -121.89),  # Monterey CA
+    (35.38, -120.85),  # San Luis Obispo CA
+    (34.41, -119.69),  # Santa Barbara CA
+    (33.99, -118.46),  # Santa Monica CA
+    (37.97, -122.52),  # San Rafael CA
+    (37.52, -122.05),  # Fremont CA
+    (37.34, -121.88),  # San Jose CA
+    (38.58, -121.49),  # Sacramento CA (inland, near Sacramento River delta)
+    (48.52, -122.62),  # Anacortes WA
+    (48.11, -122.76),  # Port Townsend WA
+    (46.14, -123.83),  # Astoria OR
+    (44.63, -124.06),  # Newport OR
+    (42.32, -122.87),  # Medford OR
 ]
 
 
@@ -313,7 +366,7 @@ def _is_on_water(lat: float, lon: float) -> bool:
 def _place_rx_on_land(
     tx_lat: float, tx_lon: float,
     dist_min_km: float = 5.0, dist_max_km: float = 40.0,
-    max_attempts: int = 20,
+    max_attempts: int = 50,
 ) -> tuple[float, float]:
     """Place an RX position near a tower, rejecting water locations."""
     R = 6371.0

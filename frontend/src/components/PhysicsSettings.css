@@ -296,6 +296,13 @@
   margin-bottom: 0.6rem;
 }
 
+.ps-settings-sublabel {
+  text-transform: none;
+  letter-spacing: 0;
+  color: #475569;
+  font-size: 0.72rem;
+}
+
 .ps-count-inputs {
   display: flex;
   align-items: center;

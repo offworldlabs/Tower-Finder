@@ -594,12 +594,19 @@ async def _poll_simulation_config(
                 orchestrator.world.frac_anomalous = float(cfg.get("frac_anomalous", 0.05))
                 orchestrator.world.frac_drone     = float(cfg.get("frac_drone",     0.10))
                 orchestrator.world.frac_dark      = float(cfg.get("frac_dark",      0.15))
+                if "min_aircraft" in cfg:
+                    orchestrator.world.min_aircraft = int(cfg["min_aircraft"])
+                if "max_aircraft" in cfg:
+                    orchestrator.world.max_aircraft = int(cfg["max_aircraft"])
                 last_updated_at = updated_at
                 log.info(
-                    "Simulation fractions updated: anomalous=%.2f drone=%.2f dark=%.2f",
+                    "Simulation config updated: anomalous=%.2f drone=%.2f dark=%.2f "
+                    "aircraft=%d–%d",
                     orchestrator.world.frac_anomalous,
                     orchestrator.world.frac_drone,
                     orchestrator.world.frac_dark,
+                    orchestrator.world.min_aircraft,
+                    orchestrator.world.max_aircraft,
                 )
         except Exception as e:
             log.debug("Config poll failed: %s", e)

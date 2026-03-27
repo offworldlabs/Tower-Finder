@@ -380,31 +380,30 @@ export default function PhysicsSettings() {
         </div>
 
         <div className="ps-settings-card">
-          <div className="ps-settings-label">Aircraft count window</div>
-          <div className="ps-count-inputs">
-            <div className="ps-count-field">
-              <span className="ps-count-field-lbl">Min</span>
-              <input
-                type="number"
-                min={1}
-                max={500}
-                value={draft.min_aircraft}
-                onChange={e => setDraft(prev => ({ ...prev, min_aircraft: Number(e.target.value) }))}
-                className="ps-number-input"
-              />
-            </div>
-            <span className="ps-count-sep">—</span>
-            <div className="ps-count-field">
-              <span className="ps-count-field-lbl">Max</span>
-              <input
-                type="number"
-                min={1}
-                max={500}
-                value={draft.max_aircraft}
-                onChange={e => setDraft(prev => ({ ...prev, max_aircraft: Number(e.target.value) }))}
-                className="ps-number-input"
-              />
-            </div>
+          <div className="ps-settings-label">
+            Total objects target
+            <span className="ps-settings-sublabel"> (spawns {Math.max(1, Math.floor(draft.max_aircraft * 0.8))}–{draft.max_aircraft})</span>
+          </div>
+          <div className="ps-slider-row">
+            <input
+              type="range"
+              min={5}
+              max={200}
+              step={5}
+              value={draft.max_aircraft}
+              onChange={e => {
+                const v = Number(e.target.value);
+                setDraft(prev => ({ ...prev, max_aircraft: v, min_aircraft: Math.max(1, Math.floor(v * 0.8)) }));
+              }}
+              className="ps-range"
+              style={{
+                "--thumb-color": "#38bdf8",
+                "--fill-pct": `${((draft.max_aircraft - 5) / 195) * 100}%`,
+              }}
+            />
+            <span className="ps-pct-val" style={{ color: "#38bdf8", minWidth: "3rem" }}>
+              {draft.max_aircraft}
+            </span>
           </div>
         </div>
       </div>
