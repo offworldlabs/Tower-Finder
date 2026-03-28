@@ -94,6 +94,7 @@ export default function LiveAircraftMap() {
   const smoothRef = useRef({});  // hex → { lat, lon, track } — smoothed render position
   const prevTsRef = useRef(null);
   const svgElemsRef = useRef({}); // hex → cached SVG DOM element (avoids querySelector every frame)
+  const rafFrameRef = useRef(0);  // throttle React re-renders to ~10fps (rotation still runs at 60fps via direct DOM)
 
   /* ── Record server fixes when new WS data arrives ───────────── */
   useEffect(() => {
@@ -181,7 +182,8 @@ export default function LiveAircraftMap() {
       }
 
       displayedAircraftRef.current = Object.fromEntries(result.map((ac) => [ac.hex, ac]));
-      setDisplayAircraft(result);
+      rafFrameRef.current = (rafFrameRef.current + 1) % 6;
+      if (rafFrameRef.current === 0) setDisplayAircraft([...result]);
       animationFrameRef.current = requestAnimationFrame(tick);
     };
 
@@ -541,7 +543,7 @@ export default function LiveAircraftMap() {
               const isArcTrack = selectedAc?.position_source === "single_node_ellipse_arc";
               return buildTrailSegments(selectedTrailPositions).map((seg, i) => (
                 <Polyline
-                  key={`trail-${selectedHex}-seg${i}-${trailTick}`}
+                  key={`trail-${selectedHex}-seg${i}`}
                   positions={seg.positions}
                   pathOptions={{
                     color: "#f59e0b",
