@@ -56,6 +56,79 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels
   return <Marker position={[ac.lat, ac.lon]} icon={icon} eventHandlers={handlers} />;
 });
 
+/* ── NodeMarkersLayer: memoized — only re-renders when visibleNodes or viewport changes,
+      NOT on every 10fps displayAircraft update. Handles 400–900 node markers. ── */
+const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelectNode }) {
+  return visibleNodes.map((n) => (
+    <Marker
+      key={`node-${n.node_id}`}
+      position={[n.rx_lat, n.rx_lon]}
+      icon={nodeIcon}
+      eventHandlers={{ click: () => onSelectNode(n.node_id) }}
+    >
+      <Popup>
+        <strong>{n.node_id}</strong><br />
+        Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
+        Range: {n.max_range_km} km
+      </Popup>
+    </Marker>
+  ));
+});
+
+/* ── CoverageLayer: memoized — only re-renders when nodes or showCoverage changes ── */
+const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }) {
+  if (!showCoverage) return null;
+  return visibleNodes.map((n) => {
+    if (n.empirical_polygon && n.empirical_polygon.length >= 3) {
+      return (
+        <Polygon
+          key={`beam-${n.node_id}`}
+          positions={n.empirical_polygon}
+          pathOptions={{ color: "#22c55e", fillColor: "#22c55e", fillOpacity: 0.12, weight: 1.5 }}
+        />
+      );
+    }
+    return (
+      <Polygon
+        key={`beam-${n.node_id}`}
+        positions={yagiSectorPositions(
+          n.rx_lat, n.rx_lon,
+          n.tx_lat, n.tx_lon,
+          n.beam_azimuth_deg,
+          n.beam_width_deg ?? 42,
+          n.max_range_km ?? 50,
+        )}
+        pathOptions={{ color: "#ef4444", fillColor: "#ef4444", fillOpacity: 0.1, weight: 1.5, dashArray: "4 4" }}
+      />
+    );
+  });
+});
+
+/* ── DetectionArcs: memoized — sourced from raw aircraft (WS rate ~2Hz), NOT smoothed
+      displayAircraft (10fps). Arc positions are server-provided, don't need interpolation. ── */
+const DetectionArcs = memo(function DetectionArcs({ visibleArcs, selectedHex, onSelect, onSelectNode }) {
+  return visibleArcs.map((ac) => {
+    const isSelected = ac.hex === selectedHex;
+    const arcAge = Date.now() - (ac._fixTs || 0);
+    const arcOpacity = Math.max(0.05, Math.min(0.95, 1 - Math.max(0, arcAge - 1500) / 5000));
+    const arcColor = ac.target_class === "drone" ? "#fb923c" : dopplerColor(ac.doppler_hz ?? 0);
+    return (
+      <Polyline
+        key={`arc-${ac.hex}`}
+        positions={ac.ambiguity_arc}
+        pathOptions={{
+          color: arcColor,
+          weight: isSelected ? 5 : 3,
+          opacity: isSelected ? 1 : arcOpacity,
+          lineCap: "round",
+          lineJoin: "round",
+        }}
+        eventHandlers={{ click: () => { onSelect(ac.hex); if (ac.node_id) onSelectNode(ac.node_id); } }}
+      />
+    );
+  });
+});
+
 /* ── Main component ───────────────────────────────────────────── */
 
 export default function LiveAircraftMap() {
@@ -287,6 +360,17 @@ export default function LiveAircraftMap() {
     [nodes, viewport],
   );
 
+  // Detection arcs sourced from raw WS data (2Hz) — NOT from smoothed displayAircraft (10fps).
+  // Arc positions are server-provided ellipses; they don't need sub-second interpolation.
+  const visibleArcs = useMemo(
+    () => aircraft.filter(
+      (ac) => Array.isArray(ac.ambiguity_arc) &&
+              ac.ambiguity_arc.length >= 2 &&
+              (ac.hex === selectedHex || isAircraftInViewport(ac, viewport)),
+    ),
+    [aircraft, viewport, selectedHex],
+  );
+
   /* ── Derived: trail for selected aircraft ───────────────────── */
   const visibleTrailEntries = useMemo(() => {
     if (!selectedHex) return [];
@@ -340,10 +424,14 @@ export default function LiveAircraftMap() {
     }
   }
 
-  function handleSelectAircraft(hex) {
+  const handleSelectAircraft = useCallback((hex) => {
     setSelectedHex((prev) => (prev === hex ? null : hex));
     setFocusNonce((n) => n + 1);
-  }
+  }, []);
+
+  const handleSelectNode = useCallback((nodeId) => {
+    setSelectedNodeId((prev) => (prev === nodeId ? null : nodeId));
+  }, []);
 
   function computeError(hex, ac) {
     const gtHex = ac.ground_truth_hex || hex;
@@ -401,50 +489,11 @@ export default function LiveAircraftMap() {
             <ViewportTracker onChange={handleViewportChange} />
             <FitBounds aircraft={radarAircraft} nodes={nodes} selectedHex={selectedHex} focusNonce={focusNonce} />
 
-            {/* Coverage zones — empirical polygon when available, else theoretical Yagi sector */}
-            {showCoverage && visibleNodes.map((n) => {
-              if (n.empirical_polygon && n.empirical_polygon.length >= 3) {
-                return (
-                  <Polygon
-                    key={`beam-${n.node_id}`}
-                    positions={n.empirical_polygon}
-                    pathOptions={{ color: "#22c55e", fillColor: "#22c55e", fillOpacity: 0.12, weight: 1.5 }}
-                  />
-                );
-              }
-              return (
-                <Polygon
-                  key={`beam-${n.node_id}`}
-                  positions={yagiSectorPositions(
-                    n.rx_lat, n.rx_lon,
-                    n.tx_lat, n.tx_lon,
-                    n.beam_azimuth_deg,
-                    n.beam_width_deg ?? 42,
-                    n.max_range_km ?? 50,
-                  )}
-                  pathOptions={{ color: "#ef4444", fillColor: "#ef4444", fillOpacity: 0.1, weight: 1.5, dashArray: "4 4" }}
-                />
-              );
-            })}
+            {/* Coverage zones — memoized, only re-renders on nodes/showCoverage change */}
+            <CoverageLayer visibleNodes={visibleNodes} showCoverage={showCoverage} />
 
-            {/* Node markers */}
-            {visibleNodes.map((n) => {
-              const isNodeSelected = selectedNodeId === n.node_id;
-              return (
-                <Marker
-                  key={`node-${n.node_id}`}
-                  position={[n.rx_lat, n.rx_lon]}
-                  icon={nodeIcon}
-                  eventHandlers={{ click: () => setSelectedNodeId((prev) => (prev === n.node_id ? null : n.node_id)) }}
-                >
-                  <Popup>
-                    <strong>{n.node_id}</strong><br />
-                    Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
-                    Range: {n.max_range_km} km
-                  </Popup>
-                </Marker>
-              );
-            })}
+            {/* Node markers — memoized, only re-renders when visibleNodes changes (30s cadence) */}
+            <NodeMarkersLayer visibleNodes={visibleNodes} onSelectNode={handleSelectNode} />
 
             {/* Selected node: detection cone + TX tower + aircraft highlights */}
             {selectedNodeId && (() => {
@@ -557,35 +606,8 @@ export default function LiveAircraftMap() {
               ));
             })()}
 
-            {/* Detection arcs — fade based on age since last detection update */}
-            {visibleAircraft
-              .filter((ac) => Array.isArray(ac.ambiguity_arc) && ac.ambiguity_arc.length >= 2)
-              .map((ac) => {
-                const isSelected = ac.hex === selectedHex;
-                const arcAge = Date.now() - (ac._fixTs || 0);
-                const arcOpacity = Math.max(0.05, Math.min(0.95, 1 - Math.max(0, arcAge - 1500) / 5000));
-                const arcColor = ac.target_class === "drone"
-                  ? "#fb923c"
-                  : dopplerColor(ac.doppler_hz ?? 0);
-                return (
-                  <Polyline
-                    key={`arc-${ac.hex}`}
-                    positions={ac.ambiguity_arc}
-                    pathOptions={{
-                      color: arcColor,
-                      weight: isSelected ? 5 : 3,
-                      opacity: isSelected ? 1 : arcOpacity,
-                      lineCap: "round",
-                      lineJoin: "round",
-                    }}
-                    eventHandlers={{ click: () => {
-                      handleSelectAircraft(ac.hex);
-                      if (ac.node_id) setSelectedNodeId(ac.node_id);
-                    }}}
-                  />
-                );
-              })
-            }
+            {/* Detection arcs — memoized, sourced from raw WS data (2Hz), not smoothed positions */}
+            <DetectionArcs visibleArcs={visibleArcs} selectedHex={selectedHex} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} />
             {/* Aircraft position markers — ADS-B aided (teal icon+arc), multinode (purple icon), uncertain solo (dimmed circle) */}
             {visibleAircraft.map((ac) => {
               const isSelected = ac.hex === selectedHex;
