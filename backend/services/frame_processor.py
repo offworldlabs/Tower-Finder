@@ -12,6 +12,7 @@ from typing import Optional
 
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
+from retina_tracker.track import TrackState
 from services.storage import archive_detections
 
 # ── Archive batching ──────────────────────────────────────────────────────────
@@ -361,9 +362,14 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         alt_ft = adsb.get("alt_baro", track.alt_ft) if adsb else track.alt_ft
         gs = round(adsb.get("gs", track.speed_knots) if adsb else track.speed_knots, 1)
         heading = round(adsb.get("track", track.track_angle) if adsb else track.track_angle, 1)
-        # Always build the bistatic arc — it's the primary passive-radar visual even
-        # when the position is known from ADS-B. Doppler coloring requires the arc.
-        ambiguity_arc = _build_single_node_arc(track, node_cfg)
+        # Build arc only when position is not already resolved from ADS-B.
+        # When ADS-B telemetry is present the true location is known precisely;
+        # showing the ellipse on top of a confirmed position adds visual noise.
+        ambiguity_arc = (
+            _build_single_node_arc(track, node_cfg)
+            if position_source != "adsb_associated"
+            else None
+        )
         if ambiguity_arc and position_source == "solver_single_node":
             midpoint = ambiguity_arc[len(ambiguity_arc) // 2]
             lat = round(midpoint[0], 6)
@@ -491,6 +497,16 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     for pipeline in list(state.node_pipelines.values()):
         node_cfg = pipeline.config
         for track in list(pipeline.tracker.tracks):
+            # Only emit arcs for confirmed tracks (M-of-N promoted).
+            # TENTATIVE tracks are single-detection hypotheses; showing arcs
+            # for them produces too much clutter before a real target is confirmed.
+            if track.state_status == TrackState.TENTATIVE:
+                continue
+            # Suppress when ADS-B already gives a precise position.
+            if track.adsb_hex:
+                _ae = state.adsb_aircraft.get(track.adsb_hex)
+                if _ae and now - _ae.get("last_seen_ms", 0) / 1000 < 60:
+                    continue
             meas = track.history.get("measurements")
             if not meas:
                 continue
