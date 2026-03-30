@@ -20,7 +20,6 @@ import {
   buildTrailSegments,
   makeAircraftIcon,
   makeDroneIcon,
-  nodeIcon,
   yagiSectorPositions,
   FitBounds,
   ViewportTracker,
@@ -56,14 +55,16 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels
   return <Marker position={[ac.lat, ac.lon]} icon={icon} eventHandlers={handlers} />;
 });
 
-/* ── NodeMarkersLayer: memoized — only re-renders when visibleNodes or viewport changes,
-      NOT on every 10fps displayAircraft update. Handles 400–900 node markers. ── */
+/* ── NodeMarkersLayer: memoized + SVG CircleMarkers (NOT DOM divIcon Markers).
+      914 DOM divs with drop-shadow filters caused severe pan/zoom jank.
+      SVG circles live in a single overlay — browser composites ONE layer. ── */
 const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelectNode }) {
   return visibleNodes.map((n) => (
-    <Marker
+    <CircleMarker
       key={`node-${n.node_id}`}
-      position={[n.rx_lat, n.rx_lon]}
-      icon={nodeIcon}
+      center={[n.rx_lat, n.rx_lon]}
+      radius={5}
+      pathOptions={{ color: "#ef4444", fillColor: "#ef4444", fillOpacity: 0.55, weight: 1.5 }}
       eventHandlers={{ click: () => onSelectNode(n.node_id) }}
     >
       <Popup>
@@ -71,7 +72,7 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
         Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
         Range: {n.max_range_km} km
       </Popup>
-    </Marker>
+    </CircleMarker>
   ));
 });
 
@@ -356,7 +357,7 @@ export default function LiveAircraftMap() {
   );
 
   const visibleNodes = useMemo(
-    () => nodes.filter((node) => isPointInViewport(node.rx_lat, node.rx_lon, viewport, 3)),
+    () => nodes.filter((node) => isPointInViewport(node.rx_lat, node.rx_lon, viewport, 0.3)),
     [nodes, viewport],
   );
 
