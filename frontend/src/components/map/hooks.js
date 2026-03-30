@@ -193,6 +193,27 @@ export function useAircraftFeed() {
 }
 
 /**
+ * Returns a deterministic [dLat, dLon] privacy offset for a node's RX display location.
+ * Uses a simple djb2-derived hash of the node_id string so the same node always gets
+ * the same offset (stable display), but the true operator location cannot be read from
+ * the map. Max offset ≈ ±400 m (0.0036°).
+ */
+function nodeDisplayFuzz(nodeId) {
+  // Two independent hash passes — one for lat, one for lon
+  let h1 = 5381, h2 = 52711;
+  for (let i = 0; i < nodeId.length; i++) {
+    const c = nodeId.charCodeAt(i);
+    h1 = ((h1 << 5) + h1) ^ c;
+    h2 = ((h2 << 5) + h2) ^ (c * 1000003);
+  }
+  // Normalise to [0, 1) and map to [-1, 1)
+  const n1 = ((h1 >>> 0) / 0xFFFFFFFF) * 2 - 1;
+  const n2 = ((h2 >>> 0) / 0xFFFFFFFF) * 2 - 1;
+  // 0.0036° ≈ 400 m at mid latitudes
+  return [n1 * 0.0036, n2 * 0.0036];
+}
+
+/**
  * Fetch radar node positions for coverage zones.
  */
 export function useNodes() {
@@ -209,10 +230,14 @@ export function useNodes() {
           const da = info.detection_area;
           const ec = info.empirical_coverage;
           if (da) {
+            // Deterministic privacy fuzz for RX location — same node_id always gets the
+            // same offset so the map is stable, but the true operator location cannot be
+            // read directly from the display. ±~400m radius (≈0.0036°).
+            const [dLat, dLon] = nodeDisplayFuzz(id);
             nodeList.push({
               node_id: id,
-              rx_lat: da.rx.lat,
-              rx_lon: da.rx.lon,
+              rx_lat: da.rx.lat + dLat,
+              rx_lon: da.rx.lon + dLon,
               tx_lat: da.tx.lat,
               tx_lon: da.tx.lon,
               beam_azimuth_deg: da.beam_azimuth_deg,
