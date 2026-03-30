@@ -199,17 +199,24 @@ export function useAircraftFeed() {
  * the map. Max offset ≈ ±400 m (0.0036°).
  */
 function nodeDisplayFuzz(nodeId) {
-  // Two independent hash passes — one for lat, one for lon
-  let h1 = 5381, h2 = 52711;
+  // Murmur-style hash — two independent seeds for lat and lon.
+  // Avoids collisions between sequential IDs like node_001 / node_002.
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
   for (let i = 0; i < nodeId.length; i++) {
     const c = nodeId.charCodeAt(i);
-    h1 = ((h1 << 5) + h1) ^ c;
-    h2 = ((h2 << 5) + h2) ^ (c * 1000003);
+    h1 = Math.imul(h1 ^ c, 2654435761);
+    h2 = Math.imul(h2 ^ c, 1597334677);
   }
-  // Normalise to [0, 1) and map to [-1, 1)
-  const n1 = ((h1 >>> 0) / 0xFFFFFFFF) * 2 - 1;
-  const n2 = ((h2 >>> 0) / 0xFFFFFFFF) * 2 - 1;
-  // 0.0036° ≈ 400 m at mid latitudes
+  // Avalanche finaliser
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
+  h1 = Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  h1 ^= h1 >>> 16;
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
+  h2 = Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 ^= h2 >>> 16;
+  // Normalise to [-1, 1) and scale to ±0.0036° ≈ ±400 m
+  const n1 = ((h1 >>> 0) / 0x100000000) * 2 - 1;
+  const n2 = ((h2 >>> 0) / 0x100000000) * 2 - 1;
   return [n1 * 0.0036, n2 * 0.0036];
 }
 
