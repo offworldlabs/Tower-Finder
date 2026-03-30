@@ -494,7 +494,10 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             meas = track.history.get("measurements")
             if not meas:
                 continue
-            latest = meas[-1]
+            # measurements list can contain None for missed detections
+            latest = next((m for m in reversed(meas) if m is not None), None)
+            if latest is None:
+                continue
             delay_us = latest.get("delay", 0)
             if delay_us <= 0:
                 continue
