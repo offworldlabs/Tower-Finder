@@ -239,8 +239,11 @@ def _enu_to_lla(rx_lat: float, rx_lon: float, east_km: float, north_km: float) -
     return [float(lat), float(lon)]
 
 
-def _build_single_node_arc(track, node_cfg: dict) -> Optional[list[list[float]]]:
-    delay_us = getattr(track, "latest_delay_us", None)
+def _build_single_node_arc(track_or_delay, node_cfg: dict) -> Optional[list[list[float]]]:
+    if isinstance(track_or_delay, (int, float)):
+        delay_us = track_or_delay
+    else:
+        delay_us = getattr(track_or_delay, "latest_delay_us", None)
     if delay_us is None or delay_us <= 0:
         return None
 
@@ -478,6 +481,32 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         })
     for k in stale_adsb:
         state.adsb_aircraft.pop(k, None)
+
+    # 5. Attach detection arcs from tracker tracks to arc-less aircraft entries.
+    # This makes arcs appear immediately on each detection instead of waiting for
+    # full M-of-N track promotion + LM solver convergence.
+    _hex_to_idx = {ac["hex"]: i for i, ac in enumerate(aircraft) if not ac.get("ambiguity_arc")}
+    for pipeline in list(state.node_pipelines.values()):
+        node_cfg = pipeline.config
+        for track in list(pipeline.tracker.tracks):
+            meas = track.history.get("measurements")
+            if not meas:
+                continue
+            hex_code = track.adsb_hex
+            if not hex_code or hex_code not in _hex_to_idx:
+                continue
+            latest = meas[-1]
+            delay_us = latest.get("delay", 0)
+            if delay_us <= 0:
+                continue
+            arc = _build_single_node_arc(delay_us, node_cfg)
+            if not arc or len(arc) < 2:
+                continue
+            idx = _hex_to_idx[hex_code]
+            aircraft[idx]["ambiguity_arc"] = arc
+            aircraft[idx]["node_id"] = node_cfg.get("node_id")
+            aircraft[idx]["doppler_hz"] = round(latest.get("doppler", 0), 2)
+            del _hex_to_idx[hex_code]  # one arc per hex
 
     gt_snapshot = {
         h: list(trail)[-30:]

@@ -25,6 +25,10 @@ export function useAircraftFeed() {
   // where the server has dropped us but onclose never fires (dead TCP, no FIN)
   const lastMsgRef = useRef(Date.now());
 
+  // Detection arc accumulation buffer: key → {hex, node_id, arc, doppler_hz, target_class, ts}
+  // Arcs persist for ARC_MAX_AGE_MS after last update, enabling fade-out per detection.
+  const arcsBufferRef = useRef({});
+
   const setPaused = useCallback((val) => {
     pausedRef.current = val;
   }, []);
@@ -85,6 +89,29 @@ export function useAircraftFeed() {
       if (Array.isArray(anomalyHexes)) {
         anomalyHexesRef.current = new Set(anomalyHexes);
       }
+
+      // Accumulate detection arcs — each detection refreshes its entry; stale arcs fade out
+      const now = Date.now();
+      const ARC_MAX_AGE_MS = 10_000;
+      const buf = arcsBufferRef.current;
+      for (const ac of newAircraft) {
+        if (Array.isArray(ac.ambiguity_arc) && ac.ambiguity_arc.length >= 2 && ac.node_id) {
+          const key = `${ac.hex}-${ac.node_id}`;
+          buf[key] = {
+            hex: ac.hex,
+            node_id: ac.node_id,
+            ambiguity_arc: ac.ambiguity_arc,
+            doppler_hz: ac.doppler_hz ?? 0,
+            target_class: ac.target_class,
+            ts: now,
+          };
+        }
+      }
+      // Prune arcs older than ARC_MAX_AGE_MS
+      for (const key of Object.keys(buf)) {
+        if (now - buf[key].ts > ARC_MAX_AGE_MS) delete buf[key];
+      }
+
       updateTrails(newAircraft);
     },
     [updateTrails],
@@ -189,6 +216,7 @@ export function useAircraftFeed() {
     trailTick,
     historyRef,
     setPaused,
+    arcsBufferRef,
   };
 }
 

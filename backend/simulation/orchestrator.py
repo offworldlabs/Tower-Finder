@@ -560,6 +560,84 @@ async def _push_ground_truth_live(
             log.debug("Ground truth push failed: %s", e)
 
 
+async def _push_real_adsb(
+    orchestrator: FleetOrchestrator,
+    base_url: str,
+    areas: list[dict],
+    interval_s: float = 10.0,
+):
+    """Poll adsb.lol for real aircraft and push them to the server as ADS-B positions.
+
+    This injects real air traffic into the simulation alongside synthetic aircraft
+    so the map shows a realistic mix.
+    """
+    import urllib.request
+
+    try:
+        try:
+            from clients.adsb_lol import AdsbLolClient
+        except ImportError:
+            from simulation import sys as _s
+            import importlib.util
+            _p = os.path.join(os.path.dirname(os.path.dirname(__file__)), "clients", "adsb_lol.py")
+            spec = importlib.util.spec_from_file_location("adsb_lol", _p)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            AdsbLolClient = mod.AdsbLolClient
+    except Exception as e:
+        log.warning("Cannot import AdsbLolClient: %s — real ADSB disabled", e)
+        return
+
+    client = AdsbLolClient(areas)
+    url = f"{base_url}/api/sim/adsb/push"
+    loop = asyncio.get_event_loop()
+    ssl_context = None
+    if "localhost" in base_url or "127.0.0.1" in base_url:
+        ssl_context = ssl._create_unverified_context()
+
+    log.info("Real ADS-B feed started (%d areas, interval=%.0fs)", len(areas), interval_s)
+
+    while orchestrator._running:
+        await asyncio.sleep(interval_s)
+        try:
+            aircraft = await loop.run_in_executor(None, client.fetch_all)
+            if not aircraft:
+                continue
+
+            payload = []
+            for ac in aircraft:
+                h = ac.get("hex", "")
+                if not h or not ac.get("lat") or not ac.get("lon"):
+                    continue
+                payload.append({
+                    "hex": h,
+                    "flight": ac.get("flight", ""),
+                    "lat": ac["lat"],
+                    "lon": ac["lon"],
+                    "alt_baro": ac.get("alt_baro", 0),
+                    "gs": ac.get("gs", 0),
+                    "track": ac.get("track", 0),
+                })
+
+            if payload:
+                body = json.dumps({
+                    "ts_ms": int(time.time() * 1000),
+                    "aircraft": payload,
+                }).encode()
+                req = urllib.request.Request(
+                    url, data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                await loop.run_in_executor(
+                    None,
+                    lambda r=req, ctx=ssl_context: urllib.request.urlopen(r, timeout=5, context=ctx),
+                )
+                log.debug("Real ADS-B push: %d aircraft", len(payload))
+        except Exception as e:
+            log.debug("Real ADSB push failed: %s", e)
+
+
 async def _poll_simulation_config(
     orchestrator: FleetOrchestrator,
     base_url: str,
@@ -644,9 +722,9 @@ async def _push_adsb_live(
             aircraft_raw = orchestrator.world.get_aircraft_summary()
             payload_aircraft = []
             for ac in aircraft_raw:
-                if not ac.get("has_adsb"):
-                    continue
-                hex_code = ac.get("adsb_hex") or ""
+                # Push ALL aircraft — ADS-B and dark/drone/anomalous alike.
+                # ADS-B aircraft use their transponder hex; others use object_id.
+                hex_code = ac.get("adsb_hex") or ac.get("id", "")
                 if not hex_code:
                     continue
                 speed_ms = ac.get("speed_ms", 0)
@@ -741,6 +819,31 @@ async def _validate_against_server(
             log.debug("Validation check failed: %s", e)
 
 
+# ── Predefined metro areas ──────────────────────────────────────────────────
+_KNOWN_METROS = {
+    "atl": {"name": "Atlanta", "lat": 33.749, "lon": -84.388, "radius_nm": 80},
+    "gvl": {"name": "Greenville", "lat": 34.852, "lon": -82.394, "radius_nm": 60},
+    "clt": {"name": "Charlotte", "lat": 35.227, "lon": -80.843, "radius_nm": 70},
+    "nyc": {"name": "New York", "lat": 40.748, "lon": -73.986, "radius_nm": 80},
+    "dca": {"name": "Washington DC", "lat": 38.935, "lon": -77.079, "radius_nm": 70},
+    "chi": {"name": "Chicago", "lat": 41.872, "lon": -87.624, "radius_nm": 80},
+    "den": {"name": "Denver", "lat": 39.739, "lon": -104.990, "radius_nm": 80},
+    "lax": {"name": "Los Angeles", "lat": 34.052, "lon": -118.244, "radius_nm": 80},
+}
+
+
+def _parse_metro_areas(metros_str: str) -> list[dict]:
+    """Parse comma-separated metro codes into area dicts for AdsbLolClient."""
+    result = []
+    for code in metros_str.split(","):
+        code = code.strip().lower()
+        if code in _KNOWN_METROS:
+            result.append(_KNOWN_METROS[code])
+        else:
+            log.warning("Unknown metro code: %s (available: %s)", code, ",".join(_KNOWN_METROS))
+    return result
+
+
 async def main_async(args):
     """Main async entry point."""
     # Load or generate fleet config
@@ -755,6 +858,22 @@ async def main_async(args):
         log.info("No config file, generating %d nodes...", args.nodes)
         regions = [r.strip() for r in args.regions.split(",")]
         all_nodes = generate_fleet(n_nodes=args.nodes, regions=regions, seed=args.seed)
+
+    # When --metros is specified, filter nodes to only those near selected metros
+    if getattr(args, "metros", "") and args.metros:
+        metro_areas = _parse_metro_areas(args.metros)
+        if metro_areas:
+            def _near_any_metro(node):
+                for m in metro_areas:
+                    dlat = abs(node["rx_lat"] - m["lat"])
+                    dlon = abs(node["rx_lon"] - m["lon"])
+                    if dlat < 2.0 and dlon < 2.0:  # ~200km box
+                        return True
+                return False
+            before = len(all_nodes)
+            all_nodes = [n for n in all_nodes if _near_any_metro(n)]
+            log.info("Metro filter (%s): %d → %d nodes",
+                     args.metros, before, len(all_nodes))
 
     # Resolve real TX towers for each node (skip for non-US regions — FCC-only)
     if getattr(args, "use_real_towers", False):
@@ -824,6 +943,15 @@ async def main_async(args):
             orchestrator, args.validation_url, interval_s=5.0,
         ))
 
+    # Real ADS-B from adsb.lol — inject real air traffic when metro areas are configured.
+    if args.validation_url and hasattr(args, "metros") and args.metros:
+        metro_areas = _parse_metro_areas(args.metros)
+        if metro_areas:
+            tasks.append(_push_real_adsb(
+                orchestrator, args.validation_url,
+                areas=metro_areas, interval_s=10.0,
+            ))
+
     if args.validate and args.validation_url:
         tasks.append(_validate_against_server(
             orchestrator, args.validation_url, interval_s=30.0,
@@ -892,6 +1020,10 @@ def main():
                         help="Base URL for validation API calls")
     parser.add_argument("--ground-truth-path", type=str, default="ground_truth.json",
                         help="Path to save ground truth data")
+    parser.add_argument("--metros", type=str, default="",
+                        help="Comma-separated metro codes to focus on (e.g. atl,gvl). "
+                             "Filters fleet to these metros and injects real ADS-B from adsb.lol. "
+                             f"Available: {','.join(_KNOWN_METROS.keys())}")
     args = parser.parse_args()
 
     asyncio.run(main_async(args))

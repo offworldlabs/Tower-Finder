@@ -122,7 +122,7 @@ export default function PhysicsSettings() {
 
   useEffect(() => {
     fetchConfig();
-    const id = setInterval(fetchConfig, 3000);
+    const id = setInterval(fetchConfig, 10000);
     return () => clearInterval(id);
   }, [fetchConfig]);
 
@@ -149,11 +149,16 @@ export default function PhysicsSettings() {
     return () => clearInterval(id);
   }, [fetchGt]);
 
-  // Dead-reckoning animation — smooth position updates at 250 ms
+  // Dead-reckoning animation — smooth position updates at 500 ms
   useEffect(() => {
     const KNOTS_TO_MS = 0.514444;
     const DEG_PER_M = 1 / 111_320;
-    const id = setInterval(() => {
+    let raf;
+    let last = 0;
+    const tick = (ts) => {
+      raf = requestAnimationFrame(tick);
+      if (ts - last < 500) return; // throttle to 2 Hz React updates
+      last = ts;
       const now = Date.now() / 1000;
       const result = Object.values(fixesRef.current).map((fix) => {
         const elapsed = Math.min(now - (fix.ts || now), 60);
@@ -170,8 +175,9 @@ export default function PhysicsSettings() {
         return fix;
       });
       setAnimatedAircraft(result);
-    }, 250);
-    return () => clearInterval(id);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
   }, []);
 
   async function handleApply() {

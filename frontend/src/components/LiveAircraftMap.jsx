@@ -105,18 +105,18 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
   });
 });
 
-/* ── DetectionArcs: memoized — sourced from raw aircraft (WS rate ~2Hz), NOT smoothed
-      displayAircraft (10fps). Arc positions are server-provided, don't need interpolation. ── */
+/* ── DetectionArcs: memoized — each arc fades independently based on its last-update timestamp.
+      Multiple arcs can exist per aircraft (one per detecting node). ── */
 const DetectionArcs = memo(function DetectionArcs({ visibleArcs, selectedHex, onSelect, onSelectNode }) {
-  return visibleArcs.map((ac) => {
-    const isSelected = ac.hex === selectedHex;
-    const arcAge = Date.now() - (ac._fixTs || 0);
-    const arcOpacity = Math.max(0.05, Math.min(0.95, 1 - Math.max(0, arcAge - 1500) / 5000));
-    const arcColor = ac.target_class === "drone" ? "#fb923c" : dopplerColor(ac.doppler_hz ?? 0);
+  return visibleArcs.map((arc) => {
+    const isSelected = arc.hex === selectedHex;
+    const arcAge = Date.now() - arc.ts;
+    const arcOpacity = Math.max(0.05, Math.min(0.95, 1 - Math.max(0, arcAge - 1500) / 8500));
+    const arcColor = arc.target_class === "drone" ? "#fb923c" : dopplerColor(arc.doppler_hz ?? 0);
     return (
       <Polyline
-        key={`arc-${ac.hex}`}
-        positions={ac.ambiguity_arc}
+        key={arc._key}
+        positions={arc.ambiguity_arc}
         pathOptions={{
           color: arcColor,
           weight: isSelected ? 5 : 3,
@@ -124,7 +124,7 @@ const DetectionArcs = memo(function DetectionArcs({ visibleArcs, selectedHex, on
           lineCap: "round",
           lineJoin: "round",
         }}
-        eventHandlers={{ click: () => { onSelect(ac.hex); if (ac.node_id) onSelectNode(ac.node_id); } }}
+        eventHandlers={{ click: () => { onSelect(arc.hex); if (arc.node_id) onSelectNode(arc.node_id); } }}
       />
     );
   });
@@ -144,6 +144,7 @@ export default function LiveAircraftMap() {
     trailTick,
     historyRef,
     setPaused: setFeedPaused,
+    arcsBufferRef,
   } = useAircraftFeed();
 
   const nodes = useNodes();
@@ -361,16 +362,25 @@ export default function LiveAircraftMap() {
     [nodes, viewport],
   );
 
-  // Detection arcs sourced from raw WS data (2Hz) — NOT from smoothed displayAircraft (10fps).
-  // Arc positions are server-provided ellipses; they don't need sub-second interpolation.
-  const visibleArcs = useMemo(
-    () => aircraft.filter(
-      (ac) => Array.isArray(ac.ambiguity_arc) &&
-              ac.ambiguity_arc.length >= 2 &&
-              (ac.hex === selectedHex || isAircraftInViewport(ac, viewport)),
-    ),
-    [aircraft, viewport, selectedHex],
-  );
+  // Detection arcs from accumulated buffer — each detection creates an independently-fading arc.
+  // Arcs persist for ~10s after last server update, key = hex-node_id.
+  const visibleArcs = useMemo(() => {
+    const buf = arcsBufferRef.current;
+    const now = Date.now();
+    const result = [];
+    for (const key of Object.keys(buf)) {
+      const entry = buf[key];
+      if (now - entry.ts > 10_000) continue;
+      const mid = entry.ambiguity_arc[Math.floor(entry.ambiguity_arc.length / 2)];
+      if (
+        entry.hex === selectedHex ||
+        (mid && isPointInViewport(mid[0], mid[1], viewport, 0.5))
+      ) {
+        result.push({ ...entry, _key: key });
+      }
+    }
+    return result;
+  }, [aircraft, viewport, selectedHex]); // aircraft dep triggers recompute on each WS update
 
   /* ── Derived: trail for selected aircraft ───────────────────── */
   const visibleTrailEntries = useMemo(() => {
