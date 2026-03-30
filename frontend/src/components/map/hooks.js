@@ -75,7 +75,7 @@ export function useAircraftFeed() {
 
   // Shared history + state update
   const ingestAircraft = useCallback(
-    (newAircraft, groundTruth, groundTruthMeta, anomalyHexes) => {
+    (newAircraft, groundTruth, groundTruthMeta, anomalyHexes, detectionArcs) => {
       historyRef.current.push({ aircraft: newAircraft, ts: Date.now() });
       if (historyRef.current.length > MAX_HISTORY) historyRef.current.shift();
 
@@ -107,6 +107,24 @@ export function useAircraftFeed() {
           };
         }
       }
+      // Also ingest pending detection arcs from tracker tracks (not yet geolocated)
+      if (Array.isArray(detectionArcs)) {
+        for (const arc of detectionArcs) {
+          if (Array.isArray(arc.ambiguity_arc) && arc.ambiguity_arc.length >= 2 && arc.node_id) {
+            // Use arc midpoint as key disambiguator (each track produces a differently-positioned arc)
+            const mid = arc.ambiguity_arc[Math.floor(arc.ambiguity_arc.length / 2)];
+            const key = `det-${arc.node_id}-${Math.round(mid[0] * 100)}-${Math.round(mid[1] * 100)}`;
+            buf[key] = {
+              hex: arc.node_id,
+              node_id: arc.node_id,
+              ambiguity_arc: arc.ambiguity_arc,
+              doppler_hz: arc.doppler_hz ?? 0,
+              target_class: arc.target_class,
+              ts: now,
+            };
+          }
+        }
+      }
       // Prune arcs older than ARC_MAX_AGE_MS
       for (const key of Object.keys(buf)) {
         if (now - buf[key].ts > ARC_MAX_AGE_MS) delete buf[key];
@@ -133,7 +151,7 @@ export function useAircraftFeed() {
       lastMsgRef.current = Date.now(); // keep watchdog alive
       try {
         const data = JSON.parse(evt.data);
-        ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes);
+        ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes, data.detection_arcs);
       } catch {
         /* ignore */
       }
@@ -192,7 +210,7 @@ export function useAircraftFeed() {
         });
         if (res.ok) {
           const data = await res.json();
-          ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes);
+          ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes, data.detection_arcs);
         }
       } catch (err) {
         if (err.name !== "AbortError") {

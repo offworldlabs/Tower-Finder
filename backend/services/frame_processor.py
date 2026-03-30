@@ -482,18 +482,15 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     for k in stale_adsb:
         state.adsb_aircraft.pop(k, None)
 
-    # 5. Attach detection arcs from tracker tracks to arc-less aircraft entries.
-    # This makes arcs appear immediately on each detection instead of waiting for
-    # full M-of-N track promotion + LM solver convergence.
-    _hex_to_idx = {ac["hex"]: i for i, ac in enumerate(aircraft) if not ac.get("ambiguity_arc")}
+    # 5. Pending detection arcs from tracker tracks not yet geolocated.
+    # These arcs appear immediately on each detection without waiting for
+    # M-of-N promotion + LM solver convergence.
+    pending_arcs = []
     for pipeline in list(state.node_pipelines.values()):
         node_cfg = pipeline.config
         for track in list(pipeline.tracker.tracks):
             meas = track.history.get("measurements")
             if not meas:
-                continue
-            hex_code = track.adsb_hex
-            if not hex_code or hex_code not in _hex_to_idx:
                 continue
             latest = meas[-1]
             delay_us = latest.get("delay", 0)
@@ -502,11 +499,12 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             arc = _build_single_node_arc(delay_us, node_cfg)
             if not arc or len(arc) < 2:
                 continue
-            idx = _hex_to_idx[hex_code]
-            aircraft[idx]["ambiguity_arc"] = arc
-            aircraft[idx]["node_id"] = node_cfg.get("node_id")
-            aircraft[idx]["doppler_hz"] = round(latest.get("doppler", 0), 2)
-            del _hex_to_idx[hex_code]  # one arc per hex
+            pending_arcs.append({
+                "ambiguity_arc": arc,
+                "node_id": node_cfg.get("node_id"),
+                "doppler_hz": round(latest.get("doppler", 0), 2),
+                "target_class": getattr(track, "target_class", None),
+            })
 
     gt_snapshot = {
         h: list(trail)[-30:]
@@ -520,6 +518,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         "now": now,
         "messages": len(aircraft),
         "aircraft": aircraft,
+        "detection_arcs": pending_arcs,
         "ground_truth": gt_snapshot,
         "ground_truth_meta": gt_meta,
         "anomaly_hexes": sorted(state.anomaly_hexes),
