@@ -461,14 +461,16 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         # even when the source only sends frames every 20-40 s.
         lat, lon = _dead_reckon(entry, now)
         seen_hex.add(hex_code)
-        append_track_history(hex_code, lat, lon, entry.get("alt_baro", 0), now)
+        raw_alt = entry.get("alt_baro", 0)
+        alt_baro = raw_alt if isinstance(raw_alt, (int, float)) else 0
+        append_track_history(hex_code, lat, lon, alt_baro, now)
         aircraft.append({
             "hex": hex_code,
             "ground_truth_hex": resolve_ground_truth_hex(hex_code, lat, lon),
             "type": "adsb_icao",
             "flight": (entry.get("flight") or hex_code).strip(),
-            "alt_baro": entry.get("alt_baro", 0),
-            "alt_geom": entry.get("alt_baro", 0),
+            "alt_baro": alt_baro,
+            "alt_geom": alt_baro,
             "gs": round(entry.get("gs", 0), 1),
             "track": round(entry.get("track", 0), 1),
             "lat": round(lat, 5),
