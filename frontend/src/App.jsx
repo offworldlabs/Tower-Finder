@@ -85,18 +85,22 @@ export default function App() {
               Tower Search
             </button>
           )}
-          <button
-            className={`tab-btn ${activeTab === "physics" ? "active" : ""}`}
-            onClick={() => setActiveTab("physics")}
-          >
-            Physics Layer
-          </button>
-          <button
-            className={`tab-btn ${activeTab === "live" ? "active" : ""}`}
-            onClick={() => { setActiveTab("live"); setLiveEverOpened(true); }}
-          >
-            Live Radar
-          </button>
+          {isMapDomain && (
+            <button
+              className={`tab-btn ${activeTab === "physics" ? "active" : ""}`}
+              onClick={() => setActiveTab("physics")}
+            >
+              Physics Layer
+            </button>
+          )}
+          {isMapDomain && (
+            <button
+              className={`tab-btn ${activeTab === "live" ? "active" : ""}`}
+              onClick={() => { setActiveTab("live"); setLiveEverOpened(true); }}
+            >
+              Live Radar
+            </button>
+          )}
         </nav>
       </header>
 
