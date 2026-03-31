@@ -316,7 +316,7 @@ export default function LiveAircraftMap() {
         // Cache element reference to avoid querySelector on every 16ms frame
         let svgEl = svgElemsRef.current[fix.hex];
         if (!svgEl || !svgEl.isConnected) {
-          svgEl = document.querySelector(`.ac-hex-${fix.hex} svg`);
+          svgEl = document.querySelector(`.ac-hex-${CSS.escape(fix.hex)} svg`);
           if (svgEl) svgElemsRef.current[fix.hex] = svgEl;
           else delete svgElemsRef.current[fix.hex];
         }
