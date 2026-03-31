@@ -279,10 +279,57 @@ async def frame_processor_loop(default_pipeline):
 
 # ── Aircraft flush (2 s tick) ─────────────────────────────────────────────────
 
+def _build_real_only_payload(aircraft_data: dict) -> bytes:
+    """Build a slim WS payload filtered to non-synthetic nodes only."""
+    real_node_ids = {
+        nid for nid, info in state.connected_nodes.items()
+        if not info.get("is_synthetic", True)
+    }
+    real_aircraft = [
+        ac for ac in aircraft_data.get("aircraft", [])
+        if ac.get("node_id") in real_node_ids
+    ]
+    real_arcs = [
+        arc for arc in aircraft_data.get("detection_arcs", [])
+        if arc.get("node_id") in real_node_ids
+    ]
+    payload = {
+        "now": aircraft_data.get("now", 0),
+        "messages": len(real_aircraft),
+        "aircraft": real_aircraft,
+        "detection_arcs": real_arcs,
+        "ground_truth": {},
+        "ground_truth_meta": {},
+        "anomaly_hexes": [],
+    }
+    return orjson.dumps(payload)
+
+
 async def broadcast_aircraft(aircraft_data: dict, aircraft_bytes: bytes):
     """Push updated aircraft data to all connected WebSocket clients."""
     state.latest_aircraft_json = aircraft_data
     state.latest_aircraft_json_bytes = aircraft_bytes
+
+    # Pre-compute real-node-only payload for map.retina.fm clients
+    real_bytes = _build_real_only_payload(aircraft_data)
+    state.latest_real_aircraft_json_bytes = real_bytes
+
+    # Broadcast real-only payload to live clients (map.retina.fm)
+    if state.ws_live_clients:
+        real_payload = real_bytes.decode()
+        stale_live = set()
+        for ws in list(state.ws_live_clients):
+            try:
+                await asyncio.wait_for(ws.send_text(real_payload), timeout=5.0)
+            except Exception:
+                stale_live.add(ws)
+        state.ws_live_clients.difference_update(stale_live)
+        for ws in stale_live:
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
     if not state.ws_clients:
         return
     # Build a slim WS payload — ground_truth trails can be 20+ MB (full history

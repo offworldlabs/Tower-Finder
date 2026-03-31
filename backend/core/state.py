@@ -57,10 +57,12 @@ external_adsb_cache: dict[str, dict] = {}
 
 # ── WebSocket broadcast infrastructure ────────────────────────────────────────
 from fastapi import WebSocket  # noqa: E402  (deferred to avoid import loops)
-ws_clients: set[WebSocket] = set()
+ws_clients: set[WebSocket] = set()       # all aircraft (simulated fleet)
+ws_live_clients: set[WebSocket] = set()  # real-node-only aircraft (map.retina.fm)
 latest_aircraft_json: dict = {"now": 0, "aircraft": [], "messages": 0}
 latest_aircraft_json_bytes: bytes = b'{"now":0,"aircraft":[],"messages":0}'
 aircraft_dirty: bool = False
+latest_real_aircraft_json_bytes: bytes = b'{"now":0,"aircraft":[],"messages":0}'
 
 # ── Pre-serialized analytics / nodes / overlaps (refreshed by background task)
 latest_analytics_bytes: bytes = b'{"nodes":{},"cross_node":{"pair_overlaps":[],"coverage_suggestions":[],"blocked_nodes":[]}}'

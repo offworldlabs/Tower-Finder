@@ -139,7 +139,10 @@ export function useAircraftFeed() {
   const connectWs = useCallback(() => {
     if (wsRef.current) return;
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${proto}//${window.location.host}/ws/aircraft`);
+    // map.retina.fm (not testmap) streams only the real radar node
+    const isLiveDomain = /^map\./.test(window.location.hostname);
+    const wsPath = isLiveDomain ? "/ws/aircraft/live" : "/ws/aircraft";
+    const ws = new WebSocket(`${proto}//${window.location.host}${wsPath}`);
 
     ws.onopen = () => {
       setConnected(true);

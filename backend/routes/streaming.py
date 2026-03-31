@@ -13,6 +13,7 @@ router = APIRouter()
 
 @router.websocket("/ws/aircraft")
 async def websocket_aircraft(ws: WebSocket):
+    """Full aircraft feed — all nodes including synthetic simulation fleet."""
     await ws.accept()
     state.ws_clients.add(ws)
     logging.info("WebSocket client connected (%d total)", len(state.ws_clients))
@@ -28,6 +29,29 @@ async def websocket_aircraft(ws: WebSocket):
     finally:
         state.ws_clients.discard(ws)
         logging.info("WebSocket client disconnected (%d remaining)", len(state.ws_clients))
+
+
+@router.websocket("/ws/aircraft/live")
+async def websocket_aircraft_live(ws: WebSocket):
+    """Real-node-only aircraft feed — excludes synthetic simulation nodes.
+    Used by map.retina.fm showing only radar3.retnode.com data.
+    """
+    await ws.accept()
+    state.ws_live_clients.add(ws)
+    logging.info("WS live client connected (%d total)", len(state.ws_live_clients))
+    try:
+        # Send current snapshot immediately so the map doesn't start blank
+        if state.latest_real_aircraft_json_bytes:
+            await ws.send_text(state.latest_real_aircraft_json_bytes.decode())
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        state.ws_live_clients.discard(ws)
+        logging.info("WS live client disconnected (%d remaining)", len(state.ws_live_clients))
 
 
 @router.get("/api/radar/stream")
