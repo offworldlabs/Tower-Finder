@@ -301,28 +301,6 @@ export default function LiveAircraftMap() {
     [matchedTruthHexes, trailTick],
   );
 
-  /* ── Feed truth-only aircraft into fixesRef so the rAF loop dead-reckons them ── */
-  useEffect(() => {
-    const now = Date.now();
-    const truthHexSet = new Set(truthOnlyAircraft.map((a) => a.hex));
-    for (const ac of truthOnlyAircraft) {
-      if (!ac.lat || !ac.lon) continue;
-      const cur = fixesRef.current[ac.hex];
-      if (!cur || cur._fixLat !== ac.lat || cur._fixLon !== ac.lon) {
-        // New GT position arrived — reset the fix so dead-reckoning starts fresh
-        fixesRef.current[ac.hex] = { ...ac, _fixLat: ac.lat, _fixLon: ac.lon, _fixTs: now, _updatedAt: now };
-      } else {
-        cur._updatedAt = now; // keep alive; position unchanged between GT pushes
-      }
-    }
-    // Remove truth entries that are no longer unmatched
-    for (const [hex, fix] of Object.entries(fixesRef.current)) {
-      if (fix._isTruth && !truthHexSet.has(hex)) {
-        delete fixesRef.current[hex];
-        delete smoothRef.current[hex];
-      }
-    }
-  }, [truthOnlyAircraft]);
 
   /* ── Derived: viewport culling ──────────────────────────────── */
   const filteredAircraft = useMemo(() => {
@@ -343,18 +321,6 @@ export default function LiveAircraftMap() {
       ? truthOnlyAircraft.filter((ac) => ac.hex === selectedHex || isPointInViewport(ac.lat, ac.lon, viewport))
       : [],
     [showGroundTruth, truthOnlyAircraft, selectedHex, viewport],
-  );
-
-  // Smooth (dead-reckoned at 60fps) version of truth-only aircraft for rendering
-  const visibleSmoothTruth = useMemo(
-    () => showGroundTruth
-      ? displayAircraft.filter(
-          (ac) => ac._isTruth &&
-                  !matchedTruthHexes.has(ac.hex) &&
-                  (ac.hex === selectedHex || isPointInViewport(ac.lat, ac.lon, viewport))
-        )
-      : [],
-    [showGroundTruth, displayAircraft, matchedTruthHexes, selectedHex, viewport],
   );
 
   const visibleNodes = useMemo(
@@ -674,8 +640,8 @@ export default function LiveAircraftMap() {
                 />
               ))}
 
-            {/* Ground-truth-only markers — animated via dead-reckoning, color by object type */}
-            {showGroundTruth && visibleSmoothTruth.map((ac) => {
+            {/* Ground-truth-only markers — rendered at static WS positions (updates ~1Hz), color by object type */}
+            {showGroundTruth && visibleTruthOnlyAircraft.map((ac) => {
               const isAnomGT = ac.is_anomalous;
               const isDroneGT = ac.object_type === "drone";
               const gtColor = isAnomGT ? "#f43f5e" : isDroneGT ? "#f59e0b" : "#22d3ee";
