@@ -274,6 +274,8 @@ function nodeDisplayFuzz(nodeId) {
  */
 export function useNodes() {
   const [nodes, setNodes] = useState([]);
+  // On map.retina.fm show only real (non-synthetic) nodes
+  const isLiveDomain = /^map\./.test(window.location.hostname);
 
   useEffect(() => {
     async function loadNodes() {
@@ -283,6 +285,8 @@ export function useNodes() {
         const data = await res.json();
         const nodeList = [];
         for (const [id, info] of Object.entries(data.nodes || {})) {
+          // Skip synthetic nodes on map.retina.fm
+          if (isLiveDomain && id.startsWith("synth-")) continue;
           const da = info.detection_area;
           const ec = info.empirical_coverage;
           if (da) {
