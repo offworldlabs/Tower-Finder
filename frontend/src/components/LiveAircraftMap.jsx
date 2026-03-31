@@ -258,6 +258,7 @@ export default function LiveAircraftMap() {
   const svgElemsRef = useRef({}); // hex → cached SVG DOM element (avoids querySelector every frame)
   const rafFrameRef = useRef(0);  // throttle React re-renders to ~2fps (position/rotation at 60fps via direct L.Marker/DOM)
   const markerRegistryRef = useRef(new Map()); // hex → L.Marker for imperative 60fps setLatLng
+  const latLngCacheRef    = useRef({});         // hex → L.LatLng — mutated in place to avoid per-frame allocation
 
   /* ── Record server fixes when new WS data arrives ───────────── */
   useEffect(() => {
@@ -302,12 +303,7 @@ export default function LiveAircraftMap() {
 
       const now = Date.now();
       const fixes = fixesRef.current;
-      const fixValues = Object.values(fixes);
-      const result = new Array(fixValues.length); // pre-allocate — avoids dynamic growth
-      const dispMap = {};                          // build displayedAircraftRef inline — no extra map()
-      let i = 0;
-
-      for (const fix of fixValues) {
+      for (const fix of Object.values(fixes)) {
         const elapsed = Math.min((now - fix._fixTs) / 1000, 60);
         const gs = fix.gs || 0;
 
@@ -333,7 +329,10 @@ export default function LiveAircraftMap() {
         const dTrack = ((targetTrack - prevTrack + 540) % 360) - 180;
         const sTrack = (prevTrack + dTrack * alpha + 360) % 360;
 
-        smoothRef.current[fix.hex] = { lat: sLat, lon: sLon, track: sTrack };
+        // Mutate smooth entry in place — avoids 412 short-lived object creations per frame
+        const sm = smoothRef.current[fix.hex];
+        if (sm) { sm.lat = sLat; sm.lon = sLon; sm.track = sTrack; }
+        else     smoothRef.current[fix.hex] = { lat: sLat, lon: sLon, track: sTrack };
 
         // Update rotation directly on the DOM — avoids setIcon() every frame
         // Cache element reference to avoid querySelector on every 16ms frame
@@ -345,20 +344,32 @@ export default function LiveAircraftMap() {
         }
         if (svgEl) svgEl.style.transform = `rotate(${sTrack.toFixed(1)}deg)`;
 
-        // Imperative position update — bypasses React reconcile entirely at 60fps
-        markerRegistryRef.current.get(fix.hex)?.setLatLng([sLat, sLon]);
-
-        result[i] = { ...fix, lat: sLat, lon: sLon, track: sTrack };
-        dispMap[fix.hex] = result[i];
-        i++;
+        // Imperative Leaflet position — reuse cached L.LatLng and call marker.update() directly
+        // to avoid per-frame LatLng + event-object allocations (was ~25k allocs/s at 60fps×412).
+        const marker = markerRegistryRef.current.get(fix.hex);
+        if (marker) {
+          let ll = latLngCacheRef.current[fix.hex];
+          if (ll) { ll.lat = sLat; ll.lng = sLon; }
+          else { ll = L.latLng(sLat, sLon); latLngCacheRef.current[fix.hex] = ll; marker._latlng = ll; }
+          marker.update();
+        }
       }
-      result.length = i; // trim pre-allocated slots if any fixes were pruned mid-frame
 
-      displayedAircraftRef.current = dispMap;
-      // React reconcile at ~2fps — just for list panel + slow icon updates.
-      // Position/rotation are already updated imperatively above at 60fps.
+      // Build React display array at 2fps only — avoids ~25k spread-object allocations/s at 60fps.
       rafFrameRef.current = (rafFrameRef.current + 1) % 30;
-      if (rafFrameRef.current === 0) setDisplayAircraft(result);
+      if (rafFrameRef.current === 0) {
+        const arr = [];
+        const dispMap = {};
+        for (const fix of Object.values(fixes)) {
+          const sm = smoothRef.current[fix.hex];
+          if (!sm) continue;
+          const item = { ...fix, lat: sm.lat, lon: sm.lon, track: sm.track };
+          arr.push(item);
+          dispMap[fix.hex] = item;
+        }
+        displayedAircraftRef.current = dispMap;
+        setDisplayAircraft(arr);
+      }
       animationFrameRef.current = requestAnimationFrame(tick);
     };
 
@@ -418,11 +429,13 @@ export default function LiveAircraftMap() {
     [filteredAircraft, selectedHex, viewport],
   );
 
+  // No viewport filter — the L.canvas renderer handles off-screen dots natively.
+  // Removing the filter means:
+  //  1. All truth aircraft appear IMMEDIATELY on toggle (no blank-until-pan).
+  //  2. Every pan no longer re-triggers this memo + GroundTruthCanvasLayer.useEffect.
   const visibleTruthOnlyAircraft = useMemo(
-    () => showGroundTruth
-      ? truthOnlyAircraft.filter((ac) => ac.hex === selectedHex || isPointInViewport(ac.lat, ac.lon, viewport))
-      : [],
-    [showGroundTruth, truthOnlyAircraft, selectedHex, viewport],
+    () => showGroundTruth ? truthOnlyAircraft : [],
+    [showGroundTruth, truthOnlyAircraft],
   );
 
   const visibleNodes = useMemo(
@@ -465,7 +478,9 @@ export default function LiveAircraftMap() {
     if (!visibleTrailEntries.length) return [];
     const [, positions] = visibleTrailEntries[0];
     const pts = sampleTrailPositions(positions).map((p) => [p[0], p[1]]);
-    const animated = selectedHex ? displayedAircraftRef.current[selectedHex] : null;
+    // smoothRef is updated at 60fps (vs displayedAircraftRef which is only 2fps)
+    // so the trail tip connects exactly to the current smoothed position.
+    const animated = selectedHex ? smoothRef.current[selectedHex] : null;
     if (animated?.lat && animated?.lon) {
       const last = pts[pts.length - 1];
       if (!last || Math.abs(last[0] - animated.lat) > 0.00001 || Math.abs(last[1] - animated.lon) > 0.00001) {
