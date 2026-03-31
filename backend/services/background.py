@@ -350,7 +350,7 @@ async def broadcast_aircraft(aircraft_data: dict, aircraft_bytes: bytes):
     gt_full = aircraft_data.get("ground_truth") or {}
     gt_slim = {hex_code: [positions[-1]] for hex_code, positions in gt_full.items() if positions}
     slim_data = {**aircraft_data, "ground_truth": gt_slim}
-    payload = orjson.dumps(slim_data).decode()
+    payload = orjson.dumps(slim_data, option=orjson.OPT_SERIALIZE_NUMPY).decode()
     stale = set()
     for ws in list(state.ws_clients):  # snapshot to avoid set-changed-during-iteration
         try:
