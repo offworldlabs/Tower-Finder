@@ -205,10 +205,16 @@ export function useAircraftFeed() {
   // --- HTTP polling fallback ---
   useEffect(() => {
     if (connected) return;
+    const isLiveDomain = /^map\./.test(window.location.hostname);
+    // On map.retina.fm use the real-node-only endpoint so unfiltered synthetic
+    // aircraft never appear even when the WS is temporarily disconnected.
+    const pollPath = isLiveDomain
+      ? `${API_BASE}/radar/data/aircraft-live.json`
+      : `${API_BASE}/radar/data/aircraft.json`;
     const controller = new AbortController();
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${API_BASE}/radar/data/aircraft.json`, {
+        const res = await fetch(pollPath, {
           signal: controller.signal,
         });
         if (res.ok) {

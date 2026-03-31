@@ -313,7 +313,7 @@ def _build_real_only_payload(aircraft_data: dict) -> bytes:
         "ground_truth_meta": {},
         "anomaly_hexes": [],
     }
-    return orjson.dumps(payload)
+    return orjson.dumps(payload, option=orjson.OPT_SERIALIZE_NUMPY)
 
 
 async def broadcast_aircraft(aircraft_data: dict, aircraft_bytes: bytes):
