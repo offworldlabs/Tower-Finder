@@ -104,10 +104,22 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
   return null;
 });
 
-/* ── AircraftMarker: memoized — icon only rebuilds on selection/label/altitude changes,
-      NOT on track/position changes (track is updated via direct DOM in the rAF loop) ── */
-const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels, onSelect }) {
+/* ── AircraftMarker: memoized with custom comparator — only re-renders on visual changes
+      (selection, labels, callsign, altitude band, type).  lat/lon/track/gs are updated
+      imperatively at 60fps via markerRegistry → marker.setLatLng() in the RAF loop,
+      completely bypassing React reconcile. ── */
+const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels, onSelect, markerRegistry }) {
   const altBand = Math.floor((ac.alt_baro ?? 0) / 5000);
+  const markerRef = useRef(null);
+
+  // Register/unregister in the parent's imperative registry so the RAF loop can
+  // call marker.setLatLng() at 60fps without going through React state.
+  useEffect(() => {
+    const m = markerRef.current;
+    if (m) markerRegistry.set(ac.hex, m);
+    return () => { markerRegistry.delete(ac.hex); };
+  }, [ac.hex, markerRegistry]);
+
   const icon = useMemo(
     () => ac.target_class === "drone"
       ? makeDroneIcon(ac, showLabels, isSelected)
@@ -116,8 +128,18 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels
     [ac.hex, isSelected, showLabels, ac.flight, ac.target_class, altBand],
   );
   const handlers = useMemo(() => ({ click: () => onSelect(ac.hex) }), [ac.hex, onSelect]);
-  return <Marker position={[ac.lat, ac.lon]} icon={icon} eventHandlers={handlers} />;
-});
+  return <Marker ref={markerRef} position={[ac.lat, ac.lon]} icon={icon} eventHandlers={handlers} />;
+}, (prev, next) =>
+  // Skip re-render when ONLY position/velocity changed — those are patched live
+  // by the RAF loop via marker.setLatLng() without touching React at all.
+  prev.isSelected === next.isSelected &&
+  prev.showLabels === next.showLabels &&
+  prev.ac.hex === next.ac.hex &&
+  prev.ac.flight === next.ac.flight &&
+  prev.ac.target_class === next.ac.target_class &&
+  Math.floor((prev.ac.alt_baro ?? 0) / 5000) === Math.floor((next.ac.alt_baro ?? 0) / 5000) &&
+  prev.onSelect === next.onSelect
+);
 
 /* ── NodeMarkersLayer: memoized + SVG CircleMarkers (NOT DOM divIcon Markers).
       914 DOM divs with drop-shadow filters caused severe pan/zoom jank.
@@ -234,7 +256,8 @@ export default function LiveAircraftMap() {
   const smoothRef = useRef({});  // hex → { lat, lon, track } — smoothed render position
   const prevTsRef = useRef(null);
   const svgElemsRef = useRef({}); // hex → cached SVG DOM element (avoids querySelector every frame)
-  const rafFrameRef = useRef(0);  // throttle React re-renders to ~10fps (rotation still runs at 60fps via direct DOM)
+  const rafFrameRef = useRef(0);  // throttle React re-renders to ~2fps (position/rotation at 60fps via direct L.Marker/DOM)
+  const markerRegistryRef = useRef(new Map()); // hex → L.Marker for imperative 60fps setLatLng
 
   /* ── Record server fixes when new WS data arrives ───────────── */
   useEffect(() => {
@@ -322,6 +345,9 @@ export default function LiveAircraftMap() {
         }
         if (svgEl) svgEl.style.transform = `rotate(${sTrack.toFixed(1)}deg)`;
 
+        // Imperative position update — bypasses React reconcile entirely at 60fps
+        markerRegistryRef.current.get(fix.hex)?.setLatLng([sLat, sLon]);
+
         result[i] = { ...fix, lat: sLat, lon: sLon, track: sTrack };
         dispMap[fix.hex] = result[i];
         i++;
@@ -329,7 +355,9 @@ export default function LiveAircraftMap() {
       result.length = i; // trim pre-allocated slots if any fixes were pruned mid-frame
 
       displayedAircraftRef.current = dispMap;
-      rafFrameRef.current = (rafFrameRef.current + 1) % 6;
+      // React reconcile at ~2fps — just for list panel + slow icon updates.
+      // Position/rotation are already updated imperatively above at 60fps.
+      rafFrameRef.current = (rafFrameRef.current + 1) % 30;
       if (rafFrameRef.current === 0) setDisplayAircraft(result);
       animationFrameRef.current = requestAnimationFrame(tick);
     };
@@ -420,7 +448,10 @@ export default function LiveAircraftMap() {
       }
     }
     return result;
-  }, [aircraft, viewport, selectedHex]); // aircraft dep triggers recompute on each WS update
+    // trailTick fires on every WS message (~1Hz) — replaces `aircraft` dep.
+    // visibleArcs no longer recalculates on every setDisplayAircraft (10→2fps).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trailTick, viewport, selectedHex]);
 
   /* ── Derived: trail for selected aircraft ───────────────────── */
   const visibleTrailEntries = useMemo(() => {
@@ -547,8 +578,10 @@ export default function LiveAircraftMap() {
             {/* Coverage zones — memoized, only re-renders on nodes/showCoverage change */}
             <CoverageLayer visibleNodes={visibleNodes} showCoverage={showCoverage} />
 
-            {/* Node markers — memoized, only re-renders when visibleNodes changes (30s cadence) */}
-            <NodeMarkersLayer visibleNodes={visibleNodes} onSelectNode={handleSelectNode} />
+            {/* Node markers — uses full `nodes` list (not viewport-culled) so it only
+                re-renders every 30s when node data refreshes, not on every pan/zoom.
+                SVG circles all share one composited layer — no per-element pan cost. */}
+            <NodeMarkersLayer visibleNodes={nodes} onSelectNode={handleSelectNode} />
 
             {/* Selected node: detection cone + TX tower + aircraft highlights */}
             {selectedNodeId && (() => {
@@ -690,6 +723,7 @@ export default function LiveAircraftMap() {
                     isSelected={isSelected}
                     showLabels={showLabels}
                     onSelect={handleSelectAircraft}
+                    markerRegistry={markerRegistryRef.current}
                   />
                 );
               }
