@@ -15,6 +15,10 @@ export function useAircraftFeed() {
   const groundTruthMetaRef = useRef({});
   const anomalyHexesRef = useRef(new Set());
   const [trailTick, setTrailTick] = useState(0);
+  // Separate tick that only increments when ground-truth data is replaced —
+  // prevents the 8000-entry truthOnlyAircraft memo from re-running on every
+  // trail update (which happens every WS message via updateTrails).
+  const [groundTruthTick, setGroundTruthTick] = useState(0);
 
   const wsRef = useRef(null);
   const reconnectTimer = useRef(null);
@@ -82,6 +86,7 @@ export function useAircraftFeed() {
       if (!pausedRef.current) setAircraft(newAircraft);
       if (groundTruth && typeof groundTruth === "object") {
         groundTruthRef.current = groundTruth;
+        setGroundTruthTick((t) => t + 1);
       }
       if (groundTruthMeta && typeof groundTruthMeta === "object") {
         groundTruthMetaRef.current = groundTruthMeta;
@@ -241,6 +246,7 @@ export function useAircraftFeed() {
     groundTruthMetaRef,
     anomalyHexesRef,
     trailTick,
+    groundTruthTick,
     historyRef,
     setPaused,
     arcsBufferRef,

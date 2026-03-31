@@ -48,42 +48,58 @@ const _gtCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : n
 
 const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, onSelect }) {
   const map = useMap();
-  const markersRef = useRef([]);
-  const onSelectRef = useRef(onSelect);
+  const markerMapRef = useRef(new Map()); // hex → L.circleMarker — incremental diff
+  const onSelectRef  = useRef(onSelect);
   useEffect(() => { onSelectRef.current = onSelect; }, [onSelect]);
 
   useEffect(() => {
-    const prev = markersRef.current;
-    prev.forEach((m) => m.remove());
-    markersRef.current = [];
-    if (!aircraft.length) return;
+    const markerMap = markerMapRef.current;
+    const seen = new Set();
 
-    const next = aircraft.map((ac) => {
-      const isAnom = ac.is_anomalous;
+    for (const ac of aircraft) {
+      seen.add(ac.hex);
+      const isAnom  = ac.is_anomalous;
       const isDrone = ac.object_type === "drone";
-      const color  = isAnom ? "#f43f5e" : isDrone ? "#f59e0b" : "#22d3ee";
-      const border = isAnom ? "#e11d48" : isDrone ? "#d97706" : "#67e8f9";
-      const radius = isDrone ? 5 : isAnom ? 7 : 6;
-      const m = L.circleMarker([ac.lat, ac.lon], {
-        renderer: _gtCanvas,
-        radius,
-        color: border,
-        weight: 2,
-        fillColor: color,
-        fillOpacity: 0.45,
-        _hex: ac.hex,
-      });
-      m.on("click", () => onSelectRef.current(ac.hex));
-      m.addTo(map);
-      return m;
-    });
+      const color   = isAnom ? "#f43f5e" : isDrone ? "#f59e0b" : "#22d3ee";
+      const border  = isAnom ? "#e11d48" : isDrone ? "#d97706" : "#67e8f9";
+      const radius  = isDrone ? 5 : isAnom ? 7 : 6;
 
-    markersRef.current = next;
+      let m = markerMap.get(ac.hex);
+      if (!m) {
+        m = L.circleMarker([ac.lat, ac.lon], {
+          renderer: _gtCanvas,
+          radius,
+          color: border,
+          weight: 2,
+          fillColor: color,
+          fillOpacity: 0.45,
+        });
+        m.on("click", () => onSelectRef.current(ac.hex));
+        m.addTo(map);
+        markerMap.set(ac.hex, m);
+      } else {
+        m.setLatLng([ac.lat, ac.lon]);
+        m.setStyle({ color: border, fillColor: color });
+        if (m.options.radius !== radius) m.setRadius(radius);
+      }
+    }
+
+    // Remove markers for aircraft that left the list
+    for (const [hex, m] of markerMap) {
+      if (!seen.has(hex)) {
+        m.remove();
+        markerMap.delete(hex);
+      }
+    }
+  }, [aircraft, map]);
+
+  // Full cleanup on unmount
+  useEffect(() => {
     return () => {
-      next.forEach((m) => m.remove());
-      markersRef.current = [];
+      for (const m of markerMapRef.current.values()) m.remove();
+      markerMapRef.current.clear();
     };
-  }, [aircraft, map]); // onSelect stable via ref
+  }, [map]);
 
   return null;
 });
@@ -190,6 +206,7 @@ export default function LiveAircraftMap() {
     groundTruthMetaRef,
     anomalyHexesRef,
     trailTick,
+    groundTruthTick,
     historyRef,
     setPaused: setFeedPaused,
     arcsBufferRef,
@@ -261,9 +278,13 @@ export default function LiveAircraftMap() {
       const alpha = dt > 0 ? 1 - Math.exp(-dt / TAU) : 1;
 
       const now = Date.now();
-      const result = [];
+      const fixes = fixesRef.current;
+      const fixValues = Object.values(fixes);
+      const result = new Array(fixValues.length); // pre-allocate — avoids dynamic growth
+      const dispMap = {};                          // build displayedAircraftRef inline — no extra map()
+      let i = 0;
 
-      for (const fix of Object.values(fixesRef.current)) {
+      for (const fix of fixValues) {
         const elapsed = Math.min((now - fix._fixTs) / 1000, 60);
         const gs = fix.gs || 0;
 
@@ -301,12 +322,15 @@ export default function LiveAircraftMap() {
         }
         if (svgEl) svgEl.style.transform = `rotate(${sTrack.toFixed(1)}deg)`;
 
-        result.push({ ...fix, lat: sLat, lon: sLon, track: sTrack });
+        result[i] = { ...fix, lat: sLat, lon: sLon, track: sTrack };
+        dispMap[fix.hex] = result[i];
+        i++;
       }
+      result.length = i; // trim pre-allocated slots if any fixes were pruned mid-frame
 
-      displayedAircraftRef.current = Object.fromEntries(result.map((ac) => [ac.hex, ac]));
+      displayedAircraftRef.current = dispMap;
       rafFrameRef.current = (rafFrameRef.current + 1) % 6;
-      if (rafFrameRef.current === 0) setDisplayAircraft([...result]);
+      if (rafFrameRef.current === 0) setDisplayAircraft(result);
       animationFrameRef.current = requestAnimationFrame(tick);
     };
 
@@ -326,7 +350,9 @@ export default function LiveAircraftMap() {
     [radarAircraft],
   );
 
-  // trailTick invalidates this when groundTruthRef.current is updated
+  // trailTick still drives trail rendering; groundTruthTick drives this expensive
+  // 8000-entry recompute only when the ground-truth dataset is actually replaced (~1Hz)
+  // and NOT on every trail position update (also ~1Hz but a separate, lighter tick).
   const truthOnlyAircraft = useMemo(
     () => Object.entries(groundTruthRef.current)
       .filter(([hex, positions]) => !matchedTruthHexes.has(hex) && Array.isArray(positions) && positions.length > 0)
@@ -346,7 +372,7 @@ export default function LiveAircraftMap() {
         };
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [matchedTruthHexes, trailTick],
+    [matchedTruthHexes, groundTruthTick],
   );
 
 
