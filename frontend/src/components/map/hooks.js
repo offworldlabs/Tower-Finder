@@ -280,7 +280,12 @@ export function useNodes() {
   useEffect(() => {
     async function loadNodes() {
       try {
-        const res = await fetch(`${API_BASE}/radar/analytics`);
+        // On map.retina.fm request only real nodes from the backend — avoids
+        // relying on client-side hostname detection to filter 900+ synthetic markers.
+        const url = isLiveDomain
+          ? `${API_BASE}/radar/analytics?real_only=true`
+          : `${API_BASE}/radar/analytics`;
+        const res = await fetch(url);
         if (!res.ok) return;
         const data = await res.json();
         const nodeList = [];

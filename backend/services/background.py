@@ -60,6 +60,17 @@ def _refresh_analytics_and_nodes():
     }
     state.latest_analytics_bytes = orjson.dumps(analytics_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
+    # Real-only variant: strip synthetic nodes so map.retina.fm never receives them
+    real_node_ids = {
+        nid for nid, info in state.connected_nodes.items()
+        if not info.get("is_synthetic", True)
+    }
+    analytics_real_data = {
+        "nodes": {k: v for k, v in analytics_data["nodes"].items() if k in real_node_ids},
+        "cross_node": analytics_data["cross_node"],
+    }
+    state.latest_analytics_real_bytes = orjson.dumps(analytics_real_data, option=orjson.OPT_SERIALIZE_NUMPY)
+
     # Nodes — snapshot once to avoid RuntimeError from concurrent TCP handler mutations
     _nodes_snapshot = list(state.connected_nodes.items())
     nodes_data = {

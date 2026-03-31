@@ -11,7 +11,9 @@ router = APIRouter()
 
 
 @router.get("/api/radar/analytics")
-async def radar_analytics():
+async def radar_analytics(real_only: bool = False):
+    if real_only:
+        return Response(content=state.latest_analytics_real_bytes, media_type="application/json")
     return Response(content=state.latest_analytics_bytes, media_type="application/json")
 
 

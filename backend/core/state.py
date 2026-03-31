@@ -66,6 +66,7 @@ latest_real_aircraft_json_bytes: bytes = b'{"now":0,"aircraft":[],"messages":0}'
 
 # ── Pre-serialized analytics / nodes / overlaps (refreshed by background task)
 latest_analytics_bytes: bytes = b'{"nodes":{},"cross_node":{"pair_overlaps":[],"coverage_suggestions":[],"blocked_nodes":[]}}'
+latest_analytics_real_bytes: bytes = b'{"nodes":{},"cross_node":{"pair_overlaps":[],"coverage_suggestions":[],"blocked_nodes":[]}}'
 latest_nodes_bytes: bytes = b'{"nodes":{},"connected":0,"total":0,"synthetic":0}'
 latest_overlaps_bytes: bytes = b'{"overlaps":[],"registered_nodes":[]}'
 
