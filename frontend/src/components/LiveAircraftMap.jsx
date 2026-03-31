@@ -7,6 +7,7 @@ import {
   CircleMarker,
   Polygon,
   Polyline,
+  useMap,
 } from "react-leaflet";
 import L from "leaflet";
 import "./LiveAircraftMap.css";
@@ -38,6 +39,53 @@ L.Icon.Default.mergeOptions({
     "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
   iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
   shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+});
+
+/* ── GroundTruthCanvasLayer: renders all truth-only dots on a single <canvas> element.
+      With 500+ objects, React-managed SVG CircleMarkers cause severe lag on every
+      WS update (~1Hz). L.canvas() draws everything in one canvas tile — O(1) DOM. ── */
+const _gtCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
+
+const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, onSelect }) {
+  const map = useMap();
+  const markersRef = useRef([]);
+  const onSelectRef = useRef(onSelect);
+  useEffect(() => { onSelectRef.current = onSelect; }, [onSelect]);
+
+  useEffect(() => {
+    const prev = markersRef.current;
+    prev.forEach((m) => m.remove());
+    markersRef.current = [];
+    if (!aircraft.length) return;
+
+    const next = aircraft.map((ac) => {
+      const isAnom = ac.is_anomalous;
+      const isDrone = ac.object_type === "drone";
+      const color  = isAnom ? "#f43f5e" : isDrone ? "#f59e0b" : "#22d3ee";
+      const border = isAnom ? "#e11d48" : isDrone ? "#d97706" : "#67e8f9";
+      const radius = isDrone ? 5 : isAnom ? 7 : 6;
+      const m = L.circleMarker([ac.lat, ac.lon], {
+        renderer: _gtCanvas,
+        radius,
+        color: border,
+        weight: 2,
+        fillColor: color,
+        fillOpacity: 0.45,
+        _hex: ac.hex,
+      });
+      m.on("click", () => onSelectRef.current(ac.hex));
+      m.addTo(map);
+      return m;
+    });
+
+    markersRef.current = next;
+    return () => {
+      next.forEach((m) => m.remove());
+      markersRef.current = [];
+    };
+  }, [aircraft, map]); // onSelect stable via ref
+
+  return null;
 });
 
 /* ── AircraftMarker: memoized — icon only rebuilds on selection/label/altitude changes,
@@ -640,22 +688,13 @@ export default function LiveAircraftMap() {
                 />
               ))}
 
-            {/* Ground-truth-only markers — rendered at static WS positions (updates ~1Hz), color by object type */}
-            {showGroundTruth && visibleTruthOnlyAircraft.map((ac) => {
-              const isAnomGT = ac.is_anomalous;
-              const isDroneGT = ac.object_type === "drone";
-              const gtColor = isAnomGT ? "#f43f5e" : isDroneGT ? "#f59e0b" : "#22d3ee";
-              const gtBorder = isAnomGT ? "#e11d48" : isDroneGT ? "#d97706" : "#67e8f9";
-              return (
-                <CircleMarker
-                  key={`truth-only-${ac.hex}`}
-                  center={[ac.lat, ac.lon]}
-                  radius={isDroneGT ? 5 : isAnomGT ? 7 : 6}
-                  pathOptions={{ color: gtBorder, weight: 2, fillColor: gtColor, fillOpacity: 0.45 }}
-                  eventHandlers={{ click: () => handleSelectAircraft(ac.hex) }}
-                />
-              );
-            })}
+            {/* Ground-truth-only markers — single canvas layer, O(1) DOM regardless of count */}
+            {showGroundTruth && (
+              <GroundTruthCanvasLayer
+                aircraft={visibleTruthOnlyAircraft}
+                onSelect={handleSelectAircraft}
+              />
+            )}
           </MapContainer>
 
           {selectedAc && (
