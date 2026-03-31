@@ -45,7 +45,10 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [highlighted, setHighlighted] = useState(null);
-  const [activeTab, setActiveTab] = useState("towers");
+
+  // On map.retina.fm / testmap.retina.fm, default to "live" and hide tower search
+  const isMapDomain = /^(test)?map\./i.test(window.location.hostname);
+  const [activeTab, setActiveTab] = useState(isMapDomain ? "live" : "towers");
 
   async function handleSearch({ lat, lon, altitude, source, frequencies }) {
     setLoading(true);
@@ -65,21 +68,23 @@ export default function App() {
   }
 
   // Keep the map mounted once it has been opened so it doesn't re-initialise
-  const [liveEverOpened, setLiveEverOpened] = useState(false);
+  const [liveEverOpened, setLiveEverOpened] = useState(isMapDomain);
 
   return (
     <div className="app">
       <header className="app-header">
         <span className="header-icon">&#9041;</span>
-        <h1>Tower Finder</h1>
-        <span className="subtitle">Passive Radar Illuminator Search</span>
+        <h1>{isMapDomain ? "RETINA" : "Tower Finder"}</h1>
+        <span className="subtitle">{isMapDomain ? "Passive Radar Live Map" : "Passive Radar Illuminator Search"}</span>
         <nav className="header-tabs">
-          <button
-            className={`tab-btn ${activeTab === "towers" ? "active" : ""}`}
-            onClick={() => setActiveTab("towers")}
-          >
-            Tower Search
-          </button>
+          {!isMapDomain && (
+            <button
+              className={`tab-btn ${activeTab === "towers" ? "active" : ""}`}
+              onClick={() => setActiveTab("towers")}
+            >
+              Tower Search
+            </button>
+          )}
           <button
             className={`tab-btn ${activeTab === "physics" ? "active" : ""}`}
             onClick={() => setActiveTab("physics")}

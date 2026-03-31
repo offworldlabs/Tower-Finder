@@ -436,8 +436,12 @@ export default function LiveAircraftMap() {
   }
 
   const handleSelectAircraft = useCallback((hex) => {
-    setSelectedHex((prev) => (prev === hex ? null : hex));
-    setFocusNonce((n) => n + 1);
+    setSelectedHex((prev) => {
+      const next = prev === hex ? null : hex;
+      // Only zoom when selecting a new aircraft, not when deselecting
+      if (next !== null) setFocusNonce((n) => n + 1);
+      return next;
+    });
   }, []);
 
   const handleSelectNode = useCallback((nodeId) => {
