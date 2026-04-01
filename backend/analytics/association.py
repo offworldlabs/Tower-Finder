@@ -330,6 +330,10 @@ class InterNodeAssociator:
         self.node_geometries: dict[str, NodeGeometry] = {}
         self.overlap_zones: dict[tuple[str, str], OverlapZone] = {}
         self._pending_frames: dict[str, dict] = {}  # node_id → latest frame
+        # Adjacency index: node_id → set of neighbor node_ids that share a real
+        # overlap zone (delay_pairs is non-empty).  Built during registration so
+        # submit_frame can iterate O(K) neighbors instead of O(N) all nodes.
+        self._neighbors: dict[str, set[str]] = {}
         self._register_lock = __import__('threading').Lock()
 
     def register_node(self, node_id: str, config: dict):
@@ -389,6 +393,10 @@ class InterNodeAssociator:
                     doppler_gate_hz=self.doppler_gate_hz,
                 )
                 self.overlap_zones[pair_key] = zone
+                # Update adjacency index for O(K) submit_frame lookup.
+                if zone.delay_pairs:  # only real overlaps, not geographic misses
+                    self._neighbors.setdefault(node_id, set()).add(existing_id)
+                    self._neighbors.setdefault(existing_id, set()).add(node_id)
 
             self.node_geometries[node_id] = geo
 
@@ -396,6 +404,8 @@ class InterNodeAssociator:
         """Submit a detection frame and find associations with other recent frames.
 
         Returns association candidates found with any other node's latest frame.
+        Uses the _neighbors adjacency index so only O(K) actual-overlap pairs
+        are checked per call instead of O(N) all connected nodes.
         """
         self._pending_frames[node_id] = frame
 
@@ -403,11 +413,16 @@ class InterNodeAssociator:
         if not frame.get("delay"):
             return []
 
+        neighbors = self._neighbors.get(node_id)
+        if not neighbors:
+            return []  # no registered overlap pairs for this node yet
+
         all_candidates = []
 
-        for other_id, other_frame in list(self._pending_frames.items()):
-            if other_id == node_id:
-                continue
+        for other_id in neighbors:
+            other_frame = self._pending_frames.get(other_id)
+            if other_frame is None:
+                continue  # neighbor hasn’t sent a frame yet
 
             pair_key = tuple(sorted([node_id, other_id]))
             zone = self.overlap_zones.get(pair_key)
