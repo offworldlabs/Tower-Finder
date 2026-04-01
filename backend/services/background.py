@@ -116,10 +116,56 @@ def _refresh_analytics_and_nodes():
     }
     state.latest_overlaps_bytes = orjson.dumps(overlaps_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
+    # Solver-vs-ADS-B accuracy statistics
+    _refresh_accuracy_stats()
+
     # Synthetic chain-of-custody entries for connected nodes that lack them
     _ensure_custody_data()
     # Evict PassiveRadarPipeline instances for long-disconnected nodes to free RAM
     _evict_stale_pipelines(_nodes_snapshot)
+
+
+def _refresh_accuracy_stats():
+    """Compute solver-vs-ADS-B accuracy from the rolling sample buffer."""
+    samples = list(state.accuracy_samples)
+    if not samples:
+        state.latest_accuracy_bytes = orjson.dumps({"n_samples": 0})
+        return
+
+    errors = [s["error_km"] for s in samples]
+    errors.sort()
+    n = len(errors)
+
+    def _percentile(sorted_vals, pct):
+        idx = int(pct / 100 * (len(sorted_vals) - 1))
+        return sorted_vals[min(idx, len(sorted_vals) - 1)]
+
+    # Per-source breakdown
+    by_source: dict[str, list[float]] = {}
+    for s in samples:
+        by_source.setdefault(s["position_source"], []).append(s["error_km"])
+
+    source_stats = {}
+    for src, errs in by_source.items():
+        errs.sort()
+        sn = len(errs)
+        source_stats[src] = {
+            "n_samples": sn,
+            "mean_km": round(sum(errs) / sn, 4),
+            "median_km": round(_percentile(errs, 50), 4),
+            "p95_km": round(_percentile(errs, 95), 4),
+            "max_km": round(errs[-1], 4),
+        }
+
+    result = {
+        "n_samples": n,
+        "mean_km": round(sum(errors) / n, 4),
+        "median_km": round(_percentile(errors, 50), 4),
+        "p95_km": round(_percentile(errors, 95), 4),
+        "max_km": round(errors[-1], 4),
+        "by_source": source_stats,
+    }
+    state.latest_accuracy_bytes = orjson.dumps(result)
 
 
 def _ensure_custody_data():

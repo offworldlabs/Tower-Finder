@@ -13,19 +13,20 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
   const hasAdsb = ac.type !== "tisb_other" && ac.type !== "multinode_solve";
   const isAmbiguityArc = ac.position_source === "single_node_ellipse_arc";
   const isSolverOnly = ac.position_source === "solver_single_node";
+  const isSolverAdsbSeed = ac.position_source === "solver_adsb_seed";
   const isDrone = ac.target_class === "drone";
   const sourceLabel = isMultinode
     ? `Multi-node (${ac.n_nodes}N)`
     : isAmbiguityArc
       ? "Single-node ellipse arc"
-      : isSolverOnly
-        ? "Single-node solver (uncertain)"
-        : ac.position_source === "adsb_associated"
-          ? "ADS-B associated"
+      : isSolverAdsbSeed
+        ? "Solver (ADS-B seeded)"
+        : isSolverOnly
+          ? "Single-node solver (uncertain)"
           : hasAdsb
             ? "ADS-B"
             : ac.type || "Unknown";
-  const sourceBadge = isMultinode ? "multinode" : hasAdsb ? "adsb" : "other";
+  const sourceBadge = isMultinode ? "multinode" : isSolverAdsbSeed ? "adsb" : hasAdsb ? "adsb" : "other";
   const isTruthOnly = !ac.type && !ac.flight;
 
   return (
@@ -119,6 +120,17 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
             <Field label="Nodes" value={ac.n_nodes} />
             <Field label="RMS Delay" value={`${ac.rms_delay ?? "\u2014"} \u03bcs`} />
             <Field label="RMS Doppler" value={`${ac.rms_doppler ?? "\u2014"} Hz`} />
+          </div>
+        )}
+
+        {/* Solver residuals for single-node */}
+        {!isMultinode && !isTruthOnly && (ac.rms_delay != null || ac.rms_doppler != null) && (
+          <div className="detail-section">
+            <div className="detail-section-title">Solver Confidence</div>
+            <Field label="RMS Delay" value={ac.rms_delay != null ? `${ac.rms_delay} \u03bcs` : "\u2014"} />
+            <Field label="RMS Doppler" value={ac.rms_doppler != null ? `${ac.rms_doppler} Hz` : "\u2014"} />
+            {ac.delay_us != null && <Field label="Latest Delay" value={`${ac.delay_us} \u03bcs`} />}
+            {ac.doppler_hz != null && <Field label="Latest Doppler" value={`${ac.doppler_hz} Hz`} />}
           </div>
         )}
 

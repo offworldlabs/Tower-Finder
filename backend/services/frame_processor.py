@@ -304,6 +304,17 @@ def _build_single_node_arc(track_or_delay, node_cfg: dict) -> Optional[list[list
 
 # ── Combined aircraft.json builder ───────────────────────────────────────────
 
+
+def _record_accuracy_sample(ac_hex: str, error_km: float, position_source: str, ts: float):
+    """Append a solver-vs-ADS-B accuracy sample for the rolling accuracy API."""
+    state.accuracy_samples.append({
+        "hex": ac_hex,
+        "error_km": round(error_km, 4),
+        "position_source": position_source,
+        "ts": round(ts, 1),
+    })
+
+
 def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict:
     """Merge per-node pipelines, default pipeline, multinode, ADS-B into one feed."""
     now = time.time()
@@ -341,33 +352,32 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         return entry
 
     def _track_entry(ac_hex, track, node_cfg):
-        # Prefer live ADS-B position over potentially stale pipeline position.
-        # The pipeline position can lag by queue_depth × processing_time when
-        # the frame queue is saturated, but state.adsb_aircraft is updated on
-        # every incoming TCP frame via the fast-path extractor.
+        # The solver output is always the primary position.  ADS-B data
+        # enriches callsign / altitude / velocity but never overrides the
+        # radar-derived position — that's the whole point of the system.
         adsb = _fresh_adsb(ac_hex)
-        ambiguity_arc = None
-        position_source = "solver_single_node"
-        if adsb and adsb.get("lat") and adsb.get("lon"):
-            # Dead-reckon from the last ADS-B fix to now for smooth animation.
-            dr_lat, dr_lon = _dead_reckon(adsb, now)
-            lat = round(dr_lat, 6)
-            lon = round(dr_lon, 6)
-            position_source = "adsb_associated"
-        else:
-            lat = round(track.lat, 6)
-            lon = round(track.lon, 6)
+
+        # Primary position: always from the LM solver
         solver_lat = round(track.lat, 6)
         solver_lon = round(track.lon, 6)
+        lat = solver_lat
+        lon = solver_lon
+
+        # When ADS-B seeded the solver, label accordingly
+        has_adsb = adsb and adsb.get("lat") and adsb.get("lon")
+        position_source = "solver_adsb_seed" if has_adsb else "solver_single_node"
+
+        # Altitude / speed / heading: use ADS-B when available (more precise
+        # than the bistatic solver for these quantities), solver otherwise.
         alt_ft = adsb.get("alt_baro", track.alt_ft) if adsb else track.alt_ft
         gs = round(adsb.get("gs", track.speed_knots) if adsb else track.speed_knots, 1)
         heading = round(adsb.get("track", track.track_angle) if adsb else track.track_angle, 1)
-        # Build arc only when position is not already resolved from ADS-B.
-        # When ADS-B telemetry is present the true location is known precisely;
-        # showing the ellipse on top of a confirmed position adds visual noise.
+
+        # Build ambiguity arc only when we have no ADS-B seed — ADS-B-seeded
+        # solver positions are tight enough that arcs add visual noise.
         ambiguity_arc = (
             _build_single_node_arc(track, node_cfg)
-            if position_source != "adsb_associated"
+            if not has_adsb
             else None
         )
         if ambiguity_arc and position_source == "solver_single_node":
@@ -375,12 +385,24 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             lat = round(midpoint[0], 6)
             lon = round(midpoint[1], 6)
             position_source = "single_node_ellipse_arc"
+
         append_track_history(ac_hex, lat, lon, alt_ft, now)
+
         # Record ADS-B-verified positions as calibration points for empirical coverage.
-        if position_source == "adsb_associated":
+        if has_adsb:
             nid = node_cfg.get("node_id")
             if nid:
-                state.node_analytics.record_calibration_point(nid, lat, lon)
+                state.node_analytics.record_calibration_point(nid, solver_lat, solver_lon)
+            # Track accuracy: haversine(solver, adsb) per aircraft per update
+            adsb_lat = adsb.get("lat", 0)
+            adsb_lon = adsb.get("lon", 0)
+            if adsb_lat and adsb_lon:
+                err_km = position_distance_km(solver_lat, solver_lon, adsb_lat, adsb_lon)
+                _record_accuracy_sample(ac_hex, err_km, position_source, now)
+
+        rms_delay = round(getattr(track, "rms_delay", 0.0) or 0.0, 3)
+        rms_doppler = round(getattr(track, "rms_doppler", 0.0) or 0.0, 2)
+
         return {
             "hex": ac_hex,
             "ground_truth_hex": resolve_ground_truth_hex(ac_hex, lat, lon),
@@ -401,6 +423,8 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             "ambiguity_arc": ambiguity_arc,
             "solver_lat": solver_lat,
             "solver_lon": solver_lon,
+            "rms_delay": rms_delay,
+            "rms_doppler": rms_doppler,
             "delay_us": round(getattr(track, "latest_delay_us", 0.0) or 0.0, 3),
             "doppler_hz": round(getattr(track, "latest_doppler_hz", 0.0) or 0.0, 2),
             "node_id": node_cfg.get("node_id"),
@@ -451,42 +475,16 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     for k in stale_mn:
         state.multinode_tracks.pop(k, None)
 
-    # 4. ADS-B correlated aircraft
+    # 4. ADS-B only — excluded from map per design.
+    # Aircraft must have at least one radar detection to appear.
+    # ADS-B data is used only as a solver seed and for enrichment
+    # (callsign, altitude, velocity) of radar-detected aircraft.
+    # Stale entries are still pruned to avoid unbounded memory growth.
     stale_adsb = []
     for hex_code, entry in list(state.adsb_aircraft.items()):
-        if hex_code in seen_hex:
-            continue
         age_s = now - entry.get("last_seen_ms", 0) / 1000
         if age_s > 60:
             stale_adsb.append(hex_code)
-            continue
-        lat_fix, lon_fix = entry.get("lat", 0), entry.get("lon", 0)
-        if not lat_fix or not lon_fix or not math.isfinite(lat_fix) or not math.isfinite(lon_fix):
-            continue
-        # Dead-reckon to current time so WS clients see smooth 1 Hz movement
-        # even when the source only sends frames every 20-40 s.
-        lat, lon = _dead_reckon(entry, now)
-        seen_hex.add(hex_code)
-        raw_alt = entry.get("alt_baro", 0)
-        alt_baro = raw_alt if isinstance(raw_alt, (int, float)) else 0
-        append_track_history(hex_code, lat, lon, alt_baro, now)
-        aircraft.append({
-            "hex": hex_code,
-            "ground_truth_hex": resolve_ground_truth_hex(hex_code, lat, lon),
-            "type": "adsb_icao",
-            "flight": (entry.get("flight") or hex_code).strip(),
-            "alt_baro": alt_baro,
-            "alt_geom": alt_baro,
-            "gs": round(entry.get("gs", 0), 1),
-            "track": round(entry.get("track", 0), 1),
-            "lat": round(lat, 5),
-            "lon": round(lon, 5),
-            "seen": 0,
-            "messages": 1,
-            "rssi": -15.0,
-            "position_source": "adsb_node_report",
-            "recent_positions": list(state.track_histories.get(hex_code, [])),
-        })
     for k in stale_adsb:
         state.adsb_aircraft.pop(k, None)
 

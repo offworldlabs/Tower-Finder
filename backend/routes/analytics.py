@@ -56,6 +56,12 @@ async def association_overlaps():
     return Response(content=state.latest_overlaps_bytes, media_type="application/json")
 
 
+@router.get("/api/radar/accuracy")
+async def radar_accuracy():
+    """Solver-vs-ADS-B accuracy stats (mean, median, P95, per-source breakdown)."""
+    return Response(content=state.latest_accuracy_bytes, media_type="application/json")
+
+
 @router.get("/api/radar/association/status")
 async def association_status():
     return {

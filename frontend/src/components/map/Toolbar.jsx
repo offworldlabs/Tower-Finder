@@ -49,7 +49,7 @@ export default function Toolbar({
 
       <span className="map-legend">
         <span className="legend-item">
-          <span className="legend-dot" style={{ background: "#2dd4bf" }} /> ADS-B aided
+          <span className="legend-dot" style={{ background: "#2dd4bf" }} /> Solver+ADS-B
         </span>
         <span className="legend-item">
           <span className="legend-dot" style={{ background: "#a78bfa" }} /> Multi

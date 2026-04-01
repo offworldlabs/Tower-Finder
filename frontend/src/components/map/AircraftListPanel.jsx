@@ -147,8 +147,8 @@ export default function AircraftListPanel({
                         ? "Arc·1N"
                         : ac.position_source === "solver_single_node"
                           ? "Solver·1N"
-                          : ac.position_source === "adsb_associated"
-                            ? "ADS-B"
+                          : ac.position_source === "solver_adsb_seed"
+                            ? "Solver·ADS-B"
                             : "Solver";
                   const isDrone = ac.target_class === "drone";
 

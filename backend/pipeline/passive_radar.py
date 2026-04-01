@@ -263,6 +263,28 @@ class PassiveRadarPipeline:
         # Build geolocator Track object
         geo_track = GeoTrack(track_id, geo_detections, event)
 
+        # If the track has an ADS-B hex but its detections lack ADS-B data,
+        # inject the latest ADS-B position from state.adsb_aircraft so the
+        # solver can use it as a high-quality initial guess.
+        if not geo_track.adsb_initialized and event.get("adsb_hex"):
+            from core import state as _state  # deferred to avoid circular import at module level
+            _adsb = _state.adsb_aircraft.get(event["adsb_hex"])
+            if _adsb and _adsb.get("lat") and _adsb.get("lon"):
+                import time as _t
+                age = _t.time() - _adsb.get("last_seen_ms", 0) / 1000
+                if age < 60:
+                    # Patch the first detection with ADS-B data so
+                    # select_initial_guess() picks the ADS-B path.
+                    geo_track.adsb_initialized = True
+                    if geo_track.detections:
+                        geo_track.detections[0].adsb = {
+                            "lat": _adsb["lat"],
+                            "lon": _adsb["lon"],
+                            "alt_baro": _adsb.get("alt_baro", 0),
+                            "gs": _adsb.get("gs", 0),
+                            "track": _adsb.get("track", 0),
+                        }
+
         # Generate initial guess
         if (self.geo_config and self.geo_config.temporal_continuity
                 and track_id in self._previous_solutions):

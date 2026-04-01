@@ -83,6 +83,14 @@ solver_queue: _stdlib_queue.Queue = _stdlib_queue.Queue(maxsize=_SOLVER_QUEUE_SI
 # Monotonic counter for dropped frames (useful for monitoring)
 frames_dropped: int = 0
 
+# ── Accuracy tracking (haversine solver vs ADS-B) ────────────────────────────
+# Rolling buffer of {hex, error_km, position_source, ts} samples.
+ACCURACY_MAX_SAMPLES = 5000
+accuracy_samples: deque = deque(maxlen=ACCURACY_MAX_SAMPLES)
+
+# Pre-serialised accuracy stats (refreshed by background task alongside analytics)
+latest_accuracy_bytes: bytes = b'{}'
+
 # ── Rate limiter buckets ──────────────────────────────────────────────────────
 rate_buckets: dict[str, list] = defaultdict(list)
 

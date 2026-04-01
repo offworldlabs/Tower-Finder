@@ -155,6 +155,7 @@ async def validate_ground_truth(body: dict = Body(...)):
                 "server_hex": sa.get("hex"),
                 "position_error_km": round(best_dist, 2),
                 "altitude_error_m": round(alt_err_m, 0),
+                "position_source": sa.get("position_source", "unknown"),
                 "has_adsb": gt.get("has_adsb", False),
                 "is_anomalous": gt.get("is_anomalous", False),
             })
@@ -170,9 +171,32 @@ async def validate_ground_truth(body: dict = Body(...)):
         avg_alt_err = sum(alt_errors) / len(alt_errors)
         max_pos_err = max(pos_errors)
         accuracy_pct = len(matches) / len(truth_list) * 100
+        sorted_pos = sorted(pos_errors)
+        p50_pos = sorted_pos[len(sorted_pos) // 2]
+        p95_pos = sorted_pos[int(len(sorted_pos) * 0.95)]
+        sorted_alt = sorted(alt_errors)
+        p50_alt = sorted_alt[len(sorted_alt) // 2]
+        p95_alt = sorted_alt[int(len(sorted_alt) * 0.95)]
     else:
         avg_pos_err = avg_alt_err = max_pos_err = 0
+        p50_pos = p95_pos = p50_alt = p95_alt = 0
         accuracy_pct = 0
+
+    # Per-position_source breakdown
+    by_source: dict[str, list[float]] = {}
+    for m in matches:
+        src = m.get("position_source", "unknown")
+        by_source.setdefault(src, []).append(m["position_error_km"])
+    source_breakdown = {}
+    for src, errs in by_source.items():
+        errs.sort()
+        sn = len(errs)
+        source_breakdown[src] = {
+            "count": sn,
+            "mean_km": round(sum(errs) / sn, 2),
+            "median_km": round(errs[sn // 2], 2),
+            "p95_km": round(errs[int(sn * 0.95)], 2),
+        }
 
     return {
         "validation": {
@@ -185,9 +209,14 @@ async def validate_ground_truth(body: dict = Body(...)):
         },
         "accuracy": {
             "avg_position_error_km": round(avg_pos_err, 2),
+            "median_position_error_km": round(p50_pos, 2),
+            "p95_position_error_km": round(p95_pos, 2),
             "max_position_error_km": round(max_pos_err, 2),
             "avg_altitude_error_m": round(avg_alt_err, 0),
+            "median_altitude_error_m": round(p50_alt, 0),
+            "p95_altitude_error_m": round(p95_alt, 0),
         },
+        "by_source": source_breakdown,
         "matches": matches[:50],
         "unmatched_ids": unmatched_truth[:20],
     }
