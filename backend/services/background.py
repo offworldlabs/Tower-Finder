@@ -345,6 +345,9 @@ def _build_real_only_payload(aircraft_data: dict) -> bytes:
     real_aircraft = [
         ac for ac in aircraft_data.get("aircraft", [])
         if ac.get("node_id") in real_node_ids
+        or (ac.get("multinode") and any(
+            nid in real_node_ids for nid in ac.get("contributing_node_ids", [])
+        ))
     ]
     real_arcs = [
         arc for arc in aircraft_data.get("detection_arcs", [])
