@@ -334,6 +334,12 @@ class InterNodeAssociator:
         # overlap zone (delay_pairs is non-empty).  Built during registration so
         # submit_frame can iterate O(K) neighbors instead of O(N) all nodes.
         self._neighbors: dict[str, set[str]] = {}
+        # Rate-limit per-node association to at most once per _ASSOC_MIN_INTERVAL_S.
+        # Prevents O(K) × N frames/s = O(N²) CPU burn in dense deployments where
+        # K ≈ N (wide beams, small area).  Aircraft travel <200 m in 2 s so bistatic
+        # geometry is essentially unchanged — no association quality is lost.
+        self._ASSOC_MIN_INTERVAL_S: float = 2.0
+        self._last_assoc: dict[str, float] = {}  # node_id → last association wall-time
         self._register_lock = __import__('threading').Lock()
 
     def register_node(self, node_id: str, config: dict):
@@ -405,7 +411,9 @@ class InterNodeAssociator:
 
         Returns association candidates found with any other node's latest frame.
         Uses the _neighbors adjacency index so only O(K) actual-overlap pairs
-        are checked per call instead of O(N) all connected nodes.
+        are checked instead of O(N) all connected nodes.  Additionally rate-limits
+        the expensive inner loop to _ASSOC_MIN_INTERVAL_S so dense deployments
+        (K ≈ N) don’t produce O(N²) CPU load when many nodes share the same area.
         """
         self._pending_frames[node_id] = frame
 
@@ -417,9 +425,17 @@ class InterNodeAssociator:
         if not neighbors:
             return []  # no registered overlap pairs for this node yet
 
+        # Rate-limit: only run association at most once per _ASSOC_MIN_INTERVAL_S
+        now = __import__('time').monotonic()
+        if now - self._last_assoc.get(node_id, 0.0) < self._ASSOC_MIN_INTERVAL_S:
+            return []
+        self._last_assoc[node_id] = now
+
+        # Snapshot neighbors set to avoid RuntimeError if registration adds
+        # new entries concurrently (Python set iteration is not thread-safe).
         all_candidates = []
 
-        for other_id in neighbors:
+        for other_id in list(neighbors):
             other_frame = self._pending_frames.get(other_id)
             if other_frame is None:
                 continue  # neighbor hasn’t sent a frame yet
