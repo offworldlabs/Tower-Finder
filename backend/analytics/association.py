@@ -421,6 +421,14 @@ class InterNodeAssociator:
         if not frame.get("delay"):
             return []
 
+        # ADS-B enriched frames already carry independent position fixes for
+        # every visible aircraft.  Running bistatic inter-node association on
+        # top of that is redundant and very expensive when K ≈ N (all node
+        # pairs overlap).  Skip it entirely — the ADS-B correlation path in
+        # process_one_frame handles position attribution instead.
+        if frame.get("adsb"):
+            return []
+
         neighbors = self._neighbors.get(node_id)
         if not neighbors:
             return []  # no registered overlap pairs for this node yet
