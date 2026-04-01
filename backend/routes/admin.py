@@ -250,22 +250,92 @@ _CONFIG_LIVE_CACHE_TTL = 60.0  # seconds
 
 
 def _scan_archive_dir(archive_dir) -> tuple[int, int, dict]:
-    """Blocking file walk — must run in a thread executor."""
-    total_files = 0
+    """Blocking archive scan using subprocess du/find — avoids O(N) stat() calls.
+
+    With 78 k+ files, Python rglob+stat takes 120 s on Docker overlay FS.
+    A single 'du --max-depth=4' call lets the kernel do the tree walk in C
+    and returns per-node-day byte totals in ~1 s regardless of file count.
+    """
+    import subprocess
+
+    if not archive_dir.exists():
+        return 0, 0, {}
+
     total_bytes = 0
+    total_files = 0
     per_node: dict[str, dict] = {}
-    if archive_dir.exists():
-        for f in archive_dir.rglob("*"):
-            if f.is_file():
-                total_files += 1
-                sz = f.stat().st_size
-                total_bytes += sz
-                parts = f.relative_to(archive_dir).parts
-                node = parts[3] if len(parts) > 3 else "unknown"
-                if node not in per_node:
-                    per_node[node] = {"files": 0, "bytes": 0}
-                per_node[node]["files"] += 1
-                per_node[node]["bytes"] += sz
+
+    # ── Total + per-node bytes via du ────────────────────────────────────────
+    # archive structure: archive / YYYY / MM / DD / NODE_ID / *.parquet
+    # --max-depth=4 prints one line per node-day dir; last line is archive total.
+    try:
+        r = subprocess.run(
+            ["du", "-b", "--max-depth=4", str(archive_dir)],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode == 0:
+            from pathlib import Path as _P
+            for line in r.stdout.splitlines():
+                if "\t" not in line:
+                    continue
+                sz_str, path = line.split("\t", 1)
+                sz = int(sz_str)
+                try:
+                    rel = _P(path).relative_to(archive_dir)
+                except ValueError:
+                    total_bytes = sz  # archive root line
+                    continue
+                parts = rel.parts
+                if len(parts) == 0:
+                    total_bytes = sz
+                elif len(parts) == 4:  # YYYY/MM/DD/NODE_ID
+                    node_id = parts[3]
+                    e = per_node.setdefault(node_id, {"files": 0, "bytes": 0})
+                    e["bytes"] += sz
+                elif len(parts) == 0 or path == str(archive_dir):
+                    total_bytes = sz
+    except Exception:
+        # Fallback: du -sb for total only
+        try:
+            r = subprocess.run(
+                ["du", "-sb", str(archive_dir)],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r.returncode == 0 and r.stdout:
+                total_bytes = int(r.stdout.split()[0])
+        except Exception:
+            pass
+
+    # If du didn't give us the root total (it should be the last line with depth>4
+    # reporting archive dir itself), use the sum of depth-1 dirs.
+    if total_bytes == 0:
+        total_bytes = sum(e["bytes"] for e in per_node.values())
+
+    # ── File count via find (no stat — just directory entries) ───────────────
+    try:
+        r = subprocess.run(
+            ["find", str(archive_dir), "-type", "f", "-printf", "x"],
+            capture_output=True, timeout=30,
+        )
+        if r.returncode == 0:
+            total_files = len(r.stdout)  # one 'x' per file, no newlines needed
+            # Also populate per-node file counts from a second find pass
+            r2 = subprocess.run(
+                ["find", str(archive_dir), "-mindepth", "5", "-maxdepth", "5",
+                 "-type", "f", "-printf", "%P\n"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r2.returncode == 0:
+                from pathlib import Path as _P2
+                for rel_path in r2.stdout.splitlines():
+                    if not rel_path:
+                        continue
+                    parts = _P2(rel_path).parts
+                    node_id = parts[3] if len(parts) > 3 else "unknown"
+                    per_node.setdefault(node_id, {"files": 0, "bytes": 0})["files"] += 1
+    except Exception:
+        pass
+
     return total_files, total_bytes, per_node
 
 
