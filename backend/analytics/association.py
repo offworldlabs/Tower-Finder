@@ -323,7 +323,7 @@ class InterNodeAssociator:
     """Manages overlap zones for all node pairs and runs association at runtime."""
 
     def __init__(self, delay_gate_us: float = 5.0, doppler_gate_hz: float = 30.0,
-                 grid_step_km: float = 3.0):
+                 grid_step_km: float = 30.0):
         self.delay_gate_us = delay_gate_us
         self.doppler_gate_hz = doppler_gate_hz
         self.grid_step_km = grid_step_km
@@ -338,7 +338,7 @@ class InterNodeAssociator:
         # Prevents O(K) × N frames/s = O(N²) CPU burn in dense deployments where
         # K ≈ N (wide beams, small area).  Aircraft travel <200 m in 2 s so bistatic
         # geometry is essentially unchanged — no association quality is lost.
-        self._ASSOC_MIN_INTERVAL_S: float = 2.0
+        self._ASSOC_MIN_INTERVAL_S: float = 10.0
         self._last_assoc: dict[str, float] = {}  # node_id → last association wall-time
         self._register_lock = __import__('threading').Lock()
 
