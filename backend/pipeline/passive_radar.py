@@ -194,6 +194,12 @@ class PassiveRadarPipeline:
         # re-solve intervals produce identical quality at 50x lower CPU cost.
         self._geo_last_solve: dict[str, float] = {}
         self._GEO_INTERVAL_S: float = 5.0
+        # Stale-entry pruning: run every _PRUNE_EVERY_N frames to drop
+        # dead track IDs from the four per-track dicts. Without this,
+        # long-running deployments leak memory proportionally to the total
+        # number of tracks ever created (not just currently active).
+        self._frame_count: int = 0
+        self._PRUNE_EVERY_N: int = 500
 
     def _init_geolocator(self, config):
         """Initialize geolocator geometry and config."""
@@ -326,6 +332,28 @@ class PassiveRadarPipeline:
             target_class=target_class,
         )
 
+    def _prune_stale_tracks(self):
+        """Remove dead track IDs from per-track dicts to prevent memory leaks.
+
+        A track ID is considered dead when it no longer appears in the
+        event_writer.events dict (no recent write_event call for it) AND it
+        is not in the active tracker.tracks list.  Called every
+        _PRUNE_EVERY_N frames so the O(N) linear scan does not dominate.
+        """
+        live_ids = set(self.event_writer.events.keys()) | {
+            t.id for t in self.tracker.tracks if t.id
+        }
+        for d in (self._previous_solutions, self._geo_last_solve, self.geolocated_tracks):
+            stale = [k for k in d if k not in live_ids]
+            for k in stale:
+                del d[k]
+        # Prune event_writer.events itself: keep only IDs that are still in
+        # tracker.tracks so dead tracks don't accumulate indefinitely.
+        active_ids = {t.id for t in self.tracker.tracks if t.id}
+        stale_events = [k for k in self.event_writer.events if k not in active_ids]
+        for k in stale_events:
+            del self.event_writer.events[k]
+
     def _run_geolocation(self):
         """Run geolocation only on tracks that received new data this frame.
 
@@ -360,6 +388,11 @@ class PassiveRadarPipeline:
 
         # Run geolocation on updated track events
         self._run_geolocation()
+
+        # Periodically prune stale track entries from per-track dicts
+        self._frame_count += 1
+        if self._frame_count % self._PRUNE_EVERY_N == 0:
+            self._prune_stale_tracks()
 
     def process_file(self, filepath: str) -> list:
         """Process an entire .detection file. Returns geolocated tracks."""
