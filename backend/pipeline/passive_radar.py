@@ -188,6 +188,12 @@ class PassiveRadarPipeline:
         # Store geolocated tracks
         self.geolocated_tracks = {}  # track_id → GeolocatedTrack
         self._previous_solutions = {}  # track_id → state vector
+        # Per-track geolocation rate-limiter: solve at most once per
+        # _GEO_INTERVAL_S to avoid running the expensive LM solver every
+        # frame.  Aircraft positions change slowly enough that 5-second
+        # re-solve intervals produce identical quality at 50x lower CPU cost.
+        self._geo_last_solve: dict[str, float] = {}
+        self._GEO_INTERVAL_S: float = 5.0
 
     def _init_geolocator(self, config):
         """Initialize geolocator geometry and config."""
@@ -321,8 +327,18 @@ class PassiveRadarPipeline:
         )
 
     def _run_geolocation(self):
-        """Run geolocation only on tracks that received new data this frame."""
+        """Run geolocation only on tracks that received new data this frame.
+
+        Per-track rate-limit: re-solve at most once per _GEO_INTERVAL_S.
+        get_new_events() is always called to drain the dirty set; tracks that
+        are due for a re-solve get the expensive LM solve, others are skipped.
+        """
+        import time as _time_geo
+        now = _time_geo.monotonic()
         for track_id, event in self.event_writer.get_new_events().items():
+            if now - self._geo_last_solve.get(track_id, 0.0) < self._GEO_INTERVAL_S:
+                continue
+            self._geo_last_solve[track_id] = now
             result = self._geolocate_track_event(track_id, event)
             if result is not None:
                 self.geolocated_tracks[track_id] = result

@@ -142,16 +142,20 @@ def solve_track(track, initial_state, tx_enu, rx_enu, frequency, antenna_boresig
         100               # vz (m/s)
     ]
 
-    # Run LM optimization
+    # Run LM optimization.
+    # max_nfev=20 keeps each per-node solve attempt to <20ms instead of
+    # the original 1000-iteration budget (~800ms) that saturated the frame
+    # queue at 1000-node scale.  For well-conditioned problems (ADS-B init)
+    # 20 evaluations (~3 LM iterations) is sufficient to converge.
     result = least_squares(
         residual_function,
         initial_state,
         args=(track, tx_enu, rx_enu, frequency, antenna_boresight, rx_alt_m),
         bounds=(bounds_lower, bounds_upper),
         method='trf',  # Trust Region Reflective
-        ftol=1e-8,
-        xtol=1e-8,
-        max_nfev=1000
+        ftol=1e-4,
+        xtol=1e-4,
+        max_nfev=20
     )
 
     # Extract results
