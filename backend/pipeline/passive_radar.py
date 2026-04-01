@@ -394,16 +394,19 @@ class PassiveRadarPipeline:
                 self.geolocated_tracks[track_id] = result
 
     def process_frame(self, frame: dict):
-        """Process a single detection frame {timestamp, delay[], doppler[], snr[]}."""
+        """Process a single detection frame {timestamp, delay[], doppler[], snr[], adsb?[]}."""
         ts = frame["timestamp"]
         delays = frame.get("delay", [])
         dopplers = frame.get("doppler", [])
         snrs = frame.get("snr", [])
+        adsb_list = frame.get("adsb")  # aligned by index, may be None
 
-        detections = [
-            {"delay": d, "doppler": f, "snr": s}
-            for d, f, s in zip(delays, dopplers, snrs)
-        ]
+        detections = []
+        for i, (d, f, s) in enumerate(zip(delays, dopplers, snrs)):
+            det = {"delay": d, "doppler": f, "snr": s}
+            if adsb_list and i < len(adsb_list) and adsb_list[i] is not None:
+                det["adsb"] = adsb_list[i]
+            detections.append(det)
 
         # Feed to retina-tracker (Kalman + GNN)
         self.tracker.process_frame(detections, ts)
