@@ -107,6 +107,14 @@ class Tracker:
                 self.all_tracks.append(track)
         self.tracks = [t for t in self.tracks if not t.should_delete()]
 
+        # Prune all_tracks to the merge-window (5 s = 5000 ms) so _merge_tracks
+        # stays O(window²) instead of O(uptime²).  Entries older than the window
+        # can never be paired with new tracks, so they are safe to discard.
+        _MERGE_WINDOW_MS = 5000
+        if self.all_tracks:
+            cutoff = timestamp - _MERGE_WINDOW_MS
+            self.all_tracks = [t for t in self.all_tracks if t.death_timestamp >= cutoff]
+
         if len(self.all_tracks) > 1:
             self._merge_tracks()
 
