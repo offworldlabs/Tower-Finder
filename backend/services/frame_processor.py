@@ -468,28 +468,13 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         }
 
     # 1. Per-node pipelines
-    _geo_total = 0
-    _geo_synth = 0
-    _geo_synth_dup = 0
     for pipeline in list(state.node_pipelines.values()):
-        nid = pipeline.config.get("node_id", "?")
-        is_synth = nid.startswith("synth")
         for track in list(pipeline.geolocated_tracks.values()):
-            _geo_total += 1
             ac_hex = track.adsb_hex or track.hex_id
             if ac_hex in seen_hex:
-                if is_synth:
-                    _geo_synth_dup += 1
                 continue
             seen_hex.add(ac_hex)
-            if is_synth:
-                _geo_synth += 1
             aircraft.append(_track_entry(ac_hex, track, pipeline.config))
-    import logging as _lg_ac
-    _lg_ac.getLogger("pipeline.aircraft_build").warning(
-        "AIRCRAFT_BUILD: geo_total=%d synth_unique=%d synth_dup=%d real=%d",
-        _geo_total, _geo_synth, _geo_synth_dup, _geo_total - _geo_synth - _geo_synth_dup,
-    )
 
     # 2. Default pipeline
     for track in list(default_pipeline.geolocated_tracks.values()):
