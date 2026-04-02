@@ -369,9 +369,17 @@ class InterNodeAssociator:
         self._neighbors: dict[str, set[str]] = {}
         # Rate-limit per-node association to at most once per _ASSOC_MIN_INTERVAL_S.
         # Prevents O(K) × N frames/s = O(N²) CPU burn in dense deployments where
-        # K ≈ N (wide beams, small area).  Aircraft travel <200 m in 2 s so bistatic
-        # geometry is essentially unchanged — no association quality is lost.
-        self._ASSOC_MIN_INTERVAL_S: float = 60.0
+        # K ≈ N (wide beams, small area).
+        #
+        # BUDGET CALCULATION (1000-node fleet on 2-core / GIL-bound):
+        #   find_associations ≈ 50 µs/call.
+        #   K ≈ 999 neighbors (all nodes overlap in simulation).
+        #   Nodes send every 40 s; trigger every max(interval, 2×send) seconds.
+        #   At interval=60 s → 11.4 rounds/s → 11.4 × 999 × 50 µs = 570 ms/s
+        #   = 57 % of the single GIL core — starves frame workers.
+        #   At interval=300 s, cap=50 → 2.9 rounds/s → 2.9 × 50 × 50 µs = 7 ms/s.
+        self._ASSOC_MIN_INTERVAL_S: float = 300.0
+        self._ASSOC_MAX_NEIGHBORS: int = 50
         self._last_assoc: dict[str, float] = {}  # node_id → last association wall-time
         self._register_lock = __import__('threading').Lock()
 
@@ -466,9 +474,14 @@ class InterNodeAssociator:
 
         # Snapshot neighbors set to avoid RuntimeError if registration adds
         # new entries concurrently (Python set iteration is not thread-safe).
+        # Cap to _ASSOC_MAX_NEIGHBORS to bound CPU time per round.
         all_candidates = []
+        _neighbor_list = list(neighbors)
+        if len(_neighbor_list) > self._ASSOC_MAX_NEIGHBORS:
+            import random
+            _neighbor_list = random.sample(_neighbor_list, self._ASSOC_MAX_NEIGHBORS)
 
-        for other_id in list(neighbors):
+        for other_id in _neighbor_list:
             other_frame = self._pending_frames.get(other_id)
             if other_frame is None:
                 continue  # neighbor hasn’t sent a frame yet
