@@ -128,41 +128,48 @@ class Tracker:
         n_dets = len(detections)
         cost_matrix = np.full((n_tracks, n_dets), 1e6)
 
+        # Pre-compute detection measurements as a single (n_dets, 2) array
+        # to avoid creating n_tracks × n_dets individual numpy arrays.
+        det_z = np.array([[d["delay"], d["doppler"]] for d in detections])
+        det_snr = np.array([d.get("snr", 10.0) for d in detections])
+        snr_weights = 20.0 / np.maximum(det_snr, 5.0)
+
+        base_gate = GATE_THRESHOLD()
+        adsb_priority = self.config.get("adsb", {}).get("priority")
+
         for i, track in enumerate(self.tracks):
             z_pred = track.get_predicted_measurement()
             S = track.get_innovation_covariance()
 
-            try:
-                S_inv = np.linalg.inv(S)
-            except np.linalg.LinAlgError:
-                print(
-                    f"Warning: Singular innovation covariance for track {track.id}, skipping association",
-                    file=sys.stderr,
-                )
+            # Analytical 2×2 inverse (avoids numpy.linalg.inv per-track overhead)
+            det_S = S[0, 0] * S[1, 1] - S[0, 1] * S[1, 0]
+            if abs(det_S) < 1e-15:
+                continue
+            inv_det = 1.0 / det_S
+            S_inv = np.array([
+                [S[1, 1] * inv_det, -S[0, 1] * inv_det],
+                [-S[1, 0] * inv_det, S[0, 0] * inv_det],
+            ])
+
+            gate = base_gate
+            if track.state_status == TrackState.COASTING and track.n_missed > 0:
+                gate = base_gate * min(1.0 + 0.1 * track.n_missed, 1.2)
+
+            # Vectorized Mahalanobis distance for all detections at once
+            innovations = det_z - z_pred                     # (n_dets, 2)
+            tmp = innovations @ S_inv                        # (n_dets, 2)
+            mahal = np.sum(tmp * innovations, axis=1)        # (n_dets,)
+
+            within_gate = mahal < gate
+            if not np.any(within_gate):
                 continue
 
-            gate_threshold = GATE_THRESHOLD()
-            if track.state_status == TrackState.COASTING and track.n_missed > 0:
-                expansion = min(1.0 + 0.1 * track.n_missed, 1.2)
-                gate_threshold = GATE_THRESHOLD() * expansion
-
-            for j, det in enumerate(detections):
-                z = np.array([det["delay"], det["doppler"]])
-                innovation = z - z_pred
-
-                mahal_dist = innovation.T @ S_inv @ innovation
-
-                if mahal_dist < gate_threshold:
-                    cost = mahal_dist
-
-                    snr = det.get("snr", 10.0)
-                    snr_weight = 20.0 / max(snr, 5.0)
-                    cost *= snr_weight
-
-                    if self.config.get("adsb", {}).get("priority") and track.adsb_initialized:
-                        cost *= 0.8
-
-                    cost_matrix[i, j] = cost
+            costs = mahal * snr_weights
+            if adsb_priority and track.adsb_initialized:
+                costs *= 0.8
+            # Write only gated entries into cost matrix
+            mask_indices = np.where(within_gate)[0]
+            cost_matrix[i, mask_indices] = costs[mask_indices]
 
         row_ind, col_ind = linear_sum_assignment(cost_matrix)
 
