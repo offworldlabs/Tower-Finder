@@ -78,18 +78,49 @@ class InMemoryEventWriter:
         }
         self._dirty.add(track_id)
 
+    def write_event_lazy(self, track_id, timestamp, length, track_ref,
+                         adsb_hex=None, adsb_initialized=False,
+                         is_anomalous=False, max_velocity_ms=0.0):
+        """Lightweight write_event — stores a track reference instead of
+        materializing the detection list.  The full detection list is resolved
+        lazily via get_new_events_resolved() only for tracks that actually
+        need geolocation.  This avoids ~3200 dict creations per frame from
+        get_recent_detections() calls that were previously discarded.
+        """
+        self.events[track_id] = {
+            "track_id": track_id,
+            "timestamp": timestamp,
+            "length": length,
+            "detections": None,       # deferred
+            "_track_ref": track_ref,   # for lazy resolution
+            "adsb_hex": adsb_hex,
+            "adsb_initialized": adsb_initialized,
+            "is_anomalous": is_anomalous,
+            "max_velocity_ms": max_velocity_ms,
+        }
+        self._dirty.add(track_id)
+
     def get_events(self):
         return self.events
 
     def get_new_events(self) -> dict:
         """Return only events updated since the last call; clears the dirty set.
 
-        This avoids re-running the expensive LM solver for tracks that have
-        not received new detections in the current frame.
+        Resolves lazy detection references for events that need it.
         """
         if not self._dirty:
             return {}
-        result = {tid: self.events[tid] for tid in self._dirty if tid in self.events}
+        result = {}
+        for tid in self._dirty:
+            event = self.events.get(tid)
+            if event is None:
+                continue
+            # Lazy-resolve detections if still deferred
+            if event.get("detections") is None and event.get("_track_ref") is not None:
+                track = event["_track_ref"]
+                event["detections"] = track.get_recent_detections(n=event["length"])
+                event.pop("_track_ref", None)
+            result[tid] = event
         self._dirty.clear()
         return result
 

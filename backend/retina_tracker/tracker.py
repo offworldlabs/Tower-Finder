@@ -49,6 +49,8 @@ class Tracker:
         associated_tracks = set()
         associated_detections = set()
 
+        _lazy_write = hasattr(self.event_writer, 'write_event_lazy') if self.event_writer else False
+
         for track_idx, det_idx in associations:
             track = self.tracks[track_idx]
             det = detections[det_idx]
@@ -59,17 +61,29 @@ class Tracker:
             associated_detections.add(det_idx)
 
             if track.id and self.event_writer:
-                detections_window = track.get_recent_detections(n=self.detection_window)
-                self.event_writer.write_event(
-                    track.id,
-                    timestamp,
-                    track.n_associated,
-                    detections_window,
-                    adsb_hex=track.adsb_hex,
-                    adsb_initialized=track.adsb_initialized,
-                    is_anomalous=track.is_anomalous,
-                    max_velocity_ms=track.max_velocity_ms,
-                )
+                if _lazy_write:
+                    self.event_writer.write_event_lazy(
+                        track.id,
+                        timestamp,
+                        track.n_associated,
+                        track,
+                        adsb_hex=track.adsb_hex,
+                        adsb_initialized=track.adsb_initialized,
+                        is_anomalous=track.is_anomalous,
+                        max_velocity_ms=track.max_velocity_ms,
+                    )
+                else:
+                    detections_window = track.get_recent_detections(n=self.detection_window)
+                    self.event_writer.write_event(
+                        track.id,
+                        timestamp,
+                        track.n_associated,
+                        detections_window,
+                        adsb_hex=track.adsb_hex,
+                        adsb_initialized=track.adsb_initialized,
+                        is_anomalous=track.is_anomalous,
+                        max_velocity_ms=track.max_velocity_ms,
+                    )
 
         for i, track in enumerate(self.tracks):
             if i not in associated_tracks:
@@ -82,17 +96,29 @@ class Tracker:
             if promoted:
                 track.id = Track._generate_id(timestamp, adsb_hex=track.adsb_hex)
                 if self.event_writer:
-                    detections_list = track.get_recent_detections(n=track.n_associated)
-                    self.event_writer.write_event(
-                        track.id,
-                        timestamp,
-                        track.n_associated,
-                        detections_list,
-                        adsb_hex=track.adsb_hex,
-                        adsb_initialized=track.adsb_initialized,
-                        is_anomalous=track.is_anomalous,
-                        max_velocity_ms=track.max_velocity_ms,
-                    )
+                    if _lazy_write:
+                        self.event_writer.write_event_lazy(
+                            track.id,
+                            timestamp,
+                            track.n_associated,
+                            track,
+                            adsb_hex=track.adsb_hex,
+                            adsb_initialized=track.adsb_initialized,
+                            is_anomalous=track.is_anomalous,
+                            max_velocity_ms=track.max_velocity_ms,
+                        )
+                    else:
+                        detections_list = track.get_recent_detections(n=track.n_associated)
+                        self.event_writer.write_event(
+                            track.id,
+                            timestamp,
+                            track.n_associated,
+                            detections_list,
+                            adsb_hex=track.adsb_hex,
+                            adsb_initialized=track.adsb_initialized,
+                            is_anomalous=track.is_anomalous,
+                            max_velocity_ms=track.max_velocity_ms,
+                        )
 
         for i, det in enumerate(detections):
             if i not in associated_detections:
