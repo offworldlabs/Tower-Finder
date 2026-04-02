@@ -298,6 +298,14 @@ class Track:
         measurement = np.array([detection["delay"], detection["doppler"]])
         self.state, self.covariance = self.kf.update(self.state, self.covariance, measurement, detection.get("snr"))
 
+        # Capture ADS-B hex on first association that carries one.  Tracks
+        # initialised from clutter miss this in __init__; this back-fills it.
+        if self.adsb_hex is None and detection.get("adsb"):
+            adsb = detection["adsb"]
+            if self._validate_adsb_data(adsb) and adsb.get("hex"):
+                self.adsb_hex = adsb["hex"]
+                self.adsb_initialized = True
+
         self.history["timestamps"].append(timestamp)
         self.history["frames"].append(frame)
         self.history["states"].append(self.state.copy())
