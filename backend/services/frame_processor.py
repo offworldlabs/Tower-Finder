@@ -221,6 +221,7 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
         "contributing_node_ids": r.get("contributing_node_ids", []),
         "rms_delay": round(r["rms_delay"], 3),
         "rms_doppler": round(r["rms_doppler"], 2),
+        "position_source": "multinode_solve",
     }
 
 
