@@ -300,11 +300,20 @@ class Track:
 
         # Capture ADS-B hex on first association that carries one.  Tracks
         # initialised from clutter miss this in __init__; this back-fills it.
-        if self.adsb_hex is None and detection.get("adsb"):
-            adsb = detection["adsb"]
-            if self._validate_adsb_data(adsb) and adsb.get("hex"):
+        _det_adsb = detection.get("adsb")
+        if self.adsb_hex is None and _det_adsb:
+            adsb = _det_adsb
+            _valid = self._validate_adsb_data(adsb)
+            _has_hex = bool(adsb.get("hex"))
+            if _valid and _has_hex:
                 self.adsb_hex = adsb["hex"]
                 self.adsb_initialized = True
+            else:
+                import logging as _lg
+                _lg.getLogger("track").warning(
+                    "ADSB backfill skip: valid=%s has_hex=%s adsb_keys=%s",
+                    _valid, _has_hex, list(adsb.keys()) if isinstance(adsb, dict) else type(adsb).__name__,
+                )
 
         self.history["timestamps"].append(timestamp)
         self.history["frames"].append(frame)

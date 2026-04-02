@@ -393,6 +393,9 @@ class PassiveRadarPipeline:
             if result is not None:
                 self.geolocated_tracks[track_id] = result
 
+    _adsb_debug_counter = 0
+    _adsb_debug_last_log = 0.0
+
     def process_frame(self, frame: dict):
         """Process a single detection frame {timestamp, delay[], doppler[], snr[], adsb?[]}."""
         ts = frame["timestamp"]
@@ -402,11 +405,26 @@ class PassiveRadarPipeline:
         adsb_list = frame.get("adsb")  # aligned by index, may be None
 
         detections = []
+        n_adsb = 0
         for i, (d, f, s) in enumerate(zip(delays, dopplers, snrs)):
             det = {"delay": d, "doppler": f, "snr": s}
             if adsb_list and i < len(adsb_list) and adsb_list[i] is not None:
                 det["adsb"] = adsb_list[i]
+                n_adsb += 1
             detections.append(det)
+
+        # Debug: log how many detections carry ADS-B
+        import time as _t_dbg
+        PassiveRadarPipeline._adsb_debug_counter += n_adsb
+        _now_dbg = _t_dbg.monotonic()
+        if _now_dbg - PassiveRadarPipeline._adsb_debug_last_log > 30.0:
+            import logging as _lg_dbg
+            _lg_dbg.getLogger("pipeline.adsb_debug").warning(
+                "ADSB_DEBUG: frame has %d/%d detections with adsb, adsb_list=%s, cumulative=%d, tracker_tracks=%d",
+                n_adsb, len(detections), "present" if adsb_list else "NONE",
+                PassiveRadarPipeline._adsb_debug_counter, len(self.tracker.tracks),
+            )
+            PassiveRadarPipeline._adsb_debug_last_log = _now_dbg
 
         # Feed to retina-tracker (Kalman + GNN)
         self.tracker.process_frame(detections, ts)
