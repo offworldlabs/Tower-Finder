@@ -40,8 +40,23 @@ class KalmanFilter:
         self.R = np.diag([MEASUREMENT_NOISE_DELAY, MEASUREMENT_NOISE_DOPPLER])
 
     def predict(self, state, covariance):
-        state_pred = self.F @ state
-        cov_pred = self.F @ covariance @ self.F.T + self.Q
+        dt = self.dt
+        # Rebuild F and Q with the current dt so predictions match the actual
+        # frame interval (which can vary from 0.5 s for real nodes to 40 s for
+        # synthetic fleet nodes).
+        F = np.array([[1, dt, 0, 0], [0, 1, 0, 0], [0, 0, 1, dt], [0, 0, 0, 1]])
+        q_delay = PROCESS_NOISE_DELAY()
+        q_doppler = PROCESS_NOISE_DOPPLER()
+        Q = np.array(
+            [
+                [q_delay * dt**3 / 3, q_delay * dt**2 / 2, 0, 0],
+                [q_delay * dt**2 / 2, q_delay * dt, 0, 0],
+                [0, 0, q_doppler * dt**3 / 3, q_doppler * dt**2 / 2],
+                [0, 0, q_doppler * dt**2 / 2, q_doppler * dt],
+            ]
+        )
+        state_pred = F @ state
+        cov_pred = F @ covariance @ F.T + Q
 
         if state_pred[0] < 0:
             state_pred[0] = 0.0
