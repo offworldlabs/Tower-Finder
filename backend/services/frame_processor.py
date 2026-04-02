@@ -132,8 +132,15 @@ def get_or_create_node_pipeline(
 
 # ── Per-frame processing (runs in thread pool) ───────────────────────────────
 
+_prof_total = 0.0
+_prof_count = 0
+_prof_pipeline = 0.0
+
+
 def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarPipeline):
     """CPU-heavy frame processing — never runs on the event loop."""
+    global _prof_total, _prof_count, _prof_pipeline
+    _t0 = time.monotonic()
 
     # Deferred signature verification (moved off the event loop)
     if frame.pop("_needs_sig_verify", False):
@@ -157,11 +164,10 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
         for s_in in solver_inputs:
             if s_in["n_nodes"] < 2:
                 continue
-            # Off-load to background solver thread — keeps the hot path fast.
             try:
                 state.solver_queue.put_nowait((s_in, node_cfgs))
             except Exception:
-                pass  # queue.Full: drop candidate; solver is lagging
+                pass
 
     # Extract embedded ADS-B
     adsb_list = frame.get("adsb")
@@ -189,14 +195,21 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             }
 
     pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
+    _tp = time.monotonic()
     pipeline.process_frame(frame)
+    _prof_pipeline += time.monotonic() - _tp
 
     state.node_analytics.maybe_auto_save()
-    # Queue frame for batched archival instead of blocking per-frame
     _archive_buffer[node_id].append(frame)
     if len(_archive_buffer[node_id]) >= _ARCHIVE_BATCH_MAX:
         _flush_archive_node(node_id)
 
+    _prof_total += time.monotonic() - _t0
+    _prof_count += 1
+    if _prof_count % 500 == 0:
+        avg_total = _prof_total / _prof_count * 1000
+        avg_pipe = _prof_pipeline / _prof_count * 1000
+        logging.warning("PERF: %d frames  avg_total=%.1fms  avg_pipeline=%.1fms", _prof_count, avg_total, avg_pipe)
 
 # ── Multi-node result → tar1090-compatible dict ──────────────────────────────
 
