@@ -106,23 +106,28 @@ class InMemoryEventWriter:
     def get_new_events(self) -> dict:
         """Return only events updated since the last call; clears the dirty set.
 
-        Resolves lazy detection references for events that need it.
+        Lazy detection references are NOT resolved here — caller must call
+        resolve_event() before passing to the solver.  This avoids
+        materializing detection dicts for tracks that will be skipped by
+        the ADS-B fast-path.
         """
         if not self._dirty:
             return {}
         result = {}
         for tid in self._dirty:
             event = self.events.get(tid)
-            if event is None:
-                continue
-            # Lazy-resolve detections if still deferred
-            if event.get("detections") is None and event.get("_track_ref") is not None:
-                track = event["_track_ref"]
-                event["detections"] = track.get_recent_detections(n=event["length"])
-                event.pop("_track_ref", None)
-            result[tid] = event
+            if event is not None:
+                result[tid] = event
         self._dirty.clear()
         return result
+
+    @staticmethod
+    def resolve_event(event):
+        """Materialize lazy detection list on an event dict (idempotent)."""
+        if event.get("detections") is None and event.get("_track_ref") is not None:
+            track = event["_track_ref"]
+            event["detections"] = track.get_recent_detections(n=event["length"])
+            event.pop("_track_ref", None)
 
 
 def _enu_to_lla(enu_km, rx_lat, rx_lon, rx_alt):
@@ -274,6 +279,9 @@ class PassiveRadarPipeline:
 
     def _geolocate_track_event(self, track_id, event):
         """Run LM solver on a track event to get lat/lon/alt/velocity."""
+        # Resolve lazy detection reference if needed (only for tracks that
+        # actually reach the solver — ADS-B fast-path skips this entirely).
+        InMemoryEventWriter.resolve_event(event)
         detections_data = event.get("detections", [])
 
         min_det = 3
