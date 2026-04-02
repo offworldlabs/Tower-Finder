@@ -128,6 +128,7 @@ class GeolocatedTrack:
         self.rms_doppler = rms_doppler
         self.n_detections = n_detections
         self.last_update_ms = timestamp_ms
+        self.wall_clock_ts = time.time()  # wall-clock for staleness checks
         self.adsb_hex = adsb_hex
         self.latest_delay_us = latest_delay_us
         self.latest_doppler_hz = latest_doppler_hz

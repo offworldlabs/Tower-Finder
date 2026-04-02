@@ -473,12 +473,11 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     # computation, ground-truth resolution, history writes — all holding
     # the GIL and starving frame workers.
     _STALE_TRACK_S = 120.0
-    now_ms = now * 1000
 
     # 1. Per-node pipelines
     for pipeline in list(state.node_pipelines.values()):
         for track in list(pipeline.geolocated_tracks.values()):
-            if (now_ms - track.last_update_ms) > _STALE_TRACK_S * 1000:
+            if (now - getattr(track, 'wall_clock_ts', 0)) > _STALE_TRACK_S:
                 continue
             ac_hex = track.adsb_hex or track.hex_id
             if ac_hex in seen_hex:
@@ -488,7 +487,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
 
     # 2. Default pipeline
     for track in list(default_pipeline.geolocated_tracks.values()):
-        if (now_ms - track.last_update_ms) > _STALE_TRACK_S * 1000:
+        if (now - getattr(track, 'wall_clock_ts', 0)) > _STALE_TRACK_S:
             continue
         ac_hex = track.adsb_hex or track.hex_id
         if ac_hex in seen_hex:
