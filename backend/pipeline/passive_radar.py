@@ -376,6 +376,14 @@ class PassiveRadarPipeline:
         for k in stale_events:
             del self.event_writer.events[k]
 
+    # Geolocation diagnostics (class-level, across all pipeline instances)
+    _geo_diag_events = 0
+    _geo_diag_rate_limited = 0
+    _geo_diag_few_det = 0
+    _geo_diag_solve_fail = 0
+    _geo_diag_solve_ok = 0
+    _geo_diag_last_log = 0.0
+
     def _run_geolocation(self):
         """Run geolocation only on tracks that received new data this frame.
 
@@ -385,13 +393,35 @@ class PassiveRadarPipeline:
         """
         import time as _time_geo
         now = _time_geo.monotonic()
-        for track_id, event in self.event_writer.get_new_events().items():
+        new_events = self.event_writer.get_new_events()
+        cls = PassiveRadarPipeline
+        cls._geo_diag_events += len(new_events)
+        for track_id, event in new_events.items():
             if now - self._geo_last_solve.get(track_id, 0.0) < self._GEO_INTERVAL_S:
+                cls._geo_diag_rate_limited += 1
                 continue
             self._geo_last_solve[track_id] = now
             result = self._geolocate_track_event(track_id, event)
             if result is not None:
                 self.geolocated_tracks[track_id] = result
+                cls._geo_diag_solve_ok += 1
+            else:
+                # Distinguish why — too few detections vs solver failure
+                dets = event.get("detections", [])
+                min_det = self.geo_config.min_detections if self.geo_config else 3
+                if len(dets) < min_det:
+                    cls._geo_diag_few_det += 1
+                else:
+                    cls._geo_diag_solve_fail += 1
+
+        if now - cls._geo_diag_last_log > 30.0:
+            import logging as _lg_geo
+            _lg_geo.getLogger("pipeline.geo_debug").warning(
+                "GEO_DIAG: events=%d rate_limited=%d few_det=%d solve_fail=%d solve_ok=%d",
+                cls._geo_diag_events, cls._geo_diag_rate_limited,
+                cls._geo_diag_few_det, cls._geo_diag_solve_fail, cls._geo_diag_solve_ok,
+            )
+            cls._geo_diag_last_log = now
 
     _adsb_debug_counter = 0
     _adsb_debug_last_log = 0.0
