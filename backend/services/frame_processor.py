@@ -343,13 +343,29 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         return lat_dr, lon_dr
 
     def _fresh_adsb(ac_hex: str):
-        """Return state.adsb_aircraft entry if it's recent (< 60 s), else None."""
+        """Return ADS-B entry for ac_hex, or None if unavailable/stale.
+
+        Checks state.adsb_aircraft first (live feed, < 60 s).  Falls back to
+        state.external_adsb_cache (OpenSky snapshot) which the background
+        poller already refreshes periodically — no additional staleness guard
+        needed here.
+        """
         entry = state.adsb_aircraft.get(ac_hex)
-        if not entry:
-            return None
-        if now - entry.get("last_seen_ms", 0) / 1000 > 60:
-            return None
-        return entry
+        if entry and now - entry.get("last_seen_ms", 0) / 1000 <= 60:
+            return entry
+        # Fallback: external ADS-B truth sourced from OpenSky Network.
+        ext = state.external_adsb_cache.get(ac_hex)
+        if ext and ext.get("lat") and ext.get("lon"):
+            return {
+                "hex": ac_hex,
+                "lat": ext["lat"],
+                "lon": ext["lon"],
+                "alt_baro": round((ext.get("alt_m") or 0) / 0.3048),
+                "gs": round((ext.get("velocity") or 0) * 1.94384, 1),
+                "track": ext.get("heading") or 0,
+                "last_seen_ms": int(now * 1000),
+            }
+        return None
 
     def _track_entry(ac_hex, track, node_cfg):
         # The solver output is always the primary position.  ADS-B data

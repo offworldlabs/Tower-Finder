@@ -501,6 +501,14 @@ async def _fetch_external_adsb() -> bool:
 
     lats = [n["config"].get("rx_lat", 0) for n in active_nodes]
     lons = [n["config"].get("rx_lon", 0) for n in active_nodes]
+
+    # Prefer real (non-synthetic) nodes for the bounding box — querying a
+    # country-wide box when 900+ synthetic nodes are active causes OpenSky
+    # to time out.  If no real nodes exist fall back to all nodes.
+    real_nodes = [n for n in active_nodes if not n.get("is_synthetic", False)]
+    if real_nodes:
+        lats = [n["config"].get("rx_lat", 0) for n in real_nodes]
+        lons = [n["config"].get("rx_lon", 0) for n in real_nodes]
     if not lats or all(la == 0 for la in lats):
         return False
 
