@@ -9,84 +9,99 @@ from .bistatic_models import bistatic_delay, bistatic_doppler
 from .baseline_geometry import calculate_target_azimuth, antenna_gain_pattern
 
 
-def residual_function(state, track, tx_enu, rx_enu, frequency, antenna_boresight=None, rx_alt_m=0):
-    """
-    Calculate residuals for all detections in a track.
+# ---------------------------------------------------------------------------
+# Vectorised residual – processes all detections in a single numpy pass
+# ---------------------------------------------------------------------------
 
-    Args:
-        state: [x0, y0, z0, vx, vy, vz] - position (km) and velocity (m/s) at t0
-        track: Track object with detections
-        tx_enu: TX position in km
-        rx_enu: RX position in km
-        frequency: TX frequency in Hz
-        antenna_boresight: Antenna boresight azimuth in degrees (None to disable constraint)
-        rx_alt_m: Receiver altitude in meters ASL (for altitude constraint)
+def _residual_vec(state, dt, obs_delay, obs_doppler, tx, rx, dist_tx_rx,
+                  frequency, f_over_c, antenna_boresight, antenna_sigma,
+                  rx_alt_m, residuals_out):
+    """Fully-vectorised residual function.
 
-    Returns:
-        residuals: Array of [delay_res_1, doppler_res_1, antenna_res_1, altitude_res_1, ...]
+    Pre-extracted arrays are passed once from *solve_track* so that no Python
+    loop or per-detection np.array() allocation happens on the ~20 function
+    evaluations that ``least_squares`` performs per solve.
     """
     x0, y0, z0, vx, vy, vz = state
 
-    # Reference time (first detection)
-    t0 = track.detections[0].timestamp / 1000  # Convert ms to seconds
+    vx_km = vx / 1000.0
+    vy_km = vy / 1000.0
+    vz_km = vz / 1000.0
 
+    # Predicted positions  (N, 3) – constant-velocity model
+    px = x0 + vx_km * dt
+    py = y0 + vy_km * dt
+    pz = z0 + vz_km * dt
+
+    # Bistatic delay  (vectorised)
+    dx_tx = px - tx[0]; dy_tx = py - tx[1]; dz_tx = pz - tx[2]
+    dx_rx = rx[0] - px; dy_rx = rx[1] - py; dz_rx = rx[2] - pz
+    dist_tx_t = np.sqrt(dx_tx*dx_tx + dy_tx*dy_tx + dz_tx*dz_tx)
+    dist_t_rx = np.sqrt(dx_rx*dx_rx + dy_rx*dy_rx + dz_rx*dz_rx)
+    delay_pred = (dist_tx_t + dist_t_rx - dist_tx_rx) / 0.3  # µs
+
+    # Bistatic Doppler  (vectorised)
+    inv_tx = 1.0 / dist_tx_t
+    inv_rx = 1.0 / dist_t_rx
+    # unit vector components  target→TX  and  target→RX
+    u_tx_x = dx_tx * inv_tx; u_tx_y = dy_tx * inv_tx; u_tx_z = dz_tx * inv_tx
+    u_rx_x = dx_rx * inv_rx; u_rx_y = dy_rx * inv_rx; u_rx_z = dz_rx * inv_rx
+    v_radial = (u_tx_x + u_rx_x) * vx_km + (u_tx_y + u_rx_y) * vy_km + (u_tx_z + u_rx_z) * vz_km
+    doppler_pred = f_over_c * v_radial
+
+    # Write residuals (delay, doppler, [antenna], altitude) interleaved
+    if antenna_boresight is not None:
+        stride = 4
+        residuals_out[0::stride] = obs_delay - delay_pred
+        residuals_out[1::stride] = obs_doppler - doppler_pred
+
+        # Antenna gain  (Gaussian beam pattern)
+        az = np.degrees(np.arctan2(px, py))  # target azimuth from RX
+        az_diff = np.abs(az - antenna_boresight)
+        az_diff = np.where(az_diff > 180, 360 - az_diff, az_diff)
+        gain = np.exp(-(az_diff * az_diff) / (2.0 * antenna_sigma * antenna_sigma))
+        residuals_out[2::stride] = (1.0 - gain) * 50.0
+
+        # Altitude constraint
+        alt_asl = rx_alt_m + pz * 1000.0
+        residuals_out[3::stride] = np.where(alt_asl < 50.0, (50.0 - alt_asl) * 0.1, 0.0)
+    else:
+        stride = 3
+        residuals_out[0::stride] = obs_delay - delay_pred
+        residuals_out[1::stride] = obs_doppler - doppler_pred
+
+        alt_asl = rx_alt_m + pz * 1000.0
+        residuals_out[2::stride] = np.where(alt_asl < 50.0, (50.0 - alt_asl) * 0.1, 0.0)
+
+    # Return a copy — least_squares holds references to previous residual
+    # vectors for computing gain ratios; mutating the buffer in-place would
+    # corrupt those references.
+    return residuals_out.copy()
+
+
+# Legacy scalar residual – kept for file-based batch processing (process_file)
+def residual_function(state, track, tx_enu, rx_enu, frequency, antenna_boresight=None, rx_alt_m=0):
+    x0, y0, z0, vx, vy, vz = state
+    t0 = track.detections[0].timestamp / 1000
     residuals = []
-
     for det in track.detections:
-        # Time since reference
-        t = det.timestamp / 1000  # Convert ms to seconds
-        dt = t - t0  # seconds
-
-        # Predict position using constant velocity model
-        # position(t) = position(t0) + velocity * dt
-        # velocity is in m/s, need to convert to km/s for position update
-        pos = np.array([
-            x0 + (vx / 1000) * dt,  # km
-            y0 + (vy / 1000) * dt,  # km
-            z0 + (vz / 1000) * dt   # km
-        ])
-
-        # Velocity is constant
-        vel = np.array([vx, vy, vz])  # m/s
-
-        # Predict delay and Doppler
+        t = det.timestamp / 1000
+        dt = t - t0
+        pos = np.array([x0 + (vx / 1000) * dt, y0 + (vy / 1000) * dt, z0 + (vz / 1000) * dt])
+        vel = np.array([vx, vy, vz])
         delay_pred = bistatic_delay(pos, tx_enu, rx_enu)
         doppler_pred = bistatic_doppler(pos, vel, tx_enu, rx_enu, frequency)
-
-        # Calculate residuals
-        delay_res = det.delay - delay_pred  # μs
-        doppler_res = det.doppler - doppler_pred  # Hz
-
-        residuals.append(delay_res)
-        residuals.append(doppler_res)
-
-        # Add antenna constraint if boresight provided
+        residuals.append(det.delay - delay_pred)
+        residuals.append(det.doppler - doppler_pred)
         if antenna_boresight is not None:
-            # Calculate target azimuth from receiver
             target_azimuth = calculate_target_azimuth(pos)
-
-            # Calculate antenna gain (0-1, where 1 is on boresight)
             gain = antenna_gain_pattern(target_azimuth, antenna_boresight, beamwidth_deg=48)
-
-            # Antenna constraint residual (penalize low gain = off-boresight)
-            # Weight heavily to enforce beam constraint
-            # Residual = 0 when on boresight, large when off-boresight
-            antenna_res = (1.0 - gain) * 50.0  # Scale to match delay/Doppler magnitude
-            residuals.append(antenna_res)
-
-        # Add altitude constraint (prevent negative ASL altitude)
-        # ENU z is relative to receiver, so absolute altitude = rx_alt + z_enu * 1000
-        altitude_asl_m = rx_alt_m + pos[2] * 1000  # Convert z from km to m
-        min_alt_asl_m = 50  # Minimum 50m above sea level
-
-        if altitude_asl_m < min_alt_asl_m:
-            # Penalize negative altitude heavily
-            altitude_res = (min_alt_asl_m - altitude_asl_m) * 0.1  # Weight to match delay/Doppler scale
-            residuals.append(altitude_res)
+            residuals.append((1.0 - gain) * 50.0)
+        altitude_asl_m = rx_alt_m + pos[2] * 1000
+        if altitude_asl_m < 50:
+            residuals.append((50 - altitude_asl_m) * 0.1)
         else:
-            # No penalty when above minimum
             residuals.append(0.0)
-
     return np.array(residuals)
 
 
@@ -94,87 +109,63 @@ def solve_track(track, initial_state, tx_enu, rx_enu, frequency, antenna_boresig
     """
     Solve for track position and velocity using LM optimization.
 
-    Args:
-        track: Track object with detections
-        initial_state: [x0, y0, z0, vx, vy, vz] initial guess
-        tx_enu: TX position in km
-        rx_enu: RX position in km
-        frequency: TX frequency in Hz
-        antenna_boresight: Antenna boresight azimuth in degrees (None to disable constraint)
-        rx_alt_m: Receiver altitude in meters ASL (for proper altitude bounds)
-
-    Returns:
-        dict with:
-            - success: bool, whether solver converged
-            - state: [x0, y0, z0, vx, vy, vz] solution
-            - residuals: final residual array
-            - rms_delay: RMS delay error in μs
-            - rms_doppler: RMS Doppler error in Hz
-            - cost: final cost function value
-            - message: solver message
+    Uses a fully-vectorised residual to avoid per-detection Python loops and
+    temporary np.array allocations inside the inner loop of least_squares.
     """
-    # Define bounds
-    # Position: reasonable range around initial guess
     pos_range = 50  # km
     x0, y0, z0, vx0, vy0, vz0 = initial_state
 
-    # Altitude bound: prevent negative ASL altitude
-    # ENU z is relative to receiver, so minimum z = -rx_alt to get 0m ASL
-    # Add small margin (50m) to stay safely above ground
-    min_alt_asl_m = 50  # minimum 50m above sea level
-    min_z_enu_km = -(rx_alt_m - min_alt_asl_m) / 1000  # Convert to km
+    min_alt_asl_m = 50
+    min_z_enu_km = -(rx_alt_m - min_alt_asl_m) / 1000
 
-    bounds_lower = [
-        x0 - pos_range,  # x
-        y0 - pos_range,  # y
-        min_z_enu_km,     # z (ENU up, minimum ASL altitude ~50m)
-        -300,             # vx (m/s)
-        -300,             # vy (m/s)
-        -100              # vz (m/s)
-    ]
+    bounds_lower = [x0 - pos_range, y0 - pos_range, min_z_enu_km, -300, -300, -100]
+    bounds_upper = [x0 + pos_range, y0 + pos_range, 15.0, 300, 300, 100]
 
-    bounds_upper = [
-        x0 + pos_range,  # x
-        y0 + pos_range,  # y
-        15.0,             # z (max altitude 15 km)
-        300,              # vx (m/s)
-        300,              # vy (m/s)
-        100               # vz (m/s)
-    ]
+    # --- Pre-extract detection arrays ONCE (never re-allocated per nfev) ---
+    dets = track.detections
+    N = len(dets)
+    t0_s = dets[0].timestamp / 1000.0
+    dt = np.empty(N)
+    obs_delay = np.empty(N)
+    obs_doppler = np.empty(N)
+    for i, d in enumerate(dets):
+        dt[i] = d.timestamp / 1000.0 - t0_s
+        obs_delay[i] = d.delay
+        obs_doppler[i] = d.doppler
 
-    # Run LM optimization.
-    # max_nfev=20 keeps each per-node solve attempt to <20ms instead of
-    # the original 1000-iteration budget (~800ms) that saturated the frame
-    # queue at 1000-node scale.  For well-conditioned problems (ADS-B init)
-    # 20 evaluations (~3 LM iterations) is sufficient to converge.
+    tx = np.asarray(tx_enu, dtype=np.float64)
+    rx = np.asarray(rx_enu, dtype=np.float64)
+    dist_tx_rx = np.linalg.norm(rx - tx)
+    f_over_c = frequency / 299792.458  # Hz / (km/s) → 1/km
+
+    antenna_sigma = (48.0 / 2.355) if antenna_boresight is not None else 0.0
+
+    stride = 4 if antenna_boresight is not None else 3
+    residuals_buf = np.empty(N * stride)
+
     result = least_squares(
-        residual_function,
+        _residual_vec,
         initial_state,
-        args=(track, tx_enu, rx_enu, frequency, antenna_boresight, rx_alt_m),
+        args=(dt, obs_delay, obs_doppler, tx, rx, dist_tx_rx,
+              frequency, f_over_c, antenna_boresight, antenna_sigma,
+              rx_alt_m, residuals_buf),
         bounds=(bounds_lower, bounds_upper),
-        method='trf',  # Trust Region Reflective
+        method='trf',
         ftol=1e-4,
         xtol=1e-4,
-        max_nfev=20
+        max_nfev=20,
     )
 
-    # Extract results
     state_solution = result.x
     residuals = result.fun
     success = result.success
 
-    # Calculate RMS errors (separate delay, Doppler, antenna, and altitude)
     if antenna_boresight is not None:
-        # 4 residuals per detection: delay, doppler, antenna, altitude
-        delay_residuals = residuals[0::4]  # Every 4th starting from 0
-        doppler_residuals = residuals[1::4]  # Every 4th starting from 1
-        antenna_residuals = residuals[2::4]  # Every 4th starting from 2
-        altitude_residuals = residuals[3::4]  # Every 4th starting from 3
+        delay_residuals = residuals[0::4]
+        doppler_residuals = residuals[1::4]
     else:
-        # 3 residuals per detection: delay, doppler, altitude
-        delay_residuals = residuals[0::3]  # Every 3rd starting from 0
-        doppler_residuals = residuals[1::3]  # Every 3rd starting from 1
-        altitude_residuals = residuals[2::3]  # Every 3rd starting from 2
+        delay_residuals = residuals[0::3]
+        doppler_residuals = residuals[1::3]
 
     rms_delay = np.sqrt(np.mean(delay_residuals**2))
     rms_doppler = np.sqrt(np.mean(doppler_residuals**2))
