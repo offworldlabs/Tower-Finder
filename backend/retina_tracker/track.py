@@ -398,19 +398,26 @@ class Track:
             return "long"
 
     def get_recent_detections(self, n=20):
-        detections = []
-        for i, m in enumerate(self.history["measurements"]):
+        """Return the last *n* non-None detections (reverse scan, early exit)."""
+        measurements = self.history["measurements"]
+        timestamps = self.history["timestamps"]
+        result = []
+        for i in range(len(measurements) - 1, -1, -1):
+            m = measurements[i]
             if m is not None:
-                detections.append(
+                result.append(
                     {
-                        "timestamp": self.history["timestamps"][i],
+                        "timestamp": timestamps[i],
                         "delay": m["delay"],
                         "doppler": m["doppler"],
                         "snr": m["snr"],
                         "adsb": m.get("adsb"),
                     }
                 )
-        return detections[-n:] if n else detections
+                if len(result) >= n:
+                    break
+        result.reverse()
+        return result
 
     def to_dict(self):
         duration_sec = (self.death_timestamp - self.birth_timestamp) / 1000.0

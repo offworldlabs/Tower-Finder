@@ -339,7 +339,9 @@ class PassiveRadarPipeline:
                     self.frequency,
                 )
 
-        # Solve
+        # Solve — use fewer evaluations for refinement (temporal continuity)
+        is_refinement = (self.geo_config and self.geo_config.temporal_continuity
+                         and track_id in self._previous_solutions)
         result = solve_track(
             geo_track,
             initial_guess,
@@ -348,6 +350,7 @@ class PassiveRadarPipeline:
             self.frequency,
             self.geometry["antenna_boresight"],
             self.rx_lla[2],  # rx_alt_m
+            max_nfev=10 if is_refinement else 20,
         )
 
         if not result["success"]:

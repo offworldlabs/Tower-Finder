@@ -105,7 +105,7 @@ def residual_function(state, track, tx_enu, rx_enu, frequency, antenna_boresight
     return np.array(residuals)
 
 
-def solve_track(track, initial_state, tx_enu, rx_enu, frequency, antenna_boresight=None, rx_alt_m=0):
+def solve_track(track, initial_state, tx_enu, rx_enu, frequency, antenna_boresight=None, rx_alt_m=0, max_nfev=20):
     """
     Solve for track position and velocity using LM optimization.
 
@@ -153,7 +153,7 @@ def solve_track(track, initial_state, tx_enu, rx_enu, frequency, antenna_boresig
         method='trf',
         ftol=1e-4,
         xtol=1e-4,
-        max_nfev=20,
+        max_nfev=max_nfev,
     )
 
     state_solution = result.x
