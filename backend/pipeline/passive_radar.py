@@ -452,6 +452,9 @@ class PassiveRadarPipeline:
                     existing.last_update_ms = event["timestamp"]
                     existing.wall_clock_ts = _time_geo.time()
                     existing.n_detections = event.get("length", existing.n_detections)
+                    # Publish to pre-aggregated dict so flush skips 915-pipeline scan
+                    _hex_key = existing.adsb_hex or existing.hex_id
+                    _state.active_geo_aircraft[_hex_key] = (existing, self.config)
                     # Run full solver at reduced rate for validation only
                     if now - self._geo_last_solve.get(track_id, 0.0) < self._ADSB_SOLVE_INTERVAL_S:
                         continue
@@ -463,6 +466,8 @@ class PassiveRadarPipeline:
             result = self._geolocate_track_event(track_id, event)
             if result is not None:
                 self.geolocated_tracks[track_id] = result
+                _hex_key = result.adsb_hex or result.hex_id
+                _state.active_geo_aircraft[_hex_key] = (result, self.config)
 
     def process_frame(self, frame: dict):
         """Process a single detection frame {timestamp, delay[], doppler[], snr[], adsb?[]}."""

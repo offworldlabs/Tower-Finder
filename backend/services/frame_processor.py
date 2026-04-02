@@ -132,15 +132,9 @@ def get_or_create_node_pipeline(
 
 # ── Per-frame processing (runs in thread pool) ───────────────────────────────
 
-_prof_total = 0.0
-_prof_count = 0
-_prof_pipeline = 0.0
-
 
 def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarPipeline):
     """CPU-heavy frame processing — never runs on the event loop."""
-    global _prof_total, _prof_count, _prof_pipeline
-    _t0 = time.monotonic()
 
     # Deferred signature verification (moved off the event loop)
     if frame.pop("_needs_sig_verify", False):
@@ -195,21 +189,12 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             }
 
     pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
-    _tp = time.monotonic()
     pipeline.process_frame(frame)
-    _prof_pipeline += time.monotonic() - _tp
 
     state.node_analytics.maybe_auto_save()
     _archive_buffer[node_id].append(frame)
     if len(_archive_buffer[node_id]) >= _ARCHIVE_BATCH_MAX:
         _flush_archive_node(node_id)
-
-    _prof_total += time.monotonic() - _t0
-    _prof_count += 1
-    if _prof_count % 500 == 0:
-        avg_total = _prof_total / _prof_count * 1000
-        avg_pipe = _prof_pipeline / _prof_count * 1000
-        logging.warning("PERF: %d frames  avg_total=%.1fms  avg_pipeline=%.1fms", _prof_count, avg_total, avg_pipe)
 
 # ── Multi-node result → tar1090-compatible dict ──────────────────────────────
 
@@ -317,6 +302,17 @@ def _build_single_node_arc(track_or_delay, node_cfg: dict) -> Optional[list[list
 
 
 # ── Combined aircraft.json builder ───────────────────────────────────────────
+
+# How often to recompute detection arcs and GT snapshot (seconds).
+# Iterating 915 pipelines × 5000 tracks every second is the #1 GIL hog;
+# caching at 5 s cuts that penalty by 4/5.
+_ARC_REFRESH_S = 5.0
+_GT_REFRESH_S = 5.0
+_cached_pending_arcs: list[dict] = []
+_arcs_last_ts: float = 0.0
+_cached_gt_snapshot: dict = {}
+_cached_gt_meta: dict = {}
+_gt_last_ts: float = 0.0
 
 
 def _record_accuracy_sample(ac_hex: str, error_km: float, position_source: str, ts: float):
@@ -487,18 +483,21 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     # the GIL and starving frame workers.
     _STALE_TRACK_S = 120.0
 
-    # 1. Per-node pipelines
-    for pipeline in list(state.node_pipelines.values()):
-        for track in list(pipeline.geolocated_tracks.values()):
-            if (now - getattr(track, 'wall_clock_ts', 0)) > _STALE_TRACK_S:
-                continue
-            ac_hex = track.adsb_hex or track.hex_id
-            if ac_hex in seen_hex:
-                continue
-            seen_hex.add(ac_hex)
-            aircraft.append(_track_entry(ac_hex, track, pipeline.config))
+    # 1. Pre-aggregated geolocated aircraft (O(active) ≈ 275 instead of
+    #    O(pipelines × tracks) ≈ 915 × 2.4).  Stale entries are pruned here.
+    stale_geo = []
+    for ac_hex, (track, cfg) in list(state.active_geo_aircraft.items()):
+        if (now - getattr(track, 'wall_clock_ts', 0)) > _STALE_TRACK_S:
+            stale_geo.append(ac_hex)
+            continue
+        if ac_hex in seen_hex:
+            continue
+        seen_hex.add(ac_hex)
+        aircraft.append(_track_entry(ac_hex, track, cfg))
+    for k in stale_geo:
+        state.active_geo_aircraft.pop(k, None)
 
-    # 2. Default pipeline
+    # 2. Default pipeline — catch any tracks not in the pre-aggregated dict
     for track in list(default_pipeline.geolocated_tracks.values()):
         if (now - getattr(track, 'wall_clock_ts', 0)) > _STALE_TRACK_S:
             continue
@@ -568,54 +567,61 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     # 5. Pending detection arcs from tracker tracks not yet geolocated.
     # These arcs appear immediately on each detection without waiting for
     # M-of-N promotion + LM solver convergence.
-    pending_arcs = []
-    for pipeline in list(state.node_pipelines.values()):
-        node_cfg = pipeline.config
-        for track in list(pipeline.tracker.tracks):
-            # Only emit arcs for confirmed tracks (M-of-N promoted).
-            # TENTATIVE tracks are single-detection hypotheses; showing arcs
-            # for them produces too much clutter before a real target is confirmed.
-            if track.state_status == TrackState.TENTATIVE:
-                continue
-            # Suppress when ADS-B already gives a precise position.
-            if track.adsb_hex:
-                _ae = state.adsb_aircraft.get(track.adsb_hex)
-                if _ae and now - _ae.get("last_seen_ms", 0) / 1000 < 60:
+    # Recompute only every _ARC_REFRESH_S seconds — iterating 915 pipelines
+    # × ~5000 tracks per second is a GIL-heavy operation that starves frame
+    # workers.  Cached arcs are good enough for the 1-Hz map refresh.
+    global _cached_pending_arcs, _arcs_last_ts
+    if now - _arcs_last_ts >= _ARC_REFRESH_S:
+        _arcs_last_ts = now
+        pending_arcs = []
+        for pipeline in list(state.node_pipelines.values()):
+            node_cfg = pipeline.config
+            for track in list(pipeline.tracker.tracks):
+                if track.state_status == TrackState.TENTATIVE:
                     continue
-            meas = track.history.get("measurements")
-            if not meas:
-                continue
-            # measurements list can contain None for missed detections
-            latest = next((m for m in reversed(meas) if m is not None), None)
-            if latest is None:
-                continue
-            delay_us = latest.get("delay", 0)
-            if delay_us <= 0:
-                continue
-            arc = _build_single_node_arc(delay_us, node_cfg)
-            if not arc or len(arc) < 2:
-                continue
-            pending_arcs.append({
-                "ambiguity_arc": arc,
-                "node_id": node_cfg.get("node_id"),
-                "doppler_hz": round(latest.get("doppler", 0), 2),
-                "target_class": getattr(track, "target_class", None),
-            })
+                if track.adsb_hex:
+                    _ae = state.adsb_aircraft.get(track.adsb_hex)
+                    if _ae and now - _ae.get("last_seen_ms", 0) / 1000 < 60:
+                        continue
+                meas = track.history.get("measurements")
+                if not meas:
+                    continue
+                latest = next((m for m in reversed(meas) if m is not None), None)
+                if latest is None:
+                    continue
+                delay_us = latest.get("delay", 0)
+                if delay_us <= 0:
+                    continue
+                arc = _build_single_node_arc(delay_us, node_cfg)
+                if not arc or len(arc) < 2:
+                    continue
+                pending_arcs.append({
+                    "ambiguity_arc": arc,
+                    "node_id": node_cfg.get("node_id"),
+                    "doppler_hz": round(latest.get("doppler", 0), 2),
+                    "target_class": getattr(track, "target_class", None),
+                })
+        _cached_pending_arcs = pending_arcs
+    else:
+        pending_arcs = _cached_pending_arcs
 
-    gt_snapshot = {
-        h: list(trail)[-30:]
-        for h, trail in list(state.ground_truth_trails.items())
-        if trail
-    }
-
-    gt_meta = dict(state.ground_truth_meta)
+    # Ground-truth snapshot — recompute every _GT_REFRESH_S seconds.
+    global _cached_gt_snapshot, _cached_gt_meta, _gt_last_ts
+    if now - _gt_last_ts >= _GT_REFRESH_S:
+        _gt_last_ts = now
+        _cached_gt_snapshot = {
+            h: list(trail)[-30:]
+            for h, trail in list(state.ground_truth_trails.items())
+            if trail
+        }
+        _cached_gt_meta = dict(state.ground_truth_meta)
 
     return {
         "now": now,
         "messages": len(aircraft),
         "aircraft": aircraft,
         "detection_arcs": pending_arcs,
-        "ground_truth": gt_snapshot,
-        "ground_truth_meta": gt_meta,
+        "ground_truth": _cached_gt_snapshot,
+        "ground_truth_meta": _cached_gt_meta,
         "anomaly_hexes": sorted(state.anomaly_hexes),
     }

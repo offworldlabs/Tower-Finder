@@ -26,6 +26,11 @@ node_associator = InterNodeAssociator()
 # ── Per-node tracker pipelines (lazy-created per connecting node) ─────────────
 node_pipelines: dict = {}  # node_id → PassiveRadarPipeline
 
+# ── Pre-aggregated geolocated aircraft (hex → (GeolocatedTrack, config dict))
+# Updated incrementally by _run_geolocation() during frame processing so the
+# flush task doesn't need to iterate all 915 pipelines × their tracks.
+active_geo_aircraft: dict = {}
+
 # ── Multi-node solver results ─────────────────────────────────────────────────
 multinode_tracks: dict[str, dict] = {}
 
