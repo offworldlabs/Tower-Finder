@@ -137,11 +137,17 @@ def get_or_create_node_pipeline(
 _prof_cpu = 0.0
 _prof_wall = 0.0
 _prof_n = 0
+# Sub-phase accumulators (thread CPU time)
+_prof_analytics = 0.0
+_prof_assoc = 0.0
+_prof_pipeline = 0.0
+_prof_save = 0.0
 
 
 def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarPipeline):
     """CPU-heavy frame processing — never runs on the event loop."""
     global _prof_cpu, _prof_wall, _prof_n
+    global _prof_analytics, _prof_assoc, _prof_pipeline, _prof_save
     _t0_wall = time.monotonic()
     _t0_cpu = time.thread_time()
 
@@ -158,8 +164,11 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
         if not sig_valid and det_node_id in state.node_identities:
             logging.warning("Invalid signature on detection from %s", det_node_id)
 
+    _t1 = time.thread_time()
     state.node_analytics.record_detection_frame(node_id, frame)
+    _prof_analytics += time.thread_time() - _t1
 
+    _t2 = time.thread_time()
     assoc = state.node_associator.submit_frame(node_id, frame, frame.get("timestamp", 0))
     if assoc:
         solver_inputs = state.node_associator.format_candidates_for_solver(assoc)
@@ -171,15 +180,21 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
                 state.solver_queue.put_nowait((s_in, node_cfgs))
             except Exception:
                 pass
+    _prof_assoc += time.thread_time() - _t2
 
     # ADS-B extraction is already handled in the TCP handler
     # (_apply_synthetic_adsb) before queuing, so state.adsb_aircraft is
     # always fresh.  Skip the duplicate work here.
 
+    _t3 = time.thread_time()
     pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
     pipeline.process_frame(frame)
+    _prof_pipeline += time.thread_time() - _t3
 
+    _t4 = time.thread_time()
     state.node_analytics.maybe_auto_save()
+    _prof_save += time.thread_time() - _t4
+
     _archive_buffer[node_id].append(frame)
     if len(_archive_buffer[node_id]) >= _ARCHIVE_BATCH_MAX:
         _flush_archive_node(node_id)
@@ -193,9 +208,14 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
         _ac = _prof_cpu / _prof_n * 1000
         _aw = _prof_wall / _prof_n * 1000
         _idle = (1 - _ac / _aw) * 100 if _aw > 0 else 0
+        _a_an = _prof_analytics / _prof_n * 1000
+        _a_as = _prof_assoc / _prof_n * 1000
+        _a_pp = _prof_pipeline / _prof_n * 1000
+        _a_sv = _prof_save / _prof_n * 1000
         logging.warning(
-            "PERF: %d frames  avg_cpu=%.1fms  avg_wall=%.1fms  idle%%=%.0f",
-            _prof_n, _ac, _aw, _idle,
+            "PERF: %d frames  cpu=%.1f wall=%.1f idle%%=%.0f  "
+            "[analytics=%.1f assoc=%.1f pipeline=%.1f save=%.1f]ms",
+            _prof_n, _ac, _aw, _idle, _a_an, _a_as, _a_pp, _a_sv,
         )
 
 # ── Multi-node result → tar1090-compatible dict ──────────────────────────────
