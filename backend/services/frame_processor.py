@@ -356,13 +356,24 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         # Fallback: external ADS-B truth sourced from OpenSky Network.
         ext = state.external_adsb_cache.get(ac_hex)
         if ext and ext.get("lat") and ext.get("lon"):
+            alt_m = ext.get("alt_m") or 0
+            vel = ext.get("velocity") or 0
+            hdg = ext.get("heading") or 0
+            try:
+                alt_ft_val = float(alt_m) / 0.3048
+                gs_val = float(vel) * 1.94384
+                hdg_val = float(hdg)
+            except (TypeError, ValueError):
+                alt_ft_val = 0.0
+                gs_val = 0.0
+                hdg_val = 0.0
             return {
                 "hex": ac_hex,
                 "lat": ext["lat"],
                 "lon": ext["lon"],
-                "alt_baro": round((ext.get("alt_m") or 0) / 0.3048),
-                "gs": round((ext.get("velocity") or 0) * 1.94384, 1),
-                "track": ext.get("heading") or 0,
+                "alt_baro": round(alt_ft_val),
+                "gs": round(gs_val, 1),
+                "track": round(hdg_val, 1),
                 "last_seen_ms": int(now * 1000),
             }
         return None
@@ -385,9 +396,16 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
 
         # Altitude / speed / heading: use ADS-B when available (more precise
         # than the bistatic solver for these quantities), solver otherwise.
-        alt_ft = adsb.get("alt_baro", track.alt_ft) if adsb else track.alt_ft
-        gs = round(adsb.get("gs", track.speed_knots) if adsb else track.speed_knots, 1)
-        heading = round(adsb.get("track", track.track_angle) if adsb else track.track_angle, 1)
+        # ADS-B alt_baro can be the string "ground"; coerce to float safely.
+        def _num(v, fallback=0.0):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return float(fallback)
+
+        alt_ft = _num(adsb.get("alt_baro", track.alt_ft) if adsb else track.alt_ft)
+        gs = round(_num(adsb.get("gs", track.speed_knots) if adsb else track.speed_knots), 1)
+        heading = round(_num(adsb.get("track", track.track_angle) if adsb else track.track_angle), 1)
 
         # Build ambiguity arc only when we have no ADS-B seed — ADS-B-seeded
         # solver positions are tight enough that arcs add visual noise.
