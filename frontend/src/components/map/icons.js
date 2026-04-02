@@ -20,9 +20,9 @@ export const DRONE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="22" hei
 </svg>`;
 
 export function getAircraftColor(ac) {
-  if (ac.multinode) return "#a78bfa";
-  if (ac.type !== "tisb_other" && ac.type !== "multinode_solve") return "#38bdf8";
-  return "#2dd4bf";
+  if (ac.multinode || ac.position_source === "multinode_solve") return "#a78bfa";
+  if (ac.position_source === "solver_adsb_seed") return "#2dd4bf";
+  return "#38bdf8";
 }
 
 export function makeAircraftIcon(ac, showLabel, isSelected) {

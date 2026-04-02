@@ -714,7 +714,20 @@ export default function LiveAircraftMap() {
             {/* Aircraft position markers — ADS-B aided (teal icon+arc), multinode (purple icon), uncertain solo (dimmed circle) */}
             {visibleAircraft.map((ac) => {
               const isSelected = ac.hex === selectedHex;
-              if (ac.position_source === "solver_single_node" && ac.lat && ac.lon) {
+              if (!ac.lat || !ac.lon) return null;
+              if (ac.position_source === "solver_adsb_seed" || ac.position_source === "multinode_solve" || ac.multinode) {
+                return (
+                  <AircraftMarker
+                    key={`icon-${ac.hex}`}
+                    ac={ac}
+                    isSelected={isSelected}
+                    showLabels={showLabels}
+                    onSelect={handleSelectAircraft}
+                    markerRegistry={markerRegistryRef.current}
+                  />
+                );
+              }
+              if (ac.position_source === "solver_single_node" || ac.position_source === "single_node_ellipse_arc") {
                 return (
                   <CircleMarker
                     key={`icon-${ac.hex}`}
@@ -727,18 +740,6 @@ export default function LiveAircraftMap() {
                       weight: isSelected ? 2.5 : 1.5,
                     }}
                     eventHandlers={{ click: () => handleSelectAircraft(ac.hex) }}
-                  />
-                );
-              }
-              if (ac.lat && ac.lon && (ac.position_source === "adsb_associated" || ac.position_source === "adsb_node_report" || ac.multinode)) {
-                return (
-                  <AircraftMarker
-                    key={`icon-${ac.hex}`}
-                    ac={ac}
-                    isSelected={isSelected}
-                    showLabels={showLabels}
-                    onSelect={handleSelectAircraft}
-                    markerRegistry={markerRegistryRef.current}
                   />
                 );
               }
