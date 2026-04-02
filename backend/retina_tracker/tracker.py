@@ -231,12 +231,6 @@ class Tracker:
 
                 track.id = Track._generate_id(timestamp, adsb_hex=track.adsb_hex)
 
-                print(
-                    f"Track {track.id} promoted to ACTIVE via tracklet (linear fit: "
-                    f"v_delay={delay_velocity:.2f}, v_doppler={doppler_velocity:.2f})",
-                    file=sys.stderr,
-                )
-
                 if self.event_writer:
                     detections_list = track.get_recent_detections(n=track.n_associated)
                     self.event_writer.write_event(

@@ -194,12 +194,13 @@ class PassiveRadarPipeline:
         # re-solve intervals produce identical quality at 50x lower CPU cost.
         self._geo_last_solve: dict[str, float] = {}
         self._GEO_INTERVAL_S: float = 5.0
-        # Stale-entry pruning: run every _PRUNE_EVERY_N frames to drop
-        # dead track IDs from the four per-track dicts. Without this,
-        # long-running deployments leak memory proportionally to the total
-        # number of tracks ever created (not just currently active).
+        # Stale-entry pruning: time-based (every _PRUNE_INTERVAL_S wall-clock
+        # seconds) instead of frame-count-based.  With 40 s frame intervals
+        # the old 500-frame threshold took ~5.5 h to fire; time-based pruning
+        # runs reliably regardless of frame rate.
         self._frame_count: int = 0
-        self._PRUNE_EVERY_N: int = 500
+        self._PRUNE_INTERVAL_S: float = 60.0
+        self._last_prune_time: float = time.monotonic()
 
     def _init_geolocator(self, config):
         """Initialize geolocator geometry and config."""
@@ -416,7 +417,9 @@ class PassiveRadarPipeline:
 
         # Periodically prune stale track entries from per-track dicts
         self._frame_count += 1
-        if self._frame_count % self._PRUNE_EVERY_N == 0:
+        _now_mono = time.monotonic()
+        if (_now_mono - self._last_prune_time) >= self._PRUNE_INTERVAL_S:
+            self._last_prune_time = _now_mono
             self._prune_stale_tracks()
 
     def process_file(self, filepath: str) -> list:

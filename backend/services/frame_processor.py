@@ -467,9 +467,19 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             "recent_positions": list(state.track_histories.get(ac_hex, [])),
         }
 
+    # Staleness threshold: skip geolocated tracks not updated in the last
+    # 120 s.  Without this, geolocated_tracks accumulates dead entries
+    # between prune cycles and causes O(N_stale) work per flush — arc
+    # computation, ground-truth resolution, history writes — all holding
+    # the GIL and starving frame workers.
+    _STALE_TRACK_S = 120.0
+    now_ms = now * 1000
+
     # 1. Per-node pipelines
     for pipeline in list(state.node_pipelines.values()):
         for track in list(pipeline.geolocated_tracks.values()):
+            if (now_ms - track.last_update_ms) > _STALE_TRACK_S * 1000:
+                continue
             ac_hex = track.adsb_hex or track.hex_id
             if ac_hex in seen_hex:
                 continue
@@ -478,6 +488,8 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
 
     # 2. Default pipeline
     for track in list(default_pipeline.geolocated_tracks.values()):
+        if (now_ms - track.last_update_ms) > _STALE_TRACK_S * 1000:
+            continue
         ac_hex = track.adsb_hex or track.hex_id
         if ac_hex in seen_hex:
             continue
@@ -522,6 +534,24 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             stale_adsb.append(hex_code)
     for k in stale_adsb:
         state.adsb_aircraft.pop(k, None)
+
+    # 4b. Prune stale ground-truth trails and track histories to bound
+    # memory and keep resolve_ground_truth_hex O(N) scans cheap.
+    _GT_STALE_S = 300.0
+    stale_gt = [
+        h for h, trail in list(state.ground_truth_trails.items())
+        if not trail or (now - trail[-1][3]) > _GT_STALE_S
+    ]
+    for h in stale_gt:
+        state.ground_truth_trails.pop(h, None)
+        state.ground_truth_meta.pop(h, None)
+
+    stale_th = [
+        h for h, trail in list(state.track_histories.items())
+        if not trail or (now - trail[-1][3]) > _GT_STALE_S
+    ]
+    for h in stale_th:
+        state.track_histories.pop(h, None)
 
     # 5. Pending detection arcs from tracker tracks not yet geolocated.
     # These arcs appear immediately on each detection without waiting for
