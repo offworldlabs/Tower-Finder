@@ -226,6 +226,7 @@ class PassiveRadarPipeline:
         # re-solve intervals produce identical quality at 50x lower CPU cost.
         self._geo_last_solve: dict[str, float] = {}
         self._GEO_INTERVAL_S: float = 5.0
+        self._ADSB_SOLVE_INTERVAL_S: float = 120.0  # ADS-B tracks: full solver once per 120s
         # Stale-entry pruning: time-based (every _PRUNE_INTERVAL_S wall-clock
         # seconds) instead of frame-count-based.  With 40 s frame intervals
         # the old 500-frame threshold took ~5.5 h to fire; time-based pruning
@@ -415,15 +416,41 @@ class PassiveRadarPipeline:
     def _run_geolocation(self):
         """Run geolocation only on tracks that received new data this frame.
 
-        Per-track rate-limit: re-solve at most once per _GEO_INTERVAL_S.
-        get_new_events() is always called to drain the dirty set; tracks that
-        are due for a re-solve get the expensive LM solve, others are skipped.
+        ADS-B fast-path: for tracks with ADS-B data that already have a
+        geolocated position, refresh lat/lon/alt/vel from state.adsb_aircraft
+        (zero-cost — no solver).  The full LM solver runs only every
+        _ADSB_SOLVE_INTERVAL_S for validation/calibration.
+
+        Non-ADS-B tracks are solved every _GEO_INTERVAL_S as before.
         """
         import time as _time_geo
+        from core import state as _state
         now = _time_geo.monotonic()
         for track_id, event in self.event_writer.get_new_events().items():
-            if now - self._geo_last_solve.get(track_id, 0.0) < self._GEO_INTERVAL_S:
-                continue
+            adsb_hex = event.get("adsb_hex")
+            existing = self.geolocated_tracks.get(track_id)
+
+            # ADS-B fast-path: update position from ADS-B without solver
+            if adsb_hex and existing is not None:
+                adsb = _state.adsb_aircraft.get(adsb_hex)
+                if adsb and adsb.get("lat") and adsb.get("lon"):
+                    _gs_ms = (adsb.get("gs", 0) or 0) * 0.514444
+                    _trk = math.radians(adsb.get("track", 0) or 0)
+                    existing.lat = adsb["lat"]
+                    existing.lon = adsb["lon"]
+                    existing.alt_m = (adsb.get("alt_baro", 0) or 0) * FT_TO_M
+                    existing.vel_east = _gs_ms * math.sin(_trk)
+                    existing.vel_north = _gs_ms * math.cos(_trk)
+                    existing.last_update_ms = event["timestamp"]
+                    existing.wall_clock_ts = _time_geo.time()
+                    existing.n_detections = event.get("length", existing.n_detections)
+                    # Run full solver at reduced rate for validation only
+                    if now - self._geo_last_solve.get(track_id, 0.0) < self._ADSB_SOLVE_INTERVAL_S:
+                        continue
+            else:
+                if now - self._geo_last_solve.get(track_id, 0.0) < self._GEO_INTERVAL_S:
+                    continue
+
             self._geo_last_solve[track_id] = now
             result = self._geolocate_track_event(track_id, event)
             if result is not None:
