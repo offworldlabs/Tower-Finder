@@ -132,9 +132,18 @@ def get_or_create_node_pipeline(
 
 # ── Per-frame processing (runs in thread pool) ───────────────────────────────
 
+# Lightweight profiling: track thread-CPU vs wall-clock to distinguish
+# actual work from GIL-wait.  Logs every 1000 frames (~45 s at 22 fps).
+_prof_cpu = 0.0
+_prof_wall = 0.0
+_prof_n = 0
+
 
 def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarPipeline):
     """CPU-heavy frame processing — never runs on the event loop."""
+    global _prof_cpu, _prof_wall, _prof_n
+    _t0_wall = time.monotonic()
+    _t0_cpu = time.thread_time()
 
     # Deferred signature verification (moved off the event loop)
     if frame.pop("_needs_sig_verify", False):
@@ -163,30 +172,9 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             except Exception:
                 pass
 
-    # Extract embedded ADS-B
-    adsb_list = frame.get("adsb")
-    if adsb_list:
-        ts_ms = int(time.time() * 1000)
-        for entry in adsb_list:
-            if not isinstance(entry, dict):
-                continue
-            hex_code = entry.get("hex")
-            if not hex_code:
-                continue
-            lat = entry.get("lat", 0)
-            lon = entry.get("lon", 0)
-            if not lat or not lon or not math.isfinite(lat) or not math.isfinite(lon):
-                continue
-            state.adsb_aircraft[hex_code] = {
-                "hex": hex_code,
-                "flight": entry.get("flight", ""),
-                "lat": lat,
-                "lon": lon,
-                "alt_baro": entry.get("alt_baro", 0),
-                "gs": entry.get("gs", 0),
-                "track": entry.get("track", 0),
-                "last_seen_ms": ts_ms,
-            }
+    # ADS-B extraction is already handled in the TCP handler
+    # (_apply_synthetic_adsb) before queuing, so state.adsb_aircraft is
+    # always fresh.  Skip the duplicate work here.
 
     pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
     pipeline.process_frame(frame)
@@ -195,6 +183,20 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     _archive_buffer[node_id].append(frame)
     if len(_archive_buffer[node_id]) >= _ARCHIVE_BATCH_MAX:
         _flush_archive_node(node_id)
+
+    _dt_cpu = time.thread_time() - _t0_cpu
+    _dt_wall = time.monotonic() - _t0_wall
+    _prof_cpu += _dt_cpu
+    _prof_wall += _dt_wall
+    _prof_n += 1
+    if _prof_n % 1000 == 0:
+        _ac = _prof_cpu / _prof_n * 1000
+        _aw = _prof_wall / _prof_n * 1000
+        _idle = (1 - _ac / _aw) * 100 if _aw > 0 else 0
+        logging.warning(
+            "PERF: %d frames  avg_cpu=%.1fms  avg_wall=%.1fms  idle%%=%.0f",
+            _prof_n, _ac, _aw, _idle,
+        )
 
 # ── Multi-node result → tar1090-compatible dict ──────────────────────────────
 
