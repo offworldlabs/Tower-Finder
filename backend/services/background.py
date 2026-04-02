@@ -43,6 +43,14 @@ _aircraft_flush_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="aircraft-flush",
 )
 
+# Dedicated 2-thread pool for frame processing.  The GIL serialises
+# Python execution to one core; a second thread can simultaneously
+# execute GIL-releasing numpy/scipy C code on the other core.
+# More threads only add context-switch + GIL-thrash overhead.
+_frame_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="frame",
+)
+
 # Persistent httpx client reused across OpenSky fetches — preserves connection pooling
 _opensky_client: httpx.AsyncClient | None = None
 
@@ -323,7 +331,7 @@ async def frame_processor_loop(default_pipeline):
         node_id, frame = await state.frame_queue.get()
         try:
             await loop.run_in_executor(
-                None, process_one_frame, node_id, frame, default_pipeline,
+                _frame_executor, process_one_frame, node_id, frame, default_pipeline,
             )
             state.aircraft_dirty = True
         except Exception:
