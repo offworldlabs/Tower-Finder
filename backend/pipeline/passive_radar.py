@@ -453,25 +453,51 @@ class PassiveRadarPipeline:
             existing = self.geolocated_tracks.get(track_id)
 
             # ADS-B fast-path: update position from ADS-B without solver
-            if adsb_hex and existing is not None:
+            if adsb_hex:
                 adsb = _state.adsb_aircraft.get(adsb_hex)
                 if adsb and adsb.get("lat") and adsb.get("lon"):
                     _gs_ms = (adsb.get("gs", 0) or 0) * 0.514444
                     _trk = math.radians(adsb.get("track", 0) or 0)
-                    existing.lat = adsb["lat"]
-                    existing.lon = adsb["lon"]
-                    existing.alt_m = (adsb.get("alt_baro", 0) or 0) * FT_TO_M
-                    existing.vel_east = _gs_ms * math.sin(_trk)
-                    existing.vel_north = _gs_ms * math.cos(_trk)
-                    existing.last_update_ms = event["timestamp"]
-                    existing.wall_clock_ts = _time_geo.time()
-                    existing.n_detections = event.get("length", existing.n_detections)
+                    if existing is not None:
+                        existing.lat = adsb["lat"]
+                        existing.lon = adsb["lon"]
+                        existing.alt_m = (adsb.get("alt_baro", 0) or 0) * FT_TO_M
+                        existing.vel_east = _gs_ms * math.sin(_trk)
+                        existing.vel_north = _gs_ms * math.cos(_trk)
+                        existing.last_update_ms = event["timestamp"]
+                        existing.wall_clock_ts = _time_geo.time()
+                        existing.n_detections = event.get("length", existing.n_detections)
+                    else:
+                        # First encounter: create GeolocatedTrack from ADS-B
+                        # data directly — avoids expensive solver call.
+                        existing = GeolocatedTrack(
+                            track_id=track_id,
+                            lat=adsb["lat"],
+                            lon=adsb["lon"],
+                            alt_m=(adsb.get("alt_baro", 0) or 0) * FT_TO_M,
+                            vel_east=_gs_ms * math.sin(_trk),
+                            vel_north=_gs_ms * math.cos(_trk),
+                            vel_up=0.0,
+                            rms_delay=0.0,
+                            rms_doppler=0.0,
+                            n_detections=event.get("length", 1),
+                            timestamp_ms=event["timestamp"],
+                            adsb_hex=adsb_hex,
+                            latest_delay_us=None,
+                            latest_doppler_hz=None,
+                            target_class="aircraft",
+                        )
+                        self.geolocated_tracks[track_id] = existing
                     # Publish to pre-aggregated dict so flush skips 915-pipeline scan
                     _hex_key = existing.adsb_hex or existing.hex_id
                     _state.active_geo_aircraft[_hex_key] = (existing, self.config)
                     # Run full solver at reduced rate for validation only
                     if now - self._geo_last_solve.get(track_id, 0.0) < self._ADSB_SOLVE_INTERVAL_S:
                         PassiveRadarPipeline._geo_fast += 1
+                        continue
+                else:
+                    # ADS-B hex set but data unavailable — rate limit solver
+                    if now - self._geo_last_solve.get(track_id, 0.0) < self._GEO_INTERVAL_S:
                         continue
             else:
                 if now - self._geo_last_solve.get(track_id, 0.0) < self._GEO_INTERVAL_S:
