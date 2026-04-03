@@ -443,13 +443,22 @@ class PassiveRadarPipeline:
                     _gs_ms = (adsb.get("gs", 0) or 0) * 0.514444
                     _trk = math.radians(adsb.get("track", 0) or 0)
                     if existing is not None:
-                        existing.lat = adsb["lat"]
-                        existing.lon = adsb["lon"]
+                        # Only reset wall_clock_ts when the ADS-B position
+                        # actually changes — many nodes report the same aircraft
+                        # with identical coordinates, which would starve the
+                        # dead-reckoning in _track_entry (elapsed stays < 0.5 s).
+                        _pos_changed = (
+                            abs(existing.lat - adsb["lat"]) > 1e-6
+                            or abs(existing.lon - adsb["lon"]) > 1e-6
+                        )
+                        if _pos_changed:
+                            existing.lat = adsb["lat"]
+                            existing.lon = adsb["lon"]
+                            existing.wall_clock_ts = _time_geo.time()
                         existing.alt_m = (adsb.get("alt_baro", 0) or 0) * FT_TO_M
                         existing.vel_east = _gs_ms * math.sin(_trk)
                         existing.vel_north = _gs_ms * math.cos(_trk)
                         existing.last_update_ms = event["timestamp"]
-                        existing.wall_clock_ts = _time_geo.time()
                         existing.n_detections = event.get("length", existing.n_detections)
                     else:
                         # First encounter: create GeolocatedTrack from ADS-B
