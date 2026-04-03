@@ -453,6 +453,19 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             lon = round(midpoint[1], 6)
             position_source = "single_node_ellipse_arc"
 
+        # Dead-reckon from last fix using stored velocity so positions
+        # update smoothly between frame arrivals (~10 s real-time gaps).
+        # Mirrors the multinode dead-reckoning in Section 3.
+        if position_source != "single_node_ellipse_arc":
+            _vel_e = getattr(track, 'vel_east', 0.0) or 0.0
+            _vel_n = getattr(track, 'vel_north', 0.0) or 0.0
+            _wts = getattr(track, 'wall_clock_ts', 0.0) or 0.0
+            _dr_elapsed = min(now - _wts, 60.0)
+            if _dr_elapsed > 0.5 and (_vel_e != 0.0 or _vel_n != 0.0):
+                _cos_lat = math.cos(math.radians(lat)) or 1e-9
+                lat = round(lat + (_vel_n / 111_320.0) * _dr_elapsed, 6)
+                lon = round(lon + (_vel_e / (111_320.0 * _cos_lat)) * _dr_elapsed, 6)
+
         append_track_history(ac_hex, lat, lon, alt_ft, now)
 
         # Record ADS-B-verified positions as calibration points for empirical coverage.
