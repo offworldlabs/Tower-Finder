@@ -488,20 +488,14 @@ class PassiveRadarPipeline:
                             target_class="aircraft",
                         )
                         self.geolocated_tracks[track_id] = existing
-                        # Seed the solve timer so the periodic re-solve waits
-                        # a full _ADSB_SOLVE_INTERVAL_S before first run.
-                        self._geo_last_solve[track_id] = now
                     # Publish to pre-aggregated dict so flush skips 915-pipeline scan
                     _hex_key = existing.adsb_hex or existing.hex_id
                     _state.active_geo_aircraft[_hex_key] = (existing, self.config)
-                    # Run full solver at reduced rate for validation only
-                    if now - self._geo_last_solve.get(track_id, 0.0) < self._ADSB_SOLVE_INTERVAL_S:
-                        PassiveRadarPipeline._geo_fast += 1
-                        continue
-                else:
-                    # ADS-B hex set but data unavailable — rate limit solver
-                    if now - self._geo_last_solve.get(track_id, 0.0) < self._GEO_INTERVAL_S:
-                        continue
+                # ADS-B tracks never need the LM solver — ADS-B position is
+                # ground truth.  Skip solver entirely for any track with an
+                # ADS-B hex, whether data was found or not.
+                PassiveRadarPipeline._geo_fast += 1
+                continue
             else:
                 if now - self._geo_last_solve.get(track_id, 0.0) < self._GEO_INTERVAL_S:
                     continue
