@@ -83,7 +83,7 @@ async def solver_aircraft():
         "timestamp": now,
         "count": len(aircraft_out),
         "aircraft": aircraft_out,
-    })
+    }, option=orjson.OPT_SERIALIZE_NUMPY)
     return Response(content=body, media_type="application/json")
 
 
