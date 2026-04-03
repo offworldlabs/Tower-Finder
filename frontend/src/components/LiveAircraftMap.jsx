@@ -393,29 +393,53 @@ export default function LiveAircraftMap() {
     [radarAircraft],
   );
 
+  /* ── Feed ground-truth objects into fixesRef so the 60fps loop dead-reckons them ── */
+  useEffect(() => {
+    const now = Date.now();
+    const activeGtHexes = new Set();
+    for (const [hex, positions] of Object.entries(groundTruthRef.current)) {
+      if (!Array.isArray(positions) || positions.length === 0) continue;
+      const last = positions[positions.length - 1];
+      const meta = groundTruthMetaRef.current[hex] || {};
+      const lat = last[0], lon = last[1];
+      activeGtHexes.add(hex);
+      const prev = fixesRef.current[hex];
+      const posChanged = !prev || prev._fixLat !== lat || prev._fixLon !== lon;
+      fixesRef.current[hex] = {
+        hex,
+        lat, lon,
+        alt_baro: Math.round(last[2] / 0.3048),
+        gs: Math.round((meta.speed_ms || 0) * 1.94384 * 10) / 10,
+        track: meta.heading || 0,
+        object_type: meta.object_type,
+        is_anomalous: meta.is_anomalous,
+        points: positions.length,
+        _isTruth: true,
+        _fixLat: lat,
+        _fixLon: lon,
+        _fixTs: posChanged ? now : (prev?._fixTs ?? now),
+        _updatedAt: now,
+      };
+    }
+    // Remove ground-truth entries that are no longer in the server snapshot
+    for (const hex of Object.keys(fixesRef.current)) {
+      if (!fixesRef.current[hex]._isTruth) continue;
+      if (!activeGtHexes.has(hex)) {
+        delete fixesRef.current[hex];
+        delete smoothRef.current[hex];
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groundTruthTick]);
+
   // trailTick still drives trail rendering; groundTruthTick drives this expensive
-  // 8000-entry recompute only when the ground-truth dataset is actually replaced (~1Hz)
-  // and NOT on every trail position update (also ~1Hz but a separate, lighter tick).
+  // recompute only when the ground-truth dataset is actually replaced (~1Hz).
+  // Positions are now read from displayAircraft (60fps smoothed) rather than
+  // raw groundTruthRef so ground-truth dots move continuously like radar tracks.
   const truthOnlyAircraft = useMemo(
-    () => Object.entries(groundTruthRef.current)
-      .filter(([hex, positions]) => !matchedTruthHexes.has(hex) && Array.isArray(positions) && positions.length > 0)
-      .map(([hex, positions]) => {
-        const last = positions[positions.length - 1];
-        const meta = groundTruthMetaRef.current[hex] || {};
-        return {
-          hex,
-          lat: last[0], lon: last[1], alt_m: last[2],
-          alt_baro: Math.round(last[2] / 0.3048),
-          gs: Math.round((meta.speed_ms || 0) * 1.94384 * 10) / 10,
-          track: meta.heading || 0,
-          points: positions.length,
-          object_type: meta.object_type,
-          is_anomalous: meta.is_anomalous,
-          _isTruth: true,
-        };
-      }),
+    () => displayAircraft.filter((ac) => ac._isTruth && !matchedTruthHexes.has(ac.hex)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [matchedTruthHexes, groundTruthTick],
+    [displayAircraft, matchedTruthHexes],
   );
 
 
