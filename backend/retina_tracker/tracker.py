@@ -61,11 +61,12 @@ class Tracker:
             associated_detections.add(det_idx)
 
             if track.id and self.event_writer:
+                _det_n = min(track.n_associated, self.detection_window)
                 if _lazy_write:
                     self.event_writer.write_event_lazy(
                         track.id,
                         timestamp,
-                        track.n_associated,
+                        _det_n,
                         track,
                         adsb_hex=track.adsb_hex,
                         adsb_initialized=track.adsb_initialized,
@@ -96,11 +97,12 @@ class Tracker:
             if promoted:
                 track.id = Track._generate_id(timestamp, adsb_hex=track.adsb_hex)
                 if self.event_writer:
+                    _det_n = min(track.n_associated, self.detection_window)
                     if _lazy_write:
                         self.event_writer.write_event_lazy(
                             track.id,
                             timestamp,
-                            track.n_associated,
+                            _det_n,
                             track,
                             adsb_hex=track.adsb_hex,
                             adsb_initialized=track.adsb_initialized,
@@ -108,11 +110,11 @@ class Tracker:
                             max_velocity_ms=track.max_velocity_ms,
                         )
                     else:
-                        detections_list = track.get_recent_detections(n=track.n_associated)
+                        detections_list = track.get_recent_detections(n=_det_n)
                         self.event_writer.write_event(
                             track.id,
                             timestamp,
-                            track.n_associated,
+                            _det_n,
                             detections_list,
                             adsb_hex=track.adsb_hex,
                             adsb_initialized=track.adsb_initialized,

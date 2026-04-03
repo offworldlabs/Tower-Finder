@@ -192,7 +192,8 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     _prof_pipeline += time.thread_time() - _t3
 
     _t4 = time.thread_time()
-    state.node_analytics.maybe_auto_save()
+    # maybe_auto_save moved to analytics_refresh_task to avoid blocking
+    # frame workers during 915-file coverage-map save.
     _prof_save += time.thread_time() - _t4
 
     _archive_buffer[node_id].append(frame)

@@ -263,6 +263,9 @@ async def analytics_refresh_task():
     while True:
         try:
             await loop.run_in_executor(_analytics_executor, _refresh_analytics_and_nodes)
+            # Coverage map auto-save (runs in analytics executor so it never
+            # blocks the default pool used by frame workers).
+            await loop.run_in_executor(_analytics_executor, state.node_analytics.maybe_auto_save)
             # Check for offline nodes and auto-log events
             from routes.admin import check_node_health
             check_node_health()
