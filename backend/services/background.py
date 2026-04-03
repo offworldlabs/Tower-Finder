@@ -330,7 +330,7 @@ async def frame_processor_loop(default_pipeline):
             )
             state.aircraft_dirty = True
         except Exception:
-            logging.warning("Frame processing failed", exc_info=True)
+            logging.debug("Frame processing failed", exc_info=True)
         finally:
             state.frame_queue.task_done()
         # Yield to event loop between frames so HTTP/TCP handlers stay responsive
