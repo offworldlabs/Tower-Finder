@@ -585,9 +585,8 @@ export default function LiveAircraftMap() {
         />
 
         <div className="live-map-area">
-          <MapContainer center={[34.0, -84.5]} zoom={8} style={{ height: "100%", width: "100%" }}>
+          <MapContainer center={[34.0, -84.5]} zoom={8} style={{ height: "100%", width: "100%" }} attributionControl={false}>
             <TileLayer
-              attribution='&copy; <a href="https://carto.com">CARTO</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
               url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
             />
 
