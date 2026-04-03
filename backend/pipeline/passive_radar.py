@@ -500,7 +500,10 @@ class PassiveRadarPipeline:
                 if now - self._geo_last_solve.get(track_id, 0.0) < self._GEO_INTERVAL_S:
                     continue
 
-            self._geo_last_solve[track_id] = now
+            # Mark as "solved" with inf so this track never re-fires.
+            # Non-ADS-B (noise) tracks only need one solver attempt;
+            # ADS-B tracks reach here only if the branch above doesn't continue.
+            self._geo_last_solve[track_id] = float('inf')
             _sc0 = _time_geo.thread_time()
             result = self._geolocate_track_event(track_id, event)
             _sc1 = _time_geo.thread_time()
