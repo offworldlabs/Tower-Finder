@@ -294,6 +294,7 @@ class PassiveRadarPipeline:
             min_det = self.geo_config.min_detections
 
         if len(detections_data) < min_det:
+            PassiveRadarPipeline._geo_skip_mindet += 1
             return None
 
         # Build geolocator Detection objects
@@ -430,6 +431,9 @@ class PassiveRadarPipeline:
     _geo_fast = 0
     _geo_solve = 0
     _geo_solve_cpu = 0.0
+    _geo_solve_ok = 0
+    _geo_solve_fail = 0
+    _geo_skip_mindet = 0
 
     def _run_geolocation(self):
         """Run geolocation only on tracks that received new data this frame.
@@ -480,9 +484,12 @@ class PassiveRadarPipeline:
             PassiveRadarPipeline._geo_solve += 1
             PassiveRadarPipeline._geo_solve_cpu += _sc1 - _sc0
             if result is not None:
+                PassiveRadarPipeline._geo_solve_ok += 1
                 self.geolocated_tracks[track_id] = result
                 _hex_key = result.adsb_hex or result.hex_id
                 _state.active_geo_aircraft[_hex_key] = (result, self.config)
+            else:
+                PassiveRadarPipeline._geo_solve_fail += 1
 
     def process_frame(self, frame: dict):
         """Process a single detection frame {timestamp, delay[], doppler[], snr[], adsb?[]}."""
@@ -519,9 +526,12 @@ class PassiveRadarPipeline:
             _sf = PassiveRadarPipeline._geo_fast
             _ss = PassiveRadarPipeline._geo_solve
             _sc = PassiveRadarPipeline._geo_solve_cpu / max(_ss, 1) * 1000
+            _sok = PassiveRadarPipeline._geo_solve_ok
+            _sfail = PassiveRadarPipeline._geo_solve_fail
+            _smd = PassiveRadarPipeline._geo_skip_mindet
             import logging as _lg
-            _lg.warning("PIPE: %d  tracker=%.1fms  geo=%.1fms  fast=%d solves=%d solve_avg=%.1fms  tracks=%d",
-                        PassiveRadarPipeline._pp_n, _at, _ag, _sf, _ss, _sc,
+            _lg.warning("PIPE: %d  tracker=%.1fms  geo=%.1fms  fast=%d solves=%d(ok=%d fail=%d mindet=%d) solve_avg=%.1fms  tracks=%d",
+                        PassiveRadarPipeline._pp_n, _at, _ag, _sf, _ss, _sok, _sfail, _smd, _sc,
                         len(self.tracker.tracks))
 
         # Periodically prune stale track entries from per-track dicts
