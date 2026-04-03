@@ -232,7 +232,7 @@ class PassiveRadarPipeline:
         # frame.  Aircraft positions change slowly enough that 5-second
         # re-solve intervals produce identical quality at 50x lower CPU cost.
         self._geo_last_solve: dict[str, float] = {}
-        self._GEO_INTERVAL_S: float = 120.0
+        self._GEO_INTERVAL_S: float = 10.0
         # Stale-entry pruning: time-based (every _PRUNE_INTERVAL_S wall-clock
         # seconds) instead of frame-count-based.  With 40 s frame intervals
         # the old 500-frame threshold took ~5.5 h to fire; time-based pruning
@@ -306,18 +306,18 @@ class PassiveRadarPipeline:
         # Build geolocator Track object
         geo_track = GeoTrack(track_id, geo_detections, event)
 
-        # If the track has an ADS-B hex but its detections lack ADS-B data,
-        # inject the latest ADS-B position from state.adsb_aircraft so the
-        # solver can use it as a high-quality initial guess.
-        if not geo_track.adsb_initialized and event.get("adsb_hex"):
+        # Always inject the freshest ADS-B position from state.adsb_aircraft
+        # for tracks that have an ADS-B hex so the solver uses a current
+        # initial guess on every invocation (not stale inline detection data).
+        if event.get("adsb_hex"):
             from core import state as _state  # deferred to avoid circular import at module level
             _adsb = _state.adsb_aircraft.get(event["adsb_hex"])
             if _adsb and _adsb.get("lat") and _adsb.get("lon"):
                 import time as _t
                 age = _t.time() - _adsb.get("last_seen_ms", 0) / 1000
                 if age < 60:
-                    # Patch the first detection with ADS-B data so
-                    # select_initial_guess() picks the ADS-B path.
+                    # Overwrite first detection ADS-B field unconditionally so
+                    # select_initial_guess() always starts from fresh coordinates.
                     geo_track.adsb_initialized = True
                     if geo_track.detections:
                         geo_track.detections[0].adsb = {
@@ -424,11 +424,17 @@ class PassiveRadarPipeline:
 
 
     def _run_geolocation(self):
-        """Run geolocation only on tracks that received new data this frame.
+        """Run geolocation on tracks that received new data this frame.
 
-        ADS-B tracks: position is taken directly from state.adsb_aircraft
-        (zero-cost — no solver).  Non-ADS-B tracks get one LM solver
-        attempt per lifetime, rate-limited by _GEO_INTERVAL_S.
+        Both ADS-B and non-ADS-B tracks go through the LM solver, rate-limited
+        by _GEO_INTERVAL_S.  For ADS-B tracks the solver uses the current ADS-B
+        position as a high-quality initial guess (injected in
+        _geolocate_track_event), which adds radar-derived accuracy on top of the
+        transponder data.  If the solver fails for an ADS-B track, the latest
+        ADS-B position is used as a fallback so the track stays visible.
+
+        Between solver runs, ADS-B kinematic metadata (altitude, velocity) is
+        refreshed from live state for accurate dead-reckoning on the frontend.
         """
         import time as _time_geo
         from core import state as _state
@@ -437,17 +443,52 @@ class PassiveRadarPipeline:
             adsb_hex = event.get("adsb_hex")
             existing = self.geolocated_tracks.get(track_id)
 
-            # ADS-B fast-path: update position from ADS-B without solver
-            if adsb_hex:
+            # Between solver runs: keep ADS-B kinematic data fresh so the
+            # frontend dead-reckoning has current velocity and altitude even
+            # when the radar position hasn't been re-solved yet.
+            if adsb_hex and existing is not None:
+                adsb = _state.adsb_aircraft.get(adsb_hex)
+                if adsb:
+                    _gs_ms = (adsb.get("gs", 0) or 0) * 0.514444
+                    _trk = math.radians(adsb.get("track", 0) or 0)
+                    existing.alt_m = (adsb.get("alt_baro", 0) or 0) * FT_TO_M
+                    existing.vel_east = _gs_ms * math.sin(_trk)
+                    existing.vel_north = _gs_ms * math.cos(_trk)
+                    existing.last_update_ms = event["timestamp"]
+                    existing.n_detections = event.get("length", existing.n_detections)
+
+            # Rate-limit the solver for all track types.
+            if now - self._geo_last_solve.get(track_id, 0.0) < self._GEO_INTERVAL_S:
+                continue
+
+            self._geo_last_solve[track_id] = now
+            result = self._geolocate_track_event(track_id, event)
+
+            if result is not None:
+                # Solver succeeded: use radar-derived position (adds value over ADS-B).
+                # Preserve pos_fix_ts when position hasn't actually changed so
+                # dead-reckoning elapsed time is not reset spuriously.
+                if existing is not None:
+                    _pos_changed = (
+                        abs(existing.lat - result.lat) > 1e-6
+                        or abs(existing.lon - result.lon) > 1e-6
+                    )
+                    if not _pos_changed:
+                        result.pos_fix_ts = existing.pos_fix_ts
+                self.geolocated_tracks[track_id] = result
+                _hex_key = result.adsb_hex or result.hex_id
+                _state.active_geo_aircraft[_hex_key] = (result, self.config)
+
+            elif adsb_hex:
+                # Solver failed — fall back to ADS-B position so the track
+                # stays on the map.  This is the only path that uses ADS-B
+                # coordinates as a position source.
                 adsb = _state.adsb_aircraft.get(adsb_hex)
                 if adsb and adsb.get("lat") and adsb.get("lon"):
                     _gs_ms = (adsb.get("gs", 0) or 0) * 0.514444
                     _trk = math.radians(adsb.get("track", 0) or 0)
                     if existing is not None:
-                        # Only reset wall_clock_ts when the ADS-B position
-                        # actually changes — many nodes report the same aircraft
-                        # with identical coordinates, which would starve the
-                        # dead-reckoning in _track_entry (elapsed stays < 0.5 s).
+                        # Only advance pos_fix_ts when position actually changes.
                         _pos_changed = (
                             abs(existing.lat - adsb["lat"]) > 1e-6
                             or abs(existing.lon - adsb["lon"]) > 1e-6
@@ -457,14 +498,8 @@ class PassiveRadarPipeline:
                             existing.lon = adsb["lon"]
                             existing.wall_clock_ts = _time_geo.time()
                             existing.pos_fix_ts = existing.wall_clock_ts
-                        existing.alt_m = (adsb.get("alt_baro", 0) or 0) * FT_TO_M
-                        existing.vel_east = _gs_ms * math.sin(_trk)
-                        existing.vel_north = _gs_ms * math.cos(_trk)
-                        existing.last_update_ms = event["timestamp"]
-                        existing.n_detections = event.get("length", existing.n_detections)
                     else:
-                        # First encounter: create GeolocatedTrack from ADS-B
-                        # data directly — avoids expensive solver call.
+                        # First encounter and solver failed — bootstrap from ADS-B.
                         existing = GeolocatedTrack(
                             track_id=track_id,
                             lat=adsb["lat"],
@@ -482,9 +517,9 @@ class PassiveRadarPipeline:
                             latest_doppler_hz=None,
                             target_class="aircraft",
                         )
-                        # Inherit pos_fix_ts from existing shared entry if
-                        # position hasn't changed — otherwise every node
-                        # creating a new track resets it and starves DR.
+                        # Inherit pos_fix_ts from a shared entry when position
+                        # hasn't moved — avoids starving dead-reckoning on the
+                        # first frame when multiple nodes see the same aircraft.
                         _hex_key = existing.adsb_hex or existing.hex_id
                         _prev = _state.active_geo_aircraft.get(_hex_key)
                         if _prev is not None:
@@ -492,26 +527,8 @@ class PassiveRadarPipeline:
                             if abs(_pt.lat - existing.lat) <= 1e-6 and abs(_pt.lon - existing.lon) <= 1e-6:
                                 existing.pos_fix_ts = _pt.pos_fix_ts
                         self.geolocated_tracks[track_id] = existing
-                    # Publish to pre-aggregated dict so flush skips 915-pipeline scan
                     _hex_key = existing.adsb_hex or existing.hex_id
                     _state.active_geo_aircraft[_hex_key] = (existing, self.config)
-                # ADS-B tracks never need the LM solver — ADS-B position is
-                # ground truth.  Skip solver entirely for any track with an
-                # ADS-B hex, whether data was found or not.
-                continue
-            else:
-                if now - self._geo_last_solve.get(track_id, 0.0) < self._GEO_INTERVAL_S:
-                    continue
-
-            # Mark as "solved" with inf so this track never re-fires.
-            # Non-ADS-B (noise) tracks only need one solver attempt;
-            # ADS-B tracks reach here only if the branch above doesn't continue.
-            self._geo_last_solve[track_id] = float('inf')
-            result = self._geolocate_track_event(track_id, event)
-            if result is not None:
-                self.geolocated_tracks[track_id] = result
-                _hex_key = result.adsb_hex or result.hex_id
-                _state.active_geo_aircraft[_hex_key] = (result, self.config)
 
     def process_frame(self, frame: dict):
         """Process a single detection frame {timestamp, delay[], doppler[], snr[], adsb?[]}."""
