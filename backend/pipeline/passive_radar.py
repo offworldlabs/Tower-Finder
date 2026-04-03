@@ -165,6 +165,7 @@ class GeolocatedTrack:
         self.n_detections = n_detections
         self.last_update_ms = timestamp_ms
         self.wall_clock_ts = time.time()  # wall-clock for staleness checks
+        self.pos_fix_ts = self.wall_clock_ts  # when lat/lon actually changed
         self.adsb_hex = adsb_hex
         self.latest_delay_us = latest_delay_us
         self.latest_doppler_hz = latest_doppler_hz
@@ -455,6 +456,7 @@ class PassiveRadarPipeline:
                             existing.lat = adsb["lat"]
                             existing.lon = adsb["lon"]
                             existing.wall_clock_ts = _time_geo.time()
+                            existing.pos_fix_ts = existing.wall_clock_ts
                         existing.alt_m = (adsb.get("alt_baro", 0) or 0) * FT_TO_M
                         existing.vel_east = _gs_ms * math.sin(_trk)
                         existing.vel_north = _gs_ms * math.cos(_trk)
@@ -480,6 +482,15 @@ class PassiveRadarPipeline:
                             latest_doppler_hz=None,
                             target_class="aircraft",
                         )
+                        # Inherit pos_fix_ts from existing shared entry if
+                        # position hasn't changed — otherwise every node
+                        # creating a new track resets it and starves DR.
+                        _hex_key = existing.adsb_hex or existing.hex_id
+                        _prev = _state.active_geo_aircraft.get(_hex_key)
+                        if _prev is not None:
+                            _pt = _prev[0]
+                            if abs(_pt.lat - existing.lat) <= 1e-6 and abs(_pt.lon - existing.lon) <= 1e-6:
+                                existing.pos_fix_ts = _pt.pos_fix_ts
                         self.geolocated_tracks[track_id] = existing
                     # Publish to pre-aggregated dict so flush skips 915-pipeline scan
                     _hex_key = existing.adsb_hex or existing.hex_id
