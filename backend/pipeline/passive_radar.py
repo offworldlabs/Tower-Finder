@@ -192,6 +192,11 @@ class PassiveRadarPipeline:
 
     _BACKEND_DIR = os.path.dirname(os.path.dirname(__file__))
 
+    # Sub-phase profiling counters (shared across all instances)
+    _pp_tracker = 0.0
+    _pp_geo = 0.0
+    _pp_n = 0
+
     def __init__(self, node_config: dict = None):
         config = node_config or DEFAULT_NODE_CONFIG
         self.config = config
@@ -485,10 +490,26 @@ class PassiveRadarPipeline:
             detections.append(det)
 
         # Feed to retina-tracker (Kalman + GNN)
+        _t_trk = time.thread_time()
         self.tracker.process_frame(detections, ts)
+        _dt_trk = time.thread_time() - _t_trk
 
         # Run geolocation on updated track events
+        _t_geo = time.thread_time()
         self._run_geolocation()
+        _dt_geo = time.thread_time() - _t_geo
+
+        # Sub-phase profiling (shared across all pipelines)
+        PassiveRadarPipeline._pp_tracker += _dt_trk
+        PassiveRadarPipeline._pp_geo += _dt_geo
+        PassiveRadarPipeline._pp_n += 1
+        if PassiveRadarPipeline._pp_n % 1000 == 0:
+            _at = PassiveRadarPipeline._pp_tracker / PassiveRadarPipeline._pp_n * 1000
+            _ag = PassiveRadarPipeline._pp_geo / PassiveRadarPipeline._pp_n * 1000
+            import logging as _lg
+            _lg.warning("PIPE: %d  tracker=%.1fms  geo=%.1fms  tracks=%d",
+                        PassiveRadarPipeline._pp_n, _at, _ag,
+                        len(self.tracker.tracks))
 
         # Periodically prune stale track entries from per-track dicts
         self._frame_count += 1
