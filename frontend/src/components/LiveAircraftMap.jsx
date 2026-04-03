@@ -350,7 +350,11 @@ export default function LiveAircraftMap() {
         if (marker) {
           let ll = latLngCacheRef.current[fix.hex];
           if (ll) { ll.lat = sLat; ll.lng = sLon; }
-          else { ll = L.latLng(sLat, sLon); latLngCacheRef.current[fix.hex] = ll; marker._latlng = ll; }
+          else { ll = L.latLng(sLat, sLon); latLngCacheRef.current[fix.hex] = ll; }
+          // Always bind our cached LatLng to the marker — when React re-renders
+          // an AircraftMarker (altitude band change, selection, etc.), the new
+          // L.Marker has a fresh _latlng that isn't our cached object.
+          if (marker._latlng !== ll) marker._latlng = ll;
           marker.update();
         }
       }
