@@ -488,6 +488,9 @@ class PassiveRadarPipeline:
                             target_class="aircraft",
                         )
                         self.geolocated_tracks[track_id] = existing
+                        # Seed the solve timer so the periodic re-solve waits
+                        # a full _ADSB_SOLVE_INTERVAL_S before first run.
+                        self._geo_last_solve[track_id] = now
                     # Publish to pre-aggregated dict so flush skips 915-pipeline scan
                     _hex_key = existing.adsb_hex or existing.hex_id
                     _state.active_geo_aircraft[_hex_key] = (existing, self.config)
