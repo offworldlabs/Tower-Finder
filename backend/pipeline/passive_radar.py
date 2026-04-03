@@ -235,7 +235,7 @@ class PassiveRadarPipeline:
         # frame.  Aircraft positions change slowly enough that 5-second
         # re-solve intervals produce identical quality at 50x lower CPU cost.
         self._geo_last_solve: dict[str, float] = {}
-        self._GEO_INTERVAL_S: float = 5.0
+        self._GEO_INTERVAL_S: float = 120.0
         self._ADSB_SOLVE_INTERVAL_S: float = 120.0  # ADS-B tracks: full solver once per 120s
         # Stale-entry pruning: time-based (every _PRUNE_INTERVAL_S wall-clock
         # seconds) instead of frame-count-based.  With 40 s frame intervals
