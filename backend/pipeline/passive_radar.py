@@ -192,10 +192,6 @@ class PassiveRadarPipeline:
 
     _BACKEND_DIR = os.path.dirname(os.path.dirname(__file__))
 
-    # Sub-phase profiling counters (shared across all instances)
-    _pp_tracker = 0.0
-    _pp_geo = 0.0
-    _pp_n = 0
 
     def __init__(self, node_config: dict = None):
         config = node_config or DEFAULT_NODE_CONFIG
@@ -236,7 +232,6 @@ class PassiveRadarPipeline:
         # re-solve intervals produce identical quality at 50x lower CPU cost.
         self._geo_last_solve: dict[str, float] = {}
         self._GEO_INTERVAL_S: float = 120.0
-        self._ADSB_SOLVE_INTERVAL_S: float = 120.0  # ADS-B tracks: full solver once per 120s
         # Stale-entry pruning: time-based (every _PRUNE_INTERVAL_S wall-clock
         # seconds) instead of frame-count-based.  With 40 s frame intervals
         # the old 500-frame threshold took ~5.5 h to fire; time-based pruning
@@ -294,7 +289,6 @@ class PassiveRadarPipeline:
             min_det = self.geo_config.min_detections
 
         if len(detections_data) < min_det:
-            PassiveRadarPipeline._geo_skip_mindet += 1
             return None
 
         # Build geolocator Detection objects
@@ -427,23 +421,13 @@ class PassiveRadarPipeline:
         for k in stale_events:
             del self.event_writer.events[k]
 
-    # Geo sub-phase profiling counters
-    _geo_fast = 0
-    _geo_solve = 0
-    _geo_solve_cpu = 0.0
-    _geo_solve_ok = 0
-    _geo_solve_fail = 0
-    _geo_skip_mindet = 0
 
     def _run_geolocation(self):
         """Run geolocation only on tracks that received new data this frame.
 
-        ADS-B fast-path: for tracks with ADS-B data that already have a
-        geolocated position, refresh lat/lon/alt/vel from state.adsb_aircraft
-        (zero-cost — no solver).  The full LM solver runs only every
-        _ADSB_SOLVE_INTERVAL_S for validation/calibration.
-
-        Non-ADS-B tracks are solved every _GEO_INTERVAL_S as before.
+        ADS-B tracks: position is taken directly from state.adsb_aircraft
+        (zero-cost — no solver).  Non-ADS-B tracks get one LM solver
+        attempt per lifetime, rate-limited by _GEO_INTERVAL_S.
         """
         import time as _time_geo
         from core import state as _state
@@ -494,7 +478,6 @@ class PassiveRadarPipeline:
                 # ADS-B tracks never need the LM solver — ADS-B position is
                 # ground truth.  Skip solver entirely for any track with an
                 # ADS-B hex, whether data was found or not.
-                PassiveRadarPipeline._geo_fast += 1
                 continue
             else:
                 if now - self._geo_last_solve.get(track_id, 0.0) < self._GEO_INTERVAL_S:
@@ -504,18 +487,11 @@ class PassiveRadarPipeline:
             # Non-ADS-B (noise) tracks only need one solver attempt;
             # ADS-B tracks reach here only if the branch above doesn't continue.
             self._geo_last_solve[track_id] = float('inf')
-            _sc0 = _time_geo.thread_time()
             result = self._geolocate_track_event(track_id, event)
-            _sc1 = _time_geo.thread_time()
-            PassiveRadarPipeline._geo_solve += 1
-            PassiveRadarPipeline._geo_solve_cpu += _sc1 - _sc0
             if result is not None:
-                PassiveRadarPipeline._geo_solve_ok += 1
                 self.geolocated_tracks[track_id] = result
                 _hex_key = result.adsb_hex or result.hex_id
                 _state.active_geo_aircraft[_hex_key] = (result, self.config)
-            else:
-                PassiveRadarPipeline._geo_solve_fail += 1
 
     def process_frame(self, frame: dict):
         """Process a single detection frame {timestamp, delay[], doppler[], snr[], adsb?[]}."""
@@ -533,32 +509,10 @@ class PassiveRadarPipeline:
             detections.append(det)
 
         # Feed to retina-tracker (Kalman + GNN)
-        _t_trk = time.thread_time()
         self.tracker.process_frame(detections, ts)
-        _dt_trk = time.thread_time() - _t_trk
 
         # Run geolocation on updated track events
-        _t_geo = time.thread_time()
         self._run_geolocation()
-        _dt_geo = time.thread_time() - _t_geo
-
-        # Sub-phase profiling (shared across all pipelines)
-        PassiveRadarPipeline._pp_tracker += _dt_trk
-        PassiveRadarPipeline._pp_geo += _dt_geo
-        PassiveRadarPipeline._pp_n += 1
-        if PassiveRadarPipeline._pp_n % 1000 == 0:
-            _at = PassiveRadarPipeline._pp_tracker / PassiveRadarPipeline._pp_n * 1000
-            _ag = PassiveRadarPipeline._pp_geo / PassiveRadarPipeline._pp_n * 1000
-            _sf = PassiveRadarPipeline._geo_fast
-            _ss = PassiveRadarPipeline._geo_solve
-            _sc = PassiveRadarPipeline._geo_solve_cpu / max(_ss, 1) * 1000
-            _sok = PassiveRadarPipeline._geo_solve_ok
-            _sfail = PassiveRadarPipeline._geo_solve_fail
-            _smd = PassiveRadarPipeline._geo_skip_mindet
-            import logging as _lg
-            _lg.warning("PIPE: %d  tracker=%.1fms  geo=%.1fms  fast=%d solves=%d(ok=%d fail=%d mindet=%d) solve_avg=%.1fms  tracks=%d",
-                        PassiveRadarPipeline._pp_n, _at, _ag, _sf, _ss, _sok, _sfail, _smd, _sc,
-                        len(self.tracker.tracks))
 
         # Periodically prune stale track entries from per-track dicts
         self._frame_count += 1
