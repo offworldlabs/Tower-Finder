@@ -426,6 +426,11 @@ class PassiveRadarPipeline:
         for k in stale_events:
             del self.event_writer.events[k]
 
+    # Geo sub-phase profiling counters
+    _geo_fast = 0
+    _geo_solve = 0
+    _geo_solve_cpu = 0.0
+
     def _run_geolocation(self):
         """Run geolocation only on tracks that received new data this frame.
 
@@ -462,13 +467,18 @@ class PassiveRadarPipeline:
                     _state.active_geo_aircraft[_hex_key] = (existing, self.config)
                     # Run full solver at reduced rate for validation only
                     if now - self._geo_last_solve.get(track_id, 0.0) < self._ADSB_SOLVE_INTERVAL_S:
+                        PassiveRadarPipeline._geo_fast += 1
                         continue
             else:
                 if now - self._geo_last_solve.get(track_id, 0.0) < self._GEO_INTERVAL_S:
                     continue
 
             self._geo_last_solve[track_id] = now
+            _sc0 = _time_geo.thread_time()
             result = self._geolocate_track_event(track_id, event)
+            _sc1 = _time_geo.thread_time()
+            PassiveRadarPipeline._geo_solve += 1
+            PassiveRadarPipeline._geo_solve_cpu += _sc1 - _sc0
             if result is not None:
                 self.geolocated_tracks[track_id] = result
                 _hex_key = result.adsb_hex or result.hex_id
@@ -506,9 +516,12 @@ class PassiveRadarPipeline:
         if PassiveRadarPipeline._pp_n % 1000 == 0:
             _at = PassiveRadarPipeline._pp_tracker / PassiveRadarPipeline._pp_n * 1000
             _ag = PassiveRadarPipeline._pp_geo / PassiveRadarPipeline._pp_n * 1000
+            _sf = PassiveRadarPipeline._geo_fast
+            _ss = PassiveRadarPipeline._geo_solve
+            _sc = PassiveRadarPipeline._geo_solve_cpu / max(_ss, 1) * 1000
             import logging as _lg
-            _lg.warning("PIPE: %d  tracker=%.1fms  geo=%.1fms  tracks=%d",
-                        PassiveRadarPipeline._pp_n, _at, _ag,
+            _lg.warning("PIPE: %d  tracker=%.1fms  geo=%.1fms  fast=%d solves=%d solve_avg=%.1fms  tracks=%d",
+                        PassiveRadarPipeline._pp_n, _at, _ag, _sf, _ss, _sc,
                         len(self.tracker.tracks))
 
         # Periodically prune stale track entries from per-track dicts
