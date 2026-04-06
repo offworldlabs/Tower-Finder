@@ -252,6 +252,14 @@ class FleetOrchestrator:
             self.world.max_aircraft = self.world.min_aircraft
 
         for cfg in self.node_configs:
+            # Propagate CLI overrides into the raw config dict so the
+            # handshake sends correct beam/range to the server's
+            # InterNodeAssociator (which builds overlap grids from these).
+            if self.beam_width_deg:
+                cfg["beam_width_deg"] = self.beam_width_deg
+            if self.max_range_km:
+                cfg["max_range_km"] = self.max_range_km
+
             node = NodeConfig(
                 node_id=cfg["node_id"],
                 rx_lat=cfg["rx_lat"],

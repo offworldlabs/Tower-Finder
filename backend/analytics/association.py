@@ -378,7 +378,7 @@ class InterNodeAssociator:
         #   At interval=60 s → 11.4 rounds/s → 11.4 × 999 × 50 µs = 570 ms/s
         #   = 57 % of the single GIL core — starves frame workers.
         #   At interval=300 s, cap=50 → 2.9 rounds/s → 2.9 × 50 × 50 µs = 7 ms/s.
-        self._ASSOC_MIN_INTERVAL_S: float = 300.0
+        self._ASSOC_MIN_INTERVAL_S: float = 30.0
         self._ASSOC_MAX_NEIGHBORS: int = 50
         self._last_assoc: dict[str, float] = {}  # node_id → last association wall-time
         self._register_lock = __import__('threading').Lock()
