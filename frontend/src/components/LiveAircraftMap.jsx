@@ -197,7 +197,7 @@ const DetectionArcs = memo(function DetectionArcs({ visibleArcs, selectedHex, on
   return visibleArcs.map((arc) => {
     const isSelected = arc.hex === selectedHex;
     const arcAge = Date.now() - arc.ts;
-    const arcOpacity = Math.max(0.05, Math.min(0.95, 1 - Math.max(0, arcAge - 1500) / 8500));
+    const arcOpacity = Math.max(0.08, Math.min(0.95, 1 - Math.max(0, arcAge - 2000) / 18000));
     const arcColor = arc.target_class === "drone" ? "#fb923c" : dopplerColor(arc.doppler_hz ?? 0);
     return (
       <Polyline
@@ -240,7 +240,10 @@ export default function LiveAircraftMap() {
   const [displayAircraft, setDisplayAircraft] = useState([]);
   const [showCoverage, setShowCoverage] = useState(false);
   const [showTrails, setShowTrails] = useState(true);
-  const [showGroundTruth, setShowGroundTruth] = useState(false);
+  // Default GT on for testmap (simulation demo); off on map.retina.fm (real only)
+  const [showGroundTruth, setShowGroundTruth] = useState(
+    () => !/^map\./i.test(window.location.hostname),
+  );
   const [showLabels, setShowLabels] = useState(true);
   const [selectedHex, setSelectedHex] = useState(null);
   const [selectedNodeId, setSelectedNodeId] = useState(null);

@@ -97,7 +97,7 @@ export function useAircraftFeed() {
 
       // Accumulate detection arcs — each detection refreshes its entry; stale arcs fade out
       const now = Date.now();
-      const ARC_MAX_AGE_MS = 10_000;
+      const ARC_MAX_AGE_MS = 20_000;
       const buf = arcsBufferRef.current;
       for (const ac of newAircraft) {
         if (Array.isArray(ac.ambiguity_arc) && ac.ambiguity_arc.length >= 2 && ac.node_id) {
