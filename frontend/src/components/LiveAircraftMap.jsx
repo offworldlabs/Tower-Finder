@@ -62,7 +62,7 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
       const isDrone = ac.object_type === "drone";
       const color   = isAnom ? "#f43f5e" : isDrone ? "#f59e0b" : "#22d3ee";
       const border  = isAnom ? "#e11d48" : isDrone ? "#d97706" : "#67e8f9";
-      const radius  = isDrone ? 5 : isAnom ? 7 : 6;
+      const radius  = isDrone ? 6 : isAnom ? 8 : 9;
 
       let m = markerMap.get(ac.hex);
       if (!m) {
@@ -70,9 +70,9 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
           renderer: _gtCanvas,
           radius,
           color: border,
-          weight: 2,
+          weight: 3,
           fillColor: color,
-          fillOpacity: 0.45,
+          fillOpacity: 0.7,
         });
         m.on("click", () => onSelectRef.current(ac.hex));
         m.addTo(map);
@@ -440,9 +440,8 @@ export default function LiveAircraftMap() {
   // Positions are now read from displayAircraft (60fps smoothed) rather than
   // raw groundTruthRef so ground-truth dots move continuously like radar tracks.
   const truthOnlyAircraft = useMemo(
-    () => displayAircraft.filter((ac) => ac._isTruth && !matchedTruthHexes.has(ac.hex)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [displayAircraft, matchedTruthHexes],
+    () => displayAircraft.filter((ac) => ac._isTruth),
+    [displayAircraft],
   );
 
 
