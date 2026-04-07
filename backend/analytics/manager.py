@@ -162,10 +162,15 @@ class NodeAnalyticsManager:
             result["coverage_map"] = self.coverage_maps[node_id].summary()
         ec = self.empirical_coverages.get(node_id)
         if ec is not None:
+            da = self.detection_areas.get(node_id)
+            poly_kwargs = {}
+            if da is not None:
+                poly_kwargs["beam_azimuth_deg"] = da.beam_azimuth_deg
+                poly_kwargs["beam_width_deg"] = da.beam_width_deg
             result["empirical_coverage"] = {
                 "n_points": ec.n_points,
                 "n_filled_bins": ec.n_filled_bins,
-                "polygon": ec.to_polygon(),
+                "polygon": ec.to_polygon(**poly_kwargs),
             }
         return result
 

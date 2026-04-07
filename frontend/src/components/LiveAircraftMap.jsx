@@ -104,6 +104,99 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
   return null;
 });
 
+/* ── MatchedGroundTruthLayer: shows GT positions for radar-matched aircraft + error line.
+      Renders as imperative L.circleMarker (GT dot) + L.polyline (error vector) on a
+      single canvas.  Updated at 4Hz from smoothRef for dead-reckoned positions. ── */
+const _mgCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
+
+const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAircraft, groundTruthRef, smoothRef }) {
+  const map = useMap();
+  const markersRef = useRef(new Map());  // gtHex → { dot: L.circleMarker, line: L.polyline }
+
+  useEffect(() => {
+    const markers = markersRef.current;
+
+    const tick = () => {
+      const gt = groundTruthRef.current;
+      const seen = new Set();
+
+      for (const ac of radarAircraft) {
+        const gtHex = ac.ground_truth_hex;
+        if (!gtHex) continue;
+        const gtTrail = gt[gtHex];
+        if (!Array.isArray(gtTrail) || gtTrail.length === 0) continue;
+
+        // GT position from smoothRef (dead-reckoned at 60fps) if available, else raw
+        const smooth = smoothRef.current[gtHex];
+        let gtLat, gtLon;
+        if (smooth) {
+          gtLat = smooth.lat;
+          gtLon = smooth.lon;
+        } else {
+          const last = gtTrail[gtTrail.length - 1];
+          gtLat = last[0];
+          gtLon = last[1];
+        }
+
+        // Radar position from smoothRef
+        const radarSmooth = smoothRef.current[ac.hex];
+        const rLat = radarSmooth ? radarSmooth.lat : ac.lat;
+        const rLon = radarSmooth ? radarSmooth.lon : ac.lon;
+
+        if (!gtLat || !gtLon || !rLat || !rLon) continue;
+
+        seen.add(gtHex);
+        let entry = markers.get(gtHex);
+        if (!entry) {
+          const dot = L.circleMarker([gtLat, gtLon], {
+            renderer: _mgCanvas,
+            radius: 5,
+            color: "#22d3ee",
+            weight: 2,
+            fillColor: "#22d3ee",
+            fillOpacity: 0.8,
+          });
+          const line = L.polyline([[gtLat, gtLon], [rLat, rLon]], {
+            color: "#facc15",
+            weight: 1.5,
+            opacity: 0.6,
+            dashArray: "3 4",
+          });
+          dot.addTo(map);
+          line.addTo(map);
+          entry = { dot, line };
+          markers.set(gtHex, entry);
+        } else {
+          entry.dot.setLatLng([gtLat, gtLon]);
+          entry.line.setLatLngs([[gtLat, gtLon], [rLat, rLon]]);
+        }
+      }
+
+      // Remove markers for aircraft no longer matched
+      for (const [hex, entry] of markers) {
+        if (!seen.has(hex)) {
+          entry.dot.remove();
+          entry.line.remove();
+          markers.delete(hex);
+        }
+      }
+    };
+
+    tick();
+    const intervalId = setInterval(tick, 250);
+    return () => {
+      clearInterval(intervalId);
+      for (const entry of markers.values()) {
+        entry.dot.remove();
+        entry.line.remove();
+      }
+      markers.clear();
+    };
+  }, [map, radarAircraft, groundTruthRef, smoothRef]);
+
+  return null;
+});
+
 /* ── AircraftMarker: memoized with custom comparator — only re-renders on visual changes
       (selection, labels, callsign, altitude band, type).  lat/lon/track/gs are updated
       imperatively at 60fps via markerRegistry → marker.setLatLng() in the RAF loop,
@@ -191,29 +284,103 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
   });
 });
 
-/* ── DetectionArcs: memoized — each arc fades independently based on its last-update timestamp.
-      Multiple arcs can exist per aircraft (one per detecting node). ── */
-const DetectionArcs = memo(function DetectionArcs({ visibleArcs, selectedHex, onSelect, onSelectNode }) {
-  return visibleArcs.map((arc) => {
-    const isSelected = arc.hex === selectedHex;
-    const arcAge = Date.now() - arc.ts;
-    const arcOpacity = Math.max(0.08, Math.min(0.95, 1 - Math.max(0, arcAge - 2000) / 18000));
-    const arcColor = arc.target_class === "drone" ? "#fb923c" : dopplerColor(arc.doppler_hz ?? 0);
-    return (
-      <Polyline
-        key={arc._key}
-        positions={arc.ambiguity_arc}
-        pathOptions={{
-          color: arcColor,
-          weight: isSelected ? 5 : 3,
-          opacity: isSelected ? 1 : arcOpacity,
-          lineCap: "round",
-          lineJoin: "round",
-        }}
-        eventHandlers={{ click: () => { onSelect(arc.hex); if (arc.node_id) onSelectNode(arc.node_id); } }}
-      />
-    );
-  });
+/* ── DetectionArcs: imperative Leaflet polylines with timer-driven opacity fade.
+      Avoids React re-render bottleneck — opacity updates every 250ms via setStyle(),
+      arcs persist for 20s total (2s full brightness + 18s linear fade to zero). ── */
+const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, viewport, onSelect, onSelectNode }) {
+  const map = useMap();
+  const polyMapRef = useRef(new Map()); // key → { line: L.polyline, ts, hex, node_id, ... }
+  const onSelectRef = useRef(onSelect);
+  const onSelectNodeRef = useRef(onSelectNode);
+  const selectedHexRef = useRef(selectedHex);
+  useEffect(() => { onSelectRef.current = onSelect; }, [onSelect]);
+  useEffect(() => { onSelectNodeRef.current = onSelectNode; }, [onSelectNode]);
+  useEffect(() => { selectedHexRef.current = selectedHex; }, [selectedHex]);
+
+  useEffect(() => {
+    const polyMap = polyMapRef.current;
+
+    const tick = () => {
+      const buf = arcsBufferRef.current;
+      const now = Date.now();
+      const ARC_TOTAL_LIFE_MS = 20_000; // total arc lifetime
+      const ARC_FULL_MS = 2_000;         // full brightness period
+      const ARC_FADE_MS = 18_000;        // fade period after full
+      const curSelected = selectedHexRef.current;
+
+      const seen = new Set();
+
+      // Add / update arcs from buffer
+      for (const key of Object.keys(buf)) {
+        const entry = buf[key];
+        const age = now - entry.ts;
+        if (age > ARC_TOTAL_LIFE_MS) continue;
+        if (!Array.isArray(entry.ambiguity_arc) || entry.ambiguity_arc.length < 2) continue;
+
+        seen.add(key);
+        const isSelected = entry.hex === curSelected;
+        const opacity = isSelected ? 1.0 : Math.max(0.0, Math.min(0.95, 1 - Math.max(0, age - ARC_FULL_MS) / ARC_FADE_MS));
+        const color = entry.target_class === "drone" ? "#fb923c" : dopplerColor(entry.doppler_hz ?? 0);
+        const weight = isSelected ? 5 : 3;
+
+        let existing = polyMap.get(key);
+        if (existing) {
+          // Update opacity and style
+          existing.line.setStyle({ color, weight, opacity });
+          existing.ts = entry.ts;
+          existing.hex = entry.hex;
+          existing.node_id = entry.node_id;
+          // Update positions if arc geometry changed
+          existing.line.setLatLngs(entry.ambiguity_arc);
+        } else {
+          const line = L.polyline(entry.ambiguity_arc, {
+            color,
+            weight,
+            opacity,
+            lineCap: "round",
+            lineJoin: "round",
+          });
+          line.on("click", () => {
+            onSelectRef.current(entry.hex);
+            if (entry.node_id) onSelectNodeRef.current(entry.node_id);
+          });
+          line.addTo(map);
+          polyMap.set(key, { line, ts: entry.ts, hex: entry.hex, node_id: entry.node_id });
+        }
+      }
+
+      // Remove expired arcs
+      for (const [key, info] of polyMap) {
+        if (!seen.has(key)) {
+          const age = now - info.ts;
+          if (age > ARC_TOTAL_LIFE_MS) {
+            info.line.remove();
+            polyMap.delete(key);
+          } else {
+            // Still fading out — update opacity
+            const opacity = Math.max(0.0, Math.min(0.95, 1 - Math.max(0, age - ARC_FULL_MS) / ARC_FADE_MS));
+            if (opacity <= 0) {
+              info.line.remove();
+              polyMap.delete(key);
+            } else {
+              info.line.setStyle({ opacity });
+            }
+          }
+        }
+      }
+    };
+
+    // Initial tick + interval for smooth updates
+    tick();
+    const intervalId = setInterval(tick, 250);
+    return () => {
+      clearInterval(intervalId);
+      for (const info of polyMap.values()) info.line.remove();
+      polyMap.clear();
+    };
+  }, [map, arcsBufferRef]);
+
+  return null;
 });
 
 /* ── Main component ───────────────────────────────────────────── */
@@ -473,29 +640,6 @@ export default function LiveAircraftMap() {
     [nodes, viewport],
   );
 
-  // Detection arcs from accumulated buffer — each detection creates an independently-fading arc.
-  // Arcs persist for ~10s after last server update, key = hex-node_id.
-  const visibleArcs = useMemo(() => {
-    const buf = arcsBufferRef.current;
-    const now = Date.now();
-    const result = [];
-    for (const key of Object.keys(buf)) {
-      const entry = buf[key];
-      if (now - entry.ts > 10_000) continue;
-      const mid = entry.ambiguity_arc[Math.floor(entry.ambiguity_arc.length / 2)];
-      if (
-        entry.hex === selectedHex ||
-        (mid && isPointInViewport(mid[0], mid[1], viewport, 0.5))
-      ) {
-        result.push({ ...entry, _key: key });
-      }
-    }
-    return result;
-    // trailTick fires on every WS message (~1Hz) — replaces `aircraft` dep.
-    // visibleArcs no longer recalculates on every setDisplayAircraft (10→2fps).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trailTick, viewport, selectedHex]);
-
   /* ── Derived: trail for selected aircraft ───────────────────── */
   const visibleTrailEntries = useMemo(() => {
     if (!selectedHex) return [];
@@ -738,8 +882,8 @@ export default function LiveAircraftMap() {
               ));
             })()}
 
-            {/* Detection arcs — memoized, sourced from raw WS data (2Hz), not smoothed positions */}
-            <DetectionArcs visibleArcs={visibleArcs} selectedHex={selectedHex} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} />
+            {/* Detection arcs — imperative Leaflet layer, 4Hz opacity fade, sourced from raw WS buffer */}
+            <DetectionArcs arcsBufferRef={arcsBufferRef} selectedHex={selectedHex} viewport={viewport} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} />
             {/* Aircraft position markers — ADS-B aided (teal icon+arc), multinode (purple icon), uncertain solo (dimmed circle) */}
             {visibleAircraft.map((ac) => {
               const isSelected = ac.hex === selectedHex;
@@ -798,6 +942,15 @@ export default function LiveAircraftMap() {
               <GroundTruthCanvasLayer
                 aircraft={visibleTruthOnlyAircraft}
                 onSelect={handleSelectAircraft}
+              />
+            )}
+
+            {/* Matched GT overlay — shows GT dots + error lines for radar aircraft with GT match */}
+            {showGroundTruth && (
+              <MatchedGroundTruthLayer
+                radarAircraft={radarAircraft}
+                groundTruthRef={groundTruthRef}
+                smoothRef={smoothRef}
               />
             )}
           </MapContainer>

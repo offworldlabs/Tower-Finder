@@ -86,30 +86,57 @@ class EmpiricalCoverageState:
 
     # ── Polygon generation ────────────────────────────────────────────────────
 
-    def to_polygon(self, min_points: int = MIN_POINTS) -> list[list[float]] | None:
-        """Return a closed polygon [[lat, lon], …] or None if insufficient data."""
+    def to_polygon(self, min_points: int = MIN_POINTS,
+                   beam_azimuth_deg: float | None = None,
+                   beam_width_deg: float | None = None) -> list[list[float]] | None:
+        """Return a closed polygon [[lat, lon], …] or None if insufficient data.
+
+        When *beam_azimuth_deg* and *beam_width_deg* are provided the polygon
+        is constrained to the beam sector (a pie-slice shape starting and ending
+        at the RX position).  Bins outside the sector are zeroed so the
+        interpolation step never bleeds coverage into directions the antenna
+        physically cannot observe.
+        """
         if self.n_points < min_points:
             return None
 
-        # Step 1: robust range per bin (P85, or 0 if empty)
-        ranges: list[float] = []
-        for b in self._bins:
-            ranges.append(_p85(b) if b else 0.0)
+        # --- Determine which bins fall inside the beam sector -----------------
+        if beam_azimuth_deg is not None and beam_width_deg is not None:
+            half = beam_width_deg / 2.0
+            def _in_beam(bin_idx: int) -> bool:
+                centre = bin_idx * _DEG_PER_BIN
+                diff = (centre - beam_azimuth_deg + 180.0) % 360.0 - 180.0
+                return abs(diff) <= half
+        else:
+            _in_beam = lambda _: True  # noqa: E731 — no constraint
 
-        # Step 2: fill empty bins by angular interpolation from neighbours
+        # Step 1: robust range per bin (P85, or 0 if empty / outside beam)
+        ranges: list[float] = []
+        for i, b in enumerate(self._bins):
+            if not _in_beam(i):
+                ranges.append(0.0)
+            else:
+                ranges.append(_p85(b) if b else 0.0)
+
+        # Step 2: fill empty *in-beam* bins by angular interpolation from neighbours
         for i in range(N_BINS):
-            if ranges[i] > 0.0:
+            if ranges[i] > 0.0 or not _in_beam(i):
                 continue
-            # Search for nearest filled bin in each direction
             left_dist, left_val = None, None
             for j in range(1, N_BINS):
-                lv = ranges[(i - j) % N_BINS]
+                ni = (i - j) % N_BINS
+                if not _in_beam(ni):
+                    break  # stop at beam edge
+                lv = ranges[ni]
                 if lv > 0.0:
                     left_dist, left_val = j, lv
                     break
             right_dist, right_val = None, None
             for j in range(1, N_BINS):
-                rv = ranges[(i + j) % N_BINS]
+                ni = (i + j) % N_BINS
+                if not _in_beam(ni):
+                    break  # stop at beam edge
+                rv = ranges[ni]
                 if rv > 0.0:
                     right_dist, right_val = j, rv
                     break
@@ -123,34 +150,50 @@ class EmpiricalCoverageState:
                 est = left_val
                 gap = left_dist
             else:
-                # Weighted interpolation, closer side has more weight
                 total = left_dist + right_dist
                 est = (left_val * right_dist + right_val * left_dist) / total
                 gap = max(left_dist, right_dist)
 
-            # Conservative discount for unobserved gap: 10 % per bin up to 30 %
             discount = max(0.70, 1.0 - 0.10 * gap)
             ranges[i] = est * discount
 
-        # Step 3: circular rolling smooth (window = 3)
-        smoothed = [
-            (ranges[(i - 1) % N_BINS] + ranges[i] + ranges[(i + 1) % N_BINS]) / 3.0
-            for i in range(N_BINS)
-        ]
+        # Step 3: rolling smooth (window = 3), only among in-beam bins
+        smoothed = list(ranges)
+        for i in range(N_BINS):
+            if not _in_beam(i):
+                continue
+            prev_i = (i - 1) % N_BINS
+            next_i = (i + 1) % N_BINS
+            vals = [ranges[i]]
+            if _in_beam(prev_i):
+                vals.append(ranges[prev_i])
+            if _in_beam(next_i):
+                vals.append(ranges[next_i])
+            smoothed[i] = sum(vals) / len(vals)
 
-        # Step 4: convert polar → lat/lon
+        # Step 4: generate sector polygon (pie-slice shape)
         cos_lat = math.cos(math.radians(self.rx_lat))
         polygon: list[list[float]] = []
-        for i, r_km in enumerate(smoothed):
+
+        # Start at RX (sector tip)
+        polygon.append([round(self.rx_lat, 5), round(self.rx_lon, 5)])
+
+        for i in range(N_BINS):
+            if not _in_beam(i):
+                continue
+            r_km = smoothed[i]
             if r_km < 0.1:
-                r_km = 0.1  # prevent degenerate polygon
+                r_km = 0.1
             bearing_rad = math.radians(i * _DEG_PER_BIN)
             lat = self.rx_lat + (r_km * math.cos(bearing_rad)) / 111.320
             lon = self.rx_lon + (r_km * math.sin(bearing_rad)) / (111.320 * cos_lat)
             polygon.append([round(lat, 5), round(lon, 5)])
 
-        # Close the ring
-        polygon.append(polygon[0])
+        # Close back to RX
+        polygon.append([round(self.rx_lat, 5), round(self.rx_lon, 5)])
+
+        if len(polygon) < 4:
+            return None
         return polygon
 
     # ── Serialisation ─────────────────────────────────────────────────────────
