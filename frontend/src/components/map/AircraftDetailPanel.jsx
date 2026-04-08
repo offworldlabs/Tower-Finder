@@ -133,7 +133,15 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
               label="Type"
               value={
                 <span style={{ color: "#f43f5e", fontWeight: 600 }}>
-                  {(ac.anomaly_types || []).join(", ") || "unknown"}
+                  {(ac.anomaly_types || []).map(t => ({
+                    supersonic: "Supersonic",
+                    instant_acceleration: "Instant Acceleration",
+                    instant_direction_change: "Instant Direction Change",
+                    sustained_orbit: "Sustained Orbit",
+                    position_mismatch: "GPS Spoof",
+                    identity_swap: "Identity Swap",
+                    altitude_jump: "Altitude Jump",
+                  }[t] || t)).join(", ") || "unknown"}
                 </span>
               }
             />
