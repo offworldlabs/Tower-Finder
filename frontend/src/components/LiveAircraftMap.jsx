@@ -915,6 +915,9 @@ export default function LiveAircraftMap() {
             {/* Aircraft position markers — all radar-detected aircraft rendered as airplane icons.
                  Color encodes confidence: purple=multinode, teal=ADS-B aided, cyan=single-node. */}
             {visibleAircraft.map((ac) => {
+              // Arc-only tracks have no real position — the lat/lon is the arc midpoint
+              // which doesn't move. Skip the icon; the arc polyline is the display element.
+              if (ac.position_source === "single_node_ellipse_arc") return null;
               if (!ac.lat || !ac.lon) return null;
               const isSelected = ac.hex === selectedHex;
               return (
