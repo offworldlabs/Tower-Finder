@@ -123,6 +123,35 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
           </div>
         )}
 
+        {/* Anomaly detection */}
+        {ac.is_anomalous && (
+          <div className="detail-section">
+            <div className="detail-section-title" style={{ color: "#f43f5e" }}>
+              ⚠ Anomaly Detected
+            </div>
+            <Field
+              label="Type"
+              value={
+                <span style={{ color: "#f43f5e", fontWeight: 600 }}>
+                  {(ac.anomaly_types || []).join(", ") || "unknown"}
+                </span>
+              }
+            />
+            {ac.max_velocity_ms > 0 && (
+              <Field
+                label="Max velocity"
+                value={`${ac.max_velocity_ms.toFixed(0)} m/s (Mach ${(ac.max_velocity_ms / 343).toFixed(2)})`}
+              />
+            )}
+            {ac.gs != null && (
+              <Field
+                label="Current speed"
+                value={`${ac.gs} kts (${(ac.gs * 0.514444).toFixed(0)} m/s)`}
+              />
+            )}
+          </div>
+        )}
+
         {/* Solver residuals for single-node */}
         {!isMultinode && !isTruthOnly && (ac.rms_delay != null || ac.rms_doppler != null) && (
           <div className="detail-section">

@@ -224,8 +224,18 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
 def multinode_to_aircraft(key: str, r: dict) -> dict:
     speed_ms = math.sqrt(r["vel_east"] ** 2 + r["vel_north"] ** 2)
     heading = math.degrees(math.atan2(r["vel_east"], r["vel_north"])) % 360
+    _MACH_1 = 343.0
+    _mn_anomaly_types = []
+    if speed_ms > _MACH_1:
+        _mn_anomaly_types.append("supersonic")
+    _mn_is_anom = bool(_mn_anomaly_types)
+    _mn_hex = f"mn{abs(hash(key)) % 0xFFFF:04x}"
+    if _mn_is_anom:
+        state.anomaly_hexes.add(_mn_hex)
+    else:
+        state.anomaly_hexes.discard(_mn_hex)
     return {
-        "hex": f"mn{abs(hash(key)) % 0xFFFF:04x}",
+        "hex": _mn_hex,
         "type": "multinode_solve",
         "flight": f"MN{r['n_nodes']}N",
         "alt_baro": round(r["alt_m"] / 0.3048),
@@ -243,6 +253,9 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
         "rms_delay": round(r["rms_delay"], 3),
         "rms_doppler": round(r["rms_doppler"], 2),
         "position_source": "multinode_solve",
+        "is_anomalous": _mn_is_anom,
+        "anomaly_types": _mn_anomaly_types,
+        "max_velocity_ms": round(speed_ms, 1),
     }
 
 
@@ -483,6 +496,16 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         rms_delay = round(getattr(track, "rms_delay", 0.0) or 0.0, 3)
         rms_doppler = round(getattr(track, "rms_doppler", 0.0) or 0.0, 2)
 
+        # Anomaly propagation: GeolocatedTrack → state.anomaly_hexes
+        _is_anom = getattr(track, "is_anomalous", False)
+        _anom_types = getattr(track, "anomaly_types", set())
+        _max_vel = getattr(track, "max_velocity_ms", 0.0)
+        _flag_hex = ac_hex
+        if _is_anom:
+            state.anomaly_hexes.add(_flag_hex)
+        else:
+            state.anomaly_hexes.discard(_flag_hex)
+
         return {
             "hex": ac_hex,
             "ground_truth_hex": resolve_ground_truth_hex(ac_hex, lat, lon),
@@ -510,6 +533,9 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             "node_id": node_cfg.get("node_id"),
             "target_class": getattr(track, "target_class", None),
             "recent_positions": list(state.track_histories.get(ac_hex, [])),
+            "is_anomalous": _is_anom,
+            "anomaly_types": sorted(_anom_types) if _anom_types else [],
+            "max_velocity_ms": round(_max_vel, 1),
         }
 
     # Staleness threshold: skip geolocated tracks not updated in the last
@@ -532,6 +558,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         aircraft.append(_track_entry(ac_hex, track, cfg))
     for k in stale_geo:
         state.active_geo_aircraft.pop(k, None)
+        state.anomaly_hexes.discard(k)
 
     # 2. Default pipeline — catch any tracks not in the pre-aggregated dict
     for track in list(default_pipeline.geolocated_tracks.values()):
@@ -567,6 +594,8 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             ac["ground_truth_hex"] = resolve_ground_truth_hex(ac["hex"], ac["lat"], ac["lon"])
             aircraft.append(ac)
     for k in stale_mn:
+        _mn_hex = f"mn{abs(hash(k)) % 0xFFFF:04x}"
+        state.anomaly_hexes.discard(_mn_hex)
         state.multinode_tracks.pop(k, None)
 
     # 4. ADS-B only — excluded from map per design.
@@ -592,6 +621,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     for h in stale_gt:
         state.ground_truth_trails.pop(h, None)
         state.ground_truth_meta.pop(h, None)
+        state.anomaly_hexes.discard(h)
 
     stale_th = [
         h for h, trail in list(state.track_histories.items())

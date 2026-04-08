@@ -150,7 +150,6 @@ python3 backend/simulation/orchestrator.py \
   --concurrency 80 --connect-retries 999 \
   --interval 40.0 --time-scale 4.0 \
   --min-aircraft 60 --max-aircraft 100 \
-  --beam-width-deg 120 --max-range-km 140 \
   --metros atl,gvl
 ```
 
@@ -164,8 +163,8 @@ Key parameters:
 | `--concurrency` | 20 | Max simultaneous TCP connects at startup |
 | `--metros` | (all) | Restrict nodes and ADS-B to listed metros |
 | `--min-aircraft` / `--max-aircraft` | 5 / 20 | Aircraft count range |
-| `--beam-width-deg` | 41 | Yagi half-power beamwidth override |
-| `--max-range-km` | 50 | Detection range override |
+| `--beam-width-deg` | 0 (use config) | Yagi half-power beamwidth override (0 = per-node ~40°) |
+| `--max-range-km` | 0 (use config) | Detection range override (0 = per-node ~45 km) |
 
 `--time-scale 4.0` means simulation time runs 4× faster than wall clock, so
 a 10-minute flight takes 2.5 minutes. Detection frame rate stays constant in

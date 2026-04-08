@@ -270,7 +270,7 @@ class FleetOrchestrator:
                 tx_alt_ft=cfg["tx_alt_ft"],
                 fc_hz=cfg["fc_hz"],
                 fs_hz=cfg.get("fs_hz", 2_000_000),
-                beam_width_deg=self.beam_width_deg or cfg.get("beam_width_deg", 45),
+                beam_width_deg=self.beam_width_deg or cfg.get("beam_width_deg", 40),
                 max_range_km=self.max_range_km or cfg.get("max_range_km", 50),
             )
             self.world.add_node(node)

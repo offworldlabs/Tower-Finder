@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useMemo, memo } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo, memo } from "react";
 import {
   MapContainer,
   TileLayer,
@@ -303,9 +303,9 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
     const tick = () => {
       const buf = arcsBufferRef.current;
       const now = Date.now();
-      const ARC_TOTAL_LIFE_MS = 20_000; // total arc lifetime
+      const ARC_TOTAL_LIFE_MS = 12_000; // total arc lifetime
       const ARC_FULL_MS = 2_000;         // full brightness period
-      const ARC_FADE_MS = 18_000;        // fade period after full
+      const ARC_FADE_MS = 10_000;        // fade period after full
       const curSelected = selectedHexRef.current;
 
       const seen = new Set();
@@ -847,18 +847,46 @@ export default function LiveAircraftMap() {
               );
             })()}
 
-            {/* Contributing node rings — shown when a multinode-solved aircraft is selected */}
+            {/* Contributing node highlights — shown when a multinode-solved aircraft is selected */}
             {selectedAc?.multinode && Array.isArray(selectedAc.contributing_node_ids) &&
               selectedAc.contributing_node_ids.map((nid) => {
                 const cn = nodes.find((n) => n.node_id === nid);
                 if (!cn) return null;
+                const hasEmpirical = Array.isArray(cn.empirical_polygon) && cn.empirical_polygon.length >= 3;
                 return (
-                  <CircleMarker
-                    key={`contrib-${nid}`}
-                    center={[cn.rx_lat, cn.rx_lon]}
-                    radius={14}
-                    pathOptions={{ color: "#a78bfa", weight: 2.5, fillOpacity: 0, dashArray: "5 3" }}
-                  />
+                  <React.Fragment key={`contrib-group-${nid}`}>
+                    {/* Coverage area — empirical polygon or Yagi sector */}
+                    {hasEmpirical ? (
+                      <Polygon
+                        positions={cn.empirical_polygon}
+                        pathOptions={{ color: "#a78bfa", fillColor: "#a78bfa", fillOpacity: 0.10, weight: 1.5 }}
+                      />
+                    ) : (
+                      <Polygon
+                        positions={yagiSectorPositions(
+                          cn.rx_lat, cn.rx_lon,
+                          cn.tx_lat, cn.tx_lon,
+                          cn.beam_azimuth_deg,
+                          cn.beam_width_deg ?? 40,
+                          cn.max_range_km ?? 50,
+                        )}
+                        pathOptions={{ color: "#a78bfa", fillColor: "#a78bfa", fillOpacity: 0.08, weight: 1.5, dashArray: "5 3" }}
+                      />
+                    )}
+                    {/* Prominent node marker ring */}
+                    <CircleMarker
+                      center={[cn.rx_lat, cn.rx_lon]}
+                      radius={14}
+                      pathOptions={{ color: "#a78bfa", weight: 3, fillColor: "#a78bfa", fillOpacity: 0.25 }}
+                    />
+                    {/* Connection line from aircraft to contributing node */}
+                    {selectedAc.lat && selectedAc.lon && (
+                      <Polyline
+                        positions={[[selectedAc.lat, selectedAc.lon], [cn.rx_lat, cn.rx_lon]]}
+                        pathOptions={{ color: "#a78bfa", weight: 1.5, opacity: 0.5, dashArray: "6 4" }}
+                      />
+                    )}
+                  </React.Fragment>
                 );
               })
             }

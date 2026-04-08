@@ -151,7 +151,8 @@ class GeolocatedTrack:
     def __init__(self, track_id, lat, lon, alt_m, vel_east, vel_north, vel_up,
                  rms_delay, rms_doppler, n_detections, timestamp_ms,
                  adsb_hex=None, latest_delay_us=None, target_class=None,
-                 latest_doppler_hz=None):
+                 latest_doppler_hz=None,
+                 is_anomalous=False, anomaly_types=None, max_velocity_ms=0.0):
         self.track_id = track_id
         self.hex_id = f"pr{abs(hash(track_id)) % 0xFFFF:04x}"
         self.lat = lat
@@ -170,6 +171,9 @@ class GeolocatedTrack:
         self.latest_delay_us = latest_delay_us
         self.latest_doppler_hz = latest_doppler_hz
         self.target_class = target_class  # "aircraft", "drone", or None
+        self.is_anomalous = is_anomalous
+        self.anomaly_types = anomaly_types or set()
+        self.max_velocity_ms = max_velocity_ms
 
     @property
     def speed_knots(self):
@@ -382,6 +386,18 @@ class PassiveRadarPipeline:
         else:  # "auto"
             target_class = "drone" if speed_ms <= _DRONE_MAX_SPEED_MS and alt <= _DRONE_MAX_ALT_M else "aircraft"
 
+        # Anomaly detection: inherit tracker flags + check solver velocity
+        _MACH_1 = 343.0
+        evt_anomalous = event.get("is_anomalous", False)
+        evt_max_vel = event.get("max_velocity_ms", 0.0)
+        anomaly_types = set()
+        if evt_anomalous:
+            anomaly_types.add("tracker_flagged")
+        if speed_ms > _MACH_1:
+            anomaly_types.add("supersonic")
+        is_anomalous = bool(anomaly_types)
+        max_velocity_ms = max(speed_ms, evt_max_vel)
+
         return GeolocatedTrack(
             track_id=track_id,
             lat=lat,
@@ -398,6 +414,9 @@ class PassiveRadarPipeline:
             latest_delay_us=geo_detections[-1].delay if geo_detections else None,
             latest_doppler_hz=geo_detections[-1].doppler if geo_detections else None,
             target_class=target_class,
+            is_anomalous=is_anomalous,
+            anomaly_types=anomaly_types,
+            max_velocity_ms=max_velocity_ms,
         )
 
     def _prune_stale_tracks(self):
@@ -500,6 +519,11 @@ class PassiveRadarPipeline:
                             existing.pos_fix_ts = existing.wall_clock_ts
                     else:
                         # First encounter and solver failed — bootstrap from ADS-B.
+                        _fb_anomaly_types = set()
+                        if event.get("is_anomalous"):
+                            _fb_anomaly_types.add("tracker_flagged")
+                        if _gs_ms > 343.0:
+                            _fb_anomaly_types.add("supersonic")
                         existing = GeolocatedTrack(
                             track_id=track_id,
                             lat=adsb["lat"],
@@ -516,6 +540,9 @@ class PassiveRadarPipeline:
                             latest_delay_us=None,
                             latest_doppler_hz=None,
                             target_class="aircraft",
+                            is_anomalous=bool(_fb_anomaly_types),
+                            anomaly_types=_fb_anomaly_types,
+                            max_velocity_ms=max(_gs_ms, event.get("max_velocity_ms", 0.0)),
                         )
                         # Inherit pos_fix_ts from a shared entry when position
                         # hasn't moved — avoids starving dead-reckoning on the

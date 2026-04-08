@@ -226,7 +226,7 @@ class GeneratedNodeConfig:
     tx_alt_ft: float
     fc_hz: float
     fs_hz: float = 2_000_000.0
-    beam_width_deg: float = 45.0
+    beam_width_deg: float = 40.0
     max_range_km: float = 50.0
     region: str = "us"
     tx_callsign: str = ""
@@ -584,8 +584,8 @@ def generate_fleet(
         rx_alt_ft = random.uniform(100, 2000)
 
         node_fc = fc_hz + random.choice([-500000, 0, 0, 0, 500000])
-        beam_width = random.uniform(30, 60)
-        max_range = random.uniform(30, 70)
+        beam_width = random.uniform(35, 45)
+        max_range = random.uniform(35, 55)
 
         region_prefix = region.upper()
         node_id = f"synth-{region_prefix}-{i + 1:04d}"
@@ -634,8 +634,8 @@ def generate_fleet(
             rx_lat, rx_lon = _place_rx_on_land(tx_lat, tx_lon, dist_min_km=8, dist_max_km=35)
             rx_alt_ft = random.uniform(100, 1500)
 
-            beam_width = random.uniform(35, 55)
-            max_range = random.uniform(40, 80)
+            beam_width = random.uniform(35, 45)
+            max_range = random.uniform(35, 55)
 
             node_id = f"synth-SOLO-{j + 1:04d}"
 
