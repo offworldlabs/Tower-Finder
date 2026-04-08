@@ -1,4 +1,4 @@
-import { VIEWPORT_PAD_DEG, FOCUS_CLUSTER_LIMIT } from "./constants";
+import { VIEWPORT_PAD_DEG } from "./constants";
 
 export function getAircraftAnchorPoint(ac) {
   if (ac?.lat != null && ac?.lon != null) {
@@ -53,31 +53,8 @@ export function getFocusPoints(aircraft, nodes, selectedHex) {
     .map((ac) => ({ ac, anchor: getAircraftAnchorPoint(ac) }))
     .filter(({ anchor }) => Boolean(anchor));
   if (validAircraft.length > 0) {
-    let bestCenter = validAircraft[0].anchor;
-    let bestScore = -1;
-
-    for (const { anchor: center } of validAircraft) {
-      let score = 0;
-      for (const { anchor } of validAircraft) {
-        if (Math.abs(anchor[0] - center[0]) <= 4 && Math.abs(anchor[1] - center[1]) <= 6) {
-          score += 1;
-        }
-      }
-      if (score > bestScore) {
-        bestScore = score;
-        bestCenter = center;
-      }
-    }
-
-    return validAircraft
-      .slice()
-      .sort((a, b) => {
-        const distA = Math.pow(a.anchor[0] - bestCenter[0], 2) + Math.pow(a.anchor[1] - bestCenter[1], 2);
-        const distB = Math.pow(b.anchor[0] - bestCenter[0], 2) + Math.pow(b.anchor[1] - bestCenter[1], 2);
-        return distA - distB;
-      })
-      .slice(0, FOCUS_CLUSTER_LIMIT)
-      .flatMap(({ ac }) => getAircraftGeometryPoints(ac));
+    // Fit to ALL aircraft positions so the user sees every marker on the map.
+    return validAircraft.flatMap(({ ac }) => getAircraftGeometryPoints(ac));
   }
 
   return nodes

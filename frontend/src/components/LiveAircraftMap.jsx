@@ -912,39 +912,21 @@ export default function LiveAircraftMap() {
 
             {/* Detection arcs — imperative Leaflet layer, 4Hz opacity fade, sourced from raw WS buffer */}
             <DetectionArcs arcsBufferRef={arcsBufferRef} selectedHex={selectedHex} viewport={viewport} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} />
-            {/* Aircraft position markers — ADS-B aided (teal icon+arc), multinode (purple icon), uncertain solo (dimmed circle) */}
+            {/* Aircraft position markers — all radar-detected aircraft rendered as airplane icons.
+                 Color encodes confidence: purple=multinode, teal=ADS-B aided, cyan=single-node. */}
             {visibleAircraft.map((ac) => {
-              const isSelected = ac.hex === selectedHex;
               if (!ac.lat || !ac.lon) return null;
-              if (ac.position_source === "solver_adsb_seed" || ac.position_source === "multinode_solve" || ac.multinode) {
-                return (
-                  <AircraftMarker
-                    key={`icon-${ac.hex}`}
-                    ac={ac}
-                    isSelected={isSelected}
-                    showLabels={showLabels}
-                    onSelect={handleSelectAircraft}
-                    markerRegistry={markerRegistryRef.current}
-                  />
-                );
-              }
-              if (ac.position_source === "solver_single_node" || ac.position_source === "single_node_ellipse_arc") {
-                return (
-                  <CircleMarker
-                    key={`icon-${ac.hex}`}
-                    center={[ac.lat, ac.lon]}
-                    radius={isSelected ? 9 : 6}
-                    pathOptions={{
-                      color: isSelected ? "#fbbf24" : "#64748b",
-                      fillColor: isSelected ? "#fbbf24" : "#94a3b8",
-                      fillOpacity: isSelected ? 0.6 : 0.35,
-                      weight: isSelected ? 2.5 : 1.5,
-                    }}
-                    eventHandlers={{ click: () => handleSelectAircraft(ac.hex) }}
-                  />
-                );
-              }
-              return null;
+              const isSelected = ac.hex === selectedHex;
+              return (
+                <AircraftMarker
+                  key={`icon-${ac.hex}`}
+                  ac={ac}
+                  isSelected={isSelected}
+                  showLabels={showLabels}
+                  onSelect={handleSelectAircraft}
+                  markerRegistry={markerRegistryRef.current}
+                />
+              );
             })}
 
             {/* Anomaly flag rings — pulsing red circle around flagged aircraft */}
