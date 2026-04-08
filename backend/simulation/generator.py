@@ -471,12 +471,93 @@ def _place_rx_on_land(
     return (round(last_rx_lat, 6), round(last_rx_lon, 6))
 
 
+def _generate_cluster_nodes(
+    n: int,
+    tx_tower: tuple,
+    prefix: str = "synth-CLU",
+    cluster_dist_km: float = 20.0,
+    cluster_spread_km: float = 2.0,
+    bearing_deg: float = 0.0,
+) -> list[dict]:
+    """Generate n nodes with tightly clustered RX positions all sharing one TX.
+
+    All RX are placed within cluster_spread_km of a cluster center that is
+    cluster_dist_km from the TX at the given bearing.  With nearly-parallel
+    baselines, world.py's add_node() sets all beam azimuths to the same
+    direction (perpendicular to the TX→cluster-center line), so any aircraft
+    spawning near a cluster node will appear in ALL cluster nodes' detection
+    cones simultaneously — guaranteed multi-node detections.
+
+    Args:
+        n: Number of cluster nodes to generate.
+        tx_tower: (lat, lon, alt_ft, fc_hz, callsign) tuple of the shared TX.
+        prefix: Node ID prefix.
+        cluster_dist_km: Distance from TX to the RX cluster center.
+        cluster_spread_km: Max radius within which RX positions are jittered.
+        bearing_deg: Compass bearing (from north) of cluster center from TX.
+    """
+    tx_lat, tx_lon, tx_alt_ft, fc_hz, callsign = tx_tower
+    R = 6371.0
+
+    # Cluster center: cluster_dist_km from TX at bearing_deg
+    bearing_rad = math.radians(bearing_deg)
+    dlat = (cluster_dist_km * math.cos(bearing_rad)) / R
+    dlon = (cluster_dist_km * math.sin(bearing_rad)) / (
+        R * math.cos(math.radians(tx_lat))
+    )
+    cluster_lat = tx_lat + math.degrees(dlat)
+    cluster_lon = tx_lon + math.degrees(dlon)
+
+    nodes = []
+    for i in range(n):
+        # Jitter each RX within cluster_spread_km of cluster center
+        angle = random.uniform(0, 2 * math.pi)
+        spread = random.uniform(0, cluster_spread_km)
+        dlat2 = (spread * math.cos(angle)) / R
+        dlon2 = (spread * math.sin(angle)) / (
+            R * math.cos(math.radians(cluster_lat))
+        )
+        rx_lat = cluster_lat + math.degrees(dlat2)
+        rx_lon = cluster_lon + math.degrees(dlon2)
+
+        if _is_on_water(rx_lat, rx_lon):
+            rx_lat, rx_lon = _place_rx_on_land(
+                tx_lat, tx_lon,
+                dist_min_km=cluster_dist_km - 5,
+                dist_max_km=cluster_dist_km + 5,
+            )
+
+        rx_alt_ft = random.uniform(100, 1500)
+        beam_width = random.uniform(35, 45)
+        max_range = random.uniform(45, 60)
+
+        node = GeneratedNodeConfig(
+            node_id=f"{prefix}-{i + 1:04d}",
+            rx_lat=round(rx_lat, 6),
+            rx_lon=round(rx_lon, 6),
+            rx_alt_ft=round(rx_alt_ft, 1),
+            tx_lat=tx_lat,
+            tx_lon=tx_lon,
+            tx_alt_ft=tx_alt_ft,
+            fc_hz=fc_hz,
+            fs_hz=2_000_000,
+            beam_width_deg=round(beam_width, 1),
+            max_range_km=round(max_range, 1),
+            region="us",
+            tx_callsign=callsign,
+        )
+        nodes.append(asdict(node))
+
+    return nodes
+
+
 def generate_fleet(
     n_nodes: int = 200,
     regions: Optional[list[str]] = None,
     seed: int = 42,
     solo_fraction: float = 0.10,
     use_tower_api: bool = True,
+    n_cluster: int = 8,
 ) -> list[dict]:
     """Generate a fleet of synthetic node configurations.
 
@@ -493,12 +574,18 @@ def generate_fleet(
     rural towers far from any other nodes, useful for testing single-node
     ellipse-arc function without overlapping detection zones.
 
+    n_cluster nodes (default 8) form a dedicated multi-node cluster: all RX
+    within 2 km of a common center, all sharing the same TX tower.  This
+    guarantees multi-node detections and exercises the bistatic solver.
+    Cluster slots are carved out of the metro allocation so total stays n_nodes.
+
     Args:
         n_nodes: Total nodes to generate (100-1000).
         regions: List of regions to distribute across ["us", "eu", "au"].
         seed: Random seed for reproducibility.
         solo_fraction: Fraction of nodes allocated as solo/isolated (0.0-1.0).
         use_tower_api: Query towers.retina.fm for diverse per-node towers.
+        n_cluster: Number of tightly-clustered multi-node-detection nodes.
 
     Returns:
         List of node config dicts ready for fleet_config.json.
@@ -552,9 +639,10 @@ def generate_fleet(
             import logging
             logging.warning("Tower API lookup failed, using hardcoded towers: %s", exc)
 
-    # Allocate solo node count
+    # Allocate solo and cluster node counts, carving both from metro allocation
     n_solo = max(1, round(n_nodes * solo_fraction)) if solo_towers else 0
-    n_metro = n_nodes - n_solo
+    n_cluster = max(0, n_cluster)
+    n_metro = max(0, n_nodes - n_solo - n_cluster)
 
     # Track how many times each API tower has been used (per metro) for
     # round-robin distribution — avoids all nodes sharing one tower.
@@ -655,6 +743,23 @@ def generate_fleet(
                 tx_callsign=callsign,
             )
             nodes.append(asdict(node))
+
+    # --- Cluster nodes (dedicated multi-node detection group) ----------------
+    # All nodes share one TX, with RX tightly clustered ~20 km away.
+    # Nearly-parallel baselines → beams all point the same direction →
+    # any aircraft near the cluster appears in ALL cluster nodes' cones.
+    if n_cluster > 0:
+        # Dallas WFAA tower — central US, inland, clear of water boxes.
+        _CLUSTER_TX = (32.78060, -96.80060, 1600, 195_000_000, "WFAA-CLU")
+        cluster_nodes = _generate_cluster_nodes(
+            n=n_cluster,
+            tx_tower=_CLUSTER_TX,
+            prefix="synth-CLU",
+            cluster_dist_km=20.0,
+            cluster_spread_km=2.0,
+            bearing_deg=0.0,   # cluster center 20 km north of TX
+        )
+        nodes = cluster_nodes + nodes   # prepend so cluster IDs are first
 
     return nodes
 
