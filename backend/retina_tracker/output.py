@@ -28,6 +28,7 @@ class TrackEventWriter:
         adsb_initialized=False,
         is_anomalous=False,
         max_velocity_ms=0.0,
+        anomaly_types=None,
     ):
         event = {
             "track_id": track_id,
@@ -38,6 +39,7 @@ class TrackEventWriter:
             "detections": detections,
             "is_anomalous": is_anomalous,
             "max_velocity_ms": max_velocity_ms,
+            "anomaly_types": sorted(anomaly_types) if anomaly_types else [],
         }
         self.output.write(json.dumps(event) + "\n")
         self.output.flush()

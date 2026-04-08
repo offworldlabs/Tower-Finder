@@ -72,6 +72,7 @@ class Tracker:
                         adsb_initialized=track.adsb_initialized,
                         is_anomalous=track.is_anomalous,
                         max_velocity_ms=track.max_velocity_ms,
+                        anomaly_types=track.anomaly_types,
                     )
                 else:
                     detections_window = track.get_recent_detections(n=self.detection_window)
@@ -84,6 +85,7 @@ class Tracker:
                         adsb_initialized=track.adsb_initialized,
                         is_anomalous=track.is_anomalous,
                         max_velocity_ms=track.max_velocity_ms,
+                        anomaly_types=track.anomaly_types,
                     )
 
         for i, track in enumerate(self.tracks):
@@ -108,6 +110,7 @@ class Tracker:
                             adsb_initialized=track.adsb_initialized,
                             is_anomalous=track.is_anomalous,
                             max_velocity_ms=track.max_velocity_ms,
+                            anomaly_types=track.anomaly_types,
                         )
                     else:
                         detections_list = track.get_recent_detections(n=_det_n)
@@ -120,6 +123,7 @@ class Tracker:
                             adsb_initialized=track.adsb_initialized,
                             is_anomalous=track.is_anomalous,
                             max_velocity_ms=track.max_velocity_ms,
+                            anomaly_types=track.anomaly_types,
                         )
 
         for i, det in enumerate(detections):
@@ -277,6 +281,7 @@ class Tracker:
                         adsb_initialized=track.adsb_initialized,
                         is_anomalous=track.is_anomalous,
                         max_velocity_ms=track.max_velocity_ms,
+                        anomaly_types=track.anomaly_types,
                     )
 
     def _merge_tracks(self):

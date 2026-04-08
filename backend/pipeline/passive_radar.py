@@ -65,7 +65,8 @@ class InMemoryEventWriter:
 
     def write_event(self, track_id, timestamp, length, detections,
                     adsb_hex=None, adsb_initialized=False,
-                    is_anomalous=False, max_velocity_ms=0.0):
+                    is_anomalous=False, max_velocity_ms=0.0,
+                    anomaly_types=None):
         self.events[track_id] = {
             "track_id": track_id,
             "timestamp": timestamp,
@@ -75,12 +76,14 @@ class InMemoryEventWriter:
             "adsb_initialized": adsb_initialized,
             "is_anomalous": is_anomalous,
             "max_velocity_ms": max_velocity_ms,
+            "anomaly_types": sorted(anomaly_types) if anomaly_types else [],
         }
         self._dirty.add(track_id)
 
     def write_event_lazy(self, track_id, timestamp, length, track_ref,
                          adsb_hex=None, adsb_initialized=False,
-                         is_anomalous=False, max_velocity_ms=0.0):
+                         is_anomalous=False, max_velocity_ms=0.0,
+                         anomaly_types=None):
         """Lightweight write_event — stores a track reference instead of
         materializing the detection list.  The full detection list is resolved
         lazily via get_new_events_resolved() only for tracks that actually
@@ -97,6 +100,7 @@ class InMemoryEventWriter:
             "adsb_initialized": adsb_initialized,
             "is_anomalous": is_anomalous,
             "max_velocity_ms": max_velocity_ms,
+            "anomaly_types": sorted(anomaly_types) if anomaly_types else [],
         }
         self._dirty.add(track_id)
 
@@ -390,12 +394,12 @@ class PassiveRadarPipeline:
         _MACH_1 = 343.0
         evt_anomalous = event.get("is_anomalous", False)
         evt_max_vel = event.get("max_velocity_ms", 0.0)
-        anomaly_types = set()
-        if evt_anomalous:
-            anomaly_types.add("tracker_flagged")
+        # Propagate specific anomaly types from the tracker (e.g. supersonic,
+        # identity_swap, sustained_orbit, position_mismatch, altitude_jump)
+        anomaly_types = set(event.get("anomaly_types", []))
         if speed_ms > _MACH_1:
             anomaly_types.add("supersonic")
-        is_anomalous = bool(anomaly_types)
+        is_anomalous = evt_anomalous or bool(anomaly_types)
         max_velocity_ms = max(speed_ms, evt_max_vel)
 
         return GeolocatedTrack(
@@ -519,9 +523,7 @@ class PassiveRadarPipeline:
                             existing.pos_fix_ts = existing.wall_clock_ts
                     else:
                         # First encounter and solver failed — bootstrap from ADS-B.
-                        _fb_anomaly_types = set()
-                        if event.get("is_anomalous"):
-                            _fb_anomaly_types.add("tracker_flagged")
+                        _fb_anomaly_types = set(event.get("anomaly_types", []))
                         if _gs_ms > 343.0:
                             _fb_anomaly_types.add("supersonic")
                         existing = GeolocatedTrack(
