@@ -21,7 +21,7 @@ connected_nodes: dict[str, dict] = {}
 # node_id → {config_hash, config, status, last_heartbeat, peer, is_synthetic, capabilities}
 
 node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR)
-node_associator = InterNodeAssociator()
+node_associator = InterNodeAssociator(grid_step_km=3.0)
 
 # ── Per-node tracker pipelines (lazy-created per connecting node) ─────────────
 node_pipelines: dict = {}  # node_id → PassiveRadarPipeline
