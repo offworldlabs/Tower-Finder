@@ -103,6 +103,12 @@ class SimulatedAircraft:
     # Waypoint navigation
     waypoints: list = field(default_factory=list)
     waypoint_idx: int = 0
+    # Mid-flight anomaly injection (scheduled event)
+    anomaly_event: Optional[str] = None   # None | "hijack" | "spoof" | "orbit" | "altitude_jump" | "id_swap"
+    anomaly_trigger_at: float = 0.0       # world time when event fires
+    anomaly_fired: bool = False           # True once the event has been applied
+    _pre_spoof_lat: float = 0.0          # real position before GPS spoof
+    _pre_spoof_lon: float = 0.0
 
 
 @dataclass
@@ -360,6 +366,7 @@ class SimulationWorld:
             lifetime_s=random.uniform(180, 900) if object_type != "drone" else random.uniform(60, 300),
             waypoints=route,
             waypoint_idx=1,
+            **self._maybe_schedule_anomaly(is_anomalous, object_type),
         )
 
     def step(self, dt: float, mode: str = "detection"):
@@ -382,8 +389,34 @@ class SimulationWorld:
         for ac in self.aircraft:
             self._update_aircraft(ac, dt)
 
+    # ── Mid-flight anomaly scheduling ────────────────────────────────────────
+
+    _ANOMALY_EVENTS = ["hijack", "spoof", "orbit", "altitude_jump", "id_swap"]
+
+    def _maybe_schedule_anomaly(self, is_anomalous: bool, object_type: str) -> dict:
+        """Return kwargs to schedule a mid-flight anomaly event on ~8% of
+        normal commercial aircraft.  Already-anomalous or drones are skipped."""
+        if is_anomalous or object_type == "drone":
+            return {}
+        if random.random() > 0.08:
+            return {}
+        event = random.choice(self._ANOMALY_EVENTS)
+        # Fire 30-120s after spawn so the aircraft establishes a normal track first
+        trigger = self._time + random.uniform(30, 120)
+        return {"anomaly_event": event, "anomaly_trigger_at": trigger}
+
     def _update_aircraft(self, ac: SimulatedAircraft, dt: float):
         """Update aircraft position and navigate toward waypoints."""
+        # ── Fire scheduled mid-flight anomaly event ──────────────────────────
+        if ac.anomaly_event and not ac.anomaly_fired and self._time >= ac.anomaly_trigger_at:
+            self._fire_anomaly_event(ac)
+
+        # ── GPS spoof: real position diverges from ADS-B reported location ───
+        # After spoof fires, the aircraft keeps flying normally but ADS-B
+        # reports a frozen/drifting false position.  The radar sees the REAL
+        # position (via delay/Doppler), creating a mismatch.
+        # (ADS-B override happens in generate_detections_for_node)
+
         # Move in ENU then convert back to LLA
         dlat = (ac.vel_north / R_EARTH) * (180 / math.pi) * dt
         dlon = (ac.vel_east / (R_EARTH * math.cos(math.radians(ac.lat)))) * (180 / math.pi) * dt
@@ -394,8 +427,12 @@ class SimulationWorld:
         # Clamp altitude
         ac.alt_km = max(0.1, min(ac.alt_km, 15.0))
 
-        # Navigate toward next waypoint
-        if ac.waypoint_idx < len(ac.waypoints):
+        # ── Orbit anomaly: circle in place instead of following waypoints ────
+        if ac.anomaly_event == "orbit" and ac.anomaly_fired:
+            # Constant 6°/s turn → tight circle (~1 km radius at 200 m/s)
+            ac.heading_deg = (ac.heading_deg + 6.0 * dt) % 360
+        elif ac.waypoint_idx < len(ac.waypoints):
+            # Navigate toward next waypoint
             target_wp = ac.waypoints[ac.waypoint_idx]
             dist_to_wp = _haversine_km(ac.lat, ac.lon, target_wp[0], target_wp[1])
 
@@ -440,6 +477,50 @@ class SimulationWorld:
                 # Random speed/heading change
                 ac.speed_km_s = random.uniform(0.01, 0.5)
                 ac.heading_deg = random.uniform(0, 360)
+
+    def _fire_anomaly_event(self, ac: SimulatedAircraft):
+        """Execute a scheduled mid-flight anomaly event."""
+        ac.anomaly_fired = True
+        ac.is_anomalous = True
+        ev = ac.anomaly_event
+
+        if ev == "hijack":
+            # Sudden supersonic acceleration + 180° heading reversal.
+            # Triggers: supersonic, instant_acceleration, instant_direction_change
+            ac.speed_km_s = random.uniform(0.36, 0.55)   # 360-550 m/s (Mach 1.05-1.6)
+            ac.heading_deg = (ac.heading_deg + random.uniform(140, 220)) % 360
+            ac.vel_up = random.uniform(-0.02, 0.02)       # erratic climb/descent
+
+        elif ev == "spoof":
+            # GPS spoofing: freeze the ADS-B reported position at current location.
+            # The aircraft continues flying normally, but ADS-B data will report
+            # the frozen position.  Radar delay/Doppler will diverge from ADS-B.
+            ac._pre_spoof_lat = ac.lat
+            ac._pre_spoof_lon = ac.lon
+            # Don't change flight dynamics — the spoof is in ADS-B only
+
+        elif ev == "orbit":
+            # Sudden orbit/loiter: aircraft stops following waypoints and
+            # enters a tight circle.  Speed stays the same.
+            # Triggers: instant_direction_change (continuous high turn rate)
+            pass  # Orbit logic is in _update_aircraft above
+
+        elif ev == "altitude_jump":
+            # Impossible altitude change: ±3-8 km in one step.
+            # Triggers: could be detected by alt_baro anomaly checks if added
+            jump = random.choice([-1, 1]) * random.uniform(3.0, 8.0)
+            ac.alt_km = max(0.3, min(15.0, ac.alt_km + jump))
+            # Also change speed to make it detectable via existing checks
+            ac.speed_km_s = random.uniform(0.30, 0.45)  # 300-450 m/s
+
+        elif ev == "id_swap":
+            # Transponder identity swap: ADS-B hex changes mid-flight.
+            # Same aircraft, new identity — suspicious behavior.
+            ac.adsb_hex = f"{random.randint(0x100000, 0xFFFFFF):06x}"
+            letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            ac.adsb_callsign = f"{''.join(random.choices(letters, k=3))}{random.randint(100, 9999)}"
+            # Also do a speed bump to trigger existing anomaly detectors
+            ac.speed_km_s = random.uniform(0.35, 0.50)
 
     def _aircraft_in_detection_cone(self, ac: SimulatedAircraft, node: NodeConfig) -> bool:
         """Check if aircraft is within the node's detection cone."""
@@ -517,11 +598,19 @@ class SimulationWorld:
             if ac.has_adsb:
                 has_any_adsb = True
                 speed_ms = ac.speed_km_s * 1000
+                # GPS spoof: ADS-B reports frozen pre-spoof position while
+                # radar delay/Doppler sees the real (moving) aircraft.
+                if ac.anomaly_event == "spoof" and ac.anomaly_fired:
+                    report_lat = ac._pre_spoof_lat
+                    report_lon = ac._pre_spoof_lon
+                else:
+                    report_lat = ac.lat
+                    report_lon = ac.lon
                 adsb_list.append({
                     "hex": ac.adsb_hex,
                     "flight": ac.adsb_callsign,
-                    "lat": round(ac.lat, 5),
-                    "lon": round(ac.lon, 5),
+                    "lat": round(report_lat, 5),
+                    "lon": round(report_lon, 5),
                     "alt_baro": round(ac.alt_km * 1000 / 0.3048),
                     "gs": round(speed_ms * 1.94384, 1),
                     "track": round(ac.heading_deg, 1),
@@ -657,17 +746,24 @@ class SimulationWorld:
                         "speed_ms": round(ac.speed_km_s * 1000, 1),
                         "has_adsb": ac.has_adsb,
                         "is_anomalous": ac.is_anomalous,
+                        "anomaly_event": ac.anomaly_event if ac.anomaly_fired else None,
                         "delay_true": round(delay, 4),
                         "doppler_true": round(doppler, 4),
                         "is_clutter": False,
                     })
 
                     if ac.has_adsb:
+                        if ac.anomaly_event == "spoof" and ac.anomaly_fired:
+                            report_lat = ac._pre_spoof_lat
+                            report_lon = ac._pre_spoof_lon
+                        else:
+                            report_lat = ac.lat
+                            report_lon = ac.lon
                         adsb_list.append({
                             "hex": ac.adsb_hex,
                             "flight": ac.adsb_callsign,
-                            "lat": round(ac.lat, 5),
-                            "lon": round(ac.lon, 5),
+                            "lat": round(report_lat, 5),
+                            "lon": round(report_lon, 5),
                             "alt_baro": round(ac.alt_km * 1000 / 0.3048),
                             "gs": round(ac.speed_km_s * 1000 * 1.94384, 1),
                             "track": round(ac.heading_deg, 1),
