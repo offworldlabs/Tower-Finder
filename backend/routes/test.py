@@ -549,7 +549,7 @@ async def radar3_detection_range():
     summary = area.summary()
 
     # Empirical coverage polygon
-    ecov = state.node_analytics.empirical_coverage.get(_RADAR3_NODE_ID)
+    ecov = state.node_analytics.empirical_coverages.get(_RADAR3_NODE_ID)
     polygon = None
     if ecov:
         polygon = ecov.to_polygon(
