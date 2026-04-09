@@ -232,6 +232,9 @@ class FleetOrchestrator:
         }
         # Ground truth storage for validation
         self.ground_truth: list[dict] = []
+        # Auto-reconnect state: per-node earliest-retry timestamp and attempt count
+        self._reconnect_next: dict[str, float] = {}
+        self._reconnect_attempts: dict[str, int] = {}
 
     def _build_world(self):
         """Build the SimulationWorld from node configurations."""
@@ -378,6 +381,68 @@ class FleetOrchestrator:
         except (ConnectionResetError, BrokenPipeError, OSError):
             conn.connected = False
             self._stats["errors"] += 1
+
+    async def _reconnect_one(self, conn: NodeConnection) -> bool:
+        """Attempt to reconnect and re-handshake a single node. Returns True on success."""
+        await conn.close()
+        ok = await conn.connect(max_retries=1)
+        if ok:
+            ok = await conn.handshake()
+        if ok:
+            self._reconnect_next.pop(conn.node_id, None)
+            self._reconnect_attempts.pop(conn.node_id, None)
+            log.info("Reconnected: %s", conn.node_id)
+            return True
+        # Exponential backoff: 30 s → 60 → 120 → 240 → 300 s (cap)
+        attempt = self._reconnect_attempts.get(conn.node_id, 0) + 1
+        self._reconnect_attempts[conn.node_id] = attempt
+        delay = min(30 * (2 ** (attempt - 1)), 300)
+        self._reconnect_next[conn.node_id] = time.monotonic() + delay
+        return False
+
+    async def _reconnect_loop(self, check_interval_s: float = 15.0):
+        """Background task: periodically reconnect nodes whose TCP connection dropped.
+
+        After a Docker rebuild the server closes all sockets.  The simulation
+        loop marks those nodes ``connected=False`` and skips them.  This loop
+        finds them and re-establishes the TCP + handshake so frames resume
+        automatically without restarting the process.
+        """
+        # Give the initial connect_all() a head-start before we start checking.
+        await asyncio.sleep(check_interval_s)
+
+        while self._running:
+            now = time.monotonic()
+            due = [
+                conn for conn in self.connections.values()
+                if not conn.connected
+                and now >= self._reconnect_next.get(conn.node_id, 0.0)
+            ]
+
+            if due:
+                log.info(
+                    "Auto-reconnect: %d disconnected node(s) eligible for retry",
+                    len(due),
+                )
+                batch_size = self.max_concurrent_connects
+                reconnected = 0
+                for i in range(0, len(due), batch_size):
+                    batch = due[i : i + batch_size]
+                    results = await asyncio.gather(
+                        *[self._reconnect_one(c) for c in batch],
+                        return_exceptions=True,
+                    )
+                    reconnected += sum(1 for r in results if r is True)
+                    if i + batch_size < len(due):
+                        await asyncio.sleep(1.0)
+
+                still_down = sum(1 for c in self.connections.values() if not c.connected)
+                log.info(
+                    "Auto-reconnect done: %d recovered, %d still down",
+                    reconnected, still_down,
+                )
+
+            await asyncio.sleep(check_interval_s)
 
     async def run_simulation_loop(self, duration_s: float = 0):
         """Main simulation loop — step world continuously, send frames staggered.
@@ -929,7 +994,10 @@ async def main_async(args):
         return
 
     # Start validation loop if requested
-    tasks = [orchestrator.run_simulation_loop(duration_s=args.duration)]
+    tasks = [
+        orchestrator.run_simulation_loop(duration_s=args.duration),
+        orchestrator._reconnect_loop(check_interval_s=15.0),
+    ]
 
     # Always push per-aircraft ADS-B positions every second so every aircraft
     # has a fresh position in state.adsb_aircraft regardless of node visibility.
