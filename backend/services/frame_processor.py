@@ -182,9 +182,34 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
                 pass
     _prof_assoc += time.thread_time() - _t2
 
-    # ADS-B extraction is already handled in the TCP handler
-    # (_apply_synthetic_adsb) before queuing, so state.adsb_aircraft is
-    # always fresh.  Skip the duplicate work here.
+    # ADS-B extraction: TCP handler runs _apply_synthetic_adsb for synth nodes
+    # before queuing.  For non-TCP sources (e.g. blah2_bridge) the adsb list
+    # arrives here still unextracted — store those positions now so the
+    # verification and accuracy pipelines can reference them.
+    _adsb_list = frame.get("adsb")
+    if _adsb_list:
+        _ts_ms = int(time.time() * 1000)
+        for _ae in _adsb_list:
+            if not isinstance(_ae, dict):
+                continue
+            _hex = _ae.get("hex") or _ae.get("icao")
+            _lat = _ae.get("lat", 0)
+            _lon = _ae.get("lon", 0)
+            if not _hex or not _lat or not _lon:
+                continue
+            if not math.isfinite(_lat) or not math.isfinite(_lon):
+                continue
+            state.adsb_aircraft[_hex] = {
+                "hex": _hex,
+                "flight": _ae.get("flight", ""),
+                "lat": _lat,
+                "lon": _lon,
+                "alt_baro": _ae.get("alt_baro", 0),
+                "gs": _ae.get("gs", 0),
+                "track": _ae.get("track", 0),
+                "last_seen_ms": _ts_ms,
+            }
+        state.aircraft_dirty = True
 
     _t3 = time.thread_time()
     pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
