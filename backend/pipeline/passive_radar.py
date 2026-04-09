@@ -390,15 +390,15 @@ class PassiveRadarPipeline:
         else:  # "auto"
             target_class = "drone" if speed_ms <= _DRONE_MAX_SPEED_MS and alt <= _DRONE_MAX_ALT_M else "aircraft"
 
-        # Anomaly detection: inherit tracker flags + check solver velocity
-        _MACH_1 = 343.0
+        # Anomaly detection: inherit tracker flags only.
+        # Do NOT flag supersonic based on solver velocity — single-node LM
+        # geometry is underdetermined and vel_east/vel_north are too noisy to
+        # be a reliable speed source. Legitimate supersonic detections are
+        # already caught by the tracker via ADS-B ground speed and propagated
+        # through event["anomaly_types"].
         evt_anomalous = event.get("is_anomalous", False)
         evt_max_vel = event.get("max_velocity_ms", 0.0)
-        # Propagate specific anomaly types from the tracker (e.g. supersonic,
-        # identity_swap, sustained_orbit, position_mismatch, altitude_jump)
         anomaly_types = set(event.get("anomaly_types", []))
-        if speed_ms > _MACH_1:
-            anomaly_types.add("supersonic")
         is_anomalous = evt_anomalous or bool(anomaly_types)
         max_velocity_ms = max(speed_ms, evt_max_vel)
 
