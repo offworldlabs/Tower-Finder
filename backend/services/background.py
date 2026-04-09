@@ -120,7 +120,10 @@ def _refresh_analytics_and_nodes():
     _refresh_accuracy_stats()
 
     # Radar3 solver verification
-    _refresh_radar3_verification()
+    try:
+        _refresh_radar3_verification()
+    except Exception:
+        logging.exception("_refresh_radar3_verification failed")
 
     # Synthetic chain-of-custody entries for connected nodes that lack them
     _ensure_custody_data()
@@ -497,7 +500,7 @@ async def analytics_refresh_task():
             check_node_health()
             logging.debug("Analytics refresh completed")
         except Exception:
-            logging.debug("Analytics refresh failed", exc_info=True)
+            logging.exception("Analytics refresh failed")
         await asyncio.sleep(30)
 
 
