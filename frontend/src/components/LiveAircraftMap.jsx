@@ -736,7 +736,7 @@ export default function LiveAircraftMap() {
   );
 
   const anomalyCount = useMemo(
-    () => displayAircraft.filter((ac) => ac.is_anomalous).length,
+    () => displayAircraft.filter((ac) => (ac.position_source || ac.multinode) && ac.is_anomalous).length,
     [displayAircraft],
   );
 
