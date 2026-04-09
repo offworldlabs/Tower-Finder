@@ -1120,7 +1120,11 @@ export default function LiveAircraftMap() {
 
             {/* Anomaly flag rings — pulsing red circle around flagged aircraft */}
             {visibleAircraft
-              .filter((ac) => anomalyHexesRef.current.has(ac.ground_truth_hex || ac.hex) && ac.lat && ac.lon)
+              .filter((ac) =>
+                ac.position_source !== "single_node_ellipse_arc" &&
+                anomalyHexesRef.current.has(ac.ground_truth_hex || ac.hex) &&
+                ac.lat && ac.lon
+              )
               .map((ac) => (
                 <CircleMarker
                   key={`anomaly-${ac.hex}`}
