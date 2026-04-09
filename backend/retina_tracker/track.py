@@ -93,6 +93,7 @@ class Track:
         self._hover_anchor_lat = None
         self._hover_anchor_lon = None
         self._hover_start_ts = None
+        self._anomalous_accel_last_velocity_ms = None  # separate from last_velocity_ms (updated by _check_acceleration_anomaly)
         self._check_velocity_anomaly(detection, timestamp)
         self._check_doppler_anomaly(detection)
         # Store initial ADS-B reference values for change-detection checks
@@ -378,7 +379,12 @@ class Track:
         return False
 
     def _check_anomalous_acceleration(self, detection, timestamp):
-        """Detect extreme acceleration exceeding 10g (98.1 m/s²)."""
+        """Detect extreme acceleration exceeding 10g (98.1 m/s²).
+
+        Uses a dedicated velocity field (_anomalous_accel_last_velocity_ms)
+        because last_velocity_ms is already updated by _check_acceleration_anomaly
+        (which runs earlier in update()) — reading it here would always give dv=0.
+        """
         if not detection.get("adsb"):
             return False
 
@@ -390,11 +396,12 @@ class Track:
 
         velocity_ms = geometry.knots_to_ms(gs)
 
-        if self.last_velocity_ms is not None and len(self.history["timestamps"]) > 1:
+        result = False
+        if self._anomalous_accel_last_velocity_ms is not None and len(self.history["timestamps"]) > 1:
             dt = (timestamp - self.history["timestamps"][-2]) / 1000.0
 
             if dt > 0 and dt < 120.0:
-                dv = abs(velocity_ms - self.last_velocity_ms)
+                dv = abs(velocity_ms - self._anomalous_accel_last_velocity_ms)
                 acceleration = dv / dt
 
                 if acceleration > ANOMALOUS_ACCEL_MS2:
@@ -408,9 +415,10 @@ class Track:
                         "velocity_change_ms": dv,
                         "time_delta_sec": dt,
                     })
-                    return True
+                    result = True
 
-        return False
+        self._anomalous_accel_last_velocity_ms = velocity_ms
+        return result
 
     def _check_long_hover(self, detection, timestamp):
         """Detect long hover: position unchanged for 15 min while detections arrive."""
