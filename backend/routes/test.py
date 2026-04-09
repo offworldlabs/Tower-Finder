@@ -532,26 +532,32 @@ async def radar3_verification():
     import time as _time
     _now = _time.time()
     _geo = list(state.active_geo_aircraft.items())
-    _r3 = [(h, getattr(t, "wall_clock_ts", 0), cfg.get("node_id")) for h, (t, cfg) in _geo]
-    _r3_active = [(h, nid) for h, wts, nid in _r3 if nid == _RADAR3_NODE_ID and (_now - wts) <= 120]
+    _r3_all = []
+    _r3_active = []
+    for h, val in _geo:
+        try:
+            t, cfg = val
+        except Exception:
+            continue
+        nid = cfg.get("node_id") if isinstance(cfg, dict) else None
+        wts = getattr(t, "wall_clock_ts", 0)
+        if nid == _RADAR3_NODE_ID:
+            _r3_all.append(h)
+            if (_now - wts) <= 120:
+                _r3_active.append(h)
     _pre = state.latest_radar3_verification_bytes
-    if _pre == b"{}":
-        # Return live debug instead
-        import orjson as _orjson
-        return Response(
-            content=_orjson.dumps({
-                "debug": True,
-                "total_geo": len(_geo),
-                "radar3_active_120s": len(_r3_active),
-                "radar3_node_ids": list({nid for _, _, nid in _r3}),
-                "pre_computed": _pre.decode(),
-            }),
-            media_type="application/json",
-        )
-    return Response(
-        content=state.latest_radar3_verification_bytes,
-        media_type="application/json",
-    )
+    _debug = {
+        "debug": True,
+        "total_geo": len(_geo),
+        "radar3_all": len(_r3_all),
+        "radar3_active_120s": len(_r3_active),
+        "pre_is_empty": _pre == b"{}",
+        "pre_len": len(_pre),
+        "pre_preview": _pre[:100].decode(errors="replace"),
+    }
+    if _pre != b"{}":
+        return Response(content=_pre, media_type="application/json")
+    return Response(content=orjson.dumps(_debug), media_type="application/json")
 
 
 @router.get("/api/test/radar3/detection-range")
