@@ -210,13 +210,16 @@ def _refresh_radar3_verification():
     # Collect radar3 tracks from active geolocated aircraft
     radar3_tracks = []
     now = time.time()
-    for ac_hex, (track, cfg) in list(state.active_geo_aircraft.items()):
-        if cfg.get("node_id") != _RADAR3_NODE_ID:
-            continue
+    all_geo = list(state.active_geo_aircraft.items())
+    logging.info("radar3_verification: total active_geo=%d", len(all_geo))
+    for ac_hex, (track, cfg) in all_geo:
+        nid = cfg.get("node_id") if isinstance(cfg, dict) else None
         wall_ts = getattr(track, "wall_clock_ts", 0)
-        if (now - wall_ts) > 120:
-            continue
-        radar3_tracks.append((ac_hex, track, cfg))
+        age = now - wall_ts
+        if nid == _RADAR3_NODE_ID:
+            logging.info("  radar3 entry hex=%s age=%.0fs wall_ts=%.0f", ac_hex, age, wall_ts)
+            if age <= 120:
+                radar3_tracks.append((ac_hex, track, cfg))
 
     if not radar3_tracks:
         state.latest_radar3_verification_bytes = orjson.dumps({
