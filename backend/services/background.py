@@ -210,16 +210,13 @@ def _refresh_radar3_verification():
     # Collect radar3 tracks from active geolocated aircraft
     radar3_tracks = []
     now = time.time()
-    all_geo = list(state.active_geo_aircraft.items())
-    logging.info("radar3_verification: total active_geo=%d", len(all_geo))
-    for ac_hex, (track, cfg) in all_geo:
-        nid = cfg.get("node_id") if isinstance(cfg, dict) else None
+    for ac_hex, (track, cfg) in list(state.active_geo_aircraft.items()):
+        if not isinstance(cfg, dict) or cfg.get("node_id") != _RADAR3_NODE_ID:
+            continue
         wall_ts = getattr(track, "wall_clock_ts", 0)
-        age = now - wall_ts
-        if nid == _RADAR3_NODE_ID:
-            logging.info("  radar3 entry hex=%s age=%.0fs wall_ts=%.0f", ac_hex, age, wall_ts)
-            if age <= 120:
-                radar3_tracks.append((ac_hex, track, cfg))
+        if (now - wall_ts) > 120:
+            continue
+        radar3_tracks.append((ac_hex, track, cfg))
 
     if not radar3_tracks:
         state.latest_radar3_verification_bytes = orjson.dumps({
@@ -227,7 +224,7 @@ def _refresh_radar3_verification():
             "n_tracks": 0,
             "n_matched": 0,
             "tracks": [],
-        })
+        }, option=orjson.OPT_SERIALIZE_NUMPY)
         return
 
     def _percentile(sorted_vals, pct):
@@ -397,7 +394,7 @@ def _refresh_radar3_verification():
         },
         "tracks": matches[:50],
     }
-    state.latest_radar3_verification_bytes = orjson.dumps(result)
+    state.latest_radar3_verification_bytes = orjson.dumps(result, option=orjson.OPT_SERIALIZE_NUMPY)
 
 
 def _ensure_custody_data():
@@ -503,7 +500,7 @@ async def analytics_refresh_task():
             check_node_health()
             logging.debug("Analytics refresh completed")
         except Exception:
-            logging.exception("Analytics refresh failed")
+            logging.debug("Analytics refresh failed", exc_info=True)
         await asyncio.sleep(30)
 
 
