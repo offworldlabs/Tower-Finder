@@ -230,8 +230,13 @@ def _refresh_radar3_verification():
         idx = int(pct / 100 * (len(sorted_vals) - 1))
         return sorted_vals[min(idx, len(sorted_vals) - 1)]
 
-    # Build a flat list of all fresh ADS-B aircraft (live + external cache)
-    adsb_candidates = []
+    # Build a flat list of all known aircraft truth positions:
+    # 1. Live synthetic ADS-B (state.adsb_aircraft) — fresh within 60 s
+    # 2. External real ADS-B (state.external_adsb_cache) — OpenSky, no extra staleness gate
+    # 3. Ground-truth trails (state.ground_truth_trails) — positions from sim truth broadcast
+    adsb_candidates: list[tuple[str, dict]] = []
+    seen_adsb_hexes: set[str] = set()
+
     for adsb_hex, entry in list(state.adsb_aircraft.items()):
         if not entry.get("lat") or not entry.get("lon"):
             continue
@@ -239,10 +244,32 @@ def _refresh_radar3_verification():
         if age_s > 60:
             continue
         adsb_candidates.append((adsb_hex, entry))
+        seen_adsb_hexes.add(adsb_hex)
+
     for adsb_hex, entry in list(state.external_adsb_cache.items()):
         if not entry.get("lat") or not entry.get("lon"):
             continue
-        adsb_candidates.append((adsb_hex, entry))
+        if adsb_hex not in seen_adsb_hexes:
+            adsb_candidates.append((adsb_hex, entry))
+            seen_adsb_hexes.add(adsb_hex)
+
+    # Ground-truth trails: deque of (lat, lon, alt_ft, ts) — use latest point
+    for gt_hex, trail in list(state.ground_truth_trails.items()):
+        if gt_hex in seen_adsb_hexes or not trail:
+            continue
+        try:
+            last = trail[-1]  # most recent: (lat, lon, alt_ft, ts)
+            if len(last) < 4 or (now - last[3]) > 60:
+                continue
+            adsb_candidates.append((gt_hex, {
+                "lat": last[0],
+                "lon": last[1],
+                "alt_baro": last[2],  # alt_ft stored here
+                "gs": 0,
+            }))
+            seen_adsb_hexes.add(gt_hex)
+        except Exception:
+            continue
 
     matches = []
     pos_errors = []
