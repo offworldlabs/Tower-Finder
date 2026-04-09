@@ -29,8 +29,10 @@ class DetectionAreaState:
     max_doppler: float = float("-inf")
     n_detections: int = 0
     # Furthest verified detections (min-heap by distance, capped at 10)
+    # Each entry: (dist_km, counter, dict) — counter breaks ties to avoid dict comparison
     furthest_detections: list = field(default_factory=list)
     _FURTHEST_MAX: int = 10
+    _furthest_counter: int = field(default=0, repr=False, compare=False)
 
     def update(self, delay: float, doppler: float):
         self.min_delay = min(self.min_delay, delay)
@@ -56,10 +58,13 @@ class DetectionAreaState:
             "hex": ac_hex,
             "ts": round(_time.time(), 1),
         }
+        # Use a counter as tiebreaker so heapq never compares dict entries
+        self._furthest_counter += 1
+        heap_entry = (dist_km, self._furthest_counter, entry)
         if len(self.furthest_detections) < self._FURTHEST_MAX:
-            heapq.heappush(self.furthest_detections, (dist_km, entry))
+            heapq.heappush(self.furthest_detections, heap_entry)
         elif dist_km > self.furthest_detections[0][0]:
-            heapq.heapreplace(self.furthest_detections, (dist_km, entry))
+            heapq.heapreplace(self.furthest_detections, heap_entry)
 
     @staticmethod
     def _haversine_km(lat1, lon1, lat2, lon2):
@@ -89,7 +94,7 @@ class DetectionAreaState:
     def summary(self) -> dict:
         # Sort furthest detections by distance descending for output
         furthest = sorted(
-            [e for _, e in self.furthest_detections],
+            [e for _, _cnt, e in self.furthest_detections],
             key=lambda x: x["distance_km"],
             reverse=True,
         )
