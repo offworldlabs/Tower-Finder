@@ -529,6 +529,25 @@ _RADAR3_NODE_ID = "radar3-retnode"
 @router.get("/api/test/radar3/verification")
 async def radar3_verification():
     """Return pre-computed radar3 solver-vs-ADS-B verification stats."""
+    import time as _time
+    _now = _time.time()
+    _geo = list(state.active_geo_aircraft.items())
+    _r3 = [(h, getattr(t, "wall_clock_ts", 0), cfg.get("node_id")) for h, (t, cfg) in _geo]
+    _r3_active = [(h, nid) for h, wts, nid in _r3 if nid == _RADAR3_NODE_ID and (_now - wts) <= 120]
+    _pre = state.latest_radar3_verification_bytes
+    if _pre == b"{}":
+        # Return live debug instead
+        import orjson as _orjson
+        return Response(
+            content=_orjson.dumps({
+                "debug": True,
+                "total_geo": len(_geo),
+                "radar3_active_120s": len(_r3_active),
+                "radar3_node_ids": list({nid for _, _, nid in _r3}),
+                "pre_computed": _pre.decode(),
+            }),
+            media_type="application/json",
+        )
     return Response(
         content=state.latest_radar3_verification_bytes,
         media_type="application/json",
