@@ -172,10 +172,38 @@ def _refresh_accuracy_stats():
 
 
 _RADAR3_NODE_ID = "radar3-retnode"
+_C_KM_US = 0.299792  # speed of light in km/µs
+_DELAY_MATCH_THRESHOLD_US = 15.0  # ±15 µs ≈ ±4.5 km path-length tolerance
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Haversine great-circle distance in km."""
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
+         * math.sin(dlon / 2) ** 2)
+    return R * 2 * math.asin(min(1.0, math.sqrt(a)))
+
+
+def _bistatic_delay_us(tx_lat, tx_lon, rx_lat, rx_lon, ac_lat, ac_lon) -> float:
+    """Compute bistatic excess delay in µs: (d_ta + d_ar - d_tr) / c."""
+    d_ta = _haversine_km(tx_lat, tx_lon, ac_lat, ac_lon)
+    d_ar = _haversine_km(ac_lat, ac_lon, rx_lat, rx_lon)
+    d_tr = _haversine_km(tx_lat, tx_lon, rx_lat, rx_lon)
+    return (d_ta + d_ar - d_tr) / _C_KM_US
 
 
 def _refresh_radar3_verification():
-    """Compare radar3 solver output to ADS-B truth and store pre-serialised stats."""
+    """Compare radar3 detections to ADS-B truth via bistatic delay matching.
+
+    For each radar3 track we compute the expected bistatic delay for every
+    known ADS-B aircraft and pick the best match within ±_DELAY_MATCH_THRESHOLD_US.
+    This works even for real passive-radar nodes that have no ADS-B hex
+    association, since matching is purely physics-based (measured delay vs
+    computed delay from truth position).
+    """
     # Collect radar3 tracks from active geolocated aircraft
     radar3_tracks = []
     now = time.time()
@@ -202,37 +230,78 @@ def _refresh_radar3_verification():
         idx = int(pct / 100 * (len(sorted_vals) - 1))
         return sorted_vals[min(idx, len(sorted_vals) - 1)]
 
+    # Build a flat list of all fresh ADS-B aircraft (live + external cache)
+    adsb_candidates = []
+    for adsb_hex, entry in list(state.adsb_aircraft.items()):
+        if not entry.get("lat") or not entry.get("lon"):
+            continue
+        age_s = now - entry.get("last_seen_ms", 0) / 1000
+        if age_s > 60:
+            continue
+        adsb_candidates.append((adsb_hex, entry))
+    for adsb_hex, entry in list(state.external_adsb_cache.items()):
+        if not entry.get("lat") or not entry.get("lon"):
+            continue
+        adsb_candidates.append((adsb_hex, entry))
+
     matches = []
     pos_errors = []
     vel_errors = []
     alt_errors = []
+    # Track which ADS-B hexes we already matched to avoid double-counting
+    matched_adsb_hexes: set = set()
+    # Collect matched ADS-B positions for furthest detection recording
+    matched_detections = []
 
     for ac_hex, track, cfg in radar3_tracks:
-        solver_lat = getattr(track, "lat", 0.0)
-        solver_lon = getattr(track, "lon", 0.0)
-        if not solver_lat or not solver_lon:
+        measured_delay_us = getattr(track, "latest_delay_us", None)
+        if not measured_delay_us or measured_delay_us <= 0:
             continue
 
+        tx_lat = cfg.get("tx_lat") or 0.0
+        tx_lon = cfg.get("tx_lon") or 0.0
+        rx_lat = cfg.get("rx_lat") or 0.0
+        rx_lon = cfg.get("rx_lon") or 0.0
+        if not tx_lat or not rx_lat:
+            continue
+
+        solver_lat = getattr(track, "lat", 0.0) or 0.0
+        solver_lon = getattr(track, "lon", 0.0) or 0.0
         solver_vel_e = getattr(track, "vel_east", 0.0) or 0.0
         solver_vel_n = getattr(track, "vel_north", 0.0) or 0.0
         solver_speed = math.sqrt(solver_vel_e ** 2 + solver_vel_n ** 2)
         solver_alt_m = getattr(track, "alt_m", 0.0) or 0.0
 
-        # Try live ADS-B first, then external cache
-        adsb = state.adsb_aircraft.get(ac_hex)
-        if not adsb or not adsb.get("lat"):
-            hex_lower = ac_hex.lower() if ac_hex else ""
-            adsb = state.external_adsb_cache.get(hex_lower)
-        if not adsb or not adsb.get("lat"):
+        # Find the ADS-B aircraft whose bistatic delay best matches the measured delay
+        best_adsb_hex = None
+        best_adsb = None
+        best_delay_err = _DELAY_MATCH_THRESHOLD_US
+
+        for adsb_hex, adsb in adsb_candidates:
+            if adsb_hex in matched_adsb_hexes:
+                continue
+            expected_delay = _bistatic_delay_us(
+                tx_lat, tx_lon, rx_lat, rx_lon,
+                adsb["lat"], adsb["lon"],
+            )
+            delay_err = abs(measured_delay_us - expected_delay)
+            if delay_err < best_delay_err:
+                best_delay_err = delay_err
+                best_adsb_hex = adsb_hex
+                best_adsb = adsb
+
+        if best_adsb is None:
             continue
 
-        truth_lat = adsb["lat"]
-        truth_lon = adsb["lon"]
-        truth_alt_m = (adsb.get("alt_baro", 0) or 0) * 0.3048 if adsb.get("alt_baro") else (adsb.get("alt_m", 0) or 0)
-        truth_gs_ms = (adsb.get("gs", 0) or 0) * 0.514444 if adsb.get("gs") else (adsb.get("velocity") or 0)
+        matched_adsb_hexes.add(best_adsb_hex)
+        truth_lat = best_adsb["lat"]
+        truth_lon = best_adsb["lon"]
+        truth_alt_m = (best_adsb.get("alt_baro", 0) or 0) * 0.3048 if best_adsb.get("alt_baro") else (best_adsb.get("alt_m", 0) or 0)
+        truth_gs_ms = (best_adsb.get("gs", 0) or 0) * 0.514444 if best_adsb.get("gs") else (best_adsb.get("velocity") or 0)
 
+        # Position error: solver arc midpoint vs ADS-B truth
         dlat = (solver_lat - truth_lat) * 111.0
-        dlon = (solver_lon - truth_lon) * 111.0 * math.cos(math.radians((solver_lat + truth_lat) / 2.0))
+        dlon = (solver_lon - truth_lon) * 111.0 * math.cos(math.radians((solver_lat + truth_lat) / 2.0 or 1.0))
         err_km = math.sqrt(dlat ** 2 + dlon ** 2)
 
         vel_err = abs(solver_speed - truth_gs_ms)
@@ -244,6 +313,9 @@ def _refresh_radar3_verification():
 
         matches.append({
             "hex": ac_hex,
+            "matched_adsb_hex": best_adsb_hex,
+            "delay_match_us": round(best_delay_err, 2),
+            "measured_delay_us": round(measured_delay_us, 2),
             "solver_lat": round(solver_lat, 6),
             "solver_lon": round(solver_lon, 6),
             "truth_lat": round(truth_lat, 6),
@@ -256,6 +328,14 @@ def _refresh_radar3_verification():
             "truth_alt_m": round(truth_alt_m, 0),
             "altitude_error_m": round(alt_err, 0),
         })
+        matched_detections.append((truth_lat, truth_lon, best_adsb_hex))
+
+    # Record matched truth positions as furthest detections so
+    # Radar3RangeLayer can show the furthest verified ADS-B matches.
+    area = state.node_analytics.detection_areas.get(_RADAR3_NODE_ID)
+    if area:
+        for det_lat, det_lon, det_hex in matched_detections:
+            area.record_verified_detection(det_lat, det_lon, det_hex)
 
     pos_errors.sort()
     vel_errors.sort()
