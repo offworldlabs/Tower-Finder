@@ -29,3 +29,15 @@ export async function fetchElevation(lat, lon) {
   const data = await res.json();
   return data.elevation_m;
 }
+
+export async function fetchRadar3Verification() {
+  const res = await fetch(`${API_BASE}/test/radar3/verification`);
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function fetchRadar3DetectionRange() {
+  const res = await fetch(`${API_BASE}/test/radar3/detection-range`);
+  if (!res.ok) return null;
+  return res.json();
+}

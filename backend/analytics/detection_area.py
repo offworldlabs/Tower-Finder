@@ -1,6 +1,9 @@
 """Detection area characterisation from observed delay/Doppler bounds."""
 
-from dataclasses import dataclass
+import heapq
+import math
+import time as _time
+from dataclasses import dataclass, field
 
 from analytics.constants import C_KM_US, YAGI_BEAM_WIDTH_DEG, YAGI_MAX_RANGE_KM
 
@@ -25,6 +28,9 @@ class DetectionAreaState:
     min_doppler: float = float("inf")
     max_doppler: float = float("-inf")
     n_detections: int = 0
+    # Furthest verified detections (min-heap by distance, capped at 10)
+    furthest_detections: list = field(default_factory=list)
+    _FURTHEST_MAX: int = 10
 
     def update(self, delay: float, doppler: float):
         self.min_delay = min(self.min_delay, delay)
@@ -37,6 +43,29 @@ class DetectionAreaState:
         """Update from a raw detection frame {delay:[], doppler:[], ...}."""
         for d, f in zip(frame.get("delay", []), frame.get("doppler", [])):
             self.update(d, f)
+
+    def record_verified_detection(self, lat: float, lon: float, ac_hex: str = ""):
+        """Record a detection with verified ADS-B position for range tracking."""
+        dist_km = self._haversine_km(self.rx_lat, self.rx_lon, lat, lon)
+        if dist_km < 0.5:
+            return
+        entry = {
+            "lat": round(lat, 6),
+            "lon": round(lon, 6),
+            "distance_km": round(dist_km, 2),
+            "hex": ac_hex,
+            "ts": round(_time.time(), 1),
+        }
+        if len(self.furthest_detections) < self._FURTHEST_MAX:
+            heapq.heappush(self.furthest_detections, (dist_km, entry))
+        elif dist_km > self.furthest_detections[0][0]:
+            heapq.heapreplace(self.furthest_detections, (dist_km, entry))
+
+    @staticmethod
+    def _haversine_km(lat1, lon1, lat2, lon2):
+        dlat = (lat1 - lat2) * 111.0
+        dlon = (lon1 - lon2) * 111.0 * math.cos(math.radians((lat1 + lat2) / 2.0))
+        return math.sqrt(dlat ** 2 + dlon ** 2)
 
     @property
     def delay_range(self) -> tuple[float, float]:
@@ -58,6 +87,12 @@ class DetectionAreaState:
         return self.max_delay * C_KM_US
 
     def summary(self) -> dict:
+        # Sort furthest detections by distance descending for output
+        furthest = sorted(
+            [e for _, e in self.furthest_detections],
+            key=lambda x: x["distance_km"],
+            reverse=True,
+        )
         return {
             "node_id": self.node_id,
             "rx": {"lat": self.rx_lat, "lon": self.rx_lon},
@@ -69,4 +104,5 @@ class DetectionAreaState:
             "observed_doppler_range_hz": [round(x, 2) for x in self.doppler_range],
             "estimated_max_range_km": round(self.estimated_max_range_km, 2),
             "n_detections": self.n_detections,
+            "furthest_detections": furthest,
         }

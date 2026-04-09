@@ -486,6 +486,10 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             nid = node_cfg.get("node_id")
             if nid:
                 state.node_analytics.record_calibration_point(nid, solver_lat, solver_lon)
+                # Track furthest verified detections per node (for detection range)
+                area = state.node_analytics.detection_areas.get(nid)
+                if area:
+                    area.record_verified_detection(adsb.get("lat", 0), adsb.get("lon", 0), ac_hex)
             # Track accuracy: haversine(solver, adsb) per aircraft per update
             adsb_lat = adsb.get("lat", 0)
             adsb_lon = adsb.get("lon", 0)

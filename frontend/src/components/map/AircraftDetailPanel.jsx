@@ -1,3 +1,6 @@
+import { useState, useEffect } from "react";
+import { fetchRadar3Verification } from "../../api";
+
 export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError }) {
   if (!ac) return null;
 
@@ -141,6 +144,8 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
                     position_mismatch: "GPS Spoof",
                     identity_swap: "Identity Swap",
                     altitude_jump: "Altitude Jump",
+                    anomalous_acceleration: "Anomalous Acceleration (>10g)",
+                    long_hover: "Long Hover",
                   }[t] || t)).join(", ") || "unknown"}
                 </span>
               }
@@ -169,6 +174,11 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
             {ac.delay_us != null && <Field label="Latest Delay" value={`${ac.delay_us} \u03bcs`} />}
             {ac.doppler_hz != null && <Field label="Latest Doppler" value={`${ac.doppler_hz} Hz`} />}
           </div>
+        )}
+
+        {/* Radar3 solver verification — show when this is a radar3 detection */}
+        {ac.node_id === "radar3-retnode" && (
+          <Radar3VerificationSection hex={ac.hex} />
         )}
 
         {/* Accuracy */}
@@ -206,6 +216,52 @@ function Field({ label, value }) {
     <div className="detail-field">
       <span className="detail-label">{label}</span>
       <span className="detail-value">{value}</span>
+    </div>
+  );
+}
+
+function Radar3VerificationSection({ hex }) {
+  const [data, setData] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchRadar3Verification().then((d) => {
+      if (!cancelled && d) setData(d);
+    });
+    const interval = setInterval(() => {
+      fetchRadar3Verification().then((d) => {
+        if (!cancelled && d) setData(d);
+      });
+    }, 15000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  if (!data || !data.n_matched) return null;
+
+  // Find this aircraft's specific match
+  const match = (data.tracks || []).find((t) => t.hex === hex);
+
+  return (
+    <div className="detail-section">
+      <div className="detail-section-title" style={{ color: "#f97316" }}>
+        📡 Radar3 Verification
+      </div>
+      {match && (
+        <>
+          <Field label="Pos Error" value={
+            <span className={match.position_error_km < 5 ? "good" : match.position_error_km < 15 ? "warn" : "bad"}>
+              {match.position_error_km.toFixed(1)} km
+            </span>
+          } />
+          <Field label="Vel Error" value={`${match.velocity_error_ms.toFixed(1)} m/s`} />
+          <Field label="Alt Error" value={`${match.altitude_error_m} m`} />
+        </>
+      )}
+      <Field label="Tracked" value={`${data.n_matched}/${data.n_tracks}`} />
+      {data.position && <Field label="Median Pos" value={`${data.position.median_km} km`} />}
+      {data.position && <Field label="P95 Pos" value={`${data.position.p95_km} km`} />}
+      {data.velocity && <Field label="Median Vel" value={`${data.velocity.median_ms} m/s`} />}
+      {data.altitude && <Field label="Median Alt" value={`${data.altitude.median_m} m`} />}
     </div>
   );
 }

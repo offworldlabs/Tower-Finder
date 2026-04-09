@@ -119,6 +119,9 @@ def _refresh_analytics_and_nodes():
     # Solver-vs-ADS-B accuracy statistics
     _refresh_accuracy_stats()
 
+    # Radar3 solver verification
+    _refresh_radar3_verification()
+
     # Synthetic chain-of-custody entries for connected nodes that lack them
     _ensure_custody_data()
     # Evict PassiveRadarPipeline instances for long-disconnected nodes to free RAM
@@ -166,6 +169,122 @@ def _refresh_accuracy_stats():
         "by_source": source_stats,
     }
     state.latest_accuracy_bytes = orjson.dumps(result)
+
+
+_RADAR3_NODE_ID = "radar3-retnode"
+
+
+def _refresh_radar3_verification():
+    """Compare radar3 solver output to ADS-B truth and store pre-serialised stats."""
+    # Collect radar3 tracks from active geolocated aircraft
+    radar3_tracks = []
+    now = time.time()
+    for ac_hex, (track, cfg) in list(state.active_geo_aircraft.items()):
+        if cfg.get("node_id") != _RADAR3_NODE_ID:
+            continue
+        wall_ts = getattr(track, "wall_clock_ts", 0)
+        if (now - wall_ts) > 120:
+            continue
+        radar3_tracks.append((ac_hex, track, cfg))
+
+    if not radar3_tracks:
+        state.latest_radar3_verification_bytes = orjson.dumps({
+            "node_id": _RADAR3_NODE_ID,
+            "n_tracks": 0,
+            "n_matched": 0,
+            "tracks": [],
+        })
+        return
+
+    def _percentile(sorted_vals, pct):
+        if not sorted_vals:
+            return 0.0
+        idx = int(pct / 100 * (len(sorted_vals) - 1))
+        return sorted_vals[min(idx, len(sorted_vals) - 1)]
+
+    matches = []
+    pos_errors = []
+    vel_errors = []
+    alt_errors = []
+
+    for ac_hex, track, cfg in radar3_tracks:
+        solver_lat = getattr(track, "lat", 0.0)
+        solver_lon = getattr(track, "lon", 0.0)
+        if not solver_lat or not solver_lon:
+            continue
+
+        solver_vel_e = getattr(track, "vel_east", 0.0) or 0.0
+        solver_vel_n = getattr(track, "vel_north", 0.0) or 0.0
+        solver_speed = math.sqrt(solver_vel_e ** 2 + solver_vel_n ** 2)
+        solver_alt_m = getattr(track, "alt_m", 0.0) or 0.0
+
+        # Try live ADS-B first, then external cache
+        adsb = state.adsb_aircraft.get(ac_hex)
+        if not adsb or not adsb.get("lat"):
+            hex_lower = ac_hex.lower() if ac_hex else ""
+            adsb = state.external_adsb_cache.get(hex_lower)
+        if not adsb or not adsb.get("lat"):
+            continue
+
+        truth_lat = adsb["lat"]
+        truth_lon = adsb["lon"]
+        truth_alt_m = (adsb.get("alt_baro", 0) or 0) * 0.3048 if adsb.get("alt_baro") else (adsb.get("alt_m", 0) or 0)
+        truth_gs_ms = (adsb.get("gs", 0) or 0) * 0.514444 if adsb.get("gs") else (adsb.get("velocity") or 0)
+
+        dlat = (solver_lat - truth_lat) * 111.0
+        dlon = (solver_lon - truth_lon) * 111.0 * math.cos(math.radians((solver_lat + truth_lat) / 2.0))
+        err_km = math.sqrt(dlat ** 2 + dlon ** 2)
+
+        vel_err = abs(solver_speed - truth_gs_ms)
+        alt_err = abs(solver_alt_m - truth_alt_m)
+
+        pos_errors.append(err_km)
+        vel_errors.append(vel_err)
+        alt_errors.append(alt_err)
+
+        matches.append({
+            "hex": ac_hex,
+            "solver_lat": round(solver_lat, 6),
+            "solver_lon": round(solver_lon, 6),
+            "truth_lat": round(truth_lat, 6),
+            "truth_lon": round(truth_lon, 6),
+            "position_error_km": round(err_km, 3),
+            "solver_speed_ms": round(solver_speed, 1),
+            "truth_speed_ms": round(truth_gs_ms, 1),
+            "velocity_error_ms": round(vel_err, 1),
+            "solver_alt_m": round(solver_alt_m, 0),
+            "truth_alt_m": round(truth_alt_m, 0),
+            "altitude_error_m": round(alt_err, 0),
+        })
+
+    pos_errors.sort()
+    vel_errors.sort()
+    alt_errors.sort()
+    n = len(matches)
+
+    result = {
+        "node_id": _RADAR3_NODE_ID,
+        "n_tracks": len(radar3_tracks),
+        "n_matched": n,
+        "position": {
+            "mean_km": round(sum(pos_errors) / n, 3) if n else 0,
+            "median_km": round(_percentile(pos_errors, 50), 3),
+            "p95_km": round(_percentile(pos_errors, 95), 3),
+            "max_km": round(pos_errors[-1], 3) if pos_errors else 0,
+        },
+        "velocity": {
+            "mean_ms": round(sum(vel_errors) / n, 1) if n else 0,
+            "median_ms": round(_percentile(vel_errors, 50), 1),
+            "p95_ms": round(_percentile(vel_errors, 95), 1),
+        },
+        "altitude": {
+            "mean_m": round(sum(alt_errors) / n, 0) if n else 0,
+            "median_m": round(_percentile(alt_errors, 50), 0),
+            "p95_m": round(_percentile(alt_errors, 95), 0),
+        },
+        "tracks": matches[:50],
+    }
+    state.latest_radar3_verification_bytes = orjson.dumps(result)
 
 
 def _ensure_custody_data():

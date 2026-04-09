@@ -23,6 +23,9 @@ from .config import (
     SPOOF_MIN_SPEED_KTS,
     SPOOF_MIN_FROZEN_FRAMES,
     ALTITUDE_JUMP_THRESHOLD_FT,
+    ANOMALOUS_ACCEL_MS2,
+    LONG_HOVER_POSITION_EPSILON_DEG,
+    LONG_HOVER_MIN_DURATION_S,
 )
 
 
@@ -87,6 +90,9 @@ class Track:
         self._last_adsb_lon = None
         self._adsb_frozen_count = 0
         self._last_alt_baro = None
+        self._hover_anchor_lat = None
+        self._hover_anchor_lon = None
+        self._hover_start_ts = None
         self._check_velocity_anomaly(detection, timestamp)
         self._check_doppler_anomaly(detection)
         # Store initial ADS-B reference values for change-detection checks
@@ -371,6 +377,91 @@ class Track:
         self._last_alt_baro = alt_baro
         return False
 
+    def _check_anomalous_acceleration(self, detection, timestamp):
+        """Detect extreme acceleration exceeding 10g (98.1 m/s²)."""
+        if not detection.get("adsb"):
+            return False
+
+        adsb = detection["adsb"]
+        gs = adsb.get("gs")
+
+        if gs is None or not isinstance(gs, (int, float)) or np.isnan(gs):
+            return False
+
+        velocity_ms = geometry.knots_to_ms(gs)
+
+        if self.last_velocity_ms is not None and len(self.history["timestamps"]) > 1:
+            dt = (timestamp - self.history["timestamps"][-2]) / 1000.0
+
+            if dt > 0 and dt < 120.0:
+                dv = abs(velocity_ms - self.last_velocity_ms)
+                acceleration = dv / dt
+
+                if acceleration > ANOMALOUS_ACCEL_MS2:
+                    self.is_anomalous = True
+                    self.anomaly_types.add("anomalous_acceleration")
+                    self.anomaly_detections.append({
+                        "timestamp": timestamp,
+                        "type": "anomalous_acceleration",
+                        "acceleration_ms2": acceleration,
+                        "acceleration_g": round(acceleration / 9.81, 1),
+                        "velocity_change_ms": dv,
+                        "time_delta_sec": dt,
+                    })
+                    return True
+
+        return False
+
+    def _check_long_hover(self, detection, timestamp):
+        """Detect long hover: position unchanged for 15 min while detections arrive."""
+        if not detection.get("adsb"):
+            return False
+
+        adsb = detection["adsb"]
+        lat = adsb.get("lat")
+        lon = adsb.get("lon")
+
+        if lat is None or lon is None:
+            return False
+        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            return False
+        if np.isnan(lat) or np.isnan(lon):
+            return False
+
+        if self._hover_anchor_lat is None:
+            self._hover_anchor_lat = lat
+            self._hover_anchor_lon = lon
+            self._hover_start_ts = timestamp
+            return False
+
+        dlat = abs(lat - self._hover_anchor_lat)
+        dlon = abs(lon - self._hover_anchor_lon)
+
+        if dlat < LONG_HOVER_POSITION_EPSILON_DEG and dlon < LONG_HOVER_POSITION_EPSILON_DEG:
+            duration_s = (timestamp - self._hover_start_ts) / 1000.0
+            if duration_s >= LONG_HOVER_MIN_DURATION_S:
+                self.is_anomalous = True
+                self.anomaly_types.add("long_hover")
+                self.anomaly_detections.append({
+                    "timestamp": timestamp,
+                    "type": "long_hover",
+                    "hover_duration_s": round(duration_s, 1),
+                    "anchor_lat": self._hover_anchor_lat,
+                    "anchor_lon": self._hover_anchor_lon,
+                })
+                # Reset anchor to avoid repeated firing every frame
+                self._hover_anchor_lat = lat
+                self._hover_anchor_lon = lon
+                self._hover_start_ts = timestamp
+                return True
+        else:
+            # Position moved — reset anchor
+            self._hover_anchor_lat = lat
+            self._hover_anchor_lon = lon
+            self._hover_start_ts = timestamp
+
+        return False
+
     def _init_from_adsb(self, detection, adsb_config):
         adsb = detection["adsb"]
 
@@ -466,6 +557,8 @@ class Track:
         self._check_direction_change_anomaly(detection, timestamp)
         self._check_position_mismatch_anomaly(detection, timestamp)
         self._check_altitude_anomaly(detection, timestamp)
+        self._check_anomalous_acceleration(detection, timestamp)
+        self._check_long_hover(detection, timestamp)
 
     def mark_missed(self, timestamp, frame=0):
         """Mark track as not associated this frame."""

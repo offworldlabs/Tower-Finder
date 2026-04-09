@@ -11,7 +11,7 @@ from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import Response
 
 from core import state
-from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex
+from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex, position_distance_km
 
 router = APIRouter()
 
@@ -516,6 +516,51 @@ async def get_simulation_ground_truth():
                 "multinode_tracks": len(state.multinode_tracks),
                 "tracked_with_error": len(pos_errors),
             },
+        }),
+        media_type="application/json",
+    )
+
+
+# ── Radar3 solver verification ────────────────────────────────────────────────
+
+_RADAR3_NODE_ID = "radar3-retnode"
+
+
+@router.get("/api/test/radar3/verification")
+async def radar3_verification():
+    """Return pre-computed radar3 solver-vs-ADS-B verification stats."""
+    return Response(
+        content=state.latest_radar3_verification_bytes,
+        media_type="application/json",
+    )
+
+
+@router.get("/api/test/radar3/detection-range")
+async def radar3_detection_range():
+    """Return radar3 empirical detection range and furthest detections."""
+    area = state.node_analytics.detection_areas.get(_RADAR3_NODE_ID)
+    if not area:
+        return Response(
+            content=orjson.dumps({"error": "radar3 node not registered"}),
+            media_type="application/json",
+            status_code=404,
+        )
+
+    summary = area.summary()
+
+    # Empirical coverage polygon
+    ecov = state.node_analytics.empirical_coverage.get(_RADAR3_NODE_ID)
+    polygon = None
+    if ecov:
+        polygon = ecov.to_polygon(
+            beam_azimuth_deg=area.beam_azimuth_deg,
+            beam_width_deg=area.beam_width_deg,
+        )
+
+    return Response(
+        content=orjson.dumps({
+            **summary,
+            "empirical_coverage_polygon": polygon,
         }),
         media_type="application/json",
     )

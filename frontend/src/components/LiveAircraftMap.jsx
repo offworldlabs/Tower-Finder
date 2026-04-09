@@ -32,6 +32,8 @@ import {
   PlaybackBar,
 } from "./map";
 
+import { fetchRadar3Verification, fetchRadar3DetectionRange } from "../api";
+
 // Fix default icon paths
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({
@@ -193,6 +195,177 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
       markers.clear();
     };
   }, [map, radarAircraft, groundTruthRef, smoothRef]);
+
+  return null;
+});
+
+/* ── Radar3VerificationLayer: shows solver tracks vs ADS-B truth for radar3 node.
+      Fetches verification data every 15s and renders cyan truth dots,
+      yellow error lines, and distance labels. ── */
+const _r3Canvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
+
+const Radar3VerificationLayer = memo(function Radar3VerificationLayer({ visible }) {
+  const map = useMap();
+  const markersRef = useRef(new Map());
+  const dataRef = useRef(null);
+
+  useEffect(() => {
+    if (!visible) {
+      // Clean up when hidden
+      for (const entry of markersRef.current.values()) {
+        entry.dot.remove();
+        entry.line.remove();
+        if (entry.label) entry.label.remove();
+      }
+      markersRef.current.clear();
+      return;
+    }
+
+    let cancelled = false;
+
+    const refresh = async () => {
+      try {
+        const data = await fetchRadar3Verification();
+        if (cancelled || !data) return;
+        dataRef.current = data;
+
+        const markers = markersRef.current;
+        const seen = new Set();
+
+        for (const t of data.tracks || []) {
+          if (!t.truth_lat || !t.truth_lon || !t.solver_lat || !t.solver_lon) continue;
+          seen.add(t.hex);
+
+          let entry = markers.get(t.hex);
+          if (!entry) {
+            const dot = L.circleMarker([t.truth_lat, t.truth_lon], {
+              renderer: _r3Canvas,
+              radius: 5,
+              color: "#22d3ee",
+              weight: 2,
+              fillColor: "#22d3ee",
+              fillOpacity: 0.8,
+            });
+            const line = L.polyline(
+              [[t.truth_lat, t.truth_lon], [t.solver_lat, t.solver_lon]],
+              { color: "#facc15", weight: 1.5, opacity: 0.7, dashArray: "3 4" },
+            );
+            const label = L.tooltip({
+              permanent: true,
+              direction: "center",
+              className: "radar3-error-label",
+            });
+            line.bindTooltip(label);
+            line.setTooltipContent(`${t.position_error_km.toFixed(1)} km`);
+            dot.addTo(map);
+            line.addTo(map);
+            entry = { dot, line, label };
+            markers.set(t.hex, entry);
+          } else {
+            entry.dot.setLatLng([t.truth_lat, t.truth_lon]);
+            entry.line.setLatLngs([[t.truth_lat, t.truth_lon], [t.solver_lat, t.solver_lon]]);
+            entry.line.setTooltipContent(`${t.position_error_km.toFixed(1)} km`);
+          }
+        }
+
+        for (const [hex, entry] of markers) {
+          if (!seen.has(hex)) {
+            entry.dot.remove();
+            entry.line.remove();
+            markers.delete(hex);
+          }
+        }
+      } catch (e) {
+        // Silently ignore fetch errors
+      }
+    };
+
+    refresh();
+    const intervalId = setInterval(refresh, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+      for (const entry of markersRef.current.values()) {
+        entry.dot.remove();
+        entry.line.remove();
+      }
+      markersRef.current.clear();
+    };
+  }, [map, visible]);
+
+  return null;
+});
+
+/* ── Radar3RangeLayer: dashed range circle + furthest detection markers ── */
+const Radar3RangeLayer = memo(function Radar3RangeLayer({ visible }) {
+  const map = useMap();
+  const layersRef = useRef([]);
+  const dataRef = useRef(null);
+
+  useEffect(() => {
+    // Clean up previous layers
+    for (const l of layersRef.current) l.remove();
+    layersRef.current = [];
+
+    if (!visible) return;
+
+    let cancelled = false;
+
+    const refresh = async () => {
+      try {
+        const data = await fetchRadar3DetectionRange();
+        if (cancelled || !data || data.error) return;
+        // Clean previous
+        for (const l of layersRef.current) l.remove();
+        layersRef.current = [];
+        dataRef.current = data;
+
+        const rx = data.rx;
+        if (!rx) return;
+
+        // Max range circle (dashed)
+        const rangeKm = data.estimated_max_range_km;
+        if (rangeKm > 0) {
+          const circle = L.circle([rx.lat, rx.lon], {
+            radius: rangeKm * 1000,
+            color: "#f97316",
+            weight: 2,
+            fillOpacity: 0,
+            dashArray: "8 6",
+          });
+          circle.bindTooltip(`Max range: ${rangeKm.toFixed(1)} km`, { direction: "top" });
+          circle.addTo(map);
+          layersRef.current.push(circle);
+        }
+
+        // Furthest detections markers
+        for (const det of data.furthest_detections || []) {
+          const marker = L.circleMarker([det.lat, det.lon], {
+            radius: 7,
+            color: "#f97316",
+            weight: 2,
+            fillColor: "#f97316",
+            fillOpacity: 0.6,
+          });
+          marker.bindTooltip(
+            `${det.distance_km.toFixed(1)} km${det.hex ? ` (${det.hex})` : ""}`,
+            { direction: "top" },
+          );
+          marker.addTo(map);
+          layersRef.current.push(marker);
+        }
+      } catch (e) {
+        // Silently ignore
+      }
+    };
+
+    refresh();
+    return () => {
+      cancelled = true;
+      for (const l of layersRef.current) l.remove();
+      layersRef.current = [];
+    };
+  }, [map, visible]);
 
   return null;
 });
@@ -419,6 +592,7 @@ export default function LiveAircraftMap() {
   const [paused, setPaused] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [viewport, setViewport] = useState(null);
+  const [showAnomaliesOnly, setShowAnomaliesOnly] = useState(false);
 
   const animationFrameRef = useRef(null);
   const displayedAircraftRef = useRef({});
@@ -553,7 +727,16 @@ export default function LiveAircraftMap() {
 
   /* ── Derived: radar-detected only (exclude pure ADS-B not seen by radar) ── */
   const radarAircraft = useMemo(
-    () => displayAircraft.filter((ac) => ac.position_source || ac.multinode),
+    () => {
+      const base = displayAircraft.filter((ac) => ac.position_source || ac.multinode);
+      if (showAnomaliesOnly) return base.filter((ac) => ac.is_anomalous);
+      return base;
+    },
+    [displayAircraft, showAnomaliesOnly],
+  );
+
+  const anomalyCount = useMemo(
+    () => displayAircraft.filter((ac) => ac.is_anomalous).length,
     [displayAircraft],
   );
 
@@ -730,14 +913,17 @@ export default function LiveAircraftMap() {
         connected={connected}
         paused={paused}
         aircraftCount={radarAircraft.length + (showGroundTruth ? truthOnlyAircraft.length : 0)}
+        anomalyCount={anomalyCount}
         showCoverage={showCoverage}
         showLabels={showLabels}
         showTrails={showTrails}
         showGroundTruth={showGroundTruth}
+        showAnomaliesOnly={showAnomaliesOnly}
         onToggleCoverage={() => setShowCoverage((v) => !v)}
         onToggleLabels={() => setShowLabels((v) => !v)}
         onToggleTrails={() => setShowTrails((v) => !v)}
         onToggleGroundTruth={() => setShowGroundTruth((v) => !v)}
+        onToggleAnomaliesOnly={() => setShowAnomaliesOnly((v) => !v)}
         onTogglePause={handleTogglePause}
         onFit={() => setFocusNonce((n) => n + 1)}
       />
@@ -966,6 +1152,12 @@ export default function LiveAircraftMap() {
                 smoothRef={smoothRef}
               />
             )}
+
+            {/* Radar3 solver verification overlay — truth dots + error lines + km labels */}
+            <Radar3VerificationLayer visible={selectedNodeId === "radar3-retnode"} />
+
+            {/* Radar3 detection range circle + furthest detection markers */}
+            <Radar3RangeLayer visible={selectedNodeId === "radar3-retnode"} />
           </MapContainer>
 
           {selectedAc && (

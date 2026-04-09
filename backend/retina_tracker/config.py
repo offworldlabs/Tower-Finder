@@ -181,6 +181,13 @@ SPOOF_MIN_FROZEN_FRAMES = 2         # consecutive frozen frames to flag
 # Altitude anomaly
 ALTITUDE_JUMP_THRESHOLD_FT = 8000.0  # impossible alt change in one frame
 
+# Anomalous acceleration (extreme, >10g)
+ANOMALOUS_ACCEL_MS2 = 98.1  # 10g × 9.81 m/s²
+
+# Long hover detection
+LONG_HOVER_POSITION_EPSILON_DEG = 0.001  # ~111 m — position "frozen" threshold
+LONG_HOVER_MIN_DURATION_S = 900.0        # 15 minutes
+
 
 def get_mach1_doppler_threshold():
     """Calculate Doppler threshold for Mach 1 based on center frequency.

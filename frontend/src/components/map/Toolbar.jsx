@@ -2,14 +2,17 @@ export default function Toolbar({
   connected,
   paused,
   aircraftCount,
+  anomalyCount,
   showCoverage,
   showLabels,
   showTrails,
   showGroundTruth,
+  showAnomaliesOnly,
   onToggleCoverage,
   onToggleLabels,
   onToggleTrails,
   onToggleGroundTruth,
+  onToggleAnomaliesOnly,
   onTogglePause,
   onFit,
 }) {
@@ -36,6 +39,13 @@ export default function Toolbar({
         onClick={onToggleGroundTruth}
       >
         Debug Truth
+      </button>
+      <button
+        className={`toggle-btn${showAnomaliesOnly ? " active" : ""}`}
+        onClick={onToggleAnomaliesOnly}
+        style={showAnomaliesOnly ? { background: "#f43f5e", color: "#fff" } : {}}
+      >
+        ⚠ Anomalies{anomalyCount > 0 ? ` (${anomalyCount})` : ""}
       </button>
 
       <div className="toolbar-separator" />
