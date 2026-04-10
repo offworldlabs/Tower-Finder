@@ -2,7 +2,7 @@
 FROM node:20-alpine AS frontend-build
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm ci --ignore-scripts
+RUN npm install --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run build
 
@@ -10,7 +10,7 @@ RUN npm run build
 FROM node:20-alpine AS dashboard-build
 WORKDIR /app/dashboard
 COPY dashboard/package.json dashboard/package-lock.json* ./
-RUN npm ci --ignore-scripts
+RUN npm install --no-audit --no-fund
 COPY dashboard/ ./
 RUN npm run build
 
