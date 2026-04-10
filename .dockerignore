@@ -3,6 +3,7 @@ frontend/node_modules
 __pycache__
 *.pyc
 .env
+**/.env
 .git
 .gitignore
 *.md
