@@ -85,7 +85,7 @@ jobs:
             docker compose up -d --build
             # Wait for backend to become healthy (up to 60s)
             for i in $(seq 1 12); do
-              if curl -sf http://localhost:8000/api/health > /dev/null 2>&1; then
+              if docker compose exec -T tower-finder python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
                 echo "Deploy successful (healthy after ~$((i*5))s)"
                 exit 0
               fi
