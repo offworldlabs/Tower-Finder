@@ -18,19 +18,19 @@ import time
 import httpx
 
 from core import state
+from config.constants import (
+    C_KM_US,
+    BLAH2_POLL_INTERVAL_S as POLL_INTERVAL_S,
+    BLAH2_STALE_THRESHOLD_S as STALE_THRESHOLD_S,
+    BLAH2_RECONNECT_DELAY_S as RECONNECT_DELAY_S,
+    BLAH2_MAX_FAILURES as MAX_FAILURES,
+)
 
 log = logging.getLogger("blah2_bridge")
 
-# ── Node identity ─────────────────────────────────────────────────────────────
+# ── Node identity ─────────────────────────────────────────────────────────────────
 NODE_ID = "radar3-retnode"
 DETECTION_URL = "https://radar3.retnode.com/api/detection"
-POLL_INTERVAL_S = 1.0          # poll cadence (blah2 refreshes ~every CPI, ~0.5 s)
-STALE_THRESHOLD_S = 10.0       # ignore frames older than this
-RECONNECT_DELAY_S = 5.0        # backoff after repeated failures
-MAX_FAILURES = 5               # failures before backing off
-
-# Speed of light in km/µs (for delay unit conversion)
-C_KM_US = 0.299_792_458
 
 # Node config pushed to state.connected_nodes and pipeline factory
 _NODE_CONFIG = {

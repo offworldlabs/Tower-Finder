@@ -23,9 +23,11 @@ def _run_solver_worker():
             result = solve_multinode(s_in, node_cfgs)
         except Exception:
             state.task_error_counts["solver"] += 1
+            state.solver_failures += 1
             logging.exception("Multinode solver failed")
             result = None
         if result and result.get("success"):
+            state.solver_successes += 1
             state.task_last_success["solver"] = time.time()
             for nid in result.get("contributing_node_ids", []):
                 state.node_analytics.record_calibration_point(

@@ -21,6 +21,13 @@ import orjson
 
 from core.auth import require_admin, get_all_users, update_user_role, get_current_user
 from core import state
+from config.constants import (
+    EVENT_LOG_MAX,
+    NODE_OFFLINE_THRESHOLD_S,
+    NODE_HEALTH_CHECK_INTERVAL_S,
+    STORAGE_CACHE_TTL_S,
+    CONFIG_LIVE_CACHE_TTL_S,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +58,7 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 # ── Persistent event log ─────────────────────────────────────────────────────
 
 _EVENTS_FILE = Path(__file__).resolve().parent.parent / "data" / "events.json"
-_events: deque = deque(maxlen=2000)
+_events: deque = deque(maxlen=EVENT_LOG_MAX)
 
 
 def _load_events():
@@ -89,7 +96,7 @@ def log_event(category: str, message: str, severity: str = "info", meta: dict | 
 
 # ── Node health monitoring (auto-detect offline nodes) ───────────────────────
 
-_OFFLINE_THRESHOLD_S = 120  # 2 minutes without heartbeat = offline
+_OFFLINE_THRESHOLD_S = NODE_OFFLINE_THRESHOLD_S
 _last_health_check = 0.0
 
 
@@ -97,7 +104,7 @@ def check_node_health():
     """Called periodically from background task to detect offline nodes."""
     global _last_health_check
     now = time.time()
-    if now - _last_health_check < 30:
+    if now - _last_health_check < NODE_HEALTH_CHECK_INTERVAL_S:
         return
     _last_health_check = now
 
@@ -271,12 +278,12 @@ async def config_history(_admin=Depends(require_admin)):
 
 _storage_cache: dict | None = None
 _storage_cache_ts: float = 0.0
-_STORAGE_CACHE_TTL = 300.0  # refresh at most every 5 minutes
+_STORAGE_CACHE_TTL = STORAGE_CACHE_TTL_S
 
 # TTL cache for live-generated node/tower config (active when JSON files absent)
 _nodes_config_cache: tuple | None = None
 _towers_config_cache: tuple | None = None
-_CONFIG_LIVE_CACHE_TTL = 60.0  # seconds
+_CONFIG_LIVE_CACHE_TTL = CONFIG_LIVE_CACHE_TTL_S
 
 
 def _scan_archive_dir(archive_dir) -> tuple[int, int, dict]:
@@ -467,6 +474,9 @@ async def system_metrics(_user=Depends(require_admin)):
         "frame_queue_depth": state.frame_queue.qsize(),
         "frame_queue_max": state.frame_queue.maxsize,
         "frames_dropped": state.frames_dropped,
+        "frames_processed": state.frames_processed,
+        "solver_successes": state.solver_successes,
+        "solver_failures": state.solver_failures,
         "solver_queue_depth": state.solver_queue.qsize(),
         "connected_nodes": len([n for n in list(state.connected_nodes.values()) if n.get("status") == "active"]),
         "active_geo_aircraft": len(state.active_geo_aircraft),

@@ -36,8 +36,12 @@ from retina_geolocator import (
 )
 
 # ─── Constants ───────────────────────────────────────────────────────
-C = 299_792_458.0  # speed of light m/s
-FT_TO_M = 0.3048
+from config.constants import (
+    C_M_S as C, FT_TO_M,
+    DRONE_ALTITUDE_BOUNDS, DRONE_VELOCITY_BOUNDS,
+    DRONE_INITIAL_ALT_M, DRONE_MAX_SPEED_MS, DRONE_MAX_ALT_M,
+    GEO_INTERVAL_S, PRUNE_INTERVAL_S,
+)
 
 # ─── Node Configuration ─────────────────────────────────────────────
 DEFAULT_NODE_CONFIG = {
@@ -142,11 +146,11 @@ def _enu_to_lla(enu_km, rx_lat, rx_lon, rx_alt):
 
 
 # Target profile constants
-_DRONE_ALTITUDE_BOUNDS = [0, 500]       # metres ASL
-_DRONE_VELOCITY_BOUNDS = [-60, 60]      # m/s per component
-_DRONE_INITIAL_ALT_M   = 80             # initial guess altitude
-_DRONE_MAX_SPEED_MS    = 60.0           # classification threshold
-_DRONE_MAX_ALT_M       = 600.0          # classification threshold
+_DRONE_ALTITUDE_BOUNDS = DRONE_ALTITUDE_BOUNDS
+_DRONE_VELOCITY_BOUNDS = DRONE_VELOCITY_BOUNDS
+_DRONE_INITIAL_ALT_M   = DRONE_INITIAL_ALT_M
+_DRONE_MAX_SPEED_MS    = DRONE_MAX_SPEED_MS
+_DRONE_MAX_ALT_M       = DRONE_MAX_ALT_M
 
 
 class GeolocatedTrack:
@@ -240,13 +244,13 @@ class PassiveRadarPipeline:
         # frame.  Aircraft positions change slowly enough that 5-second
         # re-solve intervals produce identical quality at 50x lower CPU cost.
         self._geo_last_solve: dict[str, float] = {}
-        self._GEO_INTERVAL_S: float = 10.0
+        self._GEO_INTERVAL_S: float = GEO_INTERVAL_S
         # Stale-entry pruning: time-based (every _PRUNE_INTERVAL_S wall-clock
         # seconds) instead of frame-count-based.  With 40 s frame intervals
         # the old 500-frame threshold took ~5.5 h to fire; time-based pruning
         # runs reliably regardless of frame rate.
         self._frame_count: int = 0
-        self._PRUNE_INTERVAL_S: float = 60.0
+        self._PRUNE_INTERVAL_S: float = PRUNE_INTERVAL_S
         self._last_prune_time: float = time.monotonic()
 
     def _init_geolocator(self, config):

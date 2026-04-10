@@ -141,6 +141,15 @@ systemctl restart docker
 cd "$APP_DIR"
 docker compose up -d
 
+# ── 6. Setup nightly backup timer ─────────────────────────────────────────────
+echo ""
+echo "→ Installing nightly backup timer..."
+cp "$APP_DIR/deploy/retina-backup.service" /etc/systemd/system/
+cp "$APP_DIR/deploy/retina-backup.timer" /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now retina-backup.timer
+echo "  ✓ Backup timer installed (daily at 03:00 UTC)"
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "══════════════════════════════════════════════════"
@@ -155,9 +164,4 @@ echo "    - SSH: key-only auth, no password"
 echo "    - fail2ban: active on SSH"
 echo "    - Automatic security updates: enabled"
 echo "    - Docker log rotation: enabled"
-echo ""
-echo "  Next steps:"
-echo "    1. Configure DNS in Cloudflare (A record → $(curl -s ifconfig.me))"
-echo "    2. Set up Cloudflare Origin Certificate for SSL"
-echo "    3. Update nginx.conf for SSL if using certs directly"
 echo ""

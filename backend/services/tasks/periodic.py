@@ -8,7 +8,14 @@ import time
 import httpx
 
 from core import state
-from services.frame_processor import flush_all_archive_buffers, _ARCHIVE_FLUSH_INTERVAL
+from config.constants import (
+    ARCHIVE_FLUSH_INTERVAL_S,
+    REPUTATION_INTERVAL_S,
+    ADSB_TRUTH_INTERVAL_S,
+    ADSB_BACKOFF_S,
+    OPENSKY_BUFFER_DEG,
+)
+from services.frame_processor import flush_all_archive_buffers
 
 _opensky_client: httpx.AsyncClient | None = None
 
@@ -16,7 +23,7 @@ _opensky_client: httpx.AsyncClient | None = None
 async def archive_flush_task():
     """Periodically flush batched detection archives to disk/B2."""
     while True:
-        await asyncio.sleep(_ARCHIVE_FLUSH_INTERVAL)
+        await asyncio.sleep(ARCHIVE_FLUSH_INTERVAL_S)
         try:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, flush_all_archive_buffers)
@@ -29,7 +36,7 @@ async def archive_flush_task():
 async def reputation_evaluator():
     loop = asyncio.get_event_loop()
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(REPUTATION_INTERVAL_S)
         try:
             await loop.run_in_executor(
                 None, state.node_analytics.evaluate_reputations,
@@ -43,12 +50,12 @@ async def reputation_evaluator():
 async def adsb_truth_fetcher():
     backoff = 0
     while True:
-        await asyncio.sleep(120 + backoff)
+        await asyncio.sleep(ADSB_TRUTH_INTERVAL_S + backoff)
         backoff = 0
         try:
             rate_limited = await _fetch_external_adsb()
             if rate_limited:
-                backoff = 300
+                backoff = ADSB_BACKOFF_S
             state.task_last_success["adsb_truth_fetcher"] = time.time()
         except Exception:
             state.task_error_counts["adsb_truth_fetcher"] += 1
@@ -81,8 +88,8 @@ async def _fetch_external_adsb() -> bool:
     if not lats or all(la == 0 for la in lats):
         return False
 
-    lamin, lamax = min(lats) - 1.0, max(lats) + 1.0
-    lomin, lomax = min(lons) - 1.0, max(lons) + 1.0
+    lamin, lamax = min(lats) - OPENSKY_BUFFER_DEG, max(lats) + OPENSKY_BUFFER_DEG
+    lomin, lomax = min(lons) - OPENSKY_BUFFER_DEG, max(lons) + OPENSKY_BUFFER_DEG
 
     url = "https://opensky-network.org/api/states/all"
     global _opensky_client

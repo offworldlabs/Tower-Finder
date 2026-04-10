@@ -18,6 +18,7 @@ async def frame_processor_loop(default_pipeline):
                 None, process_one_frame, node_id, frame, default_pipeline,
             )
             state.aircraft_dirty = True
+            state.frames_processed += 1
             state.task_last_success["frame_processor"] = time.time()
         except Exception:
             state.task_error_counts["frame_processor"] += 1

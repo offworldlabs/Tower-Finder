@@ -2,13 +2,12 @@
 
 import math
 
-_C_KM_US = 0.299792  # speed of light in km/µs
-_DELAY_MATCH_THRESHOLD_US = 15.0  # ±15 µs ≈ ±4.5 km path-length tolerance
+from config.constants import C_KM_US as _C_KM_US, DELAY_MATCH_THRESHOLD_US as _DELAY_MATCH_THRESHOLD_US, R_EARTH_KM
 
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Haversine great-circle distance in km."""
-    R = 6371.0
+    R = R_EARTH_KM
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
     a = (math.sin(dlat / 2) ** 2

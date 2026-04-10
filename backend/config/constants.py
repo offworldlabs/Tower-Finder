@@ -40,3 +40,38 @@ ARCHIVE_BATCH_MAX = 200               # Max frames per archive flush
 TRUST_WARN_THRESHOLD = 0.3            # Trust score warning level
 TRUST_BLOCK_THRESHOLD = 0.1           # Trust score block level
 REPUTATION_BLOCK_THRESHOLD = 0.2      # Reputation block level
+
+# ── Geolocation solver ───────────────────────────────────────────────────────
+GEO_INTERVAL_S = 10.0                 # Per-track solver rate limit (seconds)
+PRUNE_INTERVAL_S = 60.0               # Stale-entry pruning interval (seconds)
+STALE_TRACK_S = 120.0                 # Remove tracks not updated in this window
+
+# ── Target classification (drone detection) ──────────────────────────────────
+DRONE_ALTITUDE_BOUNDS = [0, 500]       # metres ASL
+DRONE_VELOCITY_BOUNDS = [-60, 60]      # m/s per component
+DRONE_INITIAL_ALT_M = 80              # Solver initial guess altitude (m)
+DRONE_MAX_SPEED_MS = 60.0             # Drone classification speed threshold (m/s)
+DRONE_MAX_ALT_M = 600.0               # Drone classification altitude threshold (m)
+
+# ── Frame processor cadences ─────────────────────────────────────────────────
+ARC_REFRESH_S = 5.0                   # Detection arc recompute cadence (s)
+GT_REFRESH_S = 5.0                    # Ground-truth snapshot refresh cadence (s)
+
+# ── Periodic task intervals ──────────────────────────────────────────────────
+REPUTATION_INTERVAL_S = 60            # Reputation evaluator sleep (s)
+ADSB_TRUTH_INTERVAL_S = 120           # ADS-B truth fetcher sleep (s)
+ADSB_BACKOFF_S = 300                  # Rate-limit backoff (s)
+OPENSKY_BUFFER_DEG = 1.0              # lat/lon margin for OpenSky bbox (degrees)
+
+# ── Admin / ops ──────────────────────────────────────────────────────────────
+EVENT_LOG_MAX = 2000                  # Event log buffer capacity
+NODE_OFFLINE_THRESHOLD_S = 120        # Heartbeat timeout → offline (s)
+NODE_HEALTH_CHECK_INTERVAL_S = 30     # How often to check node liveness (s)
+STORAGE_CACHE_TTL_S = 300.0           # Archive storage stats cache TTL (s)
+CONFIG_LIVE_CACHE_TTL_S = 60.0        # Live node/tower config cache TTL (s)
+
+# ── blah2 bridge ─────────────────────────────────────────────────────────────
+BLAH2_POLL_INTERVAL_S = 1.0           # blah2 API poll cadence (s)
+BLAH2_STALE_THRESHOLD_S = 10.0        # Ignore frames older than this (s)
+BLAH2_RECONNECT_DELAY_S = 5.0         # Backoff after failures (s)
+BLAH2_MAX_FAILURES = 5                # Failures before backing off

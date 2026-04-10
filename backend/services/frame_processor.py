@@ -14,13 +14,17 @@ from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
 from retina_tracker.track import TrackState
 from services.storage import archive_detections
+from config.constants import (
+    ARCHIVE_FLUSH_INTERVAL_S, ARCHIVE_BATCH_MAX,
+    ARC_REFRESH_S, GT_REFRESH_S, STALE_TRACK_S,
+)
 
 # ── Archive batching ──────────────────────────────────────────────────────────
 # Instead of writing every frame to disk immediately (slow I/O in the hot path),
 # collect frames in memory and flush them periodically from a background task.
 _archive_buffer: dict[str, list[dict]] = defaultdict(list)
-_ARCHIVE_FLUSH_INTERVAL = 30          # seconds between batch writes
-_ARCHIVE_BATCH_MAX = 200              # flush if a node accumulates this many
+_ARCHIVE_FLUSH_INTERVAL = ARCHIVE_FLUSH_INTERVAL_S
+_ARCHIVE_BATCH_MAX = ARCHIVE_BATCH_MAX
 
 
 def _flush_archive_node(node_id: str):
@@ -368,8 +372,8 @@ def _build_single_node_arc(track_or_delay, node_cfg: dict) -> Optional[list[list
 # How often to recompute detection arcs and GT snapshot (seconds).
 # Iterating 915 pipelines × 5000 tracks every second is the #1 GIL hog;
 # caching at 5 s cuts that penalty by 4/5.
-_ARC_REFRESH_S = 5.0
-_GT_REFRESH_S = 5.0
+_ARC_REFRESH_S = ARC_REFRESH_S
+_GT_REFRESH_S = GT_REFRESH_S
 _cached_pending_arcs: list[dict] = []
 _arcs_last_ts: float = 0.0
 _cached_gt_snapshot: dict = {}
@@ -574,14 +578,14 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     # between prune cycles and causes O(N_stale) work per flush — arc
     # computation, ground-truth resolution, history writes — all holding
     # the GIL and starving frame workers.
-    _STALE_TRACK_S = 120.0
+    _STALE_TRACK_S_LOCAL = STALE_TRACK_S
 
     # 1. Pre-aggregated geolocated aircraft (O(active) ≈ 275 instead of
     #    O(pipelines × tracks) ≈ 915 × 2.4).  Stale entries are pruned here.
     stale_geo = []
     with state.geo_aircraft_lock:
         for ac_hex, (track, cfg) in list(state.active_geo_aircraft.items()):
-            if (now - getattr(track, 'wall_clock_ts', 0)) > _STALE_TRACK_S:
+            if (now - getattr(track, 'wall_clock_ts', 0)) > _STALE_TRACK_S_LOCAL:
                 stale_geo.append(ac_hex)
                 continue
             if ac_hex in seen_hex:
@@ -596,7 +600,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
 
     # 2. Default pipeline — catch any tracks not in the pre-aggregated dict
     for track in list(default_pipeline.geolocated_tracks.values()):
-        if (now - getattr(track, 'wall_clock_ts', 0)) > _STALE_TRACK_S:
+        if (now - getattr(track, 'wall_clock_ts', 0)) > _STALE_TRACK_S_LOCAL:
             continue
         ac_hex = track.adsb_hex or track.hex_id
         if ac_hex in seen_hex:

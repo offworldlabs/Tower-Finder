@@ -92,6 +92,9 @@ solver_queue: _stdlib_queue.Queue = _stdlib_queue.Queue(maxsize=_SOLVER_QUEUE_SI
 
 # Monotonic counter for dropped frames (useful for monitoring)
 frames_dropped: int = 0
+frames_processed: int = 0
+solver_successes: int = 0
+solver_failures: int = 0
 
 # ── Thread safety locks ──────────────────────────────────────────────────────
 connected_nodes_lock = threading.Lock()
