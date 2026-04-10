@@ -54,8 +54,8 @@ RUN useradd -r -s /usr/sbin/nologin appuser && \
     # nginx runtime dirs
     chown -R appuser:appuser /var/log/nginx /var/lib/nginx /run && \
     # app dirs that need write access
-    chown -R appuser:appuser /app/backend/coverage_data /app/backend/tar1090_data && \
-    mkdir -p /app/backend/data && chown -R appuser:appuser /app/backend/data
+    mkdir -p /app/backend/coverage_data /app/backend/tar1090_data /app/backend/data && \
+    chown -R appuser:appuser /app/backend/coverage_data /app/backend/tar1090_data /app/backend/data
 
 USER appuser
 
