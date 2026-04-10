@@ -9,12 +9,36 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, HTTPException, Request, Header
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
 from services.tcp_handler import is_synthetic_node
 
 router = APIRouter()
+
+
+# ── Request models ────────────────────────────────────────────────────────────
+
+class DetectionRequest(BaseModel):
+    node_id: str = Field(default="http-node", max_length=128)
+    frames: list[dict] | None = None
+    # Allow extra fields — individual frames are dicts with variable keys
+    model_config = {"extra": "allow"}
+
+
+class BulkNodeEntry(BaseModel):
+    node_id: str = Field(default="http-node", max_length=128)
+    config: dict | None = None
+    frames: list[dict] = Field(default_factory=list)
+
+
+class BulkDetectionRequest(BaseModel):
+    nodes: list[BulkNodeEntry] = Field(..., max_length=500)
+
+
+class LoadFileRequest(BaseModel):
+    path: str = Field(..., min_length=1)
 
 RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
 _RATE_LIMIT = int(os.getenv("RADAR_RATE_LIMIT", "60"))
@@ -65,7 +89,7 @@ async def tar1090_aircraft_live():
 @router.post("/api/radar/detections")
 async def ingest_detections(
     request: Request,
-    body: dict = Body(...),
+    body: DetectionRequest,
     x_api_key: str = Header(default="", alias="X-API-Key"),
 ):
     if RADAR_API_KEY and x_api_key != RADAR_API_KEY:
@@ -78,8 +102,9 @@ async def ingest_detections(
         )
         _check_rate_limit(client_ip)
 
-    node_id = body.get("node_id", "http-node")
-    frames = body.get("frames", [body]) if "frames" in body else [body]
+    node_id = body.node_id
+    body_dict = body.model_dump(exclude_none=True)
+    frames = body.frames if body.frames is not None else [body_dict]
 
     if node_id not in state.connected_nodes:
         with state.connected_nodes_lock:
@@ -120,34 +145,31 @@ async def ingest_detections(
 @router.post("/api/radar/detections/bulk")
 async def ingest_detections_bulk(
     request: Request,
-    body: dict = Body(...),
+    body: BulkDetectionRequest,
     x_api_key: str = Header(default="", alias="X-API-Key"),
 ):
     if RADAR_API_KEY and x_api_key != RADAR_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
 
-    nodes_list = body.get("nodes", [])
-    if not isinstance(nodes_list, list):
-        raise HTTPException(status_code=400, detail="'nodes' must be an array")
-
     registered = 0
     queued = 0
-    for entry in nodes_list:
-        node_id = entry.get("node_id", "http-node")
-        frames = entry.get("frames", [])
+    for entry in body.nodes:
+        node_id = entry.node_id
+        frames = entry.frames
+        entry_config = entry.config or {"node_id": node_id}
 
         if node_id not in state.connected_nodes:
             with state.connected_nodes_lock:
                 state.connected_nodes[node_id] = {
                     "config_hash": "",
-                    "config": entry.get("config", {"node_id": node_id}),
+                    "config": entry_config,
                     "status": "active",
                     "last_heartbeat": datetime.now(timezone.utc).isoformat(),
                     "peer": "http-bulk",
                     "is_synthetic": is_synthetic_node(node_id),
                     "capabilities": {},
                 }
-            state.node_analytics.register_node(node_id, entry.get("config", {"node_id": node_id}))
+            state.node_analytics.register_node(node_id, entry_config)
             registered += 1
         else:
             with state.connected_nodes_lock:
@@ -168,9 +190,9 @@ async def ingest_detections_bulk(
 
 
 @router.post("/api/radar/load-file")
-async def load_detection_file(body: dict = Body(...)):
-    filepath = body.get("path", "")
-    if not filepath or not os.path.isfile(filepath):
+async def load_detection_file(body: LoadFileRequest):
+    filepath = body.path
+    if not os.path.isfile(filepath):
         raise HTTPException(status_code=400, detail="File not found")
     if not filepath.endswith(".detection"):
         raise HTTPException(status_code=400, detail="Only .detection files accepted")

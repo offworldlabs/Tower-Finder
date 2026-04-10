@@ -15,8 +15,10 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from dotenv import load_dotenv
 
 from pipeline.passive_radar import PassiveRadarPipeline, DEFAULT_NODE_CONFIG
@@ -122,7 +124,25 @@ async def lifespan(app: FastAPI):
 
 # ── App factory ───────────────────────────────────────────────────────────────
 
+_MAX_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_BYTES", str(5 * 1024 * 1024)))  # 5 MB
+
+
+class LimitUploadSize(BaseHTTPMiddleware):
+    """Reject requests with Content-Length exceeding the configured limit."""
+
+    async def dispatch(self, request: Request, call_next):
+        cl = request.headers.get("content-length")
+        if cl and int(cl) > _MAX_BODY_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": f"Request body too large (max {_MAX_BODY_BYTES} bytes)"},
+            )
+        return await call_next(request)
+
+
 app = FastAPI(title="Tower Finder API", lifespan=lifespan)
+
+app.add_middleware(LimitUploadSize)
 
 app.add_middleware(
     CORSMiddleware,
@@ -134,8 +154,9 @@ app.add_middleware(
         "https://towers.retina.fm,https://map.retina.fm",
     ).split(","),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "HEAD", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
+    max_age=3600,
 )
 
 # ── Mount all routers ─────────────────────────────────────────────────────────

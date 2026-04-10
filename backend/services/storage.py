@@ -159,9 +159,9 @@ def read_archived_file(key: str) -> dict | None:
     if not os.path.isfile(local_path):
         return None
     # Prevent path traversal
-    real_base = os.path.realpath(_LOCAL_ARCHIVE_DIR)
+    real_base = os.path.realpath(_LOCAL_ARCHIVE_DIR) + os.sep
     real_path = os.path.realpath(local_path)
-    if not real_path.startswith(real_base + os.sep):
+    if not real_path.startswith(real_base):
         return None
     with open(local_path, "r") as f:
         return json.load(f)

@@ -108,7 +108,7 @@ async def find_towers(
         raise
     except Exception as exc:
         logging.exception("Tower data fetch failed")
-        raise HTTPException(status_code=502, detail=f"Upstream API error: {exc}")
+        raise HTTPException(status_code=502, detail="External service unavailable. Please try again.")
 
     resolved_altitude = altitude
     if altitude == 0:

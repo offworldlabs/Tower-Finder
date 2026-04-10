@@ -1,5 +1,6 @@
 """Chain of custody API endpoints."""
 
+import logging
 import os
 from datetime import datetime, timezone
 
@@ -166,4 +167,5 @@ async def custody_verify_chain(node_id: str):
         valid, issues = verifier.verify_chain(entry_objs)
         return {"node_id": node_id, "chain_length": len(entries), "valid": valid, "issues": issues}
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Verification error: {exc}")
+        logging.exception("Chain verification failed for %s", node_id)
+        raise HTTPException(status_code=500, detail="Chain verification failed")

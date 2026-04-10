@@ -7,6 +7,7 @@ Pipeline: detection data → retina-tracker → retina-geolocator → tar1090 JS
 """
 
 import json
+import logging
 import math
 import os
 import time
@@ -18,6 +19,8 @@ from typing import Optional
 import yaml
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 from retina_tracker.tracker import Tracker as RetinaTracker
 from retina_tracker.output import TrackEventWriter
@@ -668,7 +671,7 @@ def process_detection_folder(folder: str, output_dir: str, node_config: dict = N
 
     detection_files = sorted(glob.glob(os.path.join(folder, "*.detection")))
     if not detection_files:
-        print(f"No .detection files found in {folder}")
+        logger.info("No .detection files found in %s", folder)
         return
 
     os.makedirs(output_dir, exist_ok=True)
@@ -678,14 +681,14 @@ def process_detection_folder(folder: str, output_dir: str, node_config: dict = N
         json.dump(receiver, f)
 
     for filepath in detection_files:
-        print(f"Processing: {os.path.basename(filepath)}")
+        logger.info("Processing: %s", os.path.basename(filepath))
         pipeline.process_file(filepath)
 
     aircraft_data = pipeline.generate_aircraft_json()
     with open(os.path.join(output_dir, "aircraft.json"), "w") as f:
         json.dump(aircraft_data, f)
 
-    print(f"Output: {len(aircraft_data['aircraft'])} geolocated targets")
+    logger.info("Output: %d geolocated targets", len(aircraft_data['aircraft']))
     return aircraft_data
 
 

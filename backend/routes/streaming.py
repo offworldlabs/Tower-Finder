@@ -1,7 +1,9 @@
 """WebSocket and SSE live-streaming endpoints."""
 
 import asyncio
+import hmac
 import logging
+import os
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
@@ -10,10 +12,29 @@ from core import state
 
 router = APIRouter()
 
+_WS_AUTH_TOKEN = os.getenv("WS_AUTH_TOKEN", "")
+
+
+async def _authenticate_ws(ws: WebSocket) -> bool:
+    """Validate WebSocket token if WS_AUTH_TOKEN is configured.
+
+    Returns True if the connection is authorized (or auth is disabled).
+    Closes the socket and returns False on failure.
+    """
+    if not _WS_AUTH_TOKEN:
+        return True
+    token = ws.query_params.get("token", "")
+    if not token or not hmac.compare_digest(token, _WS_AUTH_TOKEN):
+        await ws.close(code=1008, reason="Unauthorized")
+        return False
+    return True
+
 
 @router.websocket("/ws/aircraft")
 async def websocket_aircraft(ws: WebSocket):
     """Full aircraft feed — all nodes including synthetic simulation fleet."""
+    if not await _authenticate_ws(ws):
+        return
     await ws.accept()
     state.ws_clients.add(ws)
     logging.info("WebSocket client connected (%d total)", len(state.ws_clients))
@@ -36,6 +57,8 @@ async def websocket_aircraft_live(ws: WebSocket):
     """Real-node-only aircraft feed — excludes synthetic simulation nodes.
     Used by map.retina.fm showing only radar3.retnode.com data.
     """
+    if not await _authenticate_ws(ws):
+        return
     await ws.accept()
     state.ws_live_clients.add(ws)
     logging.info("WS live client connected (%d total)", len(state.ws_live_clients))

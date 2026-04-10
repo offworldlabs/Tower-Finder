@@ -20,3 +20,5 @@ other/
 # Local-only agent customizations (server credentials, ops, private prompts — never push)
 .github/instructions/
 .github/prompts/
+backend/data/events.json
+backend/data/state_snapshot.json
