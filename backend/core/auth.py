@@ -12,7 +12,15 @@ import jwt  # PyJWT
 
 logger = logging.getLogger(__name__)
 
-JWT_SECRET = os.getenv("JWT_SECRET", "retina-dev-secret-change-me-in-prod-32b!")
+_RETINA_ENV = os.getenv("RETINA_ENV", "").lower()
+
+_jwt_from_env = os.getenv("JWT_SECRET", "")
+if not _jwt_from_env and _RETINA_ENV not in ("dev", "test", ""):
+    raise RuntimeError(
+        "JWT_SECRET environment variable is required in production "
+        f"(RETINA_ENV={_RETINA_ENV!r}). Set it to a random ≥32-byte string."
+    )
+JWT_SECRET = _jwt_from_env or "retina-dev-secret-change-me-in-prod-32b!"
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY = 86400 * 7  # 7 days
 

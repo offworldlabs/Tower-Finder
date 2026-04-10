@@ -58,7 +58,7 @@ function FitBounds({ towers, userLocation }) {
 
   useEffect(() => {
     if (!userLocation) return;
-    const points = [[userLocation.latitude, userLocation.longitude]];
+    const points: [number, number][] = [[userLocation.latitude, userLocation.longitude]];
     towers.forEach((t) => points.push([t.latitude, t.longitude]));
 
     if (points.length > 1) {
@@ -72,7 +72,7 @@ function FitBounds({ towers, userLocation }) {
 }
 
 export default function TowerMap({ towers, userLocation, highlighted }) {
-  const center = userLocation
+  const center: [number, number] = userLocation
     ? [userLocation.latitude, userLocation.longitude]
     : [39.8, -98.6]; // center of USA (default)
 

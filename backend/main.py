@@ -31,6 +31,7 @@ from services.background import (
     adsb_truth_fetcher,
     start_solver_workers,
 )
+from services.state_snapshot import save_snapshot, restore_snapshot
 from routes.towers import router as towers_router
 from routes.stats import router as stats_router
 from routes.radar import router as radar_router
@@ -69,6 +70,9 @@ _test_mod.init(radar_pipeline)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Restore persisted state before accepting connections
+    restore_snapshot()
+
     server = await asyncio.start_server(handle_tcp_client, "0.0.0.0", TCP_PORT)
     addrs = ", ".join(str(s.getsockname()) for s in server.sockets)
     logging.info("Radar TCP server listening on %s", addrs)
@@ -79,6 +83,16 @@ async def lifespan(app: FastAPI):
         # Run multiple parallel frame processor workers so the thread pool can
         # process frames concurrently (scipy/numpy release the GIL).
         _n_frame_workers = int(os.environ.get("FRAME_WORKERS", "4"))
+
+        async def _snapshot_loop():
+            """Save state snapshot every 5 minutes."""
+            while True:
+                await asyncio.sleep(300)
+                try:
+                    await asyncio.get_event_loop().run_in_executor(None, save_snapshot)
+                except Exception:
+                    logging.exception("State snapshot save failed")
+
         tasks = [
             asyncio.create_task(server.serve_forever()),
             asyncio.create_task(reputation_evaluator()),
@@ -87,12 +101,18 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(archive_flush_task()),
             asyncio.create_task(analytics_refresh_task()),
             asyncio.create_task(blah2_bridge_task()),
+            asyncio.create_task(_snapshot_loop()),
             *[asyncio.create_task(frame_processor_loop(radar_pipeline))
               for _ in range(_n_frame_workers)],
         ]
         yield
         for t in tasks:
             t.cancel()
+        # Save state snapshot before exit
+        try:
+            save_snapshot()
+        except Exception:
+            logging.exception("Final state snapshot failed")
         # Flush remaining buffered archives before exit
         from services.frame_processor import flush_all_archive_buffers
         flush_all_archive_buffers()

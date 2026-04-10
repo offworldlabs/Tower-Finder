@@ -10,14 +10,14 @@ export default function RFEnvironmentPage() {
   const [selectedNode, setSelectedNode] = useState("");
   const [loading, setLoading] = useState(true);
   const [snrHistory, setSnrHistory] = useState([]);
-  const timerRef = useRef();
+  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
   const fetchData = () => {
     Promise.all([api.nodes(), api.analytics()])
       .then(([n, a]) => {
         const nodeMap = n.nodes || {};
         const analyticsMap = a?.nodes || {};
-        const nodeList = Object.entries(nodeMap).map(([id, info]) => ({
+        const nodeList = Object.entries(nodeMap).map(([id, info]: [string, any]) => ({
           node_id: id,
           ...info,
           _analytics: analyticsMap[id] || {},

@@ -1,3 +1,4 @@
+// @ts-nocheck — gradual TS migration; will type incrementally
 import React, { useEffect, useRef, useState, useCallback, useMemo, memo } from "react";
 import {
   MapContainer,
@@ -496,7 +497,7 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
         const color = entry.target_class === "drone" ? "#fb923c" : dopplerColor(entry.doppler_hz ?? 0);
         const weight = isSelected ? 5 : 3;
 
-        let existing = polyMap.get(key);
+        const existing = polyMap.get(key);
         if (existing) {
           // Update opacity and style
           existing.line.setStyle({ color, weight, opacity });
@@ -723,7 +724,7 @@ export default function LiveAircraftMap() {
 
     animationFrameRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animationFrameRef.current);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);  
 
   /* ── Derived: radar-detected only (exclude pure ADS-B not seen by radar) ── */
   const radarAircraft = useMemo(

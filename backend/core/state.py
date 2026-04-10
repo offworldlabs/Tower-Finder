@@ -6,12 +6,20 @@ lives here so imports are unambiguous and circular-dependency-free.
 
 import asyncio
 import os
+import threading
+import time
 from collections import defaultdict, deque
 
 from analytics.manager import NodeAnalyticsManager
 from analytics.association import InterNodeAssociator
 from chain_of_custody.crypto_backend import SignatureVerifier
 from chain_of_custody.models import NodeIdentity
+from config.constants import (
+    TRACK_HISTORY_MAX,
+    GROUND_TRUTH_MAX,
+    ANOMALY_LOG_MAX,
+    ASSOC_GRID_STEP_KM,
+)
 
 # ── Coverage / analytics persistence ──────────────────────────────────────────
 COVERAGE_STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "coverage_data")
@@ -21,7 +29,7 @@ connected_nodes: dict[str, dict] = {}
 # node_id → {config_hash, config, status, last_heartbeat, peer, is_synthetic, capabilities}
 
 node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR)
-node_associator = InterNodeAssociator(grid_step_km=3.0)
+node_associator = InterNodeAssociator(grid_step_km=ASSOC_GRID_STEP_KM)
 
 # ── Per-node tracker pipelines (lazy-created per connecting node) ─────────────
 node_pipelines: dict = {}  # node_id → PassiveRadarPipeline
@@ -39,12 +47,10 @@ adsb_aircraft: dict[str, dict] = {}
 
 # ── Track history: rolling position buffer per aircraft hex ───────────────────
 track_histories: dict[str, deque] = {}
-TRACK_HISTORY_MAX = 60
 
-# ── Ground truth trails from fleet_orchestrator ──────────────────────────────
+# ── Ground truth trails from fleet_orchestrator ──────────────────────────
 ground_truth_trails: dict[str, deque] = {}
 ground_truth_meta: dict[str, dict] = {}   # hex → {object_type, is_anomalous}
-GROUND_TRUTH_MAX = 120
 
 # ── Chain of Custody ──────────────────────────────────────────────────────────
 sig_verifier = SignatureVerifier()
@@ -55,7 +61,6 @@ iq_commitments: dict[str, list[dict]] = {}
 # ── Anomaly flagging ─────────────────────────────────────────────────────────
 anomaly_log: list[dict] = []               # append-only timestamped anomaly events
 anomaly_hexes: set[str] = set()            # hex codes currently flagged as anomalous
-ANOMALY_LOG_MAX = 500
 
 # ── External ADS-B truth (OpenSky cache) ──────────────────────────────────────
 external_adsb_cache: dict[str, dict] = {}
@@ -87,6 +92,15 @@ solver_queue: _stdlib_queue.Queue = _stdlib_queue.Queue(maxsize=_SOLVER_QUEUE_SI
 
 # Monotonic counter for dropped frames (useful for monitoring)
 frames_dropped: int = 0
+
+# ── Thread safety locks ──────────────────────────────────────────────────────
+connected_nodes_lock = threading.Lock()
+geo_aircraft_lock = threading.Lock()
+anomaly_lock = threading.Lock()
+
+# ── Task health tracking ─────────────────────────────────────────────────────
+task_last_success: dict[str, float] = {}   # task_name → last success epoch
+task_error_counts: dict[str, int] = defaultdict(int)  # task_name → cumulative errors
 
 # ── Accuracy tracking (haversine solver vs ADS-B) ────────────────────────────
 # Rolling buffer of {hex, error_km, position_source, ts} samples.

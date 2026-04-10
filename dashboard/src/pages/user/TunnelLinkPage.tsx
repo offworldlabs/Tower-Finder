@@ -13,7 +13,7 @@ export default function TunnelLinkPage() {
     api.nodes()
       .then((n) => {
         const nodeMap = n.nodes || {};
-        const nodeList = Object.entries(nodeMap).map(([id, info]) => ({
+        const nodeList = Object.entries(nodeMap).map(([id, info]: [string, any]) => ({
           node_id: id,
           ...info,
         }));

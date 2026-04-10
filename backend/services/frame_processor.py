@@ -255,10 +255,11 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
         _mn_anomaly_types.append("supersonic")
     _mn_is_anom = bool(_mn_anomaly_types)
     _mn_hex = f"mn{abs(hash(key)) % 0xFFFF:04x}"
-    if _mn_is_anom:
-        state.anomaly_hexes.add(_mn_hex)
-    else:
-        state.anomaly_hexes.discard(_mn_hex)
+    with state.anomaly_lock:
+        if _mn_is_anom:
+            state.anomaly_hexes.add(_mn_hex)
+        else:
+            state.anomaly_hexes.discard(_mn_hex)
     return {
         "hex": _mn_hex,
         "type": "multinode_solve",
@@ -530,10 +531,11 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         _anom_types = getattr(track, "anomaly_types", set())
         _max_vel = getattr(track, "max_velocity_ms", 0.0)
         _flag_hex = ac_hex
-        if _is_anom:
-            state.anomaly_hexes.add(_flag_hex)
-        else:
-            state.anomaly_hexes.discard(_flag_hex)
+        with state.anomaly_lock:
+            if _is_anom:
+                state.anomaly_hexes.add(_flag_hex)
+            else:
+                state.anomaly_hexes.discard(_flag_hex)
 
         return {
             "hex": ac_hex,
@@ -577,17 +579,20 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     # 1. Pre-aggregated geolocated aircraft (O(active) ≈ 275 instead of
     #    O(pipelines × tracks) ≈ 915 × 2.4).  Stale entries are pruned here.
     stale_geo = []
-    for ac_hex, (track, cfg) in list(state.active_geo_aircraft.items()):
-        if (now - getattr(track, 'wall_clock_ts', 0)) > _STALE_TRACK_S:
-            stale_geo.append(ac_hex)
-            continue
-        if ac_hex in seen_hex:
-            continue
-        seen_hex.add(ac_hex)
-        aircraft.append(_track_entry(ac_hex, track, cfg))
-    for k in stale_geo:
-        state.active_geo_aircraft.pop(k, None)
-        state.anomaly_hexes.discard(k)
+    with state.geo_aircraft_lock:
+        for ac_hex, (track, cfg) in list(state.active_geo_aircraft.items()):
+            if (now - getattr(track, 'wall_clock_ts', 0)) > _STALE_TRACK_S:
+                stale_geo.append(ac_hex)
+                continue
+            if ac_hex in seen_hex:
+                continue
+            seen_hex.add(ac_hex)
+            aircraft.append(_track_entry(ac_hex, track, cfg))
+        for k in stale_geo:
+            state.active_geo_aircraft.pop(k, None)
+        with state.anomaly_lock:
+            for k in stale_geo:
+                state.anomaly_hexes.discard(k)
 
     # 2. Default pipeline — catch any tracks not in the pre-aggregated dict
     for track in list(default_pipeline.geolocated_tracks.values()):
@@ -624,7 +629,8 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             aircraft.append(ac)
     for k in stale_mn:
         _mn_hex = f"mn{abs(hash(k)) % 0xFFFF:04x}"
-        state.anomaly_hexes.discard(_mn_hex)
+        with state.anomaly_lock:
+            state.anomaly_hexes.discard(_mn_hex)
         state.multinode_tracks.pop(k, None)
 
     # 4. ADS-B only — excluded from map per design.
@@ -650,7 +656,8 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     for h in stale_gt:
         state.ground_truth_trails.pop(h, None)
         state.ground_truth_meta.pop(h, None)
-        state.anomaly_hexes.discard(h)
+        with state.anomaly_lock:
+            state.anomaly_hexes.discard(h)
 
     stale_th = [
         h for h, trail in list(state.track_histories.items())

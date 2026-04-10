@@ -16,5 +16,5 @@ fi
 cd /app/backend
 uvicorn main:app --host 127.0.0.1 --port 8000 --workers "${WORKERS}" --log-level warning &
 
-# Start Nginx in foreground
-nginx -g "daemon off;"
+# Start Nginx in foreground (PID in writable location for non-root user)
+nginx -g "daemon off; pid /run/nginx.pid;"

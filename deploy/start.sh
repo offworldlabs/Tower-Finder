@@ -11,9 +11,25 @@ FRAME_QUEUE_SIZE="${FRAME_QUEUE_SIZE:-10000}"
 export FRAME_WORKERS
 export FRAME_QUEUE_SIZE
 
-# Start FastAPI backend
+# Start FastAPI backend with auto-restart supervision
 cd /app/backend
-uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1 --log-level warning &
+(
+  while true; do
+    echo "[supervisor] starting uvicorn..."
+    uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1 --log-level warning
+    EXIT_CODE=$?
+    echo "[supervisor] uvicorn exited with code $EXIT_CODE, restarting in 2s..."
+    sleep 2
+  done
+) &
+UVICORN_PID=$!
 
-# Start Nginx in foreground
-nginx -g "daemon off;"
+# Clean up background supervisor on exit
+cleanup() {
+  kill "$UVICORN_PID" 2>/dev/null
+  wait "$UVICORN_PID" 2>/dev/null
+}
+trap cleanup EXIT TERM INT
+
+# Nginx PID in a writable location (non-root user)
+nginx -g "daemon off; pid /run/nginx.pid;"

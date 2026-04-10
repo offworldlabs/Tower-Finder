@@ -9,7 +9,7 @@ export default function DetectionsPage() {
   const [filterNode, setFilterNode] = useState("");
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
-  const timerRef = useRef();
+  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
   useEffect(() => {
     api.nodes()

@@ -5,7 +5,7 @@ import { useNavigate } from "react-router-dom";
 export default function Header({ title }) {
   const { user, logout } = useAuth();
   const [open, setOpen] = useState(false);
-  const ref = useRef();
+  const ref = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
   useEffect(() => {

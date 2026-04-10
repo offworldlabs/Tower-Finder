@@ -160,7 +160,7 @@ export default function PhysicsSettings() {
       if (ts - last < 500) return; // throttle to 2 Hz React updates
       last = ts;
       const now = Date.now() / 1000;
-      const result = Object.values(fixesRef.current).map((fix) => {
+      const result = Object.values(fixesRef.current).map((fix: any) => {
         const elapsed = Math.min(now - (fix.ts || now), 60);
         const gs_ms = (fix.gs || 0) * KNOTS_TO_MS;
         if (elapsed > 0 && gs_ms > 0) {

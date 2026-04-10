@@ -1,7 +1,7 @@
 export function interpolateBearing(start, end, progress) {
   const a = start ?? 0;
   const b = end ?? a;
-  let delta = ((b - a + 540) % 360) - 180;
+  const delta = ((b - a + 540) % 360) - 180;
   return (a + delta * progress + 360) % 360;
 }
 

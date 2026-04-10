@@ -4,7 +4,7 @@ import { api } from "../../api/client";
 export default function AlertsPage() {
   const [alerts, setAlerts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const timerRef = useRef();
+  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
   const fetchAlerts = () => {
     api.alerts()

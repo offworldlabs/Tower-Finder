@@ -47,7 +47,7 @@ export default function ConfigPage() {
   const towerEntries = isLiveTowers ? Object.entries(towerConfig.towers) : [];
   const filteredTowers = search
     ? towerEntries.filter(([key, t]) =>
-        key.includes(search) || (t.nodes_using || []).some((n) => n.toLowerCase().includes(search.toLowerCase()))
+        key.includes(search) || ((t as any).nodes_using || []).some((n) => n.toLowerCase().includes(search.toLowerCase()))
       )
     : towerEntries;
   const towerTotalPages = Math.ceil(filteredTowers.length / PAGE_SIZE);
@@ -177,7 +177,7 @@ export default function ConfigPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {pagedNodes.map(([id, n]) => (
+                        {pagedNodes.map(([id, n]: [string, any]) => (
                           <tr key={id}>
                             <td style={{ fontFamily: "monospace", fontSize: 12 }}>{id}</td>
                             <td><span className={`badge ${n.status === "active" ? "online" : "offline"}`}>{n.status || "—"}</span></td>
@@ -213,7 +213,7 @@ export default function ConfigPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {pagedTowers.map(([key, t]) => (
+                        {pagedTowers.map(([key, t]: [string, any]) => (
                           <tr key={key}>
                             <td style={{ fontFamily: "monospace", fontSize: 12 }}>{key}</td>
                             <td>{t.lat?.toFixed(4)}</td>

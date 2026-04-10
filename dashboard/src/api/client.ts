@@ -1,6 +1,6 @@
 const BASE = "";
 
-async function request(path, opts = {}) {
+async function request(path, opts: any = {}) {
   const controller = new AbortController();
   const timeoutMs = path === "/api/auth/me" ? 30000 : 10000;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -43,7 +43,7 @@ export const api = {
 
   // Archive
   archive: (limit = 50, offset = 0, nodeId = null) => {
-    const params = new URLSearchParams({ limit, offset });
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     if (nodeId) params.set("node_id", nodeId);
     return request(`/api/data/archive?${params}`);
   },

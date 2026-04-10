@@ -15,6 +15,33 @@ from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex
 
 router = APIRouter()
 
+# ── Task staleness detection ──────────────────────────────────────────────────
+# Each task has an expected interval — if it hasn't reported success within
+# 2× that interval, it's considered stale.
+_TASK_EXPECTED_INTERVAL_S = {
+    "frame_processor": 10,
+    "analytics_refresh": 60,
+    "aircraft_flush": 5,
+    "archive_flush": 120,
+    "reputation_evaluator": 120,
+    "adsb_truth_fetcher": 300,
+    "solver": 120,
+}
+
+
+def _get_stale_tasks() -> list[str]:
+    """Return names of tasks that haven't reported success within their expected interval."""
+    now = time.time()
+    stale = []
+    for task_name, expected_s in _TASK_EXPECTED_INTERVAL_S.items():
+        last = state.task_last_success.get(task_name)
+        if last is None:
+            continue  # task hasn't started yet — not stale
+        if (now - last) > expected_s * 2:
+            stale.append(task_name)
+    return stale
+
+
 # Module-level reference set from main.py at startup
 _default_pipeline = None
 
@@ -110,6 +137,11 @@ def _build_dashboard_data() -> bytes:
             "websocket_broadcast": "ok",
             "aircraft_feed": "ok",
             "chain_of_custody": "ok" if len(state.node_identities) > 0 or total_nodes == 0 else "waiting",
+        },
+        "task_health": {
+            "last_success": dict(state.task_last_success),
+            "error_counts": dict(state.task_error_counts),
+            "stale_tasks": _get_stale_tasks(),
         },
     })
 
@@ -256,22 +288,24 @@ async def push_ground_truth_snapshot(body: dict = Body(...)):
         }
         # Flag anomalous objects and log events
         if ac.get("is_anomalous"):
-            if hex_code not in state.anomaly_hexes:
-                state.anomaly_hexes.add(hex_code)
-                event = {
-                    "hex": hex_code,
-                    "ts": round(ts, 1),
-                    "lat": round(lat, 5),
-                    "lon": round(lon, 5),
-                    "reason": "anomalous_behavior",
-                    "object_type": ac.get("object_type", "unknown"),
-                    "flagged_at": datetime.now(timezone.utc).isoformat(),
-                }
-                state.anomaly_log.append(event)
-                if len(state.anomaly_log) > state.ANOMALY_LOG_MAX:
-                    state.anomaly_log = state.anomaly_log[-state.ANOMALY_LOG_MAX:]
+            with state.anomaly_lock:
+                if hex_code not in state.anomaly_hexes:
+                    state.anomaly_hexes.add(hex_code)
+                    event = {
+                        "hex": hex_code,
+                        "ts": round(ts, 1),
+                        "lat": round(lat, 5),
+                        "lon": round(lon, 5),
+                        "reason": "anomalous_behavior",
+                        "object_type": ac.get("object_type", "unknown"),
+                        "flagged_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    state.anomaly_log.append(event)
+                    if len(state.anomaly_log) > state.ANOMALY_LOG_MAX:
+                        state.anomaly_log = state.anomaly_log[-state.ANOMALY_LOG_MAX:]
         else:
-            state.anomaly_hexes.discard(hex_code)
+            with state.anomaly_lock:
+                state.anomaly_hexes.discard(hex_code)
 
     return {"status": "ok", "received": len(aircraft_list), "tracked_hex": len(state.ground_truth_trails)}
 

@@ -10,7 +10,7 @@ export default function SettingsPage() {
     api.nodes()
       .then((n) => {
         const nodeMap = n.nodes || {};
-        setNodes(Object.entries(nodeMap).map(([id, info]) => ({ node_id: id, ...info })));
+        setNodes(Object.entries(nodeMap).map(([id, info]: [string, any]) => ({ node_id: id, ...info })));
       })
       .catch(console.error);
   }, []);

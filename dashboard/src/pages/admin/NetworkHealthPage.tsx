@@ -14,7 +14,7 @@ export default function NetworkHealthPage() {
   const [history, setHistory] = useState([]);
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
-  const timerRef = useRef();
+  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
   const fetchAll = () => {
     // Fetch fleet dashboard and node data in parallel; if fleetDashboard fails
@@ -29,7 +29,7 @@ export default function NetworkHealthPage() {
         const nodeMap = n.nodes || {};
         // analytics.nodes is {node_id: {trust, metrics, detection_area, reputation, ...}}
         const analyticsMap = an?.nodes || {};
-        const nodeList = Object.entries(nodeMap).map(([id, info]) => {
+        const nodeList = Object.entries(nodeMap).map(([id, info]: [string, any]) => {
           const stats = analyticsMap[id] || {};
           return {
             node_id: id,

@@ -57,15 +57,16 @@ def _register_node():
     """Register radar3 in state as a real (non-synthetic) connected node."""
     import hashlib, json
     cfg_hash = hashlib.sha256(json.dumps(_NODE_CONFIG, sort_keys=True).encode()).hexdigest()[:16]
-    state.connected_nodes[NODE_ID] = {
-        "config_hash": cfg_hash,
-        "config": _NODE_CONFIG,
-        "status": "active",
-        "last_heartbeat": "",
-        "peer": "radar3.retnode.com",
-        "is_synthetic": False,
-        "capabilities": {"adsb_report": True},
-    }
+    with state.connected_nodes_lock:
+        state.connected_nodes[NODE_ID] = {
+            "config_hash": cfg_hash,
+            "config": _NODE_CONFIG,
+            "status": "active",
+            "last_heartbeat": "",
+            "peer": "radar3.retnode.com",
+            "is_synthetic": False,
+            "capabilities": {"adsb_report": True},
+        }
     state.node_analytics.register_node(NODE_ID, _NODE_CONFIG)
     state.node_associator.register_node(NODE_ID, _NODE_CONFIG)
     log.info("blah2_bridge: registered node %s", NODE_ID)
@@ -143,9 +144,10 @@ async def blah2_bridge_task():
                         # Update heartbeat timestamp
                         if NODE_ID in state.connected_nodes:
                             from datetime import datetime, timezone
-                            state.connected_nodes[NODE_ID]["last_heartbeat"] = (
-                                datetime.now(timezone.utc).isoformat()
-                            )
+                            with state.connected_nodes_lock:
+                                state.connected_nodes[NODE_ID]["last_heartbeat"] = (
+                                    datetime.now(timezone.utc).isoformat()
+                                )
                         try:
                             state.frame_queue.put_nowait((NODE_ID, frame))
                         except Exception:
@@ -163,7 +165,8 @@ async def blah2_bridge_task():
                     )
                     # Mark node as degraded but don't remove it
                     if NODE_ID in state.connected_nodes:
-                        state.connected_nodes[NODE_ID]["status"] = "degraded"
+                        with state.connected_nodes_lock:
+                            state.connected_nodes[NODE_ID]["status"] = "degraded"
                     await asyncio.sleep(RECONNECT_DELAY_S)
                     failures = 0
                     # Re-register in case state was reset

@@ -6,11 +6,16 @@ Handles: HELLO → CONFIG → HEARTBEAT → DETECTION → chain-of-custody messa
 import asyncio
 import json
 import logging
+import hmac
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from core import state
 from chain_of_custody.hash_chain import HashChainVerifier, HashChainEntry
+
+# Optional shared token for node authentication. If not set, any node can connect.
+_RADAR_NODE_TOKEN: str | None = os.getenv("RADAR_NODE_TOKEN")
 
 # Dedicated single-thread executor for node registration.
 # Registration is serialized by an internal lock anyway (O(n²) overlap zones),
@@ -34,6 +39,38 @@ SERVER_CAPABILITIES = {
     "analytics": True,
     "coverage_map": True,
 }
+
+
+def _validate_node_config(config: dict) -> str | None:
+    """Return an error message if the node config is invalid, else None."""
+    # Accept both flat lat/lon and rx_lat/rx_lon forms
+    lat = config.get("rx_lat", config.get("lat"))
+    lon = config.get("rx_lon", config.get("lon"))
+    if lat is None or lon is None:
+        return "missing lat/lon (expected rx_lat/rx_lon or lat/lon)"
+    try:
+        lat, lon = float(lat), float(lon)
+    except (TypeError, ValueError):
+        return f"non-numeric lat/lon: {lat!r}, {lon!r}"
+    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+        return f"lat/lon out of range: {lat}, {lon}"
+    bw = config.get("beam_width_deg")
+    if bw is not None:
+        try:
+            bw = float(bw)
+        except (TypeError, ValueError):
+            return f"non-numeric beam_width_deg: {bw!r}"
+        if not (0 < bw <= 360):
+            return f"beam_width_deg out of range: {bw}"
+    mr = config.get("max_range_km")
+    if mr is not None:
+        try:
+            mr = float(mr)
+        except (TypeError, ValueError):
+            return f"non-numeric max_range_km: {mr!r}"
+        if mr <= 0:
+            return f"max_range_km must be positive: {mr}"
+    return None
 
 
 def is_synthetic_node(node_id: str) -> bool:
@@ -85,6 +122,16 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                     version = msg.get("version", "0.0")
                     is_synth = msg.get("is_synthetic", is_synthetic_node(node_id))
                     caps = msg.get("capabilities", {})
+
+                    # Token authentication (if RADAR_NODE_TOKEN is set)
+                    if _RADAR_NODE_TOKEN:
+                        client_token = msg.get("token", "")
+                        if not hmac.compare_digest(client_token, _RADAR_NODE_TOKEN):
+                            logging.warning("Radar TCP: AUTH_FAIL from %s (%s) — bad token", node_id, peer)
+                            await _send_msg(writer, {"type": "AUTH_FAIL", "error": "invalid token"})
+                            writer.close()
+                            return
+
                     logging.info("Radar TCP: HELLO from %s (v%s, synthetic=%s, caps=%s)",
                                  node_id, version, is_synth, list(caps.keys()))
                     continue
@@ -95,16 +142,23 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                         node_id = msg.get("node_id", f"unknown-{peer}")
                     config_hash = msg.get("config_hash", "")
                     config_payload = msg.get("config", {})
+                    # Validate node config before accepting
+                    cfg_err = _validate_node_config(config_payload)
+                    if cfg_err:
+                        logging.warning("Radar TCP: rejected CONFIG from %s: %s", node_id, cfg_err)
+                        await _send_msg(writer, {"type": "CONFIG_NACK", "error": cfg_err})
+                        continue
                     is_synth = msg.get("is_synthetic", is_synthetic_node(node_id))
-                    state.connected_nodes[node_id] = {
-                        "config_hash": config_hash,
-                        "config": config_payload,
-                        "status": "active",
-                        "last_heartbeat": datetime.now(timezone.utc).isoformat(),
-                        "peer": str(peer),
-                        "is_synthetic": is_synth,
-                        "capabilities": msg.get("capabilities", {}),
-                    }
+                    with state.connected_nodes_lock:
+                        state.connected_nodes[node_id] = {
+                            "config_hash": config_hash,
+                            "config": config_payload,
+                            "status": "active",
+                            "last_heartbeat": datetime.now(timezone.utc).isoformat(),
+                            "peer": str(peer),
+                            "is_synthetic": is_synth,
+                            "capabilities": msg.get("capabilities", {}),
+                        }
                     logging.info("Radar TCP: CONFIG from %s (hash=%s, synthetic=%s)",
                                  node_id, config_hash, is_synth)
                     _log_event(
@@ -173,7 +227,8 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
         pass
     finally:
         if node_id and node_id in state.connected_nodes:
-            state.connected_nodes[node_id]["status"] = "disconnected"
+            with state.connected_nodes_lock:
+                state.connected_nodes[node_id]["status"] = "disconnected"
             _log_event(
                 "node",
                 f"Node {node_id} disconnected",
@@ -270,10 +325,11 @@ async def _handle_heartbeat(msg: dict, node_id: str | None, writer):
     hb_hash = msg.get("config_hash", "")
     hb_status = msg.get("status", "active")
     if hb_node_id and hb_node_id in state.connected_nodes:
-        state.connected_nodes[hb_node_id]["last_heartbeat"] = (
-            msg.get("timestamp") or datetime.now(timezone.utc).isoformat()
-        )
-        state.connected_nodes[hb_node_id]["status"] = hb_status
+        with state.connected_nodes_lock:
+            state.connected_nodes[hb_node_id]["last_heartbeat"] = (
+                msg.get("timestamp") or datetime.now(timezone.utc).isoformat()
+            )
+            state.connected_nodes[hb_node_id]["status"] = hb_status
         state.node_analytics.record_heartbeat(hb_node_id)
         stored_hash = state.connected_nodes[hb_node_id].get("config_hash", "")
         if stored_hash and hb_hash != stored_hash:

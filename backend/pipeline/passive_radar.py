@@ -500,7 +500,8 @@ class PassiveRadarPipeline:
                         result.pos_fix_ts = existing.pos_fix_ts
                 self.geolocated_tracks[track_id] = result
                 _hex_key = result.adsb_hex or result.hex_id
-                _state.active_geo_aircraft[_hex_key] = (result, self.config)
+                with _state.geo_aircraft_lock:
+                    _state.active_geo_aircraft[_hex_key] = (result, self.config)
 
             elif adsb_hex:
                 # Solver failed — fall back to ADS-B position so the track
@@ -550,14 +551,16 @@ class PassiveRadarPipeline:
                         # hasn't moved — avoids starving dead-reckoning on the
                         # first frame when multiple nodes see the same aircraft.
                         _hex_key = existing.adsb_hex or existing.hex_id
-                        _prev = _state.active_geo_aircraft.get(_hex_key)
+                        with _state.geo_aircraft_lock:
+                            _prev = _state.active_geo_aircraft.get(_hex_key)
                         if _prev is not None:
                             _pt = _prev[0]
                             if abs(_pt.lat - existing.lat) <= 1e-6 and abs(_pt.lon - existing.lon) <= 1e-6:
                                 existing.pos_fix_ts = _pt.pos_fix_ts
                         self.geolocated_tracks[track_id] = existing
                     _hex_key = existing.adsb_hex or existing.hex_id
-                    _state.active_geo_aircraft[_hex_key] = (existing, self.config)
+                    with _state.geo_aircraft_lock:
+                        _state.active_geo_aircraft[_hex_key] = (existing, self.config)
 
     def process_frame(self, frame: dict):
         """Process a single detection frame {timestamp, delay[], doppler[], snr[], adsb?[]}."""

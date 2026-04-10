@@ -116,7 +116,7 @@ export default function StoragePage() {
                 </tr>
               </thead>
               <tbody>
-                {Object.entries(storage.per_node).map(([nodeId, info]) => (
+                {Object.entries(storage.per_node).map(([nodeId, info]: [string, any]) => (
                   <tr key={nodeId}>
                     <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>{nodeId}</td>
                     <td>{(info.files || 0).toLocaleString()}</td>

@@ -82,20 +82,22 @@ async def ingest_detections(
     frames = body.get("frames", [body]) if "frames" in body else [body]
 
     if node_id not in state.connected_nodes:
-        state.connected_nodes[node_id] = {
-            "config_hash": "",
-            "config": {"node_id": node_id},
-            "status": "active",
-            "last_heartbeat": datetime.now(timezone.utc).isoformat(),
-            "peer": "http",
-            "is_synthetic": is_synthetic_node(node_id),
-            "capabilities": {},
-        }
+        with state.connected_nodes_lock:
+            state.connected_nodes[node_id] = {
+                "config_hash": "",
+                "config": {"node_id": node_id},
+                "status": "active",
+                "last_heartbeat": datetime.now(timezone.utc).isoformat(),
+                "peer": "http",
+                "is_synthetic": is_synthetic_node(node_id),
+                "capabilities": {},
+            }
         state.node_analytics.register_node(node_id, {"node_id": node_id})
         state.node_associator.register_node(node_id, {"node_id": node_id})
     else:
-        state.connected_nodes[node_id]["status"] = "active"
-        state.connected_nodes[node_id]["last_heartbeat"] = datetime.now(timezone.utc).isoformat()
+        with state.connected_nodes_lock:
+            state.connected_nodes[node_id]["status"] = "active"
+            state.connected_nodes[node_id]["last_heartbeat"] = datetime.now(timezone.utc).isoformat()
 
     processed = 0
     for frame in frames:
@@ -135,20 +137,22 @@ async def ingest_detections_bulk(
         frames = entry.get("frames", [])
 
         if node_id not in state.connected_nodes:
-            state.connected_nodes[node_id] = {
-                "config_hash": "",
-                "config": entry.get("config", {"node_id": node_id}),
-                "status": "active",
-                "last_heartbeat": datetime.now(timezone.utc).isoformat(),
-                "peer": "http-bulk",
-                "is_synthetic": is_synthetic_node(node_id),
-                "capabilities": {},
-            }
+            with state.connected_nodes_lock:
+                state.connected_nodes[node_id] = {
+                    "config_hash": "",
+                    "config": entry.get("config", {"node_id": node_id}),
+                    "status": "active",
+                    "last_heartbeat": datetime.now(timezone.utc).isoformat(),
+                    "peer": "http-bulk",
+                    "is_synthetic": is_synthetic_node(node_id),
+                    "capabilities": {},
+                }
             state.node_analytics.register_node(node_id, entry.get("config", {"node_id": node_id}))
             registered += 1
         else:
-            state.connected_nodes[node_id]["status"] = "active"
-            state.connected_nodes[node_id]["last_heartbeat"] = datetime.now(timezone.utc).isoformat()
+            with state.connected_nodes_lock:
+                state.connected_nodes[node_id]["status"] = "active"
+                state.connected_nodes[node_id]["last_heartbeat"] = datetime.now(timezone.utc).isoformat()
 
         for frame in frames:
             if "timestamp" not in frame:

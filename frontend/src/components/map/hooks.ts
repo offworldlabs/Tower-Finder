@@ -304,8 +304,8 @@ export function useNodes() {
         for (const [id, info] of Object.entries(data.nodes || {})) {
           // Skip synthetic nodes on map.retina.fm
           if (isLiveDomain && id.startsWith("synth-")) continue;
-          const da = info.detection_area;
-          const ec = info.empirical_coverage;
+          const da = (info as any).detection_area;
+          const ec = (info as any).empirical_coverage;
           if (da) {
             // Deterministic privacy fuzz for RX location — same node_id always gets the
             // same offset so the map is stable, but the true operator location cannot be

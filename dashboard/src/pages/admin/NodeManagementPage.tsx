@@ -16,7 +16,7 @@ export default function NodeManagementPage() {
     Promise.all([api.nodes(), api.analytics()])
       .then(([n, a]) => {
         const nodeMap = n.nodes || {};
-        const nodeList = Object.entries(nodeMap).map(([id, info]) => ({ node_id: id, ...info }));
+        const nodeList = Object.entries(nodeMap).map(([id, info]: [string, any]) => ({ node_id: id, ...info }));
         setNodes(nodeList);
         setAnalytics(a);
       })

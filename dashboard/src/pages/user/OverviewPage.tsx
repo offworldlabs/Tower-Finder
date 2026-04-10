@@ -19,7 +19,7 @@ export default function OverviewPage() {
         const nodeMap = n.nodes || {};
         // a.nodes is a dict {node_id: {trust, metrics, detection_area, reputation}}
         const analyticsMap = a?.nodes || {};
-        const nodeList = Object.entries(nodeMap).map(([id, info]) => ({
+        const nodeList = Object.entries(nodeMap).map(([id, info]: [string, any]) => ({
           node_id: id,
           ...info,
           _analytics: analyticsMap[id] || {},

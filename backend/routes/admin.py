@@ -23,6 +23,29 @@ from core.auth import require_admin, get_all_users, update_user_role, get_curren
 from core import state
 
 logger = logging.getLogger(__name__)
+
+# ── Task staleness detection ──────────────────────────────────────────────────
+_TASK_EXPECTED_INTERVAL_S = {
+    "frame_processor": 10,
+    "analytics_refresh": 60,
+    "aircraft_flush": 5,
+    "archive_flush": 120,
+    "reputation_evaluator": 120,
+    "adsb_truth_fetcher": 300,
+    "solver": 120,
+}
+
+
+def _get_stale_tasks() -> list[str]:
+    now = time.time()
+    stale = []
+    for task_name, expected_s in _TASK_EXPECTED_INTERVAL_S.items():
+        last = state.task_last_success.get(task_name)
+        if last is None:
+            continue
+        if (now - last) > expected_s * 2:
+            stale.append(task_name)
+    return stale
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 # ── Persistent event log ─────────────────────────────────────────────────────
@@ -78,7 +101,9 @@ def check_node_health():
         return
     _last_health_check = now
 
-    for node_id, info in list(state.connected_nodes.items()):
+    with state.connected_nodes_lock:
+        snapshot = list(state.connected_nodes.items())
+    for node_id, info in snapshot:
         hb = info.get("last_heartbeat")
         if not hb:
             continue
@@ -89,7 +114,8 @@ def check_node_health():
         except Exception:
             continue
         if age_s > _OFFLINE_THRESHOLD_S and info.get("status") != "disconnected":
-            info["status"] = "disconnected"
+            with state.connected_nodes_lock:
+                info["status"] = "disconnected"
             log_event(
                 "node",
                 f"Node {node_id} went offline (no heartbeat for {int(age_s)}s)",
@@ -142,7 +168,9 @@ async def get_node_config(_admin=Depends(require_admin)):
     if _nodes_config_cache is not None and now - _nodes_config_cache[0] < _CONFIG_LIVE_CACHE_TTL:
         return Response(content=_nodes_config_cache[1], media_type="application/json")
     nodes_cfg = {}
-    for nid, info in list(state.connected_nodes.items()):
+    with state.connected_nodes_lock:
+        _nodes_items = list(state.connected_nodes.items())
+    for nid, info in _nodes_items:
         cfg = info.get("config", {})
         nodes_cfg[nid] = {
             "name": cfg.get("name", nid),
@@ -169,7 +197,9 @@ async def get_tower_config(_admin=Depends(require_admin)):
     if _towers_config_cache is not None and now - _towers_config_cache[0] < _CONFIG_LIVE_CACHE_TTL:
         return Response(content=_towers_config_cache[1], media_type="application/json")
     towers = {}
-    for nid, info in list(state.connected_nodes.items()):
+    with state.connected_nodes_lock:
+        _tower_items = list(state.connected_nodes.items())
+    for nid, info in _tower_items:
         cfg = info.get("config", {})
         tx_lat = cfg.get("tx_lat")
         tx_lon = cfg.get("tx_lon")
@@ -426,3 +456,23 @@ async def user_alerts(_user=Depends(get_current_user)):
         or e.get("category") in ("node", "config", "system")
     ]
     return visible[:100]
+
+
+@router.get("/metrics")
+async def system_metrics(_user=Depends(require_admin)):
+    """Operational metrics: task health, error counts, queue depths."""
+    return {
+        "task_last_success": dict(state.task_last_success),
+        "task_error_counts": dict(state.task_error_counts),
+        "frame_queue_depth": state.frame_queue.qsize(),
+        "frame_queue_max": state.frame_queue.maxsize,
+        "frames_dropped": state.frames_dropped,
+        "solver_queue_depth": state.solver_queue.qsize(),
+        "connected_nodes": len([n for n in list(state.connected_nodes.values()) if n.get("status") == "active"]),
+        "active_geo_aircraft": len(state.active_geo_aircraft),
+        "multinode_tracks": len(state.multinode_tracks),
+        "adsb_aircraft": len(state.adsb_aircraft),
+        "ws_clients": len(state.ws_clients),
+        "ws_live_clients": len(state.ws_live_clients),
+        "stale_tasks": _get_stale_tasks(),
+    }

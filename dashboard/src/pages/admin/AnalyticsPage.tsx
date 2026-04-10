@@ -15,7 +15,7 @@ export default function AnalyticsPage() {
   const [loading, setLoading] = useState(true);
   const [trend, setTrend] = useState([]);
   const [overlapPage, setOverlapPage] = useState(0);
-  const timerRef = useRef();
+  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
   const fetchData = () => {
     Promise.all([api.analytics(), api.overlaps()])
