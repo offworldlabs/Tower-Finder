@@ -60,6 +60,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Fetch tar1090 static assets
+        run: git clone --depth 1 https://github.com/wiedehopf/tar1090.git tar1090
       - run: docker build -t tower-finder:ci .
 
   deploy:
