@@ -83,12 +83,15 @@ jobs:
             cd /opt/tower-finder
             git pull origin main
             docker compose up -d --build
-            # Wait for uvicorn to start
-            sleep 10
-            # Smoke test: health endpoint must return 200
-            curl -sf http://localhost:8000/api/health > /dev/null || {
-              echo "Health check failed after deploy"
-              docker compose logs --tail=50
-              exit 1
-            }
-            echo "Deploy successful"
+            # Wait for backend to become healthy (up to 60s)
+            for i in $(seq 1 12); do
+              if curl -sf http://localhost:8000/api/health > /dev/null 2>&1; then
+                echo "Deploy successful (healthy after ~$((i*5))s)"
+                exit 0
+              fi
+              echo "Waiting for health check... attempt $i/12"
+              sleep 5
+            done
+            echo "Health check failed after 60s"
+            docker compose logs --tail=50
+            exit 1

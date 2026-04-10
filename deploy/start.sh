@@ -31,5 +31,5 @@ cleanup() {
 }
 trap cleanup EXIT TERM INT
 
-# Nginx PID in a writable location (non-root user)
-nginx -g "daemon off; pid /run/nginx.pid;"
+# Nginx foreground (pid already set in /etc/nginx/nginx.conf)
+nginx -g "daemon off;"
