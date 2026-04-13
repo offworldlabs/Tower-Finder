@@ -9,9 +9,9 @@ from fastapi import APIRouter, Body, HTTPException, Header
 from fastapi.responses import Response
 
 from core import state
-from chain_of_custody.crypto_backend import SignatureVerifier
-from chain_of_custody.hash_chain import HashChainVerifier, HashChainEntry
-from chain_of_custody.models import NodeIdentity
+from retina_custody.crypto_backend import SignatureVerifier
+from retina_custody.hash_chain import HashChainVerifier, HashChainEntry
+from retina_custody.models import NodeIdentity
 
 router = APIRouter()
 

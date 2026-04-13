@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from core import state
-from chain_of_custody.hash_chain import HashChainVerifier, HashChainEntry
+from retina_custody.hash_chain import HashChainVerifier, HashChainEntry
 
 # Optional shared token for node authentication. If not set, any node can connect.
 _RADAR_NODE_TOKEN: str | None = os.getenv("RADAR_NODE_TOKEN")
@@ -242,7 +242,7 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
 # ── Sub-handlers (keep handle_tcp_client readable) ────────────────────────────
 
 async def _handle_register_key(msg: dict, node_id: str | None, writer):
-    from chain_of_custody.models import NodeIdentity
+    from retina_custody.models import NodeIdentity
 
     key_node_id = msg.get("node_id", node_id)
     pub_key_pem = msg.get("public_key_pem", "")

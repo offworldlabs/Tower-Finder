@@ -6,10 +6,10 @@ import os
 
 import pytest
 
-from chain_of_custody.crypto_backend import SoftwareCryptoBackend, SignatureVerifier
-from chain_of_custody.packet_signer import PacketSigner, PacketVerifier, canonicalize
-from chain_of_custody.hash_chain import HashChainBuilder, HashChainVerifier
-from chain_of_custody.models import SignedPacket, HashChainEntry, NodeIdentity
+from retina_custody.crypto_backend import SoftwareCryptoBackend, SignatureVerifier
+from retina_custody.packet_signer import PacketSigner, PacketVerifier, canonicalize
+from retina_custody.hash_chain import HashChainBuilder, HashChainVerifier
+from retina_custody.models import SignedPacket, HashChainEntry, NodeIdentity
 
 
 @pytest.fixture()

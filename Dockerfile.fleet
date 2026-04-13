@@ -6,6 +6,11 @@ WORKDIR /app
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Extracted packages
+COPY libs/retina-custody/ ./libs/retina-custody/
+COPY libs/retina-simulation/ ./libs/retina-simulation/
+RUN pip install --no-cache-dir ./libs/retina-custody ./libs/retina-simulation
+
 # Copy backend code (fleet orchestrator + simulation world + fleet generator)
 COPY backend/ ./backend/
 

@@ -42,9 +42,9 @@ sys.stdout.reconfigure(line_buffering=True)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from simulation.world import SimulationWorld, NodeConfig
-from chain_of_custody.crypto_backend import SoftwareCryptoBackend
-from chain_of_custody.packet_signer import PacketSigner
+from retina_simulation.world import SimulationWorld, NodeConfig
+from retina_custody.crypto_backend import SoftwareCryptoBackend
+from retina_custody.packet_signer import PacketSigner
 
 # Max concurrent HTTP posts (avoids overwhelming server / OS fd limits)
 CONCURRENCY = 20

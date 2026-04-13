@@ -30,7 +30,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Submodule packages (retina_geolocator + retina_tracker)
 COPY libs/retina-geolocator/ ./libs/retina-geolocator/
 COPY libs/retina-tracker/ ./libs/retina-tracker/
-RUN pip install --no-cache-dir ./libs/retina-geolocator ./libs/retina-tracker
+COPY libs/retina-custody/ ./libs/retina-custody/
+COPY libs/retina-simulation/ ./libs/retina-simulation/
+RUN pip install --no-cache-dir ./libs/retina-geolocator ./libs/retina-tracker ./libs/retina-custody ./libs/retina-simulation
 
 # Backend code
 COPY backend/ ./backend/

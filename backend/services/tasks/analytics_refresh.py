@@ -328,7 +328,7 @@ def _refresh_radar3_verification():
 def _ensure_custody_data():
     """Auto-register connected nodes in chain-of-custody if they lack entries."""
     from datetime import datetime, timezone
-    from chain_of_custody.models import NodeIdentity
+    from retina_custody.models import NodeIdentity
 
     now_iso = datetime.now(timezone.utc).isoformat()
     hour_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:00:00Z")

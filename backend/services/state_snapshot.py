@@ -22,7 +22,7 @@ _SAVE_INTERVAL_S = 300  # 5 minutes
 def save_snapshot() -> None:
     """Serialise high-value state to disk as JSON."""
     from analytics.trust import AdsReportEntry, TrustScoreState
-    from chain_of_custody.models import NodeIdentity
+    from retina_custody.models import NodeIdentity
 
     trust = {}
     for nid, ts in state.node_analytics.trust_scores.items():
@@ -65,7 +65,7 @@ def restore_snapshot() -> bool:
     """Load state from disk snapshot. Returns True if restored, False if no snapshot found."""
     from analytics.trust import AdsReportEntry, TrustScoreState
     from analytics.reputation import NodeReputation
-    from chain_of_custody.models import NodeIdentity
+    from retina_custody.models import NodeIdentity
 
     if not os.path.exists(_SNAPSHOT_PATH):
         logging.info("No state snapshot found at %s", _SNAPSHOT_PATH)

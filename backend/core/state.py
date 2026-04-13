@@ -12,8 +12,8 @@ from collections import defaultdict, deque
 
 from analytics.manager import NodeAnalyticsManager
 from analytics.association import InterNodeAssociator
-from chain_of_custody.crypto_backend import SignatureVerifier
-from chain_of_custody.models import NodeIdentity
+from retina_custody.crypto_backend import SignatureVerifier
+from retina_custody.models import NodeIdentity
 from config.constants import (
     TRACK_HISTORY_MAX,
     GROUND_TRUTH_MAX,

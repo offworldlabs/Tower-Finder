@@ -4,3 +4,9 @@
 [submodule "libs/retina-tracker"]
 	path = libs/retina-tracker
 	url = https://github.com/offworldlabs/retina-tracker.git
+[submodule "libs/retina-custody"]
+	path = libs/retina-custody
+	url = https://github.com/offworldlabs/retina-custody.git
+[submodule "libs/retina-simulation"]
+	path = libs/retina-simulation
+        url = https://github.com/offworldlabs/retina-simulation.git
