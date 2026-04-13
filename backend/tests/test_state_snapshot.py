@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
-from analytics.trust import AdsReportEntry, TrustScoreState
-from analytics.reputation import NodeReputation
+from retina_analytics.trust import AdsReportEntry, TrustScoreState
+from retina_analytics.reputation import NodeReputation
 from retina_custody.models import NodeIdentity
 from services.state_snapshot import save_snapshot, restore_snapshot, _SNAPSHOT_PATH
 

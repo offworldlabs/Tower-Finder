@@ -5,7 +5,7 @@ from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import Response
 
 from core import state
-from analytics.trust import AdsReportEntry
+from retina_analytics.trust import AdsReportEntry
 
 router = APIRouter()
 

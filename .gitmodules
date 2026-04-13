@@ -10,3 +10,6 @@
 [submodule "libs/retina-simulation"]
 	path = libs/retina-simulation
         url = https://github.com/offworldlabs/retina-simulation.git
+[submodule "libs/retina-analytics"]
+	path = libs/retina-analytics
+	url = https://github.com/offworldlabs/retina-analytics.git

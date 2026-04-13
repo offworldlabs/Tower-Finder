@@ -176,7 +176,7 @@ class TestReputationEvaluations:
     """Test NodeReputation evaluation methods for trust, heartbeat, detection rate."""
 
     def test_low_trust_blocks_node(self):
-        from analytics.reputation import NodeReputation
+        from retina_analytics.reputation import NodeReputation
         rep = NodeReputation(node_id="bad-1")
         # Critically low trust → penalty → eventually blocked
         for _ in range(20):
@@ -185,14 +185,14 @@ class TestReputationEvaluations:
         assert rep.reputation < 0.2
 
     def test_high_trust_rewards_node(self):
-        from analytics.reputation import NodeReputation
+        from retina_analytics.reputation import NodeReputation
         rep = NodeReputation(node_id="good-1", reputation=0.5)
         for _ in range(50):
             rep.evaluate_trust(0.9)  # above 0.7
         assert rep.reputation > 0.5  # increased
 
     def test_stale_heartbeat_penalty(self):
-        from analytics.reputation import NodeReputation
+        from retina_analytics.reputation import NodeReputation
         import time
         rep = NodeReputation(node_id="stale-1")
         # Last heartbeat 600s ago (> 300s threshold)
@@ -202,13 +202,13 @@ class TestReputationEvaluations:
         assert "stale" in rep.penalties[0]["reason"].lower()
 
     def test_high_detection_rate_penalty(self):
-        from analytics.reputation import NodeReputation
+        from retina_analytics.reputation import NodeReputation
         rep = NodeReputation(node_id="flood-1")
         rep.evaluate_detection_rate(100.0)  # >> 50 threshold
         assert len(rep.penalties) == 1
 
     def test_unblock_resets_reputation_to_0_3(self):
-        from analytics.reputation import NodeReputation
+        from retina_analytics.reputation import NodeReputation
         rep = NodeReputation(node_id="x", reputation=0.0, blocked=True, block_reason="test")
         rep.unblock()
         assert rep.blocked is False
@@ -216,7 +216,7 @@ class TestReputationEvaluations:
         assert rep.block_reason == ""
 
     def test_penalty_cap(self):
-        from analytics.reputation import NodeReputation
+        from retina_analytics.reputation import NodeReputation
         rep = NodeReputation(node_id="cap", max_penalties=5)
         for i in range(10):
             rep.apply_penalty(0.01, f"penalty {i}")
@@ -224,25 +224,25 @@ class TestReputationEvaluations:
         assert rep.penalties[-1]["reason"] == "penalty 9"  # newest kept
 
     def test_reputation_never_negative(self):
-        from analytics.reputation import NodeReputation
+        from retina_analytics.reputation import NodeReputation
         rep = NodeReputation(node_id="floor")
         rep.apply_penalty(2.0, "huge penalty")
         assert rep.reputation == 0.0
 
     def test_reputation_never_above_one(self):
-        from analytics.reputation import NodeReputation
+        from retina_analytics.reputation import NodeReputation
         rep = NodeReputation(node_id="ceil", reputation=0.99)
         rep.apply_reward(0.5)
         assert rep.reputation == 1.0
 
     def test_blocked_node_no_rewards(self):
-        from analytics.reputation import NodeReputation
+        from retina_analytics.reputation import NodeReputation
         rep = NodeReputation(node_id="b", reputation=0.1, blocked=True)
         rep.apply_reward(0.5)
         assert rep.reputation == 0.1  # unchanged
 
     def test_neighbour_consistency_penalty(self):
-        from analytics.reputation import NodeReputation
+        from retina_analytics.reputation import NodeReputation
         rep = NodeReputation(node_id="inc")
         # Trusted neighbour (0.8) but very low overlap (0.01) → suspicious
         rep.evaluate_neighbour_consistency(overlap_ratio=0.01, neighbour_trust=0.8)
@@ -250,7 +250,7 @@ class TestReputationEvaluations:
         assert "inconsistent" in rep.penalties[0]["reason"].lower()
 
     def test_summary_shape(self):
-        from analytics.reputation import NodeReputation
+        from retina_analytics.reputation import NodeReputation
         rep = NodeReputation(node_id="summary-test")
         rep.apply_penalty(0.1, "test")
         s = rep.summary()

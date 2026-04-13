@@ -10,8 +10,8 @@ import threading
 import time
 from collections import defaultdict, deque
 
-from analytics.manager import NodeAnalyticsManager
-from analytics.association import InterNodeAssociator
+from retina_analytics.manager import NodeAnalyticsManager
+from retina_analytics.association import InterNodeAssociator
 from retina_custody.crypto_backend import SignatureVerifier
 from retina_custody.models import NodeIdentity
 from config.constants import (
