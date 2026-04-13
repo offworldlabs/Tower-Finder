@@ -23,7 +23,7 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r requirements.txt
       - run: pip install ../libs/retina-geolocator ../libs/retina-tracker
-      - run: pytest tests/ -v --tb=short
+      - run: pytest tests/ -v --tb=short -m "not external"
 
   frontend-build:
     runs-on: ubuntu-latest

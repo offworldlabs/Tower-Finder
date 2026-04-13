@@ -5,14 +5,9 @@ aircraft JSON path in frame_processor.py.
 These tests run standalone (no live server required).
 """
 
-import sys
-import os
 import math
 
 import pytest
-
-# Ensure backend package is importable when run from the backend/ dir
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from services.frame_processor import _build_single_node_arc, _bearing_deg, _enu_to_lla
 

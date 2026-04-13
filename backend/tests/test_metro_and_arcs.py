@@ -2,12 +2,7 @@
 Unit tests for metro filtering and orchestrator helpers.
 """
 
-import sys
-import os
-
 import pytest
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from simulation.orchestrator import _KNOWN_METROS, _parse_metro_areas
 

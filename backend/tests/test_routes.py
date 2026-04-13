@@ -1,5 +1,6 @@
 """Tests for HTTP API routes — health, detections, config, metrics, WebSocket auth."""
 
+import json
 import os
 import time
 
@@ -179,3 +180,153 @@ class TestWebSocketAuth:
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "secret-token-123")
         with client.websocket_connect("/ws/aircraft?token=secret-token-123") as ws:
             pass
+
+
+# ── Config (detailed) ────────────────────────────────────────────────────────
+
+class TestConfigDetailed:
+    def test_config_has_ranking(self, client):
+        r = client.get("/api/config")
+        cfg = r.json()
+        assert "ranking" in cfg
+        assert "band_priority" in cfg["ranking"]
+        assert "distance_classes" in cfg["ranking"]
+        assert "sort_order" in cfg["ranking"]
+
+    def test_config_has_receiver(self, client):
+        r = client.get("/api/config")
+        assert "receiver" in r.json()
+
+    def test_config_has_broadcast_bands(self, client):
+        r = client.get("/api/config")
+        assert "broadcast_bands" in r.json()
+
+
+# ── Config PUT + reload ──────────────────────────────────────────────────────
+
+class TestConfigReload:
+    def test_put_and_reload(self, client):
+        r = client.get("/api/config")
+        cfg = r.json()
+
+        new_cfg = json.loads(json.dumps(cfg))
+        new_cfg["ranking"]["band_priority"]["FM"] = 0
+        new_cfg["ranking"]["band_priority"]["VHF"] = 2
+
+        r2 = client.put("/api/config", json=new_cfg)
+        assert r2.status_code == 200
+        assert r2.json().get("status") == "updated"
+
+        reloaded = client.get("/api/config").json()
+        assert reloaded["ranking"]["band_priority"]["FM"] == 0
+        assert reloaded["ranking"]["band_priority"]["VHF"] == 2
+
+        # Restore original
+        r3 = client.put("/api/config", json=cfg)
+        assert r3.status_code == 200
+        restored = client.get("/api/config").json()
+        assert restored["ranking"]["band_priority"]["VHF"] == cfg["ranking"]["band_priority"]["VHF"]
+
+
+# ── Elevation ─────────────────────────────────────────────────────────────────
+
+class TestElevation:
+    @pytest.mark.external
+    def test_sydney_elevation(self, client):
+        r = client.get("/api/elevation", params={"lat": -33.8688, "lon": 151.2093})
+        assert r.status_code == 200
+        body = r.json()
+        assert "elevation_m" in body
+        assert isinstance(body["elevation_m"], (int, float))
+        assert 0 <= body["elevation_m"] <= 200
+
+    @pytest.mark.external
+    def test_denver_elevation(self, client):
+        r = client.get("/api/elevation", params={"lat": 39.7392, "lon": -104.9903})
+        assert r.status_code == 200
+        assert r.json()["elevation_m"] > 1500
+
+    def test_invalid_lat_returns_422(self, client):
+        r = client.get("/api/elevation", params={"lat": 999, "lon": 0})
+        assert r.status_code == 422
+
+
+# ── Towers parameter validation ──────────────────────────────────────────────
+
+class TestTowersValidation:
+    def test_missing_lat_lon_returns_422(self, client):
+        r = client.get("/api/towers")
+        assert r.status_code == 422
+
+    def test_lat_out_of_range_returns_422(self, client):
+        r = client.get("/api/towers", params={"lat": 999, "lon": 0})
+        assert r.status_code == 422
+
+    def test_invalid_source_returns_400(self, client):
+        r = client.get("/api/towers", params={"lat": 0, "lon": 0, "source": "xx"})
+        assert r.status_code == 400
+
+
+# ── Tower usage statistics ───────────────────────────────────────────────────
+
+class TestTowerStats:
+    @pytest.fixture(autouse=True)
+    def cleanup_stats(self):
+        yield
+        stats_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tower_stats.json")
+        if os.path.exists(stats_path):
+            os.remove(stats_path)
+
+    def test_post_selection(self, client):
+        r = client.post("/api/stats/tower-selection", json={
+            "node_id": "test-node-1",
+            "tower_callsign": "ABC7",
+            "tower_frequency_mhz": 177.5,
+            "tower_lat": -33.8,
+            "tower_lon": 151.2,
+            "node_lat": -33.9,
+            "node_lon": 151.1,
+            "source": "au",
+        })
+        assert r.status_code == 200
+        assert r.json()["status"] == "recorded"
+
+    def test_missing_fields_returns_400(self, client):
+        r = client.post("/api/stats/tower-selection", json={"node_id": "x"})
+        assert r.status_code == 400
+
+    def test_get_summary(self, client):
+        # Record two selections first
+        for nid in ("test-s-1", "test-s-2"):
+            client.post("/api/stats/tower-selection", json={
+                "node_id": nid,
+                "tower_callsign": "ABC7",
+                "tower_frequency_mhz": 177.5,
+                "tower_lat": -33.8,
+                "tower_lon": 151.2,
+                "node_lat": -34.0,
+                "node_lon": 151.0,
+                "source": "au",
+            })
+        r = client.get("/api/stats/summary")
+        assert r.status_code == 200
+        s = r.json()
+        assert "total_selections" in s
+        assert "unique_towers" in s
+        assert isinstance(s.get("tower_usage"), list)
+        assert s["total_selections"] >= 2
+
+
+# ── Archive API ──────────────────────────────────────────────────────────────
+
+class TestArchiveAPI:
+    def test_archive_list(self, client):
+        r = client.get("/api/data/archive")
+        assert r.status_code == 200
+        body = r.json()
+        assert "files" in body
+        assert "count" in body
+
+    def test_missing_archive_file_returns_404(self, client):
+        r = client.get("/api/data/archive/nonexistent/path.json")
+        assert r.status_code == 404

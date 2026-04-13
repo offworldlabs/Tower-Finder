@@ -1,3 +1,7 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "external: requires external API (open-meteo.com)",
+    "asyncio: mark test as async (requires pytest-asyncio)",
+]

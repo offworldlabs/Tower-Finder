@@ -2,15 +2,11 @@
 Unit tests for the adsb.lol client and metro filtering logic.
 """
 
-import sys
-import os
 import json
 import time
 from unittest.mock import patch, MagicMock
 
 import pytest
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from clients.adsb_lol import AdsbLolClient
 
