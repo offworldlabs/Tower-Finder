@@ -389,18 +389,11 @@ async def storage_stats(_admin=Depends(require_admin)):
         _admin_executor, _scan_archive_dir, archive_dir
     )
 
-    b2_status = "not_configured"
-    b2_key_id = os.getenv("B2_KEY_ID", "")
-    if b2_key_id:
-        b2_status = "configured"
-
     result = {
         "archive_files": total_files,
         "archive_bytes": total_bytes,
         "archive_mb": round(total_bytes / (1024 * 1024), 2),
         "per_node": per_node,
-        "b2_status": b2_status,
-        "b2_bucket": os.getenv("B2_BUCKET_NAME", ""),
     }
     _storage_cache = result
     _storage_cache_ts = now

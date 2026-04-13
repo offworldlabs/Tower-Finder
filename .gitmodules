@@ -1,0 +1,6 @@
+[submodule "libs/retina-geolocator"]
+	path = libs/retina-geolocator
+	url = https://github.com/offworldlabs/retina-geolocator.git
+[submodule "libs/retina-tracker"]
+	path = libs/retina-tracker
+	url = https://github.com/offworldlabs/retina-tracker.git

@@ -217,9 +217,10 @@ class PassiveRadarPipeline:
         # Set up retina-tracker with in-memory event writer
         self.event_writer = InMemoryEventWriter()
 
-        # Load tracker config
+        # Load tracker config (from installed package location)
+        import retina_tracker as _rt_pkg
         tracker_config_path = os.path.join(
-            self._BACKEND_DIR, "retina_tracker", "config.yaml"
+            os.path.dirname(_rt_pkg.__file__), "config.yaml"
         )
         tracker_config = {}
         if os.path.exists(tracker_config_path):
@@ -277,9 +278,10 @@ class PassiveRadarPipeline:
         self.tx_enu = (tx_enu_m[0] / 1000, tx_enu_m[1] / 1000, tx_enu_m[2] / 1000)
         self.rx_enu = (0, 0, 0)
 
-        # Load geolocator config
+        # Load geolocator config (from installed package location)
+        import retina_geolocator as _rg_pkg
         geo_config_path = os.path.join(
-            self._BACKEND_DIR, "retina_geolocator", "geolocator_config.yml"
+            os.path.dirname(_rg_pkg.__file__), "geolocator_config.yml"
         )
         if os.path.exists(geo_config_path):
             self.geo_config = load_geolocator_config(geo_config_path)

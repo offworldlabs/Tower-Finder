@@ -91,9 +91,10 @@ if [ -d "$APP_DIR/.git" ]; then
     echo "  Repo exists, pulling latest..."
     cd "$APP_DIR"
     git pull
+    git submodule update --init --recursive
 else
     echo "  Cloning repository..."
-    git clone https://github.com/pavlodef/Tower-Finder.git "$APP_DIR"
+    git clone --recursive https://github.com/pavlodef/Tower-Finder.git "$APP_DIR"
     cd "$APP_DIR"
 fi
 
@@ -140,15 +141,6 @@ systemctl restart docker
 # Restart app after Docker restart
 cd "$APP_DIR"
 docker compose up -d
-
-# ── 6. Setup nightly backup timer ─────────────────────────────────────────────
-echo ""
-echo "→ Installing nightly backup timer..."
-cp "$APP_DIR/deploy/retina-backup.service" /etc/systemd/system/
-cp "$APP_DIR/deploy/retina-backup.timer" /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now retina-backup.timer
-echo "  ✓ Backup timer installed (daily at 03:00 UTC)"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""

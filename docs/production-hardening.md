@@ -203,14 +203,6 @@ self-healing.
 **Priority:** medium
 **Effort:** small (~20 lines)
 
-### 5.4 Add offsite data backup
-
-Coverage data, detection archives, and user accounts currently live on a
-single server disk. A nightly sync to cloud storage is worth adding \u2014
-the B2 client is already in the codebase, so this is mostly configuration.
-
-**Priority:** medium
-**Effort:** small (cron job + ~50 lines)
 
 ---
 
@@ -274,7 +266,6 @@ Week 2  — Reliability + visibility
 Week 3  — Validation + infrastructure
   [2.5] Validate node configuration on connect
   [5.3] Process supervisor in container
-  [5.4] Nightly data backup
   [4.1] Consolidate tuning constants
 
 Month 2 — Code quality + testing

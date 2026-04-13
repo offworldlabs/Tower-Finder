@@ -9,9 +9,23 @@ Given geographic coordinates, the system queries the [Maprad.io](https://maprad.
 ```
 backend/          Python API (FastAPI)
 frontend/         React SPA (Vite)
+dashboard/        Admin dashboard (React/Vite)
+libs/             Git submodules
+  retina-geolocator/   Bistatic passive radar geolocation solver
+  retina-tracker/      Multi-target Kalman tracker with anomaly detection
 ```
 
 ## Quick Start
+
+### Clone (with submodules)
+
+```bash
+git clone --recursive https://github.com/offworldlabs/Tower-Finder.git
+cd Tower-Finder
+
+# If already cloned without --recursive:
+git submodule update --init --recursive
+```
 
 ### Backend
 
@@ -19,6 +33,7 @@ frontend/         React SPA (Vite)
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+pip install -e ../libs/retina-geolocator -e ../libs/retina-tracker
 cp .env.example .env    # add your Maprad.io API key
 uvicorn main:app --reload
 ```

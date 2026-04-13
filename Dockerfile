@@ -27,6 +27,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Submodule packages (retina_geolocator + retina_tracker)
+COPY libs/retina-geolocator/ ./libs/retina-geolocator/
+COPY libs/retina-tracker/ ./libs/retina-tracker/
+RUN pip install --no-cache-dir ./libs/retina-geolocator ./libs/retina-tracker
+
 # Backend code
 COPY backend/ ./backend/
 

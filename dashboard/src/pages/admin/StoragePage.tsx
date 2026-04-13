@@ -74,33 +74,6 @@ export default function StoragePage() {
           </div>
         </div>
 
-        <div className="card">
-          <div className="card-header"><h3>B2 Cloud Storage</h3></div>
-          <div className="card-body">
-            {storage?.b2_status ? (
-              <table>
-                <tbody>
-                  <tr>
-                    <td style={{ color: "var(--text-muted)" }}>Status</td>
-                    <td>
-                      <span className={`badge ${storage.b2_status === "connected" ? "online" : "warning"}`}>
-                        {storage.b2_status}
-                      </span>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td style={{ color: "var(--text-muted)" }}>Bucket</td>
-                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{storage.b2_bucket || "—"}</td>
-                  </tr>
-                </tbody>
-              </table>
-            ) : (
-              <div className="empty-state">
-                <p>B2 cloud storage not configured</p>
-              </div>
-            )}
-          </div>
-        </div>
       </div>
 
       {storage?.per_node && Object.keys(storage.per_node).length > 0 && (

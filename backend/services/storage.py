@@ -1,13 +1,7 @@
 """
-Backblaze B2 storage helper for archiving detection data.
+Local archive storage for detection data.
 
-Env vars required:
-    B2_KEY_ID        – Application Key ID
-    B2_APP_KEY       – Application Key
-    B2_BUCKET_NAME   – Target bucket name
-
-If credentials are missing, the module falls back to local-only storage
-under coverage_data/ without raising errors.
+Files are written to coverage_data/archive/ relative to the backend directory.
 """
 
 import json
@@ -20,58 +14,17 @@ logger = logging.getLogger(__name__)
 
 _LOCAL_ARCHIVE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "coverage_data", "archive")
 
-# ---------- B2 SDK bootstrap (optional dependency) --------------------------
 
-_b2_api = None
-_b2_bucket = None
-
-
-def _init_b2():
-    """Lazily initialize Backblaze B2 API client from env vars."""
-    global _b2_api, _b2_bucket
-
-    if _b2_api is not None:
-        return _b2_api is not False  # False = previously failed
-
-    key_id = os.getenv("B2_KEY_ID", "")
-    app_key = os.getenv("B2_APP_KEY", "")
-    bucket_name = os.getenv("B2_BUCKET_NAME", "")
-
-    if not all([key_id, app_key, bucket_name]):
-        logger.info("B2 credentials not configured – using local storage only")
-        _b2_api = False
-        return False
-
-    try:
-        from b2sdk.v2 import B2Api, InMemoryAccountInfo
-
-        info = InMemoryAccountInfo()
-        api = B2Api(info)
-        api.authorize_account("production", key_id, app_key)
-        _b2_bucket = api.get_bucket_by_name(bucket_name)
-        _b2_api = api
-        logger.info("Connected to Backblaze B2 bucket '%s'", bucket_name)
-        return True
-    except Exception as exc:
-        logger.warning("B2 init failed (%s) – falling back to local storage", exc)
-        _b2_api = False
-        return False
-
-
-# ---------- Local archive helpers -------------------------------------------
+# ---------- Helpers ---------------------------------------------------------
 
 def _ensure_local_dir():
     os.makedirs(_LOCAL_ARCHIVE_DIR, exist_ok=True)
 
 
-def _date_prefix() -> str:
-    return datetime.now(timezone.utc).strftime("%Y/%m/%d")
-
-
 # ---------- Public API ------------------------------------------------------
 
 def archive_detections(node_id: str, detections: list[dict], *, tag: str = "detections") -> str:
-    """Archive a batch of detections to local filesystem and (optionally) B2.
+    """Archive a batch of detections to local filesystem.
 
     Returns the archive key (relative path like "2025/06/21/node01/detections_143022.json").
     """
@@ -87,18 +40,10 @@ def archive_detections(node_id: str, detections: list[dict], *, tag: str = "dete
         default=str,
     )
 
-    # Local write
     local_path = os.path.join(_LOCAL_ARCHIVE_DIR, key)
     os.makedirs(os.path.dirname(local_path), exist_ok=True)
     with open(local_path, "w") as f:
         f.write(payload)
-
-    # B2 upload (fire-and-forget style)
-    if _init_b2() and _b2_bucket is not None:
-        try:
-            _b2_bucket.upload_bytes(payload.encode(), f"archive/{key}")
-        except Exception as exc:
-            logger.warning("B2 upload failed for %s: %s", key, exc)
 
     return key
 
