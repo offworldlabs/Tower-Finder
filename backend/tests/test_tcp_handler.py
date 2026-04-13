@@ -125,8 +125,7 @@ class TestHandshake:
         state.connected_nodes.pop("test-node-1", None)
         state.connected_nodes.pop("test-node-2", None)
 
-    @pytest.mark.asyncio
-    async def test_hello_config_registers_node(self):
+    def test_hello_config_registers_node(self):
         """HELLO + CONFIG → node appears in state.connected_nodes."""
         reader = MockStreamReader([
             _make_hello("test-node-1"),
@@ -135,15 +134,14 @@ class TestHandshake:
         ])
         writer = MockStreamWriter()
 
-        await handle_tcp_client(reader, writer)
+        asyncio.run(handle_tcp_client(reader, writer))
 
         assert "test-node-1" in state.connected_nodes
         node = state.connected_nodes["test-node-1"]
         assert node["config_hash"] == "abc123"
         assert node["status"] == "disconnected"  # set in finally block after EOF
 
-    @pytest.mark.asyncio
-    async def test_config_ack_sent(self):
+    def test_config_ack_sent(self):
         """Server replies with CONFIG_ACK after receiving CONFIG."""
         reader = MockStreamReader([
             _make_hello("test-node-2"),
@@ -152,15 +150,14 @@ class TestHandshake:
         ])
         writer = MockStreamWriter()
 
-        await handle_tcp_client(reader, writer)
+        asyncio.run(handle_tcp_client(reader, writer))
 
         msgs = writer.get_messages()
         ack = [m for m in msgs if m.get("type") == "CONFIG_ACK"]
         assert len(ack) == 1
         assert ack[0]["config_hash"] == "abc123"
 
-    @pytest.mark.asyncio
-    async def test_disconnection_marks_status(self):
+    def test_disconnection_marks_status(self):
         """After disconnect, node status is set to 'disconnected'."""
         reader = MockStreamReader([
             _make_hello("test-node-1"),
@@ -169,12 +166,11 @@ class TestHandshake:
         ])
         writer = MockStreamWriter()
 
-        await handle_tcp_client(reader, writer)
+        asyncio.run(handle_tcp_client(reader, writer))
 
         assert state.connected_nodes["test-node-1"]["status"] == "disconnected"
 
-    @pytest.mark.asyncio
-    async def test_malformed_json_skipped(self):
+    def test_malformed_json_skipped(self):
         """Malformed JSON lines are skipped without crashing."""
         reader = MockStreamReader([
             _make_hello("test-node-1"),
@@ -184,13 +180,12 @@ class TestHandshake:
         ])
         writer = MockStreamWriter()
 
-        await handle_tcp_client(reader, writer)
+        asyncio.run(handle_tcp_client(reader, writer))
 
         # Node still registered despite malformed line
         assert "test-node-1" in state.connected_nodes
 
-    @pytest.mark.asyncio
-    async def test_synthetic_node_flag(self):
+    def test_synthetic_node_flag(self):
         """Synthetic nodes are correctly flagged."""
         reader = MockStreamReader([
             _make_hello("synth-test-1", is_synthetic=True),
@@ -199,7 +194,7 @@ class TestHandshake:
         ])
         writer = MockStreamWriter()
 
-        await handle_tcp_client(reader, writer)
+        asyncio.run(handle_tcp_client(reader, writer))
 
         state.connected_nodes.pop("synth-test-1", None)
 
