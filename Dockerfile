@@ -62,7 +62,7 @@ RUN useradd -r -s /usr/sbin/nologin appuser && \
     # nginx runtime dirs
     chown -R appuser:appuser /var/log/nginx /var/lib/nginx /run && \
     # allow start.sh to swap nginx config at runtime (for staging/test envs)
-    chown appuser:appuser /etc/nginx/sites-available && \
+    chown appuser:appuser /etc/nginx/sites-available /etc/nginx/sites-available/default && \
     # app dirs that need write access
     mkdir -p /app/backend/coverage_data /app/backend/tar1090_data /app/backend/data && \
     chown -R appuser:appuser /app/backend/coverage_data /app/backend/tar1090_data /app/backend/data
