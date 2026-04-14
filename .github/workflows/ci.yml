@@ -115,7 +115,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Wait for fleet to connect
-        run: sleep 60
+        run: |
+          echo "Waiting for fleet nodes to connect..."
+          for i in $(seq 1 24); do
+            COUNT=$(curl -sk https://${{ secrets.STAGING_HOST }}/api/test/dashboard \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['active'])" 2>/dev/null) || COUNT=0
+            if [ "${COUNT:-0}" -ge 1 ]; then
+              echo "Fleet ready: ${COUNT} node(s) connected after ~$((i*5))s"
+              break
+            fi
+            echo "Attempt $i/24: ${COUNT} nodes — waiting 5s..."
+            sleep 5
+          done
       - name: Run smoke tests against staging
         run: bash deploy/staging-smoke-test.sh ${{ secrets.STAGING_HOST }}
 
@@ -123,6 +134,7 @@ jobs:
     name: Deploy to production
     runs-on: ubuntu-latest
     needs: [staging-smoke-tests]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     concurrency:
       group: production-deploy
       cancel-in-progress: false
