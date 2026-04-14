@@ -128,7 +128,7 @@ jobs:
             sleep 5
           done
       - name: Run smoke tests against staging
-        run: bash deploy/staging-smoke-test.sh ${{ secrets.STAGING_HOST }}
+        run: bash deploy/staging-smoke-test.sh
 
   deploy-production:
     name: Deploy to production
