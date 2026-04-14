@@ -11,6 +11,12 @@ FRAME_QUEUE_SIZE="${FRAME_QUEUE_SIZE:-10000}"
 export FRAME_WORKERS
 export FRAME_QUEUE_SIZE
 
+# Swap nginx config based on environment
+if [ "${RETINA_ENV}" = "staging" ] && [ -f /app/deploy/nginx-staging.conf ]; then
+    echo "[start.sh] Using staging nginx config for staging.retina.fm domains"
+    cp /app/deploy/nginx-staging.conf /etc/nginx/sites-available/default
+fi
+
 # Start FastAPI backend with auto-restart supervision
 cd /app/backend
 (
