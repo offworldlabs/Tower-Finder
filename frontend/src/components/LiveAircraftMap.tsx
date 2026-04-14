@@ -25,6 +25,7 @@ import {
   yagiSectorPositions,
   FitBounds,
   ViewportTracker,
+  MapClickClear,
   useAircraftFeed,
   useNodes,
   AircraftListPanel,
@@ -892,6 +893,11 @@ export default function LiveAircraftMap() {
     setSelectedNodeId((prev) => (prev === nodeId ? null : nodeId));
   }, []);
 
+  const handleMapClick = useCallback(() => {
+    setSelectedNodeId(null);
+    setSelectedHex(null);
+  }, []);
+
   function computeError(hex, ac) {
     const gtHex = ac.ground_truth_hex || hex;
     const gtTrail = groundTruthRef.current[gtHex];
@@ -948,6 +954,7 @@ export default function LiveAircraftMap() {
             />
 
             <ViewportTracker onChange={handleViewportChange} />
+            <MapClickClear onClear={handleMapClick} />
             <FitBounds aircraft={radarAircraft} nodes={nodes} selectedHex={selectedHex} focusNonce={focusNonce} />
 
             {/* Coverage zones — memoized, only re-renders on nodes/showCoverage change */}

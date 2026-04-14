@@ -42,6 +42,13 @@ export function FitBounds({ aircraft, nodes, selectedHex, focusNonce }) {
   return null;
 }
 
+export function MapClickClear({ onClear }) {
+  useMapEvents({
+    click: () => onClear(),
+  });
+  return null;
+}
+
 export function ViewportTracker({ onChange }) {
   const map = useMapEvents({
     moveend: () => onChange(buildViewportSnapshot(map.getBounds())),
