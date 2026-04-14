@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
+    "test:e2e:local": "E2E_ENV=local playwright test",
     "test:e2e:staging": "E2E_ENV=staging playwright test",
     "test:e2e:prod": "E2E_ENV=prod playwright test",
     "test:e2e:ui": "playwright test --ui",

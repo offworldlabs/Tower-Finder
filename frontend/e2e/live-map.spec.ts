@@ -15,7 +15,7 @@ const BASE = hosts.testmap;
 
 // Helper: wait for the connection badge to show "LIVE"
 async function waitForLive(page: Page, timeoutMs = 15_000) {
-  await expect(page.locator(".connection-badge")).toHaveText(/LIVE|PAUSED/i, {
+  await expect(page.locator(".connection-badge")).toHaveText(/LIVE/i, {
     timeout: timeoutMs,
   });
 }
@@ -76,7 +76,7 @@ test.describe("Live Map — map rendering", () => {
   });
 });
 
-test.describe("Live Map — WebSocket connectivity", () => {
+test.describe("Live Map — WebSocket connectivity", { tag: "@live" }, () => {
   test("connection badge transitions to LIVE within 15s", async ({ page }) => {
     await page.goto(BASE);
     await waitForLive(page);
@@ -105,7 +105,7 @@ test.describe("Live Map — WebSocket connectivity", () => {
   });
 });
 
-test.describe("Live Map — aircraft list panel", () => {
+test.describe("Live Map — aircraft list panel", { tag: "@live" }, () => {
   test("aircraft list panel renders within 20s of connection", async ({ page }) => {
     await page.goto(BASE);
     await waitForLive(page);

@@ -30,6 +30,10 @@ test.describe("API radar endpoints", () => {
     ctx = await request.newContext();
   });
 
+  test.afterAll(async () => {
+    await ctx.dispose();
+  });
+
   test("GET /api/radar/nodes returns node map with expected shape", async () => {
     const res = await ctx.get(`${API}/api/radar/nodes`);
     expect(res.status()).toBe(200);
@@ -127,6 +131,10 @@ test.describe("API admin endpoints", () => {
 
   test.beforeAll(async () => {
     ctx = await request.newContext();
+  });
+
+  test.afterAll(async () => {
+    await ctx.dispose();
   });
 
   test("GET /api/admin/leaderboard returns per-node list", async () => {

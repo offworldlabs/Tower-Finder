@@ -60,8 +60,7 @@ test.describe("Tower Finder — search form", () => {
   test("auto-detects US source for US coordinates", async ({ page }) => {
     await page.getByLabel(/latitude/i).fill("37.7749");
     await page.getByLabel(/longitude/i).fill("-122.4194");
-    await page.waitForTimeout(500); // allow useEffect to fire
-    // Source dropdown should switch to "us"
+    // Source dropdown should switch to "us" — toHaveValue auto-waits for the useEffect
     const sourceSelect = page.getByLabel(/source|country|region/i).first();
     if (await sourceSelect.isVisible()) {
       await expect(sourceSelect).toHaveValue("us");
@@ -69,36 +68,35 @@ test.describe("Tower Finder — search form", () => {
   });
 
   test("auto-fetches elevation when lat/lon are entered", async ({ page }) => {
-    // Intercept elevation API call
-    let elevRequest = false;
-    page.on("request", (req) => {
-      if (req.url().includes("/api/elevation") || req.url().includes("elevation")) {
-        elevRequest = true;
-      }
-    });
+    // Set up response interceptor before triggering the network request
+    const elevationResponse = page
+      .waitForResponse((r) => r.url().includes("elevation"), { timeout: 5_000 })
+      .catch(() => null); // resolves null if no elevation request fires
+
     await page.getByLabel(/latitude/i).fill("37.7749");
     await page.getByLabel(/longitude/i).fill("-122.4194");
-    await page.waitForTimeout(1500);
-    // Elevation field should be populated (not empty)
+
+    const gotElevation = await elevationResponse;
     const altVal = await page.getByLabel(/altitude/i).inputValue();
-    // Either the field has a value, or an API call was made
-    const hasResult = altVal !== "" || elevRequest;
+    // Either the elevation field was populated or an elevation API call was made
+    const hasResult = altVal !== "" || gotElevation !== null;
     expect(hasResult).toBe(true);
   });
 
   test("frequency filter toggle shows/hides frequency inputs", async ({ page }) => {
     const toggle = page.getByRole("button", { name: /frequenc/i });
-    if (await toggle.isVisible()) {
-      // Frequency inputs should not be visible by default
-      const freqInput = page.locator("input[placeholder*='MHz']").first();
-      const initiallyVisible = await freqInput.isVisible().catch(() => false);
+    await expect(toggle).toBeVisible(); // Fail fast if the toggle was removed from the UI
 
-      await toggle.click();
-      await page.waitForTimeout(300);
+    const freqInput = page.locator("input[placeholder*='MHz']").first();
+    const initiallyVisible = await freqInput.isVisible().catch(() => false);
 
-      const nowVisible = await freqInput.isVisible().catch(() => false);
-      // State should have changed
-      expect(nowVisible).not.toBe(initiallyVisible);
+    await toggle.click();
+
+    // Use Playwright auto-waiting assertions instead of a fixed sleep
+    if (initiallyVisible) {
+      await expect(freqInput).toBeHidden();
+    } else {
+      await expect(freqInput).toBeVisible();
     }
   });
 });
