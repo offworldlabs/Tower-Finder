@@ -1,0 +1,82 @@
+# ── Staging Environment ──────────────────────────────────────────────────────
+# Deploys server + fleet simulator with synthetic data.
+# Used by CI to validate changes before production promotion.
+#
+# Usage:
+#   docker compose -f docker-compose.staging.yml up -d --build
+#   docker compose -f docker-compose.staging.yml logs -f
+#   docker compose -f docker-compose.staging.yml down
+
+services:
+  # ── Main server: API + TCP + nginx ────────────────────────────────────────
+  tower-finder:
+    build: .
+    container_name: retina-staging-server
+    ports:
+      - "80:80"
+      - "443:443"
+      - "3012:3012"
+    volumes:
+      - /etc/ssl/cloudflare:/etc/ssl/cloudflare:ro
+    env_file:
+      - backend/.env
+    environment:
+      - RETINA_ENV=staging
+      - CORS_ORIGINS=*
+      - RADAR_TCP_PORT=3012
+      - FRAME_WORKERS=6
+      - FRAME_QUEUE_SIZE=10000
+    command: ["/bin/sh", "/app/deploy/start.sh"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 3G
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ── Fleet simulator: synthetic radar nodes ────────────────────────────────
+  fleet:
+    build:
+      context: .
+      dockerfile: Dockerfile.fleet
+    container_name: retina-staging-fleet
+    depends_on:
+      tower-finder:
+        condition: service_healthy
+    environment:
+      - FLEET_NODES=50
+      - FLEET_REGIONS=us
+      - FLEET_MODE=adsb
+      - FLEET_INTERVAL=40.0
+      - FLEET_TIME_SCALE=1.0
+      - FLEET_MIN_AIRCRAFT=20
+      - FLEET_MAX_AIRCRAFT=40
+      - FLEET_BEAM_WIDTH_DEG=0
+      - FLEET_MAX_RANGE_KM=0
+      - FLEET_CONCURRENCY=10
+      - FLEET_CONNECT_RETRIES=10
+      - FLEET_HOST=tower-finder
+      - FLEET_PORT=3012
+      - FLEET_VALIDATE=false
+      - FLEET_SEED=42
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
