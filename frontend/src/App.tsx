@@ -46,8 +46,8 @@ export default function App() {
   const [error, setError] = useState(null);
   const [highlighted, setHighlighted] = useState(null);
 
-  // On map.retina.fm / testmap.retina.fm / staging-map.retina.fm, default to "live" and hide tower search
-  const isMapDomain = /^((staging-|test)?map)\./i.test(window.location.hostname);
+  // On map.retina.fm / testmap.retina.fm / staging-map.retina.fm / staging-testmap.retina.fm, default to "live" and hide tower search
+  const isMapDomain = /^((staging-)?(test)?map)\./i.test(window.location.hostname);
   // On map.retina.fm only (not testmap/staging-map): real radar only — no fleet simulator, hide Physics tab
   const isLiveDomain = /^map\./i.test(window.location.hostname);
   const [activeTab, setActiveTab] = useState(isMapDomain ? "live" : "towers");

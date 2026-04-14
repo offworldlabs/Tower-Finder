@@ -48,7 +48,8 @@ else:
 add_record "staging"
 add_record "staging-api"
 add_record "staging-dash"
+add_record "staging-testmap"
 
 echo ""
 echo "Done. DNS records propagate through Cloudflare within seconds."
-echo "Domains: staging.retina.fm, staging-api.retina.fm, staging-dash.retina.fm"
+echo "Domains: staging.retina.fm, staging-api.retina.fm, staging-dash.retina.fm, staging-testmap.retina.fm"

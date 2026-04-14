@@ -584,7 +584,7 @@ export default function LiveAircraftMap() {
   const [showTrails, setShowTrails] = useState(true);
   // Default GT on for testmap (simulation demo); off on map.retina.fm (real only)
   const [showGroundTruth, setShowGroundTruth] = useState(
-    () => !/^map\./i.test(window.location.hostname),
+    () => !/^map\./i.test(window.location.hostname) && !/^staging-testmap\./.test(window.location.hostname),
   );
   const [showLabels, setShowLabels] = useState(true);
   const [selectedHex, setSelectedHex] = useState(null);
