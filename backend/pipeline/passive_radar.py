@@ -380,7 +380,7 @@ class PassiveRadarPipeline:
                 self.rx_lla[2],  # rx_alt_m
                 max_nfev=10 if is_refinement else 20,
             )
-        except (ValueError, Exception) as _e:
+        except Exception as _e:
             logging.debug("Solver raised for track %s: %s", track_id, _e)
             return None
 
