@@ -22,7 +22,7 @@ services:
       - backend/.env
     environment:
       - RETINA_ENV=staging
-      - CORS_ORIGINS=*
+      - CORS_ORIGINS=https://staging.retina.fm,https://staging-api.retina.fm,https://staging-dash.retina.fm
       - RADAR_TCP_PORT=3012
       - FRAME_WORKERS=6
       - FRAME_QUEUE_SIZE=10000
