@@ -13,7 +13,7 @@ export {
 } from "./geo";
 export { mergeTrailPositions, sampleTrailPositions, buildTrailSegments } from "./trails";
 export { PLANE_PATH, getAircraftColor, makeAircraftIcon, makeDroneIcon, nodeIcon } from "./icons";
-export { FitBounds, ViewportTracker } from "./MapControls";
+export { FitBounds, ViewportTracker, MapClickClear } from "./MapControls";
 export { useAircraftFeed, useNodes } from "./hooks";
 export { default as AircraftListPanel } from "./AircraftListPanel";
 export { default as AircraftDetailPanel } from "./AircraftDetailPanel";
