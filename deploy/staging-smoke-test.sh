@@ -3,13 +3,14 @@
 # Run against the staging server to verify deployment health before
 # promoting to production.
 #
-# Usage: bash deploy/staging-smoke-test.sh <STAGING_HOST>
+# Usage: bash deploy/staging-smoke-test.sh
 # Exit code: 0 = all checks passed, 1 = failure
 set -euo pipefail
 
-HOST="${1:?Usage: staging-smoke-test.sh <STAGING_HOST>}"
-BASE_URL="https://${HOST}"
-CURL="curl -sk --connect-timeout 10 --max-time 30"
+BASE_URL="https://staging.retina.fm"
+API_URL="https://staging-api.retina.fm"
+DASH_URL="https://staging-dash.retina.fm"
+CURL="curl -s --connect-timeout 10 --max-time 30"
 PASS=0
 FAIL=0
 
@@ -63,16 +64,27 @@ check_json_field() {
 }
 
 echo "═══════════════════════════════════════════════════"
-echo "  Staging Smoke Tests — ${HOST}"
+echo "  Staging Smoke Tests"
+echo "  frontend: ${BASE_URL}"
+echo "  api:      ${API_URL}"
+echo "  dash:     ${DASH_URL}"
 echo "═══════════════════════════════════════════════════"
 
 echo ""
-echo "── Health & API endpoints ──"
+echo "── Health & API endpoints (staging.retina.fm) ──"
 check_status "GET /api/health"              "${BASE_URL}/api/health"        "200"
 check_status "GET /api/radar/nodes"         "${BASE_URL}/api/radar/nodes"   "200"
 check_status "GET /api/radar/analytics"     "${BASE_URL}/api/radar/analytics" "200"
 check_status "GET /api/test/dashboard"      "${BASE_URL}/api/test/dashboard" "200"
 check_status "GET /api/config"              "${BASE_URL}/api/config"        "200"
+
+echo ""
+echo "── Dedicated API subdomain (staging-api.retina.fm) ──"
+check_status "staging-api /api/health"      "${API_URL}/api/health"         "200"
+
+echo ""
+echo "── Dashboard subdomain (staging-dash.retina.fm) ──"
+check_status "staging-dash GET /"           "${DASH_URL}/"                  "200"
 
 echo ""
 echo "── Frontend assets ──"
