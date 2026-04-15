@@ -1,5 +1,6 @@
 """Test network dashboard, ground-truth validation endpoints."""
 
+import logging
 import math
 import os
 import time
@@ -7,13 +8,29 @@ from collections import deque
 from datetime import datetime, timezone
 
 import orjson
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Depends, Header
 from fastapi.responses import Response
 
 from core import state
+from core.auth import require_admin
 from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex, position_distance_km
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+_RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
+if not _RADAR_API_KEY:
+    logger.warning(
+        "RADAR_API_KEY is not set — /api/test/ground-truth/push and "
+        "/api/sim/adsb/push accept ANY caller without authentication."
+    )
+
+
+def _verify_sim_key(x_api_key: str = Header(default="", alias="X-API-Key")):
+    """Require X-API-Key for simulation data injection endpoints."""
+    if _RADAR_API_KEY and x_api_key != _RADAR_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
+
 
 # ── Task staleness detection ──────────────────────────────────────────────────
 # Each task has an expected interval — if it hasn't reported success within
@@ -255,7 +272,7 @@ async def validate_ground_truth(body: dict = Body(...)):
 
 
 @router.post("/api/test/ground-truth/push")
-async def push_ground_truth_snapshot(body: dict = Body(...)):
+async def push_ground_truth_snapshot(body: dict = Body(...), _key=Depends(_verify_sim_key)):
     ts = body.get("ts_ms", int(time.time() * 1000)) / 1000.0
     aircraft_list = body.get("aircraft", [])
     if not isinstance(aircraft_list, list):
@@ -311,7 +328,7 @@ async def push_ground_truth_snapshot(body: dict = Body(...)):
 
 
 @router.post("/api/sim/adsb/push")
-async def sim_push_adsb_positions(body: dict = Body(...)):
+async def sim_push_adsb_positions(body: dict = Body(...), _key=Depends(_verify_sim_key)):
     """Simulator pushes live ADS-B positions every second directly into state.adsb_aircraft.
 
     This keeps each aircraft's position current at 1 Hz regardless of how many
@@ -418,7 +435,7 @@ async def get_simulation_config():
 
 
 @router.put("/api/simulation/config")
-async def put_simulation_config(body: dict = Body(...)):
+async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_admin)):
     """Update simulation physics fractions.
 
     Accepted keys: frac_anomalous, frac_drone, frac_dark (0.0–1.0 each).
