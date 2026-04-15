@@ -16,6 +16,7 @@ const AlertsPage = lazy(() => import("./pages/user/AlertsPage"));
 const LeaderboardPage = lazy(() => import("./pages/user/LeaderboardPage"));
 const KnowledgeBasePage = lazy(() => import("./pages/user/KnowledgeBasePage"));
 const TunnelLinkPage = lazy(() => import("./pages/user/TunnelLinkPage"));
+const AnomalyPage = lazy(() => import("./pages/user/AnomalyPage"));
 
 // Admin pages — lazy-loaded
 const NetworkHealthPage = lazy(() => import("./pages/admin/NetworkHealthPage"));
@@ -63,6 +64,7 @@ export default function App() {
                       <Route path="nodes" element={<NodeManagementPage />} />
                       <Route path="nodes/:nodeId" element={<NodeDetailPage />} />
                       <Route path="analytics" element={<AnalyticsPage />} />
+                      <Route path="anomalies" element={<AnomalyPage />} />
                       <Route path="events" element={<EventsPage />} />
                       <Route path="storage" element={<StoragePage />} />
                       <Route path="custody" element={<CustodyPage />} />
@@ -78,6 +80,7 @@ export default function App() {
                       <Route path="contribution" element={<ContributionPage />} />
                       <Route path="data" element={<DataExplorerPage />} />
                       <Route path="alerts" element={<AlertsPage />} />
+                      <Route path="anomalies" element={<AnomalyPage />} />
                       <Route path="leaderboard" element={<LeaderboardPage />} />
                       <Route path="knowledge" element={<KnowledgeBasePage />} />
                       <Route path="tunnel" element={<TunnelLinkPage />} />

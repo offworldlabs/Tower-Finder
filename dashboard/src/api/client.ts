@@ -40,6 +40,7 @@ export const api = {
   nodeAnalytics: (id) => request(`/api/radar/analytics/${id}`),
   aircraft: () => request("/api/radar/data/aircraft.json"),
   overlaps: () => request("/api/radar/association/overlaps"),
+  anomalies: () => request("/api/radar/anomalies"),
 
   // Archive
   archive: (limit = 50, offset = 0, nodeId = null) => {
