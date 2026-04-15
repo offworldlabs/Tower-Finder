@@ -1,5 +1,6 @@
 """Test network dashboard, ground-truth validation endpoints."""
 
+import logging
 import math
 import os
 import time
@@ -15,14 +16,21 @@ from core.auth import require_admin
 from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex, position_distance_km
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
+if not _RADAR_API_KEY:
+    logger.warning(
+        "RADAR_API_KEY is not set — /api/test/ground-truth/push and "
+        "/api/sim/adsb/push accept ANY caller without authentication."
+    )
 
 
 def _verify_sim_key(x_api_key: str = Header(default="", alias="X-API-Key")):
     """Require X-API-Key for simulation data injection endpoints."""
     if _RADAR_API_KEY and x_api_key != _RADAR_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
+
 
 # ── Task staleness detection ──────────────────────────────────────────────────
 # Each task has an expected interval — if it hasn't reported success within

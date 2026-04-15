@@ -45,6 +45,9 @@ RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
 _RATE_LIMIT = int(os.getenv("RADAR_RATE_LIMIT", "60"))
 _RATE_WINDOW = int(os.getenv("RADAR_RATE_WINDOW", "60"))
 _TAR1090_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tar1090_data")
+_ALLOWED_DETECTION_DIR = os.path.realpath(
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "coverage_data", "archive")
+)
 
 # Module-level reference to default pipeline; set from main.py at startup
 _default_pipeline: PassiveRadarPipeline | None = None
@@ -192,7 +195,9 @@ async def ingest_detections_bulk(
 
 @router.post("/api/radar/load-file")
 async def load_detection_file(body: LoadFileRequest, _admin=Depends(require_admin)):
-    filepath = body.path
+    filepath = os.path.realpath(body.path)
+    if not filepath.startswith(_ALLOWED_DETECTION_DIR + os.sep):
+        raise HTTPException(status_code=400, detail="Path must be inside the coverage archive directory")
     if not os.path.isfile(filepath):
         raise HTTPException(status_code=400, detail="File not found")
     if not filepath.endswith(".detection"):
