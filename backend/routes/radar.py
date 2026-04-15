@@ -7,11 +7,12 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Body, HTTPException, Request, Header
+from fastapi import APIRouter, Body, HTTPException, Request, Header, Depends
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from core import state
+from core.auth import require_admin
 from pipeline.passive_radar import PassiveRadarPipeline
 from services.tcp_handler import is_synthetic_node
 
@@ -190,7 +191,7 @@ async def ingest_detections_bulk(
 
 
 @router.post("/api/radar/load-file")
-async def load_detection_file(body: LoadFileRequest):
+async def load_detection_file(body: LoadFileRequest, _admin=Depends(require_admin)):
     filepath = body.path
     if not os.path.isfile(filepath):
         raise HTTPException(status_code=400, detail="File not found")

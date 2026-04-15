@@ -5,7 +5,8 @@ import logging
 import os
 
 import httpx
-from fastapi import APIRouter, Query, HTTPException, Body
+from fastapi import APIRouter, Query, HTTPException, Body, Depends
+from core.auth import require_admin
 
 from services.tower_ranking import (
     process_and_rank, reload_config, _CONFIG_PATH,
@@ -156,7 +157,7 @@ async def get_config():
 
 
 @router.put("/api/config")
-async def update_config(body: dict):
+async def update_config(body: dict, _admin=Depends(require_admin)):
     with open(_CONFIG_PATH, "w") as f:
         json.dump(body, f, indent=2)
     reload_config()
