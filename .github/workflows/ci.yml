@@ -92,6 +92,7 @@ jobs:
         run: E2E_ENV=staging npx playwright test --grep-invert "@live"
         env:
           CI: "true"
+          RADAR_API_KEY: ${{ secrets.STAGING_RADAR_API_KEY }}
 
   deploy-staging:
     name: Deploy to staging
