@@ -4,6 +4,29 @@ import {
 } from "recharts";
 import { api } from "../../api/client";
 
+interface AnomalyEvent {
+  hex: string;
+  reason: string;
+  lat?: number;
+  lon?: number;
+  ts?: number;
+  flagged_at?: string;
+  object_type?: string;
+}
+
+interface AnomalyData {
+  summary: {
+    active_count: number;
+    total_events: number;
+    unique_hexes: number;
+    most_common_type: string | null;
+  };
+  by_type: Record<string, number>;
+  timeline: { ts: number; count: number }[];
+  geographic_clusters: { lat: number; lon: number; count: number; dominant_type: string }[];
+  recent_events: AnomalyEvent[];
+}
+
 const TYPE_COLORS: Record<string, string> = {
   supersonic: "#ef4444",
   instant_acceleration: "#f97316",
@@ -26,14 +49,23 @@ function formatDateTime(iso: string) {
 }
 
 export default function AnomalyPage() {
-  const [data, setData] = useState<any>(null);
+  const [data, setData] = useState<AnomalyData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [stale, setStale] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
   const fetchData = () => {
     api.anomalies()
-      .then(setData)
-      .catch(console.error)
+      .then((d: AnomalyData) => {
+        setData(d);
+        setLastUpdated(new Date());
+        setStale(false);
+      })
+      .catch((err) => {
+        console.error(err);
+        setStale(true);
+      })
       .finally(() => setLoading(false));
   };
 
@@ -69,7 +101,7 @@ export default function AnomalyPage() {
         <div className="stat-card accent">
           <div className="stat-label">Total Events</div>
           <div className="stat-value">{summary?.total_events ?? 0}</div>
-          <div className="stat-sub">in log (max 500)</div>
+          <div className="stat-sub">in anomaly log</div>
         </div>
         <div className="stat-card warning">
           <div className="stat-label">Unique Aircraft</div>
@@ -197,7 +229,10 @@ export default function AnomalyPage() {
       <div className="card">
         <div className="card-header">
           <h3>Recent Anomaly Events</h3>
-          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Auto-refreshes every 10s</span>
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            {stale && <span style={{ color: "#f97316", marginRight: 8 }}>⚠ Stale data</span>}
+            {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : "Auto-refreshes every 10s"}
+          </span>
         </div>
         <div className="table-wrapper">
           <table>
@@ -212,8 +247,8 @@ export default function AnomalyPage() {
               </tr>
             </thead>
             <tbody>
-              {[...(recent_events || [])].reverse().map((ev: any, i: number) => (
-                <tr key={i}>
+              {[...(recent_events || [])].reverse().map((ev: AnomalyEvent, i: number) => (
+                <tr key={`${ev.hex}-${ev.flagged_at ?? i}`}>
                   <td style={{ fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>
                     {ev.flagged_at ? formatDateTime(ev.flagged_at) : "—"}
                   </td>

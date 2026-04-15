@@ -161,7 +161,7 @@ async def radar_anomalies():
         "by_type": by_type,
         "timeline": timeline,
         "geographic_clusters": clusters[:50],
-        "recent_events": log_snapshot[-100:],
+        "recent_events": log_snapshot,
     }
     return Response(
         content=orjson.dumps(payload, option=orjson.OPT_SERIALIZE_NUMPY),
