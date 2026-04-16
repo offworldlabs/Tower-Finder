@@ -189,6 +189,10 @@ def _refresh_missed_detections(nodes_snapshot: list):
         max_range = float(cfg.get("max_range_km") or YAGI_MAX_RANGE_KM)
         beam_azimuth = cfg.get("beam_azimuth_deg")
         if beam_azimuth is None:
+            # Default: Yagi sits perpendicular to the RX→TX baseline, so the
+            # boresight is rotated +90° from the direct RX→TX bearing.
+            # Nodes with a different antenna orientation should set beam_azimuth_deg
+            # explicitly in their config to avoid incorrect missed-detection counts.
             beam_azimuth = (_bearing_deg(rx_lat, rx_lon, tx_lat, tx_lon) + 90.0) % 360.0
 
         # Aircraft within this node's beam
@@ -220,18 +224,19 @@ def _refresh_missed_detections(nodes_snapshot: list):
         missed = in_range_set - detected_hexes
 
         # Build details for missed aircraft (limit to 20 for payload size)
+        # Pre-build a hex→(lat,lon) dict for O(1) lookup instead of O(n²) scan.
+        adsb_by_hex = {h.lower(): (lat, lon) for h, lat, lon in adsb_snapshot}
         missed_details = []
         for hex_code in list(missed)[:20]:
-            for h, lat, lon in adsb_snapshot:
-                if h.lower() == hex_code:
-                    dist = haversine_km(rx_lat, rx_lon, lat, lon)
-                    missed_details.append({
-                        "hex": hex_code,
-                        "lat": round(lat, 5),
-                        "lon": round(lon, 5),
-                        "dist_km": round(dist, 1),
-                    })
-                    break
+            if hex_code in adsb_by_hex:
+                lat, lon = adsb_by_hex[hex_code]
+                dist = haversine_km(rx_lat, rx_lon, lat, lon)
+                missed_details.append({
+                    "hex": hex_code,
+                    "lat": round(lat, 5),
+                    "lon": round(lon, 5),
+                    "dist_km": round(dist, 1),
+                })
 
         n_in_range = len(in_range_set)
         n_detected = len(detected_in_range)

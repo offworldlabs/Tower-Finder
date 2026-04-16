@@ -167,7 +167,7 @@ export default function LeaderboardPage() {
                           color: (entry.miss_rate || 0) > 0.5 ? "#ef4444"
                             : (entry.miss_rate || 0) > 0.2 ? "#f59e0b" : "#10b981",
                         }}>
-                          {entry.in_range > 0 ? ((entry.miss_rate || 0) * 100).toFixed(1) + "%" : "—"}
+                          {(entry.in_range || 0) > 0 ? ((entry.miss_rate || 0) * 100).toFixed(1) + "%" : "—"}
                         </td>
                         <td>{formatUptime(entry.uptime_s)}</td>
                         <td>{entry.avg_snr.toFixed(1)} dB</td>

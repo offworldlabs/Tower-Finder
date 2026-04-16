@@ -5,6 +5,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import shutil
 import time
 from collections import deque
 from pathlib import Path
@@ -382,13 +383,12 @@ async def storage_stats(_admin=Depends(require_admin)):
         return _storage_cache
 
     archive_dir = _BACKEND_DIR / "coverage_data" / "archive"
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     total_files, total_bytes, per_node = await loop.run_in_executor(
         _admin_executor, _scan_archive_dir, archive_dir
     )
 
     # Disk usage (shutil.disk_usage is fast — single stat call)
-    import shutil
     disk_path = str(archive_dir) if archive_dir.exists() else str(_BACKEND_DIR)
     try:
         du = shutil.disk_usage(disk_path)
@@ -407,11 +407,11 @@ async def storage_stats(_admin=Depends(require_admin)):
         # Get uptime from analytics
         node_info = state.connected_nodes.get(node_id, {})
         first_seen = node_info.get("first_seen_ts")
-        if first_seen:
-            age_days = max((now - first_seen) / 86400, 0.01)
-        else:
-            # Fallback: assume at least 1 day
-            age_days = 1.0
+        if not first_seen:
+            # Node not currently tracked (disconnected/historical) — skip to
+            # avoid inflating rate with a bogus 1-day age assumption.
+            continue
+        age_days = max((now - first_seen) / 86400, 0.01)
         per_node_rate[node_id] = round(node_bytes / age_days, 0)
 
     total_rate = sum(per_node_rate.values())
@@ -462,7 +462,7 @@ async def leaderboard(_user=Depends(get_current_user)):
             pass
     # Fall back to live computation only if the snapshot is empty
     if not summaries:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         summaries = await loop.run_in_executor(_admin_executor, state.node_analytics.get_all_summaries)
 
     entries = []

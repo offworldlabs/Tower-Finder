@@ -154,6 +154,7 @@ def _clean_state():
         with state.geo_aircraft_lock:
             state.active_geo_aircraft.clear()
         state.adsb_aircraft.clear()
+        state.latest_missed_detections.clear()
         # Drain leftover frames so tests start from a clean queue.
         while not state.frame_queue.empty():
             try:
