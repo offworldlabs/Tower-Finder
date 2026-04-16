@@ -29,6 +29,7 @@ from services.background import (
     aircraft_flush_task,
     archive_flush_task,
     analytics_refresh_task,
+    storage_refresh_task,
     reputation_evaluator,
     adsb_truth_fetcher,
     start_solver_workers,
@@ -102,6 +103,7 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(aircraft_flush_task(radar_pipeline)),
             asyncio.create_task(archive_flush_task()),
             asyncio.create_task(analytics_refresh_task()),
+            asyncio.create_task(storage_refresh_task()),
             asyncio.create_task(blah2_bridge_task()),
             asyncio.create_task(_snapshot_loop()),
             *[asyncio.create_task(frame_processor_loop(radar_pipeline))

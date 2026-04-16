@@ -120,6 +120,9 @@ latest_missed_detections: dict[str, dict] = {}
 # Pre-serialised radar3 solver verification (refreshed by background task)
 latest_radar3_verification_bytes: bytes = b'{}'
 
+# Pre-serialised storage stats (refreshed every 5 min by storage_refresh_task)
+latest_storage_bytes: bytes = b'{}'
+
 # ── Rate limiter buckets ──────────────────────────────────────────────────────
 rate_buckets: dict[str, list] = defaultdict(list)
 
