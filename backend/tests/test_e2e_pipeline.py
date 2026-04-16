@@ -869,7 +869,7 @@ class TestFullIntegrationPath:
 
     def test_storage_endpoint_disk_fields(self):
         """The storage scan helper returns disk usage fields."""
-        from routes.admin import _scan_archive_dir
+        from services.tasks.storage_refresh import _scan_archive_dir
         from pathlib import Path
 
         archive_dir = Path(__file__).resolve().parent.parent / "coverage_data" / "archive"
