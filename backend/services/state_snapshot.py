@@ -16,7 +16,7 @@ from core import state
 
 _SNAPSHOT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 _SNAPSHOT_PATH = os.path.join(_SNAPSHOT_DIR, "state_snapshot.json")
-_SAVE_INTERVAL_S = 300  # 5 minutes
+_SAVE_INTERVAL_S = 60  # 1 minute
 
 
 def save_snapshot() -> None:
@@ -58,7 +58,16 @@ def save_snapshot() -> None:
     with open(tmp, "w") as f:
         json.dump(snapshot, f)
     os.replace(tmp, _SNAPSHOT_PATH)
-    logging.info("State snapshot saved (%d bytes)", os.path.getsize(_SNAPSHOT_PATH))
+    size = os.path.getsize(_SNAPSHOT_PATH)
+    logging.info("State snapshot saved (%d bytes)", size)
+
+    # Replicate to R2 for durability across container recreates
+    from services.r2_client import is_enabled as r2_enabled, upload_file
+    if r2_enabled():
+        if upload_file("snapshots/state_snapshot.json", _SNAPSHOT_PATH):
+            logging.info("State snapshot replicated to R2")
+        else:
+            logging.warning("State snapshot R2 replication failed")
 
 
 def restore_snapshot() -> bool:
@@ -67,15 +76,31 @@ def restore_snapshot() -> bool:
     from retina_analytics.reputation import NodeReputation
     from retina_custody.models import NodeIdentity
 
-    if not os.path.exists(_SNAPSHOT_PATH):
-        logging.info("No state snapshot found at %s", _SNAPSHOT_PATH)
-        return False
+    snap = None
 
-    try:
-        with open(_SNAPSHOT_PATH) as f:
-            snap = json.load(f)
-    except Exception:
-        logging.exception("Failed to read state snapshot")
+    # Try local snapshot first
+    if os.path.exists(_SNAPSHOT_PATH):
+        try:
+            with open(_SNAPSHOT_PATH) as f:
+                snap = json.load(f)
+        except Exception:
+            logging.exception("Failed to read local state snapshot")
+
+    # Fall back to R2 if local snapshot is missing or corrupt
+    if snap is None:
+        from services.r2_client import is_enabled as r2_enabled, download_bytes
+        if r2_enabled():
+            logging.info("Trying R2 for state snapshot...")
+            data = download_bytes("snapshots/state_snapshot.json")
+            if data:
+                try:
+                    snap = json.loads(data)
+                    logging.info("State snapshot loaded from R2")
+                except Exception:
+                    logging.exception("Failed to parse R2 state snapshot")
+
+    if snap is None:
+        logging.info("No state snapshot found (checked local + R2)")
         return False
 
     saved_at = snap.get("saved_at", 0)

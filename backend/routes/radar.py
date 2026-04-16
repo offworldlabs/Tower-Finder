@@ -1,15 +1,17 @@
 """Radar pipeline endpoints: receiver/aircraft JSON, detections, nodes, status."""
 
+import asyncio
 import json
 import logging
 import os
 import time
-from collections import defaultdict
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Body, HTTPException, Request, Header
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Header
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
+
+from core.auth import require_admin
 
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
@@ -41,6 +43,8 @@ class LoadFileRequest(BaseModel):
     path: str = Field(..., min_length=1)
 
 RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
+if not RADAR_API_KEY:
+    logging.warning("RADAR_API_KEY is not set — detection/custody endpoints have no API key protection")
 _RATE_LIMIT = int(os.getenv("RADAR_RATE_LIMIT", "60"))
 _RATE_WINDOW = int(os.getenv("RADAR_RATE_WINDOW", "60"))
 _TAR1090_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tar1090_data")
@@ -190,7 +194,7 @@ async def ingest_detections_bulk(
 
 
 @router.post("/api/radar/load-file")
-async def load_detection_file(body: LoadFileRequest):
+async def load_detection_file(body: LoadFileRequest, _user=Depends(require_admin)):
     filepath = body.path
     if not os.path.isfile(filepath):
         raise HTTPException(status_code=400, detail="File not found")

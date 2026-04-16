@@ -11,6 +11,7 @@ from services.tasks.aircraft_flush import aircraft_flush_task
 from services.tasks.storage_refresh import storage_refresh_task
 from services.tasks.periodic import (
     archive_flush_task,
+    archive_lifecycle_task,
     reputation_evaluator,
     adsb_truth_fetcher,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "aircraft_flush_task",
     "storage_refresh_task",
     "archive_flush_task",
+    "archive_lifecycle_task",
     "reputation_evaluator",
     "adsb_truth_fetcher",
 ]

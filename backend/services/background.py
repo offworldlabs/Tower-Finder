@@ -14,6 +14,7 @@ from services.tasks import (  # noqa: F401
     aircraft_flush_task,
     storage_refresh_task,
     archive_flush_task,
+    archive_lifecycle_task,
     reputation_evaluator,
     adsb_truth_fetcher,
 )

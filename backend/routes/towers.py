@@ -5,7 +5,9 @@ import logging
 import os
 
 import httpx
-from fastapi import APIRouter, Query, HTTPException, Body
+from fastapi import APIRouter, Depends, Query, HTTPException, Body
+
+from core.auth import require_admin
 
 from services.tower_ranking import (
     process_and_rank, reload_config, _CONFIG_PATH,
@@ -146,6 +148,26 @@ async def find_towers(
 
 @router.get("/api/health")
 async def health():
+    from core import state
+    import time
+
+    issues = []
+
+    # Check frame queue saturation (>90% = unhealthy)
+    q_pct = state.frame_queue.qsize() / max(state.frame_queue.maxsize, 1)
+    if q_pct > 0.9:
+        issues.append(f"frame_queue_saturated ({q_pct:.0%})")
+
+    # Check critical task staleness
+    now = time.time()
+    critical_tasks = {"frame_processor": 20, "analytics_refresh": 120, "aircraft_flush": 15}
+    for task, max_age_s in critical_tasks.items():
+        last = state.task_last_success.get(task)
+        if last is not None and (now - last) > max_age_s:
+            issues.append(f"stale_task:{task}")
+
+    if issues:
+        return {"status": "degraded", "issues": issues}
     return {"status": "ok"}
 
 
@@ -156,7 +178,7 @@ async def get_config():
 
 
 @router.put("/api/config")
-async def update_config(body: dict):
+async def update_config(body: dict, _user=Depends(require_admin)):
     with open(_CONFIG_PATH, "w") as f:
         json.dump(body, f, indent=2)
     reload_config()

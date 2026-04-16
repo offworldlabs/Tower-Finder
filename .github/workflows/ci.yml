@@ -147,18 +147,96 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             cd /opt/tower-finder
+
+            # Pre-deploy: save rollback image + git tag
+            bash deploy/pre-deploy.sh || true
+
             git pull origin main
             git submodule update --init --recursive
             docker compose up -d --build
+
             # Wait for backend to become healthy (up to 60s)
             for i in $(seq 1 12); do
               if docker compose exec -T tower-finder python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
                 echo "Deploy successful (healthy after ~$((i*5))s)"
-                exit 0
+                break
               fi
               echo "Waiting for health check... attempt $i/12"
               sleep 5
+              if [ "$i" = "12" ]; then
+                echo "Health check failed after 60s"
+                docker compose logs --tail=50
+                exit 1
+              fi
             done
-            echo "Health check failed after 60s"
-            docker compose logs --tail=50
-            exit 1
+
+            # Restart fleet simulator (stop old units, start new one)
+            FLEET_NUM=$(date +%s | tail -c 5)
+            # Stop any running fleet units
+            for unit in $(systemctl list-units --type=service --state=running --no-legend | grep '^fleet' | awk '{print $1}'); do
+              echo "Stopping old fleet: $unit"
+              systemctl stop "$unit" || true
+            done
+            # Start fresh fleet
+            systemd-run --unit="fleet${FLEET_NUM}" --working-directory=/opt/tower-finder \
+              python3 backend/simulation/orchestrator.py \
+              --nodes 200 --mode adsb \
+              --validation-url https://localhost \
+              --concurrency 20 --connect-retries 999 \
+              --interval 40.0 --time-scale 1.0 \
+              --min-aircraft 60 --max-aircraft 100
+            echo "Fleet fleet${FLEET_NUM} started"
+
+  production-smoke-tests:
+    name: Production smoke tests
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for fleet to connect
+        run: |
+          echo "Waiting 60s for fleet nodes to reconnect..."
+          sleep 60
+          for i in $(seq 1 12); do
+            COUNT=$(curl -sk https://${{ secrets.SERVER_HOST }}/api/test/dashboard \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['active'])" 2>/dev/null) || COUNT=0
+            if [ "${COUNT:-0}" -ge 10 ]; then
+              echo "Fleet ready: ${COUNT} nodes connected"
+              break
+            fi
+            echo "Attempt $i/12: ${COUNT} nodes — waiting 10s..."
+            sleep 10
+          done
+      - name: Run production smoke tests
+        env:
+          BASE_URL: https://${{ secrets.SERVER_HOST }}
+          API_URL: https://api.retina.fm
+        run: |
+          CURL="curl -s --connect-timeout 10 --max-time 30"
+          PASS=0; FAIL=0
+
+          check_status() {
+            local name="$1" url="$2" expected="$3"
+            printf "  %-40s " "$name"
+            CODE=$($CURL -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) || { echo "FAIL (connection)"; FAIL=$((FAIL+1)); return; }
+            if [ "$CODE" = "$expected" ]; then echo "OK ($CODE)"; PASS=$((PASS+1)); else echo "FAIL ($CODE != $expected)"; FAIL=$((FAIL+1)); fi
+          }
+
+          echo "── Production Smoke Tests ──"
+          check_status "GET /api/health"          "${BASE_URL}/api/health"            "200"
+          check_status "GET /api/radar/nodes"     "${BASE_URL}/api/radar/nodes"       "200"
+          check_status "GET /api/radar/analytics" "${BASE_URL}/api/radar/analytics"   "200"
+          check_status "GET /api/test/dashboard"  "${BASE_URL}/api/test/dashboard"    "200"
+          check_status "GET /api/config"          "${BASE_URL}/api/config"            "200"
+          check_status "GET / (frontend)"         "https://towers.retina.fm/"         "200"
+          check_status "GET /api/health (api.retina.fm)" "${API_URL}/api/health"      "200"
+
+          # Check aircraft data is flowing
+          AIRCRAFT=$(curl -sk "${BASE_URL}/api/test/dashboard" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['pipeline']['aircraft_on_map'])" 2>/dev/null) || AIRCRAFT=0
+          printf "  %-40s " "Aircraft on map > 0"
+          if [ "${AIRCRAFT:-0}" -gt 0 ]; then echo "OK ($AIRCRAFT)"; PASS=$((PASS+1)); else echo "WARN ($AIRCRAFT — fleet may still be connecting)"; fi
+
+          echo ""
+          echo "Results: $PASS passed, $FAIL failed"
+          [ "$FAIL" -eq 0 ] || exit 1

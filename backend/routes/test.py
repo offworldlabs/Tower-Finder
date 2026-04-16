@@ -7,8 +7,10 @@ from collections import deque
 from datetime import datetime, timezone
 
 import orjson
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import Response
+
+from core.auth import require_admin
 
 from core import state
 from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex, position_distance_km
@@ -23,6 +25,7 @@ _TASK_EXPECTED_INTERVAL_S = {
     "analytics_refresh": 60,
     "aircraft_flush": 5,
     "archive_flush": 120,
+    "archive_lifecycle": 3600,
     "reputation_evaluator": 120,
     "adsb_truth_fetcher": 300,
     "solver": 120,
@@ -255,7 +258,7 @@ async def validate_ground_truth(body: dict = Body(...)):
 
 
 @router.post("/api/test/ground-truth/push")
-async def push_ground_truth_snapshot(body: dict = Body(...)):
+async def push_ground_truth_snapshot(body: dict = Body(...), _=Depends(require_admin)):
     ts = body.get("ts_ms", int(time.time() * 1000)) / 1000.0
     aircraft_list = body.get("aircraft", [])
     if not isinstance(aircraft_list, list):
@@ -311,7 +314,7 @@ async def push_ground_truth_snapshot(body: dict = Body(...)):
 
 
 @router.post("/api/sim/adsb/push")
-async def sim_push_adsb_positions(body: dict = Body(...)):
+async def sim_push_adsb_positions(body: dict = Body(...), _=Depends(require_admin)):
     """Simulator pushes live ADS-B positions every second directly into state.adsb_aircraft.
 
     This keeps each aircraft's position current at 1 Hz regardless of how many
@@ -418,7 +421,7 @@ async def get_simulation_config():
 
 
 @router.put("/api/simulation/config")
-async def put_simulation_config(body: dict = Body(...)):
+async def put_simulation_config(body: dict = Body(...), _=Depends(require_admin)):
     """Update simulation physics fractions.
 
     Accepted keys: frac_anomalous, frac_drone, frac_dark (0.0–1.0 each).

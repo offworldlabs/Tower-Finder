@@ -1,7 +1,41 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = [
+    "--cov=.",
+    "--cov-report=term-missing:skip-covered",
+    "--cov-report=html:htmlcov",
+    "--cov-fail-under=55",
+    "-q",
+]
 markers = [
     "external: requires external API (open-meteo.com)",
     "asyncio: mark test as async (requires pytest-asyncio)",
 ]
+
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "tests/*",
+    "scripts/*",
+    "simulation/*",
+    "*/conftest.py",
+    # OAuth routes — require browser / external OAuth provider; not unit-testable:
+    "routes/auth.py",
+    # Simulation/test-only endpoints — not production code paths:
+    "routes/test.py",
+    # External API clients — require live network; tested via integration only:
+    "clients/fcc.py",
+    # blah2 bridge — requires live blah2 hardware/daemon:
+    "services/blah2_bridge.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+skip_covered = true
+show_missing = true

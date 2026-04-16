@@ -28,13 +28,14 @@ from services.background import (
     frame_processor_loop,
     aircraft_flush_task,
     archive_flush_task,
+    archive_lifecycle_task,
     analytics_refresh_task,
     storage_refresh_task,
     reputation_evaluator,
     adsb_truth_fetcher,
     start_solver_workers,
 )
-from services.state_snapshot import save_snapshot, restore_snapshot
+from services.state_snapshot import save_snapshot, restore_snapshot, _SAVE_INTERVAL_S
 from routes.towers import router as towers_router
 from routes.stats import router as stats_router
 from routes.radar import router as radar_router
@@ -88,9 +89,9 @@ async def lifespan(app: FastAPI):
         _n_frame_workers = int(os.environ.get("FRAME_WORKERS", "4"))
 
         async def _snapshot_loop():
-            """Save state snapshot every 5 minutes."""
+            """Save state snapshot periodically."""
             while True:
-                await asyncio.sleep(300)
+                await asyncio.sleep(_SAVE_INTERVAL_S)
                 try:
                     await asyncio.get_event_loop().run_in_executor(None, save_snapshot)
                 except Exception:
@@ -102,6 +103,7 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(adsb_truth_fetcher()),
             asyncio.create_task(aircraft_flush_task(radar_pipeline)),
             asyncio.create_task(archive_flush_task()),
+            asyncio.create_task(archive_lifecycle_task()),
             asyncio.create_task(analytics_refresh_task()),
             asyncio.create_task(storage_refresh_task()),
             asyncio.create_task(blah2_bridge_task()),

@@ -36,6 +36,11 @@ ANALYTICS_REFRESH_INTERVAL_S = 30     # Background analytics recompute
 ARCHIVE_FLUSH_INTERVAL_S = 30         # Detection archive batch write
 ARCHIVE_BATCH_MAX = 200               # Max frames per archive flush
 
+# ── Archive lifecycle (R2 offload + local disk cleanup) ──────────────────────
+ARCHIVE_OFFLOAD_AGE_DAYS = 1          # Upload to R2 after this many days
+ARCHIVE_RETENTION_DAYS = 14           # Delete local files after this many days
+ARCHIVE_LIFECYCLE_INTERVAL_S = 3600   # Run lifecycle check every hour
+
 # ── Reputation thresholds ────────────────────────────────────────────────────
 TRUST_WARN_THRESHOLD = 0.3            # Trust score warning level
 TRUST_BLOCK_THRESHOLD = 0.1           # Trust score block level
