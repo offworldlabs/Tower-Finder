@@ -1,5 +1,9 @@
 """Node analytics and inter-node association endpoints."""
 
+import math
+import time
+from collections import Counter
+
 import orjson
 from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import Response
@@ -70,3 +74,96 @@ async def association_status():
         "pending_frames": list(state.node_associator._pending_frames.keys()),
         "overlaps": state.node_associator.get_overlap_summary(),
     }
+
+
+@router.get("/api/radar/anomalies")
+async def radar_anomalies():
+    """Anomaly metrics: summary, breakdown by type, timeline, geographic clusters, recent events."""
+    now = time.time()
+
+    with state.anomaly_lock:
+        log_snapshot = list(state.anomaly_log)
+        active_hexes = set(state.anomaly_hexes)
+
+    # --- Live anomaly types from aircraft.json ---
+    live_aircraft = state.latest_aircraft_json.get("aircraft", [])
+    live_type_counts: Counter = Counter()
+    for ac in live_aircraft:
+        if ac.get("is_anomalous"):
+            for atype in ac.get("anomaly_types", []):
+                live_type_counts[atype] += 1
+
+    # --- Breakdown by type from log + live ---
+    log_type_counts: Counter = Counter()
+    for ev in log_snapshot:
+        log_type_counts[ev.get("reason", "unknown")] += 1
+
+    by_type = dict(log_type_counts + live_type_counts)
+
+    # --- Unique hexes in log ---
+    unique_hexes = {ev.get("hex") for ev in log_snapshot if ev.get("hex")}
+
+    # --- Timeline: 1-hour buckets over last 24h ---
+    bucket_size = 3600
+    cutoff = now - 86400
+    buckets: Counter = Counter()
+    for ev in log_snapshot:
+        ts = ev.get("ts", 0)
+        if ts >= cutoff:
+            b = int(ts // bucket_size) * bucket_size
+            buckets[b] += 1
+
+    # Fill empty buckets so the chart is continuous
+    timeline = []
+    if buckets:
+        first = min(buckets)
+        last = max(buckets)
+    else:
+        first = int(cutoff // bucket_size) * bucket_size
+        last = int(now // bucket_size) * bucket_size
+    b = first
+    while b <= last:
+        timeline.append({"ts": b, "count": buckets.get(b, 0)})
+        b += bucket_size
+
+    # --- Geographic clusters: 0.1° grid ---
+    geo_grid: dict[tuple, list] = {}
+    for ev in log_snapshot:
+        lat = ev.get("lat")
+        lon = ev.get("lon")
+        if lat is None or lon is None:
+            continue
+        key = (round(lat, 1), round(lon, 1))
+        geo_grid.setdefault(key, []).append(ev.get("reason", "unknown"))
+
+    clusters = []
+    for (glat, glon), reasons in geo_grid.items():
+        dominant = Counter(reasons).most_common(1)[0][0] if reasons else "unknown"
+        clusters.append({
+            "lat": glat,
+            "lon": glon,
+            "count": len(reasons),
+            "dominant_type": dominant,
+        })
+    clusters.sort(key=lambda c: c["count"], reverse=True)
+
+    # --- Most common anomaly type ---
+    all_types = log_type_counts + live_type_counts
+    most_common = all_types.most_common(1)[0][0] if all_types else None
+
+    payload = {
+        "summary": {
+            "active_count": len(active_hexes),
+            "total_events": len(log_snapshot),
+            "unique_hexes": len(unique_hexes),
+            "most_common_type": most_common,
+        },
+        "by_type": by_type,
+        "timeline": timeline,
+        "geographic_clusters": clusters[:50],
+        "recent_events": log_snapshot,
+    }
+    return Response(
+        content=orjson.dumps(payload, option=orjson.OPT_SERIALIZE_NUMPY),
+        media_type="application/json",
+    )

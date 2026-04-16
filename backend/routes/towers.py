@@ -5,7 +5,7 @@ import logging
 import os
 
 import httpx
-from fastapi import APIRouter, Depends, Query, HTTPException, Body
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from core.auth import require_admin
 
@@ -178,7 +178,7 @@ async def get_config():
 
 
 @router.put("/api/config")
-async def update_config(body: dict, _user=Depends(require_admin)):
+async def update_config(body: dict, _admin=Depends(require_admin)):
     with open(_CONFIG_PATH, "w") as f:
         json.dump(body, f, indent=2)
     reload_config()
