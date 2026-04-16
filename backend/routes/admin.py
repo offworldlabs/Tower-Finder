@@ -5,7 +5,6 @@ import concurrent.futures
 import json
 import logging
 import os
-import shutil
 import time
 from collections import deque
 from pathlib import Path
@@ -26,7 +25,6 @@ from config.constants import (
     EVENT_LOG_MAX,
     NODE_OFFLINE_THRESHOLD_S,
     NODE_HEALTH_CHECK_INTERVAL_S,
-    STORAGE_CACHE_TTL_S,
     CONFIG_LIVE_CACHE_TTL_S,
 )
 
@@ -41,6 +39,7 @@ _TASK_EXPECTED_INTERVAL_S = {
     "reputation_evaluator": 120,
     "adsb_truth_fetcher": 300,
     "solver": 120,
+    "storage_refresh": 720,  # expected every 300 s; alert if >2× late
 }
 
 
@@ -276,10 +275,8 @@ async def config_history(_admin=Depends(require_admin)):
 
 
 # ── Storage stats ─────────────────────────────────────────────────────────────
-
-_storage_cache: dict | None = None
-_storage_cache_ts: float = 0.0
-_STORAGE_CACHE_TTL = STORAGE_CACHE_TTL_S
+# Results are pre-computed by storage_refresh_task (services/tasks/storage_refresh.py)
+# and stored in state.latest_storage_bytes. The endpoint just returns those bytes.
 
 # TTL cache for live-generated node/tower config (active when JSON files absent)
 _nodes_config_cache: tuple | None = None
@@ -287,162 +284,14 @@ _towers_config_cache: tuple | None = None
 _CONFIG_LIVE_CACHE_TTL = CONFIG_LIVE_CACHE_TTL_S
 
 
-def _scan_archive_dir(archive_dir) -> tuple[int, int, dict]:
-    """Blocking archive scan using subprocess du/find — avoids O(N) stat() calls.
-
-    With 78 k+ files, Python rglob+stat takes 120 s on Docker overlay FS.
-    A single 'du --max-depth=4' call lets the kernel do the tree walk in C
-    and returns per-node-day byte totals in ~1 s regardless of file count.
-    """
-    import subprocess
-
-    if not archive_dir.exists():
-        return 0, 0, {}
-
-    total_bytes = 0
-    total_files = 0
-    per_node: dict[str, dict] = {}
-
-    # ── Total + per-node bytes via du ────────────────────────────────────────
-    # archive structure: archive / YYYY / MM / DD / NODE_ID / *.parquet
-    # --max-depth=4 prints one line per node-day dir; last line is archive total.
-    try:
-        r = subprocess.run(
-            ["du", "-b", "--max-depth=4", str(archive_dir)],
-            capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode == 0:
-            from pathlib import Path as _P
-            for line in r.stdout.splitlines():
-                if "\t" not in line:
-                    continue
-                sz_str, path = line.split("\t", 1)
-                sz = int(sz_str)
-                try:
-                    rel = _P(path).relative_to(archive_dir)
-                except ValueError:
-                    total_bytes = sz  # archive root line
-                    continue
-                parts = rel.parts
-                if len(parts) == 0:
-                    total_bytes = sz
-                elif len(parts) == 4:  # YYYY/MM/DD/NODE_ID
-                    node_id = parts[3]
-                    e = per_node.setdefault(node_id, {"files": 0, "bytes": 0})
-                    e["bytes"] += sz
-    except Exception:
-        # Fallback: du -sb for total only
-        try:
-            r = subprocess.run(
-                ["du", "-sb", str(archive_dir)],
-                capture_output=True, text=True, timeout=30,
-            )
-            if r.returncode == 0 and r.stdout:
-                total_bytes = int(r.stdout.split()[0])
-        except Exception:
-            pass
-
-    # If du didn't give us the root total (it should be the last line with depth>4
-    # reporting archive dir itself), use the sum of depth-1 dirs.
-    if total_bytes == 0:
-        total_bytes = sum(e["bytes"] for e in per_node.values())
-
-    # ── File count via find (no stat — just directory entries) ───────────────
-    try:
-        r = subprocess.run(
-            ["find", str(archive_dir), "-type", "f", "-printf", "x"],
-            capture_output=True, timeout=30,
-        )
-        if r.returncode == 0:
-            total_files = len(r.stdout)  # one 'x' per file, no newlines needed
-            # Also populate per-node file counts from a second find pass
-            r2 = subprocess.run(
-                ["find", str(archive_dir), "-mindepth", "5", "-maxdepth", "5",
-                 "-type", "f", "-printf", "%P\n"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if r2.returncode == 0:
-                from pathlib import Path as _P2
-                for rel_path in r2.stdout.splitlines():
-                    if not rel_path:
-                        continue
-                    parts = _P2(rel_path).parts
-                    node_id = parts[3] if len(parts) > 3 else "unknown"
-                    per_node.setdefault(node_id, {"files": 0, "bytes": 0})["files"] += 1
-    except Exception:
-        pass
-
-    return total_files, total_bytes, per_node
-
-
 @router.get("/storage")
 async def storage_stats(_admin=Depends(require_admin)):
-    global _storage_cache, _storage_cache_ts
-    now = time.time()
-    if _storage_cache is not None and now - _storage_cache_ts < _STORAGE_CACHE_TTL:
-        return _storage_cache
-
-    archive_dir = _BACKEND_DIR / "coverage_data" / "archive"
-    loop = asyncio.get_running_loop()
-    total_files, total_bytes, per_node = await loop.run_in_executor(
-        _admin_executor, _scan_archive_dir, archive_dir
-    )
-
-    # Disk usage (shutil.disk_usage is fast — single stat call)
-    disk_path = str(archive_dir) if archive_dir.exists() else str(_BACKEND_DIR)
-    try:
-        du = shutil.disk_usage(disk_path)
-        disk_total = du.total
-        disk_used = du.used
-        disk_free = du.free
-    except Exception:
-        disk_total = disk_used = disk_free = 0
-
-    # Estimate per-node write rate (bytes/day) from archive size and node uptime
-    per_node_rate: dict[str, float] = {}
-    for node_id, pn in per_node.items():
-        node_bytes = pn.get("bytes", 0)
-        if node_bytes <= 0:
-            continue
-        # Get uptime from analytics
-        node_info = state.connected_nodes.get(node_id, {})
-        first_seen = node_info.get("first_seen_ts")
-        if not first_seen:
-            # Node not currently tracked (disconnected/historical) — skip to
-            # avoid inflating rate with a bogus 1-day age assumption.
-            continue
-        age_days = max((now - first_seen) / 86400, 0.01)
-        per_node_rate[node_id] = round(node_bytes / age_days, 0)
-
-    total_rate = sum(per_node_rate.values())
-    days_until_full = 0.0
-    if total_rate > 0 and disk_free > 0:
-        days_until_full = round(disk_free / total_rate, 1)
-
-    result = {
-        "archive_files": total_files,
-        "archive_bytes": total_bytes,
-        "archive_mb": round(total_bytes / (1024 * 1024), 2),
-        "per_node": per_node,
-        "disk": {
-            "total_bytes": disk_total,
-            "used_bytes": disk_used,
-            "free_bytes": disk_free,
-            "total_gb": round(disk_total / (1024 ** 3), 2),
-            "used_gb": round(disk_used / (1024 ** 3), 2),
-            "free_gb": round(disk_free / (1024 ** 3), 2),
-            "used_pct": round(disk_used / max(disk_total, 1) * 100, 1),
-        },
-        "write_rate": {
-            "total_bytes_per_day": round(total_rate, 0),
-            "total_mb_per_day": round(total_rate / (1024 * 1024), 2),
-            "per_node_bytes_per_day": per_node_rate,
-            "days_until_full": days_until_full,
-        },
-    }
-    _storage_cache = result
-    _storage_cache_ts = now
-    return result
+    if state.latest_storage_bytes == b'{}':
+        # Background task hasn't completed its first scan yet (startup in progress).
+        # Return 202 so the frontend knows to retry rather than treating it as an error.
+        return Response(content=b'{"status":"initializing"}', status_code=202,
+                        media_type="application/json")
+    return Response(content=state.latest_storage_bytes, media_type="application/json")
 
 
 # ── Leaderboard ──────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { api } from "../../api/client";
 
 const PAGE_SIZE = 50;
@@ -9,11 +9,25 @@ export default function StoragePage() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const fetchStorage = () => {
+    api.adminStorage()
+      .then((s) => {
+        setStorage(s);
+        // If the background scan hasn't completed yet, retry in 10 s.
+        if (s?.status === "initializing") {
+          retryTimer.current = setTimeout(fetchStorage, 10000);
+        }
+      })
+      .catch(console.error);
+  };
 
   useEffect(() => {
-    api.adminStorage()
-      .then((s) => setStorage(s))
-      .catch(console.error);
+    fetchStorage();
+    return () => {
+      if (retryTimer.current) clearTimeout(retryTimer.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -98,7 +112,9 @@ export default function StoragePage() {
                 </table>
               </>
             ) : (
-              <p style={{ color: "var(--text-muted)" }}>No disk data</p>
+              <p style={{ color: "var(--text-muted)" }}>
+                {storage?.status === "initializing" ? "Scan in progress…" : "No disk data"}
+              </p>
             )}
           </div>
         </div>
@@ -130,7 +146,9 @@ export default function StoragePage() {
                 </tbody>
               </table>
             ) : (
-              <p style={{ color: "var(--text-muted)" }}>No write rate data</p>
+              <p style={{ color: "var(--text-muted)" }}>
+                {storage?.status === "initializing" ? "Scan in progress…" : "No write rate data"}
+              </p>
             )}
           </div>
         </div>

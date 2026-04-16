@@ -2,10 +2,7 @@ const BASE = "";
 
 async function request(path, opts: any = {}) {
   const controller = new AbortController();
-  const timeoutMs =
-    path === "/api/auth/me" ? 30000
-    : path === "/api/admin/storage" ? 90000   // du scan on large archive can take 60+ s
-    : 10000;
+  const timeoutMs = path === "/api/auth/me" ? 30000 : 10000;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`${BASE}${path}`, {

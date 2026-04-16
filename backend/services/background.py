@@ -12,6 +12,7 @@ from services.tasks import (  # noqa: F401
     start_solver_workers,
     frame_processor_loop,
     aircraft_flush_task,
+    storage_refresh_task,
     archive_flush_task,
     reputation_evaluator,
     adsb_truth_fetcher,
