@@ -10,6 +10,7 @@ import time
 import orjson
 
 from core import state
+from config.constants import YAGI_BEAM_WIDTH_DEG, YAGI_MAX_RANGE_KM
 from services.tasks._helpers import haversine_km, bistatic_delay_us, _DELAY_MATCH_THRESHOLD_US
 
 _analytics_executor = concurrent.futures.ThreadPoolExecutor(
@@ -91,6 +92,12 @@ def _refresh_analytics_and_nodes():
     # Solver-vs-ADS-B accuracy statistics
     _refresh_accuracy_stats()
 
+    # Per-node missed detection analysis
+    try:
+        _refresh_missed_detections(_nodes_snapshot)
+    except Exception:
+        logging.exception("_refresh_missed_detections failed")
+
     # Radar3 solver verification
     try:
         _refresh_radar3_verification()
@@ -101,6 +108,144 @@ def _refresh_analytics_and_nodes():
     _ensure_custody_data()
     # Evict PassiveRadarPipeline instances for long-disconnected nodes to free RAM
     _evict_stale_pipelines(_nodes_snapshot)
+
+
+# ── Missed detection analysis ─────────────────────────────────────────────────
+
+def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Bearing from (lat1, lon1) to (lat2, lon2) in degrees [0, 360)."""
+    lat1r = math.radians(lat1)
+    lat2r = math.radians(lat2)
+    dlonr = math.radians(lon2 - lon1)
+    y = math.sin(dlonr) * math.cos(lat2r)
+    x = (math.cos(lat1r) * math.sin(lat2r)
+         - math.sin(lat1r) * math.cos(lat2r) * math.cos(dlonr))
+    return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+
+
+def _aircraft_in_beam(
+    ac_lat: float, ac_lon: float,
+    rx_lat: float, rx_lon: float,
+    beam_azimuth_deg: float, beam_width_deg: float,
+    max_range_km: float,
+) -> bool:
+    """Return True if an aircraft at (ac_lat, ac_lon) is inside the node beam."""
+    dist_km = haversine_km(rx_lat, rx_lon, ac_lat, ac_lon)
+    if dist_km > max_range_km:
+        return False
+    bearing = _bearing_deg(rx_lat, rx_lon, ac_lat, ac_lon)
+    # Angular difference, wrapped to [-180, 180]
+    diff = (bearing - beam_azimuth_deg + 180) % 360 - 180
+    return abs(diff) <= beam_width_deg / 2.0
+
+
+def _refresh_missed_detections(nodes_snapshot: list):
+    """Compare ADS-B ground truth against each node's beam geometry.
+
+    For each active node, count how many ADS-B aircraft are within its
+    detection zone but were NOT detected by the node's tracker.
+    Results stored in ``state.latest_missed_detections``.
+    """
+    now = time.time()
+    # Snapshot current ADS-B positions (both from node frames and external)
+    adsb_snapshot: list[tuple[str, float, float]] = []
+    seen_hexes: set[str] = set()  # lowercase, for O(1) dedup against external cache
+    for hex_code, entry in list(state.adsb_aircraft.items()):
+        lat = entry.get("lat")
+        lon = entry.get("lon")
+        if lat is None or lon is None:
+            continue
+        age_s = now - entry.get("last_seen_ms", 0) / 1000
+        if age_s > 120:
+            continue
+        adsb_snapshot.append((hex_code, lat, lon))
+        seen_hexes.add(hex_code.lower())
+
+    for hex_code, entry in list(state.external_adsb_cache.items()):
+        lat = entry.get("lat")
+        lon = entry.get("lon")
+        if lat is None or lon is None:
+            continue
+        # Avoid duplicates — O(1) set lookup, case-insensitive
+        if hex_code.lower() in seen_hexes:
+            continue
+        adsb_snapshot.append((hex_code, lat, lon))
+        seen_hexes.add(hex_code.lower())
+
+    result: dict[str, dict] = {}
+
+    for nid, info in nodes_snapshot:
+        if info.get("status") == "disconnected":
+            continue
+        cfg = info.get("config", {})
+        rx_lat = cfg.get("rx_lat")
+        rx_lon = cfg.get("rx_lon")
+        tx_lat = cfg.get("tx_lat")
+        tx_lon = cfg.get("tx_lon")
+        if not all((rx_lat, rx_lon, tx_lat, tx_lon)):
+            continue
+
+        beam_width = float(cfg.get("beam_width_deg") or YAGI_BEAM_WIDTH_DEG)
+        max_range = float(cfg.get("max_range_km") or YAGI_MAX_RANGE_KM)
+        beam_azimuth = cfg.get("beam_azimuth_deg")
+        if beam_azimuth is None:
+            beam_azimuth = (_bearing_deg(rx_lat, rx_lon, tx_lat, tx_lon) + 90.0) % 360.0
+
+        # Aircraft within this node's beam
+        in_range: list[str] = []
+        for hex_code, ac_lat, ac_lon in adsb_snapshot:
+            if _aircraft_in_beam(ac_lat, ac_lon, rx_lat, rx_lon,
+                                 beam_azimuth, beam_width, max_range):
+                in_range.append(hex_code)
+
+        if not in_range:
+            result[nid] = {
+                "in_range": 0, "detected": 0, "missed": 0,
+                "miss_rate": 0.0, "missed_aircraft": [],
+            }
+            continue
+
+        # Which of these did the node actually detect?
+        # Check the node's pipeline tracker for ADS-B hex associations.
+        pipeline = state.node_pipelines.get(nid)
+        detected_hexes: set[str] = set()
+        if pipeline:
+            for track in pipeline.tracker.tracks:
+                hex_val = getattr(track, "adsb_hex", None)
+                if hex_val:
+                    detected_hexes.add(hex_val.lower())
+
+        in_range_set = set(h.lower() for h in in_range)
+        detected_in_range = in_range_set & detected_hexes
+        missed = in_range_set - detected_hexes
+
+        # Build details for missed aircraft (limit to 20 for payload size)
+        missed_details = []
+        for hex_code in list(missed)[:20]:
+            for h, lat, lon in adsb_snapshot:
+                if h.lower() == hex_code:
+                    dist = haversine_km(rx_lat, rx_lon, lat, lon)
+                    missed_details.append({
+                        "hex": hex_code,
+                        "lat": round(lat, 5),
+                        "lon": round(lon, 5),
+                        "dist_km": round(dist, 1),
+                    })
+                    break
+
+        n_in_range = len(in_range_set)
+        n_detected = len(detected_in_range)
+        n_missed = len(missed)
+
+        result[nid] = {
+            "in_range": n_in_range,
+            "detected": n_detected,
+            "missed": n_missed,
+            "miss_rate": round(n_missed / n_in_range, 3) if n_in_range > 0 else 0.0,
+            "missed_aircraft": missed_details,
+        }
+
+    state.latest_missed_detections = result
 
 
 def _refresh_accuracy_stats():

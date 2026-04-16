@@ -329,8 +329,6 @@ def _scan_archive_dir(archive_dir) -> tuple[int, int, dict]:
                     node_id = parts[3]
                     e = per_node.setdefault(node_id, {"files": 0, "bytes": 0})
                     e["bytes"] += sz
-                elif len(parts) == 0 or path == str(archive_dir):
-                    total_bytes = sz
     except Exception:
         # Fallback: du -sb for total only
         try:
@@ -389,11 +387,58 @@ async def storage_stats(_admin=Depends(require_admin)):
         _admin_executor, _scan_archive_dir, archive_dir
     )
 
+    # Disk usage (shutil.disk_usage is fast — single stat call)
+    import shutil
+    disk_path = str(archive_dir) if archive_dir.exists() else str(_BACKEND_DIR)
+    try:
+        du = shutil.disk_usage(disk_path)
+        disk_total = du.total
+        disk_used = du.used
+        disk_free = du.free
+    except Exception:
+        disk_total = disk_used = disk_free = 0
+
+    # Estimate per-node write rate (bytes/day) from archive size and node uptime
+    per_node_rate: dict[str, float] = {}
+    for node_id, pn in per_node.items():
+        node_bytes = pn.get("bytes", 0)
+        if node_bytes <= 0:
+            continue
+        # Get uptime from analytics
+        node_info = state.connected_nodes.get(node_id, {})
+        first_seen = node_info.get("first_seen_ts")
+        if first_seen:
+            age_days = max((now - first_seen) / 86400, 0.01)
+        else:
+            # Fallback: assume at least 1 day
+            age_days = 1.0
+        per_node_rate[node_id] = round(node_bytes / age_days, 0)
+
+    total_rate = sum(per_node_rate.values())
+    days_until_full = 0.0
+    if total_rate > 0 and disk_free > 0:
+        days_until_full = round(disk_free / total_rate, 1)
+
     result = {
         "archive_files": total_files,
         "archive_bytes": total_bytes,
         "archive_mb": round(total_bytes / (1024 * 1024), 2),
         "per_node": per_node,
+        "disk": {
+            "total_bytes": disk_total,
+            "used_bytes": disk_used,
+            "free_bytes": disk_free,
+            "total_gb": round(disk_total / (1024 ** 3), 2),
+            "used_gb": round(disk_used / (1024 ** 3), 2),
+            "free_gb": round(disk_free / (1024 ** 3), 2),
+            "used_pct": round(disk_used / max(disk_total, 1) * 100, 1),
+        },
+        "write_rate": {
+            "total_bytes_per_day": round(total_rate, 0),
+            "total_mb_per_day": round(total_rate / (1024 * 1024), 2),
+            "per_node_bytes_per_day": per_node_rate,
+            "days_until_full": days_until_full,
+        },
     }
     _storage_cache = result
     _storage_cache_ts = now
@@ -425,6 +470,7 @@ async def leaderboard(_user=Depends(get_current_user)):
         m = s.get("metrics", {})
         t = s.get("trust", {})
         r = s.get("reputation", {})
+        miss = state.latest_missed_detections.get(node_id, {})
         entries.append({
             "node_id": node_id,
             "name": state.connected_nodes.get(node_id, {}).get("config", {}).get("name", node_id),
@@ -436,6 +482,10 @@ async def leaderboard(_user=Depends(get_current_user)):
             "trust_score": t.get("trust_score", 0),
             "reputation": r.get("reputation", 0),
             "online": state.connected_nodes.get(node_id, {}).get("status") not in ("disconnected", None),
+            "in_range": miss.get("in_range", 0),
+            "detected_in_range": miss.get("detected", 0),
+            "missed": miss.get("missed", 0),
+            "miss_rate": miss.get("miss_rate", 0.0),
         })
     # Sort by detections descending
     entries.sort(key=lambda e: e["detections"], reverse=True)

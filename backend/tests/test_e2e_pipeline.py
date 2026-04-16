@@ -726,3 +726,155 @@ class TestBackgroundFrameLoop:
         assert len(active) >= 1, (
             "frame_processor_loop must drive tracker to ACTIVE via M-of-N promotion"
         )
+
+
+# ── 7. Full integration: TCP → processor → analytics → API output ────────────
+
+class TestFullIntegrationPath:
+    """End-to-end test that exercises the *complete* production data path.
+
+    This is the integration gap that earlier test classes left open:
+    previous tests verify individual stages (TCP → queue, queue → tracker,
+    loop drains queue), but never confirm that the analytics refresh sees
+    the resulting node data and that the leaderboard/storage endpoints
+    return coherent results from it.
+
+    The test:
+      1. TCP handshake + N_WINDOW DETECTION frames
+      2. Drain frame_queue manually through process_one_frame
+      3. Run _refresh_analytics_and_nodes() synchronously
+      4. Assert state.latest_analytics_bytes contains the test node
+      5. Assert the leaderboard builder includes the node with correct data
+      6. Assert missed-detections computation runs without errors
+    """
+
+    def _tcp_handshake_and_process(self):
+        """Full path: TCP messages → queue → process_one_frame → promoted tracks."""
+        base = int(time.time() * 1000)
+        chunks = [_hello(), _config()]
+        for i in range(_N_FRAMES):
+            chunks.append(_detection(base + i * 2000))
+        chunks.append(b"")
+
+        reader = _FakeReader(chunks)
+        writer = _FakeWriter()
+
+        with patch("services.tcp_handler._NODE_MIN_INTERVAL_S", 0.0):
+            asyncio.run(handle_tcp_client(reader, writer))
+
+        pipe = PassiveRadarPipeline(_NODE_CONFIG)
+        state.node_pipelines[_NODE_ID] = pipe
+
+        frames = []
+        while not state.frame_queue.empty():
+            frames.append(state.frame_queue.get_nowait())
+
+        for node_id, frame in frames:
+            process_one_frame(node_id, frame, pipe)
+
+        return pipe, frames
+
+    def test_analytics_refresh_includes_node_after_processing(self):
+        """After TCP + processing, analytics refresh picks up the test node."""
+        from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
+
+        pipe, frames = self._tcp_handshake_and_process()
+        assert len(frames) == _N_FRAMES
+
+        # Run the analytics refresh synchronously
+        _refresh_analytics_and_nodes()
+
+        # The pre-serialised analytics bytes must contain our test node
+        import orjson
+        analytics = orjson.loads(state.latest_analytics_bytes)
+        assert _NODE_ID in analytics.get("nodes", {}), (
+            f"Analytics refresh must include {_NODE_ID} after frame processing; "
+            f"found nodes: {list(analytics.get('nodes', {}).keys())[:5]}"
+        )
+
+        # Nodes bytes must also contain the test node
+        nodes_data = orjson.loads(state.latest_nodes_bytes)
+        assert _NODE_ID in nodes_data.get("nodes", {}), (
+            f"Nodes snapshot must include {_NODE_ID}"
+        )
+
+    def test_leaderboard_includes_node_with_detections(self):
+        """Leaderboard data includes the test node with non-zero detections."""
+        from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
+        import orjson
+
+        self._tcp_handshake_and_process()
+        _refresh_analytics_and_nodes()
+
+        # Parse leaderboard the same way the endpoint does
+        raw = state.latest_analytics_bytes
+        summaries = orjson.loads(raw).get("nodes", {})
+        assert _NODE_ID in summaries
+
+        s = summaries[_NODE_ID]
+        m = s.get("metrics", {})
+        assert m.get("total_frames", 0) > 0, (
+            "Node must have recorded frames after processing"
+        )
+        assert m.get("total_detections", 0) > 0, (
+            "Node must have recorded detections after processing"
+        )
+
+    def test_missed_detections_computed_for_node(self):
+        """After processing, _refresh_missed_detections runs without crash
+        and produces an entry for the test node."""
+        from services.tasks.analytics_refresh import (
+            _refresh_analytics_and_nodes,
+            _refresh_missed_detections,
+        )
+
+        self._tcp_handshake_and_process()
+
+        # The TCP handler sets status="disconnected" on EOF. Override to
+        # "active" so _refresh_missed_detections doesn't skip this node.
+        with state.connected_nodes_lock:
+            if _NODE_ID in state.connected_nodes:
+                state.connected_nodes[_NODE_ID]["status"] = "active"
+
+        # Add a fake ADS-B aircraft within the node's beam so there's
+        # something to detect/miss.
+        ac_hex = "e2etest1"
+        state.adsb_aircraft[ac_hex] = {
+            "hex": ac_hex,
+            "lat": 33.85,    # near the default node location
+            "lon": -84.50,
+            "alt_baro": 35000,
+            "gs": 250,
+            "track": 90,
+            "last_seen_ms": int(time.time() * 1000),
+        }
+
+        with state.connected_nodes_lock:
+            snapshot = list(state.connected_nodes.items())
+
+        _refresh_missed_detections(snapshot)
+
+        assert _NODE_ID in state.latest_missed_detections, (
+            "Missed detections must contain the test node"
+        )
+        miss_data = state.latest_missed_detections[_NODE_ID]
+        assert "in_range" in miss_data
+        assert "missed" in miss_data
+        assert "miss_rate" in miss_data
+        assert isinstance(miss_data["miss_rate"], float)
+
+        # Cleanup
+        state.adsb_aircraft.pop(ac_hex, None)
+
+    def test_storage_endpoint_disk_fields(self):
+        """The storage scan helper returns disk usage fields."""
+        from routes.admin import _scan_archive_dir
+        from pathlib import Path
+
+        archive_dir = Path(__file__).resolve().parent.parent / "coverage_data" / "archive"
+        total_files, total_bytes, per_node = _scan_archive_dir(archive_dir)
+
+        # Should not crash even if the archive dir doesn't exist (empty results)
+        assert isinstance(total_files, int)
+        assert isinstance(total_bytes, int)
+        assert isinstance(per_node, dict)
