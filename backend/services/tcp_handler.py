@@ -8,6 +8,7 @@ import json
 import logging
 import hmac
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -158,6 +159,7 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                             "peer": str(peer),
                             "is_synthetic": is_synth,
                             "capabilities": msg.get("capabilities", {}),
+                            "first_seen_ts": state.connected_nodes.get(node_id, {}).get("first_seen_ts", time.time()),
                         }
                     logging.info("Radar TCP: CONFIG from %s (hash=%s, synthetic=%s)",
                                  node_id, config_hash, is_synth)

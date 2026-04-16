@@ -27,6 +27,7 @@ export default function LeaderboardPage() {
     if (sortBy === "uptime") return b.uptime_s - a.uptime_s;
     if (sortBy === "trust") return b.trust_score - a.trust_score;
     if (sortBy === "snr") return b.avg_snr - a.avg_snr;
+    if (sortBy === "miss_rate") return (a.miss_rate || 0) - (b.miss_rate || 0);
     return 0;
   });
 
@@ -88,13 +89,13 @@ export default function LeaderboardPage() {
       {/* Sort control */}
       <div style={{ marginBottom: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ fontSize: 13, color: "var(--text-muted)" }}>Sort by:</span>
-        {["detections", "uptime", "trust", "snr"].map((key) => (
+        {["detections", "uptime", "trust", "snr", "miss_rate"].map((key) => (
           <button
             key={key}
             className={`btn ${sortBy === key ? "btn-primary" : "btn-secondary"} btn-sm`}
             onClick={() => { setSortBy(key); setPage(0); }}
           >
-            {key === "snr" ? "SNR" : key.charAt(0).toUpperCase() + key.slice(1)}
+            {key === "snr" ? "SNR" : key === "miss_rate" ? "Miss Rate" : key.charAt(0).toUpperCase() + key.slice(1)}
           </button>
         ))}
         <input
@@ -135,6 +136,9 @@ export default function LeaderboardPage() {
                       <th>Status</th>
                       <th>Detections</th>
                       <th>Tracks</th>
+                      <th>In Range</th>
+                      <th>Missed</th>
+                      <th>Miss Rate</th>
                       <th>Uptime</th>
                       <th>Avg SNR</th>
                       <th>Trust</th>
@@ -154,6 +158,17 @@ export default function LeaderboardPage() {
                         </td>
                         <td>{entry.detections.toLocaleString()}</td>
                         <td>{entry.tracks}</td>
+                        <td>{entry.in_range || 0}</td>
+                        <td style={{ color: (entry.missed || 0) > 0 ? "#f59e0b" : undefined }}>
+                          {entry.missed || 0}
+                        </td>
+                        <td style={{
+                          fontWeight: 600,
+                          color: (entry.miss_rate || 0) > 0.5 ? "#ef4444"
+                            : (entry.miss_rate || 0) > 0.2 ? "#f59e0b" : "#10b981",
+                        }}>
+                          {(entry.in_range || 0) > 0 ? ((entry.miss_rate || 0) * 100).toFixed(1) + "%" : "—"}
+                        </td>
                         <td>{formatUptime(entry.uptime_s)}</td>
                         <td>{entry.avg_snr.toFixed(1)} dB</td>
                         <td>{(entry.trust_score * 100).toFixed(0)}%</td>
@@ -161,7 +176,7 @@ export default function LeaderboardPage() {
                     ))}
                     {paged.length === 0 && (
                       <tr>
-                        <td colSpan={8} style={{ textAlign: "center", padding: 32 }}>No nodes found</td>
+                        <td colSpan={11} style={{ textAlign: "center", padding: 32 }}>No nodes found</td>
                       </tr>
                     )}
                   </tbody>
