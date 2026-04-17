@@ -74,7 +74,8 @@ jobs:
   e2e:
     name: Playwright E2E (staging, no-live)
     runs-on: ubuntu-latest
-    needs: [frontend-build]
+    needs: [deploy-staging]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     defaults:
       run:
         working-directory: frontend
@@ -232,8 +233,7 @@ jobs:
           done
       - name: Run production smoke tests
         env:
-          BASE_URL: https://${{ secrets.SERVER_HOST }}
-          API_URL: https://api.retina.fm
+          BASE_URL: https://api.retina.fm
         run: |
           CURL="curl -s --connect-timeout 10 --max-time 30"
           PASS=0; FAIL=0
@@ -252,7 +252,7 @@ jobs:
           check_status "GET /api/test/dashboard"  "${BASE_URL}/api/test/dashboard"    "200"
           check_status "GET /api/config"          "${BASE_URL}/api/config"            "200"
           check_status "GET / (frontend)"         "https://towers.retina.fm/"         "200"
-          check_status "GET /api/health (api.retina.fm)" "${API_URL}/api/health"      "200"
+          check_status "GET /api/health (api.retina.fm)" "${BASE_URL}/api/health"     "200"
 
           # Check aircraft data is flowing
           AIRCRAFT=$(curl -sk "${BASE_URL}/api/test/dashboard" \
