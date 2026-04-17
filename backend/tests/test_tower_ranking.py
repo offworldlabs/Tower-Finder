@@ -1,16 +1,12 @@
 """Tests for tower ranking utilities — source detection, band classification, frequency parsing."""
 
 import os
-import sys
-
-import pytest
 
 os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
 from routes.towers import _detect_source  # noqa: E402
 from services.tower_ranking import classify_band, parse_user_frequencies  # noqa: E402
-
 
 # ── Auto source detection ────────────────────────────────────────────────────
 

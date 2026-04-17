@@ -1,9 +1,7 @@
 """Tests for core/auth.py — JWT, user management, and FastAPI auth dependencies."""
 
-import hashlib
 import json
 import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import jwt as pyjwt
@@ -18,7 +16,6 @@ from core.auth import (
     update_user_role,
     verify_token,
 )
-
 
 # ── JWT Token Tests ───────────────────────────────────────────────────────────
 
@@ -177,6 +174,7 @@ class TestAuthDependencies:
     def test_get_current_user_no_auth_returns_anonymous(self):
         """When AUTH_ENABLED=False, any request gets anonymous admin."""
         import asyncio
+
         from core.auth import get_current_user
         request = MagicMock()
         with patch("core.auth.AUTH_ENABLED", False):
@@ -186,6 +184,7 @@ class TestAuthDependencies:
 
     def test_require_admin_no_auth_returns_anonymous(self):
         import asyncio
+
         from core.auth import require_admin
         request = MagicMock()
         with patch("core.auth.AUTH_ENABLED", False):
@@ -194,8 +193,10 @@ class TestAuthDependencies:
 
     def test_get_current_user_missing_cookie_raises_401(self):
         import asyncio
-        from core.auth import get_current_user
+
         from fastapi import HTTPException
+
+        from core.auth import get_current_user
         request = MagicMock()
         request.cookies = {}
         with patch("core.auth.AUTH_ENABLED", True):
@@ -205,8 +206,10 @@ class TestAuthDependencies:
 
     def test_get_current_user_invalid_token_raises_401(self):
         import asyncio
-        from core.auth import get_current_user
+
         from fastapi import HTTPException
+
+        from core.auth import get_current_user
         request = MagicMock()
         request.cookies = {"auth_token": "invalid.jwt.token"}
         with patch("core.auth.AUTH_ENABLED", True):
@@ -216,8 +219,10 @@ class TestAuthDependencies:
 
     def test_require_admin_non_admin_raises_403(self, tmp_path):
         import asyncio
-        from core.auth import require_admin
+
         from fastapi import HTTPException
+
+        from core.auth import require_admin
 
         users_path = tmp_path / "users.json"
         user = {"id": "u1", "email": "regular@retina.fm", "role": "user"}

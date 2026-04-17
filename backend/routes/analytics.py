@@ -1,15 +1,14 @@
 """Node analytics and inter-node association endpoints."""
 
-import math
 import time
 from collections import Counter
 
 import orjson
 from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import Response
+from retina_analytics.trust import AdsReportEntry
 
 from core import state
-from retina_analytics.trust import AdsReportEntry
 
 router = APIRouter()
 
@@ -51,7 +50,7 @@ async def submit_adsb_report(body: dict = Body(...)):
     return {
         "status": "recorded",
         "trust_score": round(ts.score, 4) if ts else 0.0,
-        "n_samples": ts.n_samples if ts else 0,
+        "n_samples": len(ts.samples) if ts else 0,
     }
 
 

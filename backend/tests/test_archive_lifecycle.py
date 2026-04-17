@@ -5,15 +5,14 @@ archive so the real archive is never touched.
 """
 
 import os
-import time
 import tempfile
+import time
 import unittest
 import unittest.mock
 from pathlib import Path
 
 import boto3
 from moto import mock_aws
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -104,10 +103,10 @@ class TestArchiveLifecycle(unittest.TestCase):
         """Uploaded file should be retrievable from R2 with correct content."""
         _make_bucket()
         payload = b'{"node": "test", "detections": []}'
-        f = _create_archive_file(self._archive_dir, age_days=2.0, content=payload)
+        _create_archive_file(self._archive_dir, age_days=2.0, content=payload)
 
+        from services.r2_client import download_bytes, list_keys
         from services.tasks.archive_lifecycle import run_archive_lifecycle
-        from services.r2_client import list_keys, download_bytes
         run_archive_lifecycle()
 
         keys = list_keys("archive/")
@@ -175,7 +174,6 @@ class TestArchiveLifecycle(unittest.TestCase):
         """After deleting all files in a directory, empty dirs should be removed."""
         _make_bucket()
         f = _create_archive_file(self._archive_dir, age_days=15.0)
-        day_dir = f.parent.parent  # .../2025/01/01
 
         from services.tasks.archive_lifecycle import run_archive_lifecycle
         run_archive_lifecycle()

@@ -8,13 +8,13 @@ continue to work without changes::
 """
 
 from services.tasks import (  # noqa: F401
-    analytics_refresh_task,
-    start_solver_workers,
-    frame_processor_loop,
+    adsb_truth_fetcher,
     aircraft_flush_task,
-    storage_refresh_task,
+    analytics_refresh_task,
     archive_flush_task,
     archive_lifecycle_task,
+    frame_processor_loop,
     reputation_evaluator,
-    adsb_truth_fetcher,
+    start_solver_workers,
+    storage_refresh_task,
 )

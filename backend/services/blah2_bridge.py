@@ -17,14 +17,22 @@ import time
 
 import httpx
 
-from core import state
 from config.constants import (
-    C_KM_US,
-    BLAH2_POLL_INTERVAL_S as POLL_INTERVAL_S,
-    BLAH2_STALE_THRESHOLD_S as STALE_THRESHOLD_S,
-    BLAH2_RECONNECT_DELAY_S as RECONNECT_DELAY_S,
     BLAH2_MAX_FAILURES as MAX_FAILURES,
 )
+from config.constants import (
+    BLAH2_POLL_INTERVAL_S as POLL_INTERVAL_S,
+)
+from config.constants import (
+    BLAH2_RECONNECT_DELAY_S as RECONNECT_DELAY_S,
+)
+from config.constants import (
+    BLAH2_STALE_THRESHOLD_S as STALE_THRESHOLD_S,
+)
+from config.constants import (
+    C_KM_US,
+)
+from core import state
 
 log = logging.getLogger("blah2_bridge")
 
@@ -55,7 +63,8 @@ _NODE_CONFIG = {
 
 def _register_node():
     """Register radar3 in state as a real (non-synthetic) connected node."""
-    import hashlib, json
+    import hashlib
+    import json
     cfg_hash = hashlib.sha256(json.dumps(_NODE_CONFIG, sort_keys=True).encode()).hexdigest()[:16]
     with state.connected_nodes_lock:
         state.connected_nodes[NODE_ID] = {

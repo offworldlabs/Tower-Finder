@@ -1,19 +1,14 @@
 """Tests for services/state_snapshot.py — save/restore of in-memory state."""
 
 import json
-import os
 import time
 from collections import deque
-from dataclasses import asdict
 from unittest.mock import patch
 
-import pytest
-
-from retina_analytics.trust import AdsReportEntry, TrustScoreState
 from retina_analytics.reputation import NodeReputation
-from retina_custody.models import NodeIdentity
-from services.state_snapshot import save_snapshot, restore_snapshot, _SNAPSHOT_PATH
+from retina_analytics.trust import AdsReportEntry, TrustScoreState
 
+from services.state_snapshot import restore_snapshot, save_snapshot
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -173,7 +168,6 @@ class TestSnapshotEdgeCases:
 
     def test_save_uses_atomic_write(self, tmp_path):
         """Save writes to .tmp then replaces — if we crash mid-write, old file survives."""
-        from core import state
 
         snap_path = str(tmp_path / "snap.json")
         # Write a known-good snapshot first

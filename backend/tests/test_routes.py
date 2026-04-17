@@ -12,7 +12,6 @@ os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
 from main import app  # noqa: E402
-from core import state  # noqa: E402
 
 
 @pytest.fixture()
@@ -162,7 +161,7 @@ class TestWebSocketAuth:
     def test_ws_open_when_no_token_configured(self, client):
         """When WS_AUTH_TOKEN is empty, any client can connect."""
         # WS_AUTH_TOKEN defaults to "" — should accept
-        with client.websocket_connect("/ws/aircraft") as ws:
+        with client.websocket_connect("/ws/aircraft"):
             # Connection succeeded — close immediately
             pass
 
@@ -178,7 +177,7 @@ class TestWebSocketAuth:
         """When WS_AUTH_TOKEN is set, valid tokens get accepted."""
         import routes.streaming as streaming_mod
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "secret-token-123")
-        with client.websocket_connect("/ws/aircraft?token=secret-token-123") as ws:
+        with client.websocket_connect("/ws/aircraft?token=secret-token-123"):
             pass
 
 

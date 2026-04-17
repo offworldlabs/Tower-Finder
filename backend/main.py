@@ -15,39 +15,39 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from dotenv import load_dotenv
 
-from pipeline.passive_radar import PassiveRadarPipeline, DEFAULT_NODE_CONFIG
 from core import state
-from services.tcp_handler import handle_tcp_client
+from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
+from routes.admin import router as admin_router
+from routes.analytics import router as analytics_router
+from routes.archive import router as archive_router
+from routes.auth import router as auth_router
+from routes.custody import router as custody_router
+from routes.output import router as output_router
+from routes.radar import router as radar_router
+from routes.stats import router as stats_router
+from routes.streaming import router as streaming_router
+from routes.test import router as test_router
+from routes.towers import router as towers_router
 from services.background import (
-    frame_processor_loop,
+    adsb_truth_fetcher,
     aircraft_flush_task,
+    analytics_refresh_task,
     archive_flush_task,
     archive_lifecycle_task,
-    analytics_refresh_task,
-    storage_refresh_task,
+    frame_processor_loop,
     reputation_evaluator,
-    adsb_truth_fetcher,
     start_solver_workers,
+    storage_refresh_task,
 )
-from services.state_snapshot import save_snapshot, restore_snapshot, SAVE_INTERVAL_S
-from routes.towers import router as towers_router
-from routes.stats import router as stats_router
-from routes.radar import router as radar_router
-from routes.analytics import router as analytics_router
-from routes.streaming import router as streaming_router
-from routes.archive import router as archive_router
-from routes.test import router as test_router
-from routes.custody import router as custody_router
-from routes.auth import router as auth_router
-from routes.admin import router as admin_router
-from routes.output import router as output_router
 from services.blah2_bridge import blah2_bridge_task
+from services.state_snapshot import SAVE_INTERVAL_S, restore_snapshot, save_snapshot
+from services.tcp_handler import handle_tcp_client
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -65,7 +65,9 @@ with open(os.path.join(_TAR1090_DATA_DIR, "receiver.json"), "w") as _f:
     json.dump(radar_pipeline.generate_receiver_json(), _f)
 
 # Inject pipeline reference into route modules that need it
-from routes import radar as _radar_mod, test as _test_mod  # noqa: E402
+from routes import radar as _radar_mod  # noqa: E402
+from routes import test as _test_mod
+
 _radar_mod.init(radar_pipeline)
 _test_mod.init(radar_pipeline)
 

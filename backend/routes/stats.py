@@ -13,7 +13,7 @@ _STATS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tower_st
 
 def _load_stats() -> dict:
     if os.path.exists(_STATS_PATH):
-        with open(_STATS_PATH, "r") as f:
+        with open(_STATS_PATH) as f:
             return json.load(f)
     return {"selections": []}
 

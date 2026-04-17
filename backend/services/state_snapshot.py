@@ -21,8 +21,6 @@ SAVE_INTERVAL_S = 60  # 1 minute
 
 def save_snapshot() -> None:
     """Serialise high-value state to disk as JSON."""
-    from retina_analytics.trust import AdsReportEntry, TrustScoreState
-    from retina_custody.models import NodeIdentity
 
     trust = {}
     for nid, ts in state.node_analytics.trust_scores.items():
@@ -62,7 +60,8 @@ def save_snapshot() -> None:
     logging.info("State snapshot saved (%d bytes)", size)
 
     # Replicate to R2 for durability across container recreates
-    from services.r2_client import is_enabled as r2_enabled, upload_file
+    from services.r2_client import is_enabled as r2_enabled
+    from services.r2_client import upload_file
     if r2_enabled():
         if upload_file("snapshots/state_snapshot.json", _SNAPSHOT_PATH):
             logging.info("State snapshot replicated to R2")
@@ -72,8 +71,8 @@ def save_snapshot() -> None:
 
 def restore_snapshot() -> bool:
     """Load state from disk snapshot. Returns True if restored, False if no snapshot found."""
-    from retina_analytics.trust import AdsReportEntry, TrustScoreState
     from retina_analytics.reputation import NodeReputation
+    from retina_analytics.trust import AdsReportEntry, TrustScoreState
     from retina_custody.models import NodeIdentity
 
     snap = None
@@ -88,7 +87,8 @@ def restore_snapshot() -> bool:
 
     # Fall back to R2 if local snapshot is missing or corrupt
     if snap is None:
-        from services.r2_client import is_enabled as r2_enabled, download_bytes
+        from services.r2_client import download_bytes
+        from services.r2_client import is_enabled as r2_enabled
         if r2_enabled():
             logging.info("Trying R2 for state snapshot...")
             data = download_bytes("snapshots/state_snapshot.json")

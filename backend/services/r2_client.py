@@ -14,7 +14,6 @@ Requires env vars:
 import logging
 import os
 from functools import lru_cache
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +92,7 @@ def upload_file(key: str, file_path: str, content_type: str = "application/json"
         return False
 
 
-def download_bytes(key: str) -> Optional[bytes]:
+def download_bytes(key: str) -> bytes | None:
     """Download an object from R2. Returns bytes or None on failure."""
     client = _get_client()
     if client is None:

@@ -13,7 +13,7 @@ from fastapi.responses import Response
 
 from core import state
 from core.auth import require_admin
-from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex, position_distance_km
+from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -76,8 +76,6 @@ async def test_network_dashboard():
 
 
 def _build_dashboard_data() -> bytes:
-    now = time.time()
-
     total_nodes = len(state.connected_nodes)
     active_nodes = sum(1 for n in state.connected_nodes.values() if n.get("status") not in ("disconnected",))
     synthetic_nodes = sum(1 for n in state.connected_nodes.values() if n.get("is_synthetic"))

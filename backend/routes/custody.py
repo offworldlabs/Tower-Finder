@@ -5,13 +5,12 @@ import os
 from datetime import datetime, timezone
 
 import orjson
-from fastapi import APIRouter, Body, HTTPException, Header
+from fastapi import APIRouter, Body, Header, HTTPException
 from fastapi.responses import Response
+from retina_custody.hash_chain import HashChainEntry, HashChainVerifier
+from retina_custody.models import NodeIdentity
 
 from core import state
-from retina_custody.crypto_backend import SignatureVerifier
-from retina_custody.hash_chain import HashChainVerifier, HashChainEntry
-from retina_custody.models import NodeIdentity
 
 router = APIRouter()
 
@@ -166,6 +165,6 @@ async def custody_verify_chain(node_id: str):
         verifier = HashChainVerifier(lambda nid: state.sig_verifier.get_key(nid))
         valid, issues = verifier.verify_chain(entry_objs)
         return {"node_id": node_id, "chain_length": len(entries), "valid": valid, "issues": issues}
-    except Exception as exc:
+    except Exception:
         logging.exception("Chain verification failed for %s", node_id)
-        raise HTTPException(status_code=500, detail="Chain verification failed")
+        raise HTTPException(status_code=500, detail="Chain verification failed") from None

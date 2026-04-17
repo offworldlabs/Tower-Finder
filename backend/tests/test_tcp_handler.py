@@ -12,12 +12,11 @@ import pytest
 
 from core import state
 from services.tcp_handler import (
+    _apply_synthetic_adsb,
+    _enqueue_detection,
     handle_tcp_client,
     is_synthetic_node,
-    _enqueue_detection,
-    _apply_synthetic_adsb,
 )
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

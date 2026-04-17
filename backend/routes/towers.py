@@ -5,16 +5,19 @@ import logging
 import os
 
 import httpx
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from core.auth import require_admin
-
-from services.tower_ranking import (
-    process_and_rank, reload_config, _CONFIG_PATH,
-    DEFAULT_RADIUS_KM, DEFAULT_LIMIT, parse_user_frequencies,
-)
-from clients.maprad import fetch_broadcast_systems
 from clients.fcc import fetch_fcc_broadcast_systems
+from clients.maprad import fetch_broadcast_systems
+from core.auth import require_admin
+from services.tower_ranking import (
+    _CONFIG_PATH,
+    DEFAULT_LIMIT,
+    DEFAULT_RADIUS_KM,
+    parse_user_frequencies,
+    process_and_rank,
+    reload_config,
+)
 
 router = APIRouter()
 
@@ -108,9 +111,9 @@ async def find_towers(
             )
     except HTTPException:
         raise
-    except Exception as exc:
+    except Exception:
         logging.exception("Tower data fetch failed")
-        raise HTTPException(status_code=502, detail="External service unavailable. Please try again.")
+        raise HTTPException(status_code=502, detail="External service unavailable. Please try again.") from None
 
     resolved_altitude = altitude
     if altitude == 0:
@@ -148,8 +151,9 @@ async def find_towers(
 
 @router.get("/api/health")
 async def health():
-    from core import state
     import time
+
+    from core import state
 
     issues = []
 
@@ -173,7 +177,7 @@ async def health():
 
 @router.get("/api/config")
 async def get_config():
-    with open(_CONFIG_PATH, "r") as f:
+    with open(_CONFIG_PATH) as f:
         return json.load(f)
 
 

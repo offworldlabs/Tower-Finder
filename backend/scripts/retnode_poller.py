@@ -38,7 +38,6 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Optional
 
 try:
     import requests as _requests
@@ -64,7 +63,7 @@ DEFAULT_TX_ALT_FT = 1600.0
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
 
 
-def _http_get(url: str, timeout: float = 5.0) -> Optional[dict]:
+def _http_get(url: str, timeout: float = 5.0) -> dict | None:
     """Fetch JSON from a URL. Returns None on any error."""
     try:
         if _HAS_REQUESTS:
@@ -167,7 +166,7 @@ def _tcp_connect(host: str, port: int) -> socket.socket:
             sock.settimeout(None)
             print(f"[poller] TCP connected to {host}:{port}", file=sys.stderr)
             return sock
-        except (ConnectionRefusedError, socket.timeout, OSError) as exc:
+        except (TimeoutError, ConnectionRefusedError, OSError) as exc:
             attempt += 1
             wait = min(2 ** attempt, 30)
             print(
@@ -187,7 +186,7 @@ def _send_msg(sock: socket.socket, msg: dict) -> None:
         sock.sendall(data)
 
 
-def _recv_msg(sock: socket.socket, timeout: float = CONFIG_ACK_TIMEOUT_S) -> Optional[dict]:
+def _recv_msg(sock: socket.socket, timeout: float = CONFIG_ACK_TIMEOUT_S) -> dict | None:
     """Receive a single newline-delimited JSON message."""
     sock.settimeout(timeout)
     buf = b""
@@ -199,7 +198,7 @@ def _recv_msg(sock: socket.socket, timeout: float = CONFIG_ACK_TIMEOUT_S) -> Opt
             buf += chunk
         sock.settimeout(None)
         return json.loads(buf.split(b"\n", 1)[0])
-    except (socket.timeout, json.JSONDecodeError):
+    except (TimeoutError, json.JSONDecodeError):
         sock.settimeout(None)
         return None
 
@@ -237,7 +236,7 @@ def _perform_handshake(sock: socket.socket, cfg: dict, cfg_hash: str) -> bool:
         ack = _recv_msg(sock, timeout=CONFIG_ACK_TIMEOUT_S)
         if ack and ack.get("type") == "CONFIG_ACK":
             if ack.get("config_hash") == cfg_hash:
-                print(f"[poller]   ← CONFIG_ACK — handshake complete", file=sys.stderr)
+                print("[poller]   ← CONFIG_ACK — handshake complete", file=sys.stderr)
                 return True
             print(f"[poller]   ← CONFIG_ACK hash mismatch (expected={cfg_hash})", file=sys.stderr)
         elif ack:
@@ -278,11 +277,11 @@ def _heartbeat_loop(
                 "config_hash": cfg_hash,
                 "status": "active",
             })
-            print(f"[poller]   → HEARTBEAT sent", file=sys.stderr)
+            print("[poller]   → HEARTBEAT sent", file=sys.stderr)
         except (BrokenPipeError, ConnectionResetError, OSError) as exc:
             print(f"[poller] heartbeat error: {exc}", file=sys.stderr)
             break
-    print(f"[poller] heartbeat thread stopped", file=sys.stderr)
+    print("[poller] heartbeat thread stopped", file=sys.stderr)
 
 
 def _listener_loop(
@@ -315,7 +314,7 @@ def _listener_loop(
                 except json.JSONDecodeError:
                     continue
                 if msg.get("type") == "CONFIG_REQUEST":
-                    print(f"[poller]   ← CONFIG_REQUEST — resending config", file=sys.stderr)
+                    print("[poller]   ← CONFIG_REQUEST — resending config", file=sys.stderr)
                     try:
                         _send_msg(sock, {
                             "type": "CONFIG",
@@ -347,7 +346,7 @@ def run_poller(
     print(f"[poller] poll_interval={poll_interval_s}s", file=sys.stderr)
 
     # Fetch and translate node config (retry until available)
-    raw_cfg: Optional[dict] = None
+    raw_cfg: dict | None = None
     while raw_cfg is None:
         print("[poller] Fetching node config...", file=sys.stderr)
         raw_cfg = _http_get(f"{node_url}/api/config")
@@ -365,7 +364,7 @@ def run_poller(
         file=sys.stderr,
     )
 
-    last_timestamp: Optional[int] = None
+    last_timestamp: int | None = None
     frames_sent = 0
     frames_skipped = 0
 

@@ -11,7 +11,7 @@ _CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config"
 
 
 def _load_config() -> dict:
-    with open(_CONFIG_PATH, "r") as f:
+    with open(_CONFIG_PATH) as f:
         return json.load(f)
 
 

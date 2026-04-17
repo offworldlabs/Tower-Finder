@@ -4,16 +4,17 @@ Handles: HELLO → CONFIG → HEARTBEAT → DETECTION → chain-of-custody messa
 """
 
 import asyncio
+import hmac
 import json
 import logging
-import hmac
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
+from retina_custody.hash_chain import HashChainEntry, HashChainVerifier
+
 from core import state
-from retina_custody.hash_chain import HashChainVerifier, HashChainEntry
 
 # Optional shared token for node authentication. If not set, any node can connect.
 _RADAR_NODE_TOKEN: str | None = os.getenv("RADAR_NODE_TOKEN")
@@ -198,11 +199,12 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                     # Run registration in the dedicated single-thread executor so
                     # it never starves the default executor used by frame workers.
                     loop = asyncio.get_event_loop()
+                    _nid, _cfg = node_id, config_payload
                     await loop.run_in_executor(
                         _registration_executor,
-                        lambda: (
-                            state.node_analytics.register_node(node_id, config_payload),
-                            state.node_associator.register_node(node_id, config_payload),
+                        lambda _nid=_nid, _cfg=_cfg: (
+                            state.node_analytics.register_node(_nid, _cfg),
+                            state.node_associator.register_node(_nid, _cfg),
                         ),
                     )
                     continue
@@ -376,6 +378,7 @@ _last_drop_log: float = 0.0     # monotonic timestamp of last drop warning
 # enqueued from this node within the last NODE_FRAME_MIN_INTERVAL_S seconds.
 # ADS-B positions are always extracted regardless (fast-path below).
 import os as _os
+
 _NODE_MIN_INTERVAL_S: float = float(_os.getenv("NODE_FRAME_MIN_INTERVAL_S", "1.0"))
 _per_node_last_enqueue: dict[str, float] = {}
 
@@ -421,8 +424,8 @@ def _enqueue_detection(msg: dict, node_id: str | None):
 
 def _apply_synthetic_adsb(msg: dict, node_id: str):
     """Fast-path for synthetic nodes: store ADS-B positions directly in state."""
-    import time as _time
     import math as _math
+    import time as _time
     frame = msg.get("data", msg)
     adsb_list = frame.get("adsb")
     if not adsb_list:

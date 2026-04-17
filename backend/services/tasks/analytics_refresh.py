@@ -9,9 +9,9 @@ import time
 
 import orjson
 
-from core import state
 from config.constants import YAGI_BEAM_WIDTH_DEG, YAGI_MAX_RANGE_KM
-from services.tasks._helpers import haversine_km, bistatic_delay_us, _DELAY_MATCH_THRESHOLD_US
+from core import state
+from services.tasks._helpers import _DELAY_MATCH_THRESHOLD_US, bistatic_delay_us, haversine_km
 
 _analytics_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="analytics-bg",
@@ -478,6 +478,7 @@ def _refresh_radar3_verification():
 def _ensure_custody_data():
     """Auto-register connected nodes in chain-of-custody if they lack entries."""
     from datetime import datetime, timezone
+
     from retina_custody.models import NodeIdentity
 
     now_iso = datetime.now(timezone.utc).isoformat()
