@@ -183,8 +183,12 @@ async def get_config():
 
 @router.put("/api/config")
 async def update_config(body: dict, _admin=Depends(require_admin)):
+    # Sanity check: config should be a reasonable size
+    raw = json.dumps(body)
+    if len(raw) > 1_000_000:
+        raise HTTPException(status_code=413, detail="Config too large (max 1 MB)")
     with open(_CONFIG_PATH, "w") as f:
-        json.dump(body, f, indent=2)
+        f.write(raw)
     reload_config()
     return {"status": "updated"}
 

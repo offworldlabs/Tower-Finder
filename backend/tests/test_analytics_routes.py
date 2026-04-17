@@ -59,8 +59,10 @@ class TestAnalytics:
 # ── ADS-B Report ─────────────────────────────────────────────────────────────
 
 class TestAdsbReport:
+    _HEADERS = {"X-API-Key": "test-key-abc123"}
+
     def test_missing_fields(self, client):
-        r = client.post("/api/radar/analytics/adsb-report", json={"node_id": "x"})
+        r = client.post("/api/radar/analytics/adsb-report", json={"node_id": "x"}, headers=self._HEADERS)
         assert r.status_code == 400
         assert "Missing" in r.json()["detail"]
 
@@ -73,6 +75,7 @@ class TestAdsbReport:
                 "measured_delay": 102.0,
                 "adsb_hex": "ABC123",
             },
+            headers=self._HEADERS,
         )
         assert r.status_code == 200
         body = r.json()

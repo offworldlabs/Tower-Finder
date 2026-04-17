@@ -276,6 +276,8 @@ class TestTowerStats:
         if os.path.exists(stats_path):
             os.remove(stats_path)
 
+    _HEADERS = {"X-API-Key": "test-key-abc123"}
+
     def test_post_selection(self, client):
         r = client.post("/api/stats/tower-selection", json={
             "node_id": "test-node-1",
@@ -286,12 +288,12 @@ class TestTowerStats:
             "node_lat": -33.9,
             "node_lon": 151.1,
             "source": "au",
-        })
+        }, headers=self._HEADERS)
         assert r.status_code == 200
         assert r.json()["status"] == "recorded"
 
     def test_missing_fields_returns_400(self, client):
-        r = client.post("/api/stats/tower-selection", json={"node_id": "x"})
+        r = client.post("/api/stats/tower-selection", json={"node_id": "x"}, headers=self._HEADERS)
         assert r.status_code == 400
 
     def test_get_summary(self, client):
@@ -306,7 +308,7 @@ class TestTowerStats:
                 "node_lat": -34.0,
                 "node_lon": 151.0,
                 "source": "au",
-            })
+            }, headers=self._HEADERS)
         r = client.get("/api/stats/summary")
         assert r.status_code == 200
         s = r.json()

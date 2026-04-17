@@ -806,6 +806,10 @@ class TestFullIntegrationPath:
         from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
 
         self._tcp_handshake_and_process()
+
+        # Invalidate the analytics cache so get_all_summaries() recomputes
+        state.node_analytics._summaries_cache = None
+
         _refresh_analytics_and_nodes()
 
         # Parse leaderboard the same way the endpoint does

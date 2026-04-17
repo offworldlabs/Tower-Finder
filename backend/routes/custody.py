@@ -5,11 +5,13 @@ import os
 from datetime import datetime, timezone
 
 import orjson
-from fastapi import APIRouter, Body, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import Response
+from pydantic import BaseModel, Field
 from retina_custody.hash_chain import HashChainEntry, HashChainVerifier
 from retina_custody.models import NodeIdentity
 
+from config.constants import CHAIN_ENTRIES_MAX_PER_NODE, IQ_COMMITMENTS_MAX_PER_NODE
 from core import state
 
 router = APIRouter()
@@ -17,73 +19,94 @@ router = APIRouter()
 RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
 
 
+# ── Request models ────────────────────────────────────────────────────────────
+
+class RegisterNodeRequest(BaseModel):
+    node_id: str = Field(..., min_length=1, max_length=128)
+    public_key_pem: str = Field(..., min_length=1, max_length=8192)
+    fingerprint: str = Field(default="", max_length=256)
+    serial_number: str = Field(default="", max_length=128)
+    signing_mode: str = Field(default="software", max_length=32)
+
+
+class ChainEntryRequest(BaseModel):
+    node_id: str = Field(..., min_length=1, max_length=128)
+    entry_hash: str = Field(default="", max_length=256)
+    prev_hash: str = Field(default="", max_length=256)
+    hour_utc: str = Field(default="", max_length=32)
+    payload_hash: str = Field(default="", max_length=256)
+    signature: str = Field(default="", max_length=4096)
+    model_config = {"extra": "allow"}  # Allow extra chain fields
+
+
+class IqCommitmentRequest(BaseModel):
+    node_id: str = Field(..., min_length=1, max_length=128)
+    capture_id: str = Field(default="", max_length=256)
+    model_config = {"extra": "allow"}
+
+
 @router.post("/api/custody/register")
 async def custody_register_node(
-    body: dict = Body(...),
+    body: RegisterNodeRequest,
     x_api_key: str = Header(default="", alias="X-API-Key"),
 ):
     if RADAR_API_KEY and x_api_key != RADAR_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
-    node_id = body.get("node_id", "")
-    pub_key_pem = body.get("public_key_pem", "")
-    fingerprint = body.get("fingerprint", "")
-
-    if not node_id or not pub_key_pem:
-        raise HTTPException(status_code=400, detail="node_id and public_key_pem required")
-
     identity = NodeIdentity(
-        node_id=node_id,
-        public_key_pem=pub_key_pem,
-        public_key_fingerprint=fingerprint,
-        serial_number=body.get("serial_number", ""),
-        signing_mode=body.get("signing_mode", "software"),
+        node_id=body.node_id,
+        public_key_pem=body.public_key_pem,
+        public_key_fingerprint=body.fingerprint,
+        serial_number=body.serial_number,
+        signing_mode=body.signing_mode,
         registered_at=datetime.now(timezone.utc).isoformat(),
     )
-    state.node_identities[node_id] = identity
-    state.sig_verifier.register_key(node_id, pub_key_pem)
+    state.node_identities[body.node_id] = identity
+    state.sig_verifier.register_key(body.node_id, body.public_key_pem)
 
     return {
         "status": "registered",
-        "node_id": node_id,
-        "fingerprint": fingerprint,
+        "node_id": body.node_id,
+        "fingerprint": body.fingerprint,
         "signing_mode": identity.signing_mode,
     }
 
 
 @router.post("/api/custody/chain-entry")
 async def custody_submit_chain_entry(
-    body: dict = Body(...),
+    body: ChainEntryRequest,
     x_api_key: str = Header(default="", alias="X-API-Key"),
 ):
     if RADAR_API_KEY and x_api_key != RADAR_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
-    node_id = body.get("node_id", "")
-    if not node_id:
-        raise HTTPException(status_code=400, detail="node_id required")
-
+    node_id = body.node_id
     if node_id not in state.chain_entries:
         state.chain_entries[node_id] = []
 
     verified = False
     reason = "no key registered"
+    body_dict = body.model_dump()
     if node_id in state.node_identities:
         try:
-            entry_obj = HashChainEntry.from_dict(body)
+            entry_obj = HashChainEntry.from_dict(body_dict)
             verifier = HashChainVerifier(lambda nid: state.sig_verifier.get_key(nid))
             verified, reason = verifier.verify_entry(entry_obj)
         except Exception as exc:
             reason = str(exc)
 
-    body["_verified"] = verified
-    body["_received_at"] = datetime.now(timezone.utc).isoformat()
-    state.chain_entries[node_id].append(body)
+    body_dict["_verified"] = verified
+    body_dict["_received_at"] = datetime.now(timezone.utc).isoformat()
+    entries = state.chain_entries[node_id]
+    entries.append(body_dict)
+    # Rolling cap — drop oldest entries when limit exceeded
+    if len(entries) > CHAIN_ENTRIES_MAX_PER_NODE:
+        state.chain_entries[node_id] = entries[-CHAIN_ENTRIES_MAX_PER_NODE:]
 
     return {
         "status": "stored",
         "node_id": node_id,
-        "entry_hash": body.get("entry_hash", ""),
+        "entry_hash": body.entry_hash,
         "verified": verified,
         "reason": reason,
     }
@@ -91,23 +114,24 @@ async def custody_submit_chain_entry(
 
 @router.post("/api/custody/iq-commitment")
 async def custody_iq_commitment(
-    body: dict = Body(...),
+    body: IqCommitmentRequest,
     x_api_key: str = Header(default="", alias="X-API-Key"),
 ):
     if RADAR_API_KEY and x_api_key != RADAR_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
-    node_id = body.get("node_id", "")
-    if not node_id:
-        raise HTTPException(status_code=400, detail="node_id required")
-
+    node_id = body.node_id
     if node_id not in state.iq_commitments:
         state.iq_commitments[node_id] = []
 
-    body["_received_at"] = datetime.now(timezone.utc).isoformat()
-    state.iq_commitments[node_id].append(body)
+    body_dict = body.model_dump()
+    body_dict["_received_at"] = datetime.now(timezone.utc).isoformat()
+    commits = state.iq_commitments[node_id]
+    commits.append(body_dict)
+    if len(commits) > IQ_COMMITMENTS_MAX_PER_NODE:
+        state.iq_commitments[node_id] = commits[-IQ_COMMITMENTS_MAX_PER_NODE:]
 
-    return {"status": "committed", "node_id": node_id, "capture_id": body.get("capture_id", "")}
+    return {"status": "committed", "node_id": node_id, "capture_id": body.capture_id}
 
 
 @router.get("/api/custody/status")

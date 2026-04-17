@@ -18,6 +18,13 @@ from core import state
 
 # Optional shared token for node authentication. If not set, any node can connect.
 _RADAR_NODE_TOKEN: str | None = os.getenv("RADAR_NODE_TOKEN")
+_RETINA_ENV = os.getenv("RETINA_ENV", "").lower()
+if not _RADAR_NODE_TOKEN:
+    if _RETINA_ENV not in ("dev", "test"):
+        logging.warning(
+            "RADAR_NODE_TOKEN is not set — any TCP client can register as a radar node. "
+            "Set it in backend/.env to require node authentication."
+        )
 
 # TCP connection limits
 _MAX_TCP_CONNECTIONS = int(os.getenv("MAX_TCP_CONNECTIONS", "500"))

@@ -22,10 +22,11 @@ _aircraft_flush_executor = concurrent.futures.ThreadPoolExecutor(
 
 def _build_real_only_payload(aircraft_data: dict) -> bytes:
     """Build a slim WS payload filtered to non-synthetic nodes only."""
-    real_node_ids = {
-        nid for nid, info in state.connected_nodes.items()
-        if not info.get("is_synthetic", True)
-    }
+    with state.connected_nodes_lock:
+        real_node_ids = {
+            nid for nid, info in state.connected_nodes.items()
+            if not info.get("is_synthetic", True)
+        }
     real_aircraft = [
         ac for ac in aircraft_data.get("aircraft", [])
         if ac.get("node_id") in real_node_ids

@@ -84,7 +84,7 @@ async def _fetch_external_adsb() -> bool:
     Returns True if rate-limited (HTTP 429), False otherwise.
     """
     active_nodes = [
-        info for info in state.connected_nodes.values()
+        info for info in list(state.connected_nodes.values())
         if info.get("status") != "disconnected" and info.get("config")
     ]
     if not active_nodes:
