@@ -54,10 +54,17 @@ class TestJWT:
     def test_tampered_token_rejected(self):
         user = {"id": "u1", "email": "test@retina.fm", "role": "user"}
         token = create_token(user)
-        # Flip a character in the signature portion
+        # Flip a character in the *middle* of the signature. The last character
+        # of a 43-char base64url HS256 signature uses only 4 of its 6 bits
+        # (the bottom 2 are padding zeros), so swapping the last char can leave
+        # the decoded bytes unchanged and the token would still verify. Middle
+        # characters use all 6 bits, so any single-char change invalidates the
+        # HMAC.
         parts = token.split(".")
         sig = parts[2]
-        tampered_sig = sig[:-1] + ("A" if sig[-1] != "A" else "B")
+        mid = len(sig) // 2
+        tampered_c = "A" if sig[mid] != "A" else "B"
+        tampered_sig = sig[:mid] + tampered_c + sig[mid + 1:]
         tampered_token = f"{parts[0]}.{parts[1]}.{tampered_sig}"
         assert verify_token(tampered_token) is None
 
