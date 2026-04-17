@@ -39,6 +39,8 @@ else
         docker compose -f "$COMPOSE_FILE" up -d
     else
         echo "No rollback image found. Falling back to previous git commit."
+        # Note: this creates a detached HEAD. After recovery, re-attach with:
+        #   git checkout main && git pull
         git checkout HEAD~1
         git submodule update --init --recursive
         docker compose -f "$COMPOSE_FILE" up -d --build

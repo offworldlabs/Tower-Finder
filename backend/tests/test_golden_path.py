@@ -27,8 +27,7 @@ Rollback note
                          Called by CI before every deploy; also safe to run manually.
 
 Usage (manual rollback on server):
-    ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 \
-      'cd /opt/tower-finder && bash deploy/rollback.sh'
+    See deploy/rollback.sh and the server-ops runbook.
 """
 
 import asyncio

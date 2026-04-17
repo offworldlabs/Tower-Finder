@@ -35,7 +35,7 @@ from services.background import (
     adsb_truth_fetcher,
     start_solver_workers,
 )
-from services.state_snapshot import save_snapshot, restore_snapshot, _SAVE_INTERVAL_S
+from services.state_snapshot import save_snapshot, restore_snapshot, SAVE_INTERVAL_S
 from routes.towers import router as towers_router
 from routes.stats import router as stats_router
 from routes.radar import router as radar_router
@@ -91,7 +91,7 @@ async def lifespan(app: FastAPI):
         async def _snapshot_loop():
             """Save state snapshot periodically."""
             while True:
-                await asyncio.sleep(_SAVE_INTERVAL_S)
+                await asyncio.sleep(SAVE_INTERVAL_S)
                 try:
                     await asyncio.get_event_loop().run_in_executor(None, save_snapshot)
                 except Exception:

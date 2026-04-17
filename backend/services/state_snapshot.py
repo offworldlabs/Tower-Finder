@@ -16,7 +16,7 @@ from core import state
 
 _SNAPSHOT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 _SNAPSHOT_PATH = os.path.join(_SNAPSHOT_DIR, "state_snapshot.json")
-_SAVE_INTERVAL_S = 60  # 1 minute
+SAVE_INTERVAL_S = 60  # 1 minute
 
 
 def save_snapshot() -> None:

@@ -108,14 +108,17 @@ def download_bytes(key: str) -> Optional[bytes]:
         return None
 
 
-def list_keys(prefix: str = "", max_keys: int = 1000) -> list[str]:
-    """List object keys under a prefix. Returns empty list on failure."""
+def list_keys(prefix: str = "") -> list[str]:
+    """List all object keys under a prefix. Paginates automatically."""
     client = _get_client()
     if client is None:
         return []
     try:
-        resp = client.list_objects_v2(Bucket=_BUCKET, Prefix=prefix, MaxKeys=max_keys)
-        return [obj["Key"] for obj in resp.get("Contents", [])]
+        paginator = client.get_paginator("list_objects_v2")
+        keys: list[str] = []
+        for page in paginator.paginate(Bucket=_BUCKET, Prefix=prefix):
+            keys.extend(obj["Key"] for obj in page.get("Contents", []))
+        return keys
     except Exception:
         logger.exception("R2 list failed: prefix=%s", prefix)
         return []
