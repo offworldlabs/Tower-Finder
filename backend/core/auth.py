@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 _RETINA_ENV = os.getenv("RETINA_ENV", "").lower()
 
 _jwt_from_env = os.getenv("JWT_SECRET", "")
-if not _jwt_from_env and _RETINA_ENV not in ("dev", "test", ""):
+if not _jwt_from_env and _RETINA_ENV not in ("dev", "test"):
     raise RuntimeError(
         "JWT_SECRET environment variable is required in production "
         f"(RETINA_ENV={_RETINA_ENV!r}). Set it to a random ≥32-byte string."

@@ -16,6 +16,8 @@ coverage_data/
 metro_tower_cache.json
 tower_assignments.json
 other/
+backend/.coverage
+backend/htmlcov/
 
 # Local-only agent customizations (server credentials, ops, private prompts — never push)
 .github/instructions/

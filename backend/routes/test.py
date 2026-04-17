@@ -8,7 +8,7 @@ from collections import deque
 from datetime import datetime, timezone
 
 import orjson
-from fastapi import APIRouter, Body, HTTPException, Depends, Header
+from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from fastapi.responses import Response
 
 from core import state
@@ -40,6 +40,7 @@ _TASK_EXPECTED_INTERVAL_S = {
     "analytics_refresh": 60,
     "aircraft_flush": 5,
     "archive_flush": 120,
+    "archive_lifecycle": 3600,
     "reputation_evaluator": 120,
     "adsb_truth_fetcher": 300,
     "solver": 120,

@@ -1,4 +1,4 @@
-"""Periodic background tasks: archive flush, reputation, ADS-B truth fetch."""
+"""Periodic background tasks: archive flush, archive lifecycle, reputation, ADS-B truth fetch."""
 
 import asyncio
 import logging
@@ -10,6 +10,7 @@ import httpx
 from core import state
 from config.constants import (
     ARCHIVE_FLUSH_INTERVAL_S,
+    ARCHIVE_LIFECYCLE_INTERVAL_S,
     REPUTATION_INTERVAL_S,
     ADSB_TRUTH_INTERVAL_S,
     ADSB_BACKOFF_S,
@@ -31,6 +32,21 @@ async def archive_flush_task():
         except Exception:
             state.task_error_counts["archive_flush"] += 1
             logging.exception("Archive batch flush failed")
+
+
+async def archive_lifecycle_task():
+    """Periodically offload old archives to R2 and delete expired local files."""
+    from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+    while True:
+        await asyncio.sleep(ARCHIVE_LIFECYCLE_INTERVAL_S)
+        try:
+            loop = asyncio.get_event_loop()
+            stats = await loop.run_in_executor(None, run_archive_lifecycle)
+            state.task_last_success["archive_lifecycle"] = time.time()
+        except Exception:
+            state.task_error_counts["archive_lifecycle"] += 1
+            logging.exception("Archive lifecycle failed")
 
 
 async def reputation_evaluator():

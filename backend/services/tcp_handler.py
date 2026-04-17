@@ -18,6 +18,12 @@ from retina_custody.hash_chain import HashChainVerifier, HashChainEntry
 # Optional shared token for node authentication. If not set, any node can connect.
 _RADAR_NODE_TOKEN: str | None = os.getenv("RADAR_NODE_TOKEN")
 
+# TCP connection limits
+_MAX_TCP_CONNECTIONS = int(os.getenv("MAX_TCP_CONNECTIONS", "500"))
+_MAX_BUF_SIZE = 1_048_576  # 1 MB max buffer before newline — prevents memory exhaustion
+_active_tcp_connections = 0
+_tcp_connections_lock = asyncio.Lock()
+
 # Dedicated single-thread executor for node registration.
 # Registration is serialized by an internal lock anyway (O(n²) overlap zones),
 # so one thread is sufficient. Keeping it separate prevents registration from
@@ -93,8 +99,18 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
       3. Steady state: node sends HEARTBEAT + DETECTION messages
       4. Server sends CONFIG_REQUEST if heartbeat config hash mismatches
     """
+    global _active_tcp_connections
     peer = writer.get_extra_info("peername")
-    logging.info("Radar TCP: new connection from %s", peer)
+
+    # Enforce connection limit
+    async with _tcp_connections_lock:
+        if _active_tcp_connections >= _MAX_TCP_CONNECTIONS:
+            logging.warning("Radar TCP: rejecting connection from %s — limit %d reached", peer, _MAX_TCP_CONNECTIONS)
+            writer.close()
+            return
+        _active_tcp_connections += 1
+
+    logging.info("Radar TCP: new connection from %s (active=%d)", peer, _active_tcp_connections)
     buf = b""
     node_id = None
 
@@ -104,6 +120,10 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
             if not chunk:
                 break
             buf += chunk
+            # Guard against clients that never send a newline
+            if len(buf) > _MAX_BUF_SIZE:
+                logging.warning("Radar TCP: buffer overflow from %s (node=%s) — disconnecting", peer, node_id)
+                break
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
                 line = line.strip()
@@ -189,7 +209,7 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
 
                 # ── REGISTER_KEY (chain of custody) ────────────────
                 if msg_type == "REGISTER_KEY":
-                    _handle_register_key(msg, node_id, writer)
+                    await _handle_register_key(msg, node_id, writer)
                     continue
 
                 # ── CHAIN_ENTRY ────────────────────────────────────
@@ -228,6 +248,8 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
     except (asyncio.IncompleteReadError, ConnectionResetError):
         pass
     finally:
+        async with _tcp_connections_lock:
+            _active_tcp_connections -= 1
         if node_id and node_id in state.connected_nodes:
             with state.connected_nodes_lock:
                 state.connected_nodes[node_id]["status"] = "disconnected"
