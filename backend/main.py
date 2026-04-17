@@ -29,7 +29,6 @@ from routes.archive import router as archive_router
 from routes.auth import router as auth_router
 from routes.custody import router as custody_router
 from routes.output import router as output_router
-from routes.radar import _check_api_key_configured
 from routes.radar import router as radar_router
 from routes.stats import router as stats_router
 from routes.streaming import router as streaming_router
@@ -77,8 +76,6 @@ _test_mod.init(radar_pipeline)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Validate required env vars before accepting connections
-    _check_api_key_configured()
     # Restore persisted state before accepting connections
     restore_snapshot()
 
