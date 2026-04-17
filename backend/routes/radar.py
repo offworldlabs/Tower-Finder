@@ -45,16 +45,11 @@ class LoadFileRequest(BaseModel):
 RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
 _RETINA_ENV = os.getenv("RETINA_ENV", "").lower()
 if not RADAR_API_KEY:
-    logging.warning("RADAR_API_KEY is not set — detection/custody endpoints have no API key protection")
-
-
-def _check_api_key_configured() -> None:
-    """Called from lifespan startup — raises RuntimeError if key missing in production."""
-    if not RADAR_API_KEY and _RETINA_ENV not in ("dev", "test"):
-        raise RuntimeError(
-            "RADAR_API_KEY is required in production. "
-            "Set it in backend/.env to protect detection/custody endpoints."
-        )
+    _msg = "RADAR_API_KEY is not set — detection/custody endpoints have no API key protection"
+    if _RETINA_ENV not in ("dev", "test"):
+        logging.error(_msg)  # loud in production/staging, doesn't crash the server
+    else:
+        logging.warning(_msg)
 _RATE_LIMIT = int(os.getenv("RADAR_RATE_LIMIT", "60"))
 _RATE_WINDOW = int(os.getenv("RADAR_RATE_WINDOW", "60"))
 _TAR1090_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tar1090_data")
