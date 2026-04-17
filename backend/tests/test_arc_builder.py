@@ -9,8 +9,7 @@ import math
 
 import pytest
 
-from services.frame_processor import _build_single_node_arc, _bearing_deg, _enu_to_lla
-
+from services.frame_processor import _bearing_deg, _build_single_node_arc, _enu_to_lla
 
 # ─── Minimal fake track ─────────────────────────────────────────────────────
 

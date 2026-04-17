@@ -7,10 +7,11 @@ import os
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, Header
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+from config.constants import RATE_BUCKETS_MAX_IPS
 from core import state
 from core.auth import require_admin
 from pipeline.passive_radar import PassiveRadarPipeline
@@ -42,8 +43,18 @@ class LoadFileRequest(BaseModel):
     path: str = Field(..., min_length=1)
 
 RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
+_RETINA_ENV = os.getenv("RETINA_ENV", "").lower()
 if not RADAR_API_KEY:
     logging.warning("RADAR_API_KEY is not set — detection/custody endpoints have no API key protection")
+
+
+def _check_api_key_configured() -> None:
+    """Called from lifespan startup — raises RuntimeError if key missing in production."""
+    if not RADAR_API_KEY and _RETINA_ENV not in ("dev", "test"):
+        raise RuntimeError(
+            "RADAR_API_KEY is required in production. "
+            "Set it in backend/.env to protect detection/custody endpoints."
+        )
 _RATE_LIMIT = int(os.getenv("RADAR_RATE_LIMIT", "60"))
 _RATE_WINDOW = int(os.getenv("RADAR_RATE_WINDOW", "60"))
 _TAR1090_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tar1090_data")
@@ -71,6 +82,11 @@ def _check_rate_limit(ip: str) -> None:
         del state.rate_buckets[ip]
     if len(recent) >= _RATE_LIMIT:
         raise HTTPException(status_code=429, detail="Rate limit exceeded — slow down")
+    # Prevent unbounded memory growth from unique IPs — evict oldest half
+    if len(state.rate_buckets) > RATE_BUCKETS_MAX_IPS:
+        evict_count = len(state.rate_buckets) // 2
+        for old_ip in list(state.rate_buckets)[:evict_count]:
+            del state.rate_buckets[old_ip]
     state.rate_buckets[ip].append(now)
 
 

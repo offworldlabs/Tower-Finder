@@ -33,7 +33,8 @@ def run_archive_lifecycle() -> dict:
 
     Returns summary dict: {uploaded, deleted, errors, skipped}.
     """
-    from services.r2_client import is_enabled as r2_enabled, upload_file as r2_upload
+    from services.r2_client import is_enabled as r2_enabled
+    from services.r2_client import upload_file as r2_upload
 
     stats = {"uploaded": 0, "deleted": 0, "errors": 0, "skipped": 0}
     now = time.time()

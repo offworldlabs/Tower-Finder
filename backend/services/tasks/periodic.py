@@ -7,15 +7,15 @@ import time
 
 import httpx
 
-from core import state
 from config.constants import (
+    ADSB_BACKOFF_S,
+    ADSB_TRUTH_INTERVAL_S,
     ARCHIVE_FLUSH_INTERVAL_S,
     ARCHIVE_LIFECYCLE_INTERVAL_S,
-    REPUTATION_INTERVAL_S,
-    ADSB_TRUTH_INTERVAL_S,
-    ADSB_BACKOFF_S,
     OPENSKY_BUFFER_DEG,
+    REPUTATION_INTERVAL_S,
 )
+from core import state
 from services.frame_processor import flush_all_archive_buffers
 
 _opensky_client: httpx.AsyncClient | None = None
@@ -42,7 +42,7 @@ async def archive_lifecycle_task():
         await asyncio.sleep(ARCHIVE_LIFECYCLE_INTERVAL_S)
         try:
             loop = asyncio.get_event_loop()
-            stats = await loop.run_in_executor(None, run_archive_lifecycle)
+            await loop.run_in_executor(None, run_archive_lifecycle)
             state.task_last_success["archive_lifecycle"] = time.time()
         except Exception:
             state.task_error_counts["archive_lifecycle"] += 1
@@ -84,7 +84,7 @@ async def _fetch_external_adsb() -> bool:
     Returns True if rate-limited (HTTP 429), False otherwise.
     """
     active_nodes = [
-        info for info in state.connected_nodes.values()
+        info for info in list(state.connected_nodes.values())
         if info.get("status") != "disconnected" and info.get("config")
     ]
     if not active_nodes:

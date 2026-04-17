@@ -1,15 +1,17 @@
 """Node analytics and inter-node association endpoints."""
 
-import math
+import os
 import time
 from collections import Counter
 
 import orjson
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Header, HTTPException
 from fastapi.responses import Response
+from retina_analytics.trust import AdsReportEntry
 
 from core import state
-from retina_analytics.trust import AdsReportEntry
+
+_RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
 
 router = APIRouter()
 
@@ -30,7 +32,12 @@ async def radar_node_analytics(node_id: str):
 
 
 @router.post("/api/radar/analytics/adsb-report")
-async def submit_adsb_report(body: dict = Body(...)):
+async def submit_adsb_report(
+    body: dict = Body(...),
+    x_api_key: str = Header(default="", alias="X-API-Key"),
+):
+    if _RADAR_API_KEY and x_api_key != _RADAR_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
     required = ["node_id", "predicted_delay", "measured_delay"]
     missing = [k for k in required if k not in body]
     if missing:
@@ -51,7 +58,7 @@ async def submit_adsb_report(body: dict = Body(...)):
     return {
         "status": "recorded",
         "trust_score": round(ts.score, 4) if ts else 0.0,
-        "n_samples": ts.n_samples if ts else 0,
+        "n_samples": len(ts.samples) if ts else 0,
     }
 
 

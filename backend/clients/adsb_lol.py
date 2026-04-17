@@ -6,11 +6,10 @@ Returns tar1090-compatible aircraft objects.
 License: ODbL (same as OpenStreetMap).
 """
 
+import json
 import logging
 import time
 import urllib.request
-import json
-from typing import Optional
 
 log = logging.getLogger(__name__)
 

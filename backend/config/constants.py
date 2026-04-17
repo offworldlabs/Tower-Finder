@@ -75,6 +75,11 @@ NODE_HEALTH_CHECK_INTERVAL_S = 30     # How often to check node liveness (s)
 STORAGE_CACHE_TTL_S = 300.0           # Archive storage stats cache TTL (s)
 CONFIG_LIVE_CACHE_TTL_S = 60.0        # Live node/tower config cache TTL (s)
 
+# ── Chain of custody limits ──────────────────────────────────────────────────
+CHAIN_ENTRIES_MAX_PER_NODE = 500      # Max chain entries per node (rolling)
+IQ_COMMITMENTS_MAX_PER_NODE = 200     # Max IQ commitments per node (rolling)
+RATE_BUCKETS_MAX_IPS = 10_000         # Max unique IPs in rate limiter
+
 # ── blah2 bridge ─────────────────────────────────────────────────────────────
 BLAH2_POLL_INTERVAL_S = 1.0           # blah2 API poll cadence (s)
 BLAH2_STALE_THRESHOLD_S = 10.0        # Ignore frames older than this (s)

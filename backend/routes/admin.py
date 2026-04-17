@@ -4,7 +4,6 @@ import asyncio
 import concurrent.futures
 import json
 import logging
-import os
 import time
 from collections import deque
 from pathlib import Path
@@ -13,20 +12,19 @@ from pathlib import Path
 # the default thread pool used by frame processors.
 _admin_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="admin-io")
 
+import orjson
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-import orjson
-
-from core.auth import require_admin, get_all_users, update_user_role, get_current_user
-from core import state
 from config.constants import (
-    EVENT_LOG_MAX,
-    NODE_OFFLINE_THRESHOLD_S,
-    NODE_HEALTH_CHECK_INTERVAL_S,
     CONFIG_LIVE_CACHE_TTL_S,
+    EVENT_LOG_MAX,
+    NODE_HEALTH_CHECK_INTERVAL_S,
+    NODE_OFFLINE_THRESHOLD_S,
 )
+from core import state
+from core.auth import get_all_users, get_current_user, require_admin, update_user_role
 
 logger = logging.getLogger(__name__)
 

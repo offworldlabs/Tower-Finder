@@ -16,8 +16,8 @@ from pathlib import Path
 
 import orjson
 
-from core import state
 from config.constants import STORAGE_CACHE_TTL_S
+from core import state
 
 logger = logging.getLogger(__name__)
 

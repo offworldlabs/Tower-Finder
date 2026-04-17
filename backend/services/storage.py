@@ -174,5 +174,5 @@ def read_archived_file(key: str) -> dict | None:
     real_path = os.path.realpath(local_path)
     if not real_path.startswith(real_base):
         return None
-    with open(local_path, "r") as f:
+    with open(local_path) as f:
         return json.load(f)

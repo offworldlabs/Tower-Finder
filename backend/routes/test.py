@@ -13,7 +13,7 @@ from fastapi.responses import Response
 
 from core import state
 from core.auth import require_admin
-from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex, position_distance_km
+from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -76,15 +76,18 @@ async def test_network_dashboard():
 
 
 def _build_dashboard_data() -> bytes:
-    now = time.time()
+    # Snapshot mutable dicts to avoid RuntimeError from concurrent mutation
+    with state.connected_nodes_lock:
+        _cn_snapshot = list(state.connected_nodes.values())
+    _pipelines_snapshot = list(state.node_pipelines.values())
 
-    total_nodes = len(state.connected_nodes)
-    active_nodes = sum(1 for n in state.connected_nodes.values() if n.get("status") not in ("disconnected",))
-    synthetic_nodes = sum(1 for n in state.connected_nodes.values() if n.get("is_synthetic"))
+    total_nodes = len(_cn_snapshot)
+    active_nodes = sum(1 for n in _cn_snapshot if n.get("status") not in ("disconnected",))
+    synthetic_nodes = sum(1 for n in _cn_snapshot if n.get("is_synthetic"))
 
-    total_tracks = sum(len(p.tracker.tracks) for p in state.node_pipelines.values()) if state.node_pipelines else 0
+    total_tracks = sum(len(p.tracker.tracks) for p in _pipelines_snapshot) if _pipelines_snapshot else 0
     total_tracks += len(_default_pipeline.tracker.tracks) if _default_pipeline and hasattr(_default_pipeline, 'tracker') else 0
-    geolocated = sum(len(p.geolocated_tracks) for p in state.node_pipelines.values()) if state.node_pipelines else 0
+    geolocated = sum(len(p.geolocated_tracks) for p in _pipelines_snapshot) if _pipelines_snapshot else 0
     geolocated += len(_default_pipeline.geolocated_tracks) if _default_pipeline and hasattr(_default_pipeline, 'geolocated_tracks') else 0
     mn_tracks = len(state.multinode_tracks)
     adsb_tracks = len(state.adsb_aircraft)
@@ -93,11 +96,11 @@ def _build_dashboard_data() -> bytes:
     analytics_nodes = len(state.node_analytics.trust_scores)
     avg_trust = 0.0
     if state.node_analytics.trust_scores:
-        scores = [ts.score for ts in state.node_analytics.trust_scores.values() if hasattr(ts, 'score')]
+        scores = [ts.score for ts in list(state.node_analytics.trust_scores.values()) if hasattr(ts, 'score')]
         avg_trust = sum(scores) / len(scores) if scores else 0
 
     blocked_nodes = sum(
-        1 for r in state.node_analytics.reputations.values()
+        1 for r in list(state.node_analytics.reputations.values())
         if hasattr(r, 'reputation') and r.reputation < 0.1
     )
     n_overlaps = len(state.node_associator.overlap_zones) if hasattr(state.node_associator, 'overlap_zones') else 0
@@ -142,8 +145,8 @@ def _build_dashboard_data() -> bytes:
         },
         "chain_of_custody": {
             "registered_keys": len(state.node_identities),
-            "chain_entries_total": sum(len(e) for e in state.chain_entries.values()),
-            "iq_commitments_total": sum(len(c) for c in state.iq_commitments.values()),
+            "chain_entries_total": sum(len(e) for e in list(state.chain_entries.values())),
+            "iq_commitments_total": sum(len(c) for c in list(state.iq_commitments.values())),
             "nodes_with_chains": len(state.chain_entries),
         },
         "subsystem_health": {
@@ -421,7 +424,7 @@ async def get_anomaly_log():
 async def get_simulation_config():
     """Return current simulation physics configuration plus live object-type counts."""
     counts: dict[str, int] = {"anomalous": 0, "drone": 0, "aircraft": 0, "total": 0}
-    for meta in state.ground_truth_meta.values():
+    for meta in list(state.ground_truth_meta.values()):
         counts["total"] += 1
         if meta.get("is_anomalous"):
             counts["anomalous"] += 1

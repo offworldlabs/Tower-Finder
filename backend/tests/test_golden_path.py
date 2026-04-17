@@ -37,14 +37,14 @@ from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from retina_tracker.config import M_THRESHOLD, N_WINDOW
+from retina_tracker.track import TrackState
 
 from core import state
 from main import app
-from pipeline.passive_radar import PassiveRadarPipeline, DEFAULT_NODE_CONFIG
+from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from services.frame_processor import process_one_frame
 from services.tcp_handler import handle_tcp_client
-from retina_tracker.config import M_THRESHOLD, N_WINDOW
-from retina_tracker.track import TrackState
 
 # ── Test constants ────────────────────────────────────────────────────────────
 
@@ -111,7 +111,9 @@ class _FakeReader:
 
 
 class _FakeWriter:
-    def __init__(self): self._buf: list[bytes] = []; self.closed = False
+    def __init__(self):
+        self._buf: list[bytes] = []
+        self.closed = False
     def get_extra_info(self, k, d=None): return ("127.0.0.1", 9999) if k == "peername" else d
     def write(self, data: bytes): self._buf.append(data)
     async def drain(self): pass
@@ -142,8 +144,10 @@ def _clean():
         state.adsb_aircraft.clear()
         state.latest_missed_detections.clear()
         while not state.frame_queue.empty():
-            try: state.frame_queue.get_nowait()
-            except Exception: break
+            try:
+                state.frame_queue.get_nowait()
+            except Exception:
+                break
 
     _purge()
     yield
@@ -332,8 +336,9 @@ class TestGoldenPath_Layer3_HttpApi:
         is intentionally bypassed.  We simulate a production-like environment by
         patching AUTH_ENABLED to True and verify the guard rejects the request.
         """
-        import core.auth as _auth
         from pathlib import Path
+
+        import core.auth as _auth
         from services.tower_ranking import _CONFIG_PATH
 
         # Snapshot the real config file so we can restore it even if auth bypasses.

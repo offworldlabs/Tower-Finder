@@ -7,18 +7,18 @@ lives here so imports are unambiguous and circular-dependency-free.
 import asyncio
 import os
 import threading
-import time
 from collections import defaultdict, deque
 
-from retina_analytics.manager import NodeAnalyticsManager
 from retina_analytics.association import InterNodeAssociator
+from retina_analytics.manager import NodeAnalyticsManager
 from retina_custody.crypto_backend import SignatureVerifier
 from retina_custody.models import NodeIdentity
+
 from config.constants import (
-    TRACK_HISTORY_MAX,
-    GROUND_TRUTH_MAX,
-    ANOMALY_LOG_MAX,
+    ANOMALY_LOG_MAX,  # noqa: F401 — re-exported, used via state.ANOMALY_LOG_MAX
     ASSOC_GRID_STEP_KM,
+    GROUND_TRUTH_MAX,  # noqa: F401 — re-exported, used via state.GROUND_TRUTH_MAX
+    TRACK_HISTORY_MAX,  # noqa: F401 — re-exported, used via state.TRACK_HISTORY_MAX
 )
 
 # ── Coverage / analytics persistence ──────────────────────────────────────────
@@ -67,6 +67,7 @@ external_adsb_cache: dict[str, dict] = {}
 
 # ── WebSocket broadcast infrastructure ────────────────────────────────────────
 from fastapi import WebSocket  # noqa: E402  (deferred to avoid import loops)
+
 ws_clients: set[WebSocket] = set()       # all aircraft (simulated fleet)
 ws_live_clients: set[WebSocket] = set()  # real-node-only aircraft (map.retina.fm)
 latest_aircraft_json: dict = {"now": 0, "aircraft": [], "messages": 0}
@@ -86,6 +87,7 @@ frame_queue: asyncio.Queue = asyncio.Queue(maxsize=_FRAME_QUEUE_SIZE)
 
 # ── Background multinode solver queue (frame workers → solver threads) ────────
 import queue as _stdlib_queue
+
 # Bounded: if solver threads can't keep up, excess candidates are dropped.
 _SOLVER_QUEUE_SIZE = int(os.getenv("SOLVER_QUEUE_SIZE", "200"))
 solver_queue: _stdlib_queue.Queue = _stdlib_queue.Queue(maxsize=_SOLVER_QUEUE_SIZE)

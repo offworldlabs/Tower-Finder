@@ -8,16 +8,19 @@ import logging
 import math
 import time
 from collections import defaultdict, deque
-from typing import Optional
 
+from retina_tracker.track import TrackState
+
+from config.constants import (
+    ARC_REFRESH_S,
+    ARCHIVE_BATCH_MAX,
+    ARCHIVE_FLUSH_INTERVAL_S,
+    GT_REFRESH_S,
+    STALE_TRACK_S,
+)
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
-from retina_tracker.track import TrackState
 from services.storage import archive_detections
-from config.constants import (
-    ARCHIVE_FLUSH_INTERVAL_S, ARCHIVE_BATCH_MAX,
-    ARC_REFRESH_S, GT_REFRESH_S, STALE_TRACK_S,
-)
 
 # ── Archive batching ──────────────────────────────────────────────────────────
 # Instead of writing every frame to disk immediately (slow I/O in the hot path),
@@ -305,7 +308,7 @@ def _enu_to_lla(rx_lat: float, rx_lon: float, east_km: float, north_km: float) -
     return [float(lat), float(lon)]
 
 
-def _build_single_node_arc(track_or_delay, node_cfg: dict) -> Optional[list[list[float]]]:
+def _build_single_node_arc(track_or_delay, node_cfg: dict) -> list[list[float]] | None:
     if isinstance(track_or_delay, (int, float)):
         delay_us = track_or_delay
     else:

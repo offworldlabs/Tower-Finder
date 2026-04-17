@@ -18,16 +18,16 @@ import time
 from unittest.mock import patch
 
 import pytest
-
-from core import state
-from pipeline.passive_radar import PassiveRadarPipeline, DEFAULT_NODE_CONFIG
-from services.frame_processor import process_one_frame
-from services.tcp_handler import (
-    handle_tcp_client,
-    _enqueue_detection,
-)
 from retina_tracker.config import M_THRESHOLD, N_WINDOW
 from retina_tracker.track import TrackState
+
+from core import state
+from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
+from services.frame_processor import process_one_frame
+from services.tcp_handler import (
+    _enqueue_detection,
+    handle_tcp_client,
+)
 
 # ── Shared test constants ─────────────────────────────────────────────────────
 
@@ -782,6 +782,9 @@ class TestFullIntegrationPath:
         pipe, frames = self._tcp_handshake_and_process()
         assert len(frames) == _N_FRAMES
 
+        # Invalidate the analytics cache so get_all_summaries() recomputes fresh
+        state.node_analytics._summaries_cache = None
+
         # Run the analytics refresh synchronously
         _refresh_analytics_and_nodes()
 
@@ -801,10 +804,15 @@ class TestFullIntegrationPath:
 
     def test_leaderboard_includes_node_with_detections(self):
         """Leaderboard data includes the test node with non-zero detections."""
-        from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
         import orjson
 
+        from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
+
         self._tcp_handshake_and_process()
+
+        # Invalidate the analytics cache so get_all_summaries() recomputes
+        state.node_analytics._summaries_cache = None
+
         _refresh_analytics_and_nodes()
 
         # Parse leaderboard the same way the endpoint does
@@ -825,7 +833,6 @@ class TestFullIntegrationPath:
         """After processing, _refresh_missed_detections runs without crash
         and produces an entry for the test node."""
         from services.tasks.analytics_refresh import (
-            _refresh_analytics_and_nodes,
             _refresh_missed_detections,
         )
 
@@ -869,8 +876,9 @@ class TestFullIntegrationPath:
 
     def test_storage_endpoint_disk_fields(self):
         """The storage scan helper returns disk usage fields."""
-        from services.tasks.storage_refresh import _scan_archive_dir
         from pathlib import Path
+
+        from services.tasks.storage_refresh import _scan_archive_dir
 
         archive_dir = Path(__file__).resolve().parent.parent / "coverage_data" / "archive"
         total_files, total_bytes, per_node = _scan_archive_dir(archive_dir)

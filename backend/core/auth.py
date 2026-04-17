@@ -129,7 +129,7 @@ def verify_token(token: str) -> dict | None:
 
 # ── FastAPI dependencies ──────────────────────────────────────────────────────
 
-from fastapi import Request, HTTPException  # noqa: E402
+from fastapi import HTTPException, Request  # noqa: E402
 
 
 async def get_current_user(request: Request) -> dict:

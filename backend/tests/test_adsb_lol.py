@@ -3,13 +3,9 @@ Unit tests for the adsb.lol client and metro filtering logic.
 """
 
 import json
-import time
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from clients.adsb_lol import AdsbLolClient
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 

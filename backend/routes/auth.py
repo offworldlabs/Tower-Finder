@@ -2,13 +2,13 @@
 
 import logging
 import os
-from urllib.parse import urlencode, quote
+from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import RedirectResponse
 
-from core.auth import get_or_create_user, create_token, get_current_user, AUTH_ENABLED, _ANONYMOUS_USER
+from core.auth import _ANONYMOUS_USER, AUTH_ENABLED, create_token, get_current_user, get_or_create_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -58,7 +58,7 @@ async def callback_google(request: Request, code: str = "", state: str = "/"):
         )
         if tok.status_code != 200:
             logger.error("Google token exchange failed: %s", tok.text)
-            return RedirectResponse(f"/login?error=google_token_failed")
+            return RedirectResponse("/login?error=google_token_failed")
         tokens = tok.json()
 
         info = await client.get(
@@ -113,7 +113,7 @@ async def callback_github(request: Request, code: str = "", state: str = "/"):
         )
         if tok.status_code != 200:
             logger.error("GitHub token exchange failed: %s", tok.text)
-            return RedirectResponse(f"/login?error=github_token_failed")
+            return RedirectResponse("/login?error=github_token_failed")
         tokens = tok.json()
         access_token = tokens.get("access_token", "")
 

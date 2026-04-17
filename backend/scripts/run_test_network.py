@@ -42,9 +42,9 @@ sys.stdout.reconfigure(line_buffering=True)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from retina_simulation.world import SimulationWorld, NodeConfig
 from retina_custody.crypto_backend import SoftwareCryptoBackend
 from retina_custody.packet_signer import PacketSigner
+from retina_simulation.world import NodeConfig, SimulationWorld
 
 # Max concurrent HTTP posts (avoids overwhelming server / OS fd limits)
 CONCURRENCY = 20
@@ -180,7 +180,7 @@ async def run(
 
     print()
     print("=" * 66)
-    print(f"  Retina Test Network")
+    print("  Retina Test Network")
     print(f"  Nodes:  {len(node_dicts)}   Steps: {n_steps}   Mode: {mode}")
     print(f"  Server: {server}")
     print("=" * 66)
@@ -205,7 +205,7 @@ async def run(
         if api_key:
             cust_headers["X-API-Key"] = api_key
         key_reg_ok = 0
-        for nid, pub in node_pubkeys.items():
+        for _nid, pub in node_pubkeys.items():
             try:
                 resp = await client.post(
                     custody_url, json=pub, headers=cust_headers, timeout=10.0,

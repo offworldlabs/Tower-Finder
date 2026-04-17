@@ -1,19 +1,16 @@
 """Unit tests for the multi-node geolocation solver."""
 
-import math
 import numpy as np
 import pytest
-
+from retina_geolocator.bistatic_models import bistatic_delay, bistatic_doppler
 from retina_geolocator.multinode_solver import (
-    _lla_to_enu_km,
-    _enu_km_to_lla,
-    _residual_function,
     MultiNodeMeasurement,
     NodeSetup,
+    _enu_km_to_lla,
+    _lla_to_enu_km,
+    _residual_function,
     solve_multinode,
 )
-from retina_geolocator.bistatic_models import bistatic_delay, bistatic_doppler
-
 
 # ── Coordinate conversions ────────────────────────────────────────────────────
 

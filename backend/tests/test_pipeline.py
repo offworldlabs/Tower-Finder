@@ -4,16 +4,14 @@ Covers: PassiveRadarPipeline initialization, frame processing, tracker
 integration, InMemoryEventWriter, GeolocatedTrack properties.
 """
 
-import math
 import time
 
 from pipeline.passive_radar import (
     DEFAULT_NODE_CONFIG,
-    InMemoryEventWriter,
     GeolocatedTrack,
+    InMemoryEventWriter,
     PassiveRadarPipeline,
 )
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

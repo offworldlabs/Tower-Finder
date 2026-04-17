@@ -16,11 +16,9 @@ import tempfile
 import time
 import unittest
 import unittest.mock
-from pathlib import Path
 
 import boto3
 from moto import mock_aws
-
 
 _FAKE_R2_ENV = {
     "R2_ACCOUNT_ID": "testaccount",

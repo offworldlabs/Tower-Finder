@@ -1,8 +1,9 @@
 """Tests for simulation subsystem — world, synthetic nodes, frame generation."""
 
-from retina_simulation.world import SimulationWorld, NodeConfig as SimNodeConfig
-from retina_simulation.node import NodeConfig as SynNodeConfig, _config_hash, SyntheticNodeGenerator
-
+from retina_simulation.node import NodeConfig as SynNodeConfig
+from retina_simulation.node import SyntheticNodeGenerator, _config_hash
+from retina_simulation.world import NodeConfig as SimNodeConfig
+from retina_simulation.world import SimulationWorld
 
 # ── Simulation World ─────────────────────────────────────────────────────────
 

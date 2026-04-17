@@ -1,6 +1,7 @@
 import asyncio
-import httpx
 import logging
+
+import httpx
 
 log = logging.getLogger(__name__)
 
