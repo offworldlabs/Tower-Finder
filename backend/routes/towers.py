@@ -188,7 +188,7 @@ async def update_config(body: dict, _admin=Depends(require_admin)):
     if len(raw) > 1_000_000:
         raise HTTPException(status_code=413, detail="Config too large (max 1 MB)")
     with open(_CONFIG_PATH, "w") as f:
-        f.write(raw)
+        f.write(json.dumps(body, indent=2))
     reload_config()
     return {"status": "updated"}
 

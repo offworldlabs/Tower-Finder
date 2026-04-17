@@ -45,12 +45,16 @@ class LoadFileRequest(BaseModel):
 RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
 _RETINA_ENV = os.getenv("RETINA_ENV", "").lower()
 if not RADAR_API_KEY:
-    if _RETINA_ENV not in ("dev", "test"):
+    logging.warning("RADAR_API_KEY is not set — detection/custody endpoints have no API key protection")
+
+
+def _check_api_key_configured() -> None:
+    """Called from lifespan startup — raises RuntimeError if key missing in production."""
+    if not RADAR_API_KEY and _RETINA_ENV not in ("dev", "test"):
         raise RuntimeError(
             "RADAR_API_KEY is required in production. "
             "Set it in backend/.env to protect detection/custody endpoints."
         )
-    logging.warning("RADAR_API_KEY is not set — detection/custody endpoints have no API key protection")
 _RATE_LIMIT = int(os.getenv("RADAR_RATE_LIMIT", "60"))
 _RATE_WINDOW = int(os.getenv("RADAR_RATE_WINDOW", "60"))
 _TAR1090_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tar1090_data")
@@ -78,9 +82,11 @@ def _check_rate_limit(ip: str) -> None:
         del state.rate_buckets[ip]
     if len(recent) >= _RATE_LIMIT:
         raise HTTPException(status_code=429, detail="Rate limit exceeded — slow down")
-    # Prevent unbounded memory growth from unique IPs
+    # Prevent unbounded memory growth from unique IPs — evict oldest half
     if len(state.rate_buckets) > RATE_BUCKETS_MAX_IPS:
-        state.rate_buckets.clear()
+        evict_count = len(state.rate_buckets) // 2
+        for old_ip in list(state.rate_buckets)[:evict_count]:
+            del state.rate_buckets[old_ip]
     state.rate_buckets[ip].append(now)
 
 

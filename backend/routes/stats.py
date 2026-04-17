@@ -39,7 +39,7 @@ async def record_tower_selection(
 
     stats = _load_stats()
     if len(stats.get("selections", [])) >= _MAX_SELECTIONS:
-        raise HTTPException(status_code=429, detail="Selection log is full")
+        raise HTTPException(status_code=507, detail="Selection log is full — server capacity reached")
     stats.setdefault("selections", []).append({
         **{k: body[k] for k in required},  # Only store expected fields
         "timestamp": datetime.now(timezone.utc).isoformat(),

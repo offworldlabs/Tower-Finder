@@ -782,6 +782,9 @@ class TestFullIntegrationPath:
         pipe, frames = self._tcp_handshake_and_process()
         assert len(frames) == _N_FRAMES
 
+        # Invalidate the analytics cache so get_all_summaries() recomputes fresh
+        state.node_analytics._summaries_cache = None
+
         # Run the analytics refresh synchronously
         _refresh_analytics_and_nodes()
 

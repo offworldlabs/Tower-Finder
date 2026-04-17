@@ -1,1 +1,79 @@
-{"ranking": {"band_priority": {"VHF": 0, "UHF": 1, "FM": 2}, "distance_classes": [{"label": "Too Close", "min_km": 0, "max_km": 8}, {"label": "Ideal", "min_km": 8, "max_km": 30}, {"label": "Good", "min_km": 30, "max_km": 60}, {"label": "Far", "min_km": 60, "max_km": null}], "distance_priority": {"Ideal": 0, "Good": 1, "Far": 2, "Too Close": 3}, "sort_order": [{"field": "band_priority", "ascending": true}, {"field": "distance_priority", "ascending": true}, {"field": "received_power_dbm", "ascending": false}]}, "receiver": {"rx_antenna_gain_dbi": 6.0, "sensitivity_dbm": -120.0}, "broadcast_bands": {"FM": [[87.8, 108.0]], "VHF": [[174, 216]], "UHF": [[470, 608]]}, "search": {"default_radius_km": 80, "default_limit": 100}}
+{
+  "ranking": {
+    "band_priority": {
+      "VHF": 0,
+      "UHF": 1,
+      "FM": 2
+    },
+    "distance_classes": [
+      {
+        "label": "Too Close",
+        "min_km": 0,
+        "max_km": 8
+      },
+      {
+        "label": "Ideal",
+        "min_km": 8,
+        "max_km": 30
+      },
+      {
+        "label": "Good",
+        "min_km": 30,
+        "max_km": 60
+      },
+      {
+        "label": "Far",
+        "min_km": 60,
+        "max_km": null
+      }
+    ],
+    "distance_priority": {
+      "Ideal": 0,
+      "Good": 1,
+      "Far": 2,
+      "Too Close": 3
+    },
+    "sort_order": [
+      {
+        "field": "band_priority",
+        "ascending": true
+      },
+      {
+        "field": "distance_priority",
+        "ascending": true
+      },
+      {
+        "field": "received_power_dbm",
+        "ascending": false
+      }
+    ]
+  },
+  "receiver": {
+    "rx_antenna_gain_dbi": 6.0,
+    "sensitivity_dbm": -120.0
+  },
+  "broadcast_bands": {
+    "FM": [
+      [
+        87.8,
+        108.0
+      ]
+    ],
+    "VHF": [
+      [
+        174,
+        216
+      ]
+    ],
+    "UHF": [
+      [
+        470,
+        608
+      ]
+    ]
+  },
+  "search": {
+    "default_radius_km": 80,
+    "default_limit": 100
+  }
+}

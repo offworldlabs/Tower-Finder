@@ -36,7 +36,7 @@ class ChainEntryRequest(BaseModel):
     hour_utc: str = Field(default="", max_length=32)
     payload_hash: str = Field(default="", max_length=256)
     signature: str = Field(default="", max_length=4096)
-    model_config = {"extra": "allow"}  # Allow extra chain fields
+    model_config = {"extra": "ignore"}  # Drop unknown fields — enumerated fields cover the chain schema
 
 
 class IqCommitmentRequest(BaseModel):
