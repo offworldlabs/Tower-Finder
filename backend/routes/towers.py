@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from clients.fcc import fetch_fcc_broadcast_systems
 from clients.maprad import fetch_broadcast_systems
 from core.auth import require_admin
+from services.alerting import send_alert
 from services.tower_ranking import (
     _CONFIG_PATH,
     DEFAULT_LIMIT,
@@ -196,9 +197,9 @@ async def health():
         pass
 
     if issues:
-        from services.alerting import send_alert
+        logging.warning("Health check degraded: %s", ", ".join(issues))
         send_alert("health_degraded", f"Health check degraded: {', '.join(issues)}", {"issues": issues})
-        return {"status": "degraded", "issues": issues}
+        return {"status": "degraded"}
     return {"status": "ok"}
 
 

@@ -26,27 +26,15 @@ from config.constants import (
 )
 from core import state
 from core.auth import get_all_users, get_current_user, require_admin, update_user_role
+from core.task_registry import TASK_EXPECTED_INTERVAL_S
 
 logger = logging.getLogger(__name__)
-
-# ── Task staleness detection ──────────────────────────────────────────────────
-_TASK_EXPECTED_INTERVAL_S = {
-    "frame_processor": 10,
-    "analytics_refresh": 60,
-    "aircraft_flush": 5,
-    "archive_flush": 120,
-    "reputation_evaluator": 120,
-    "adsb_truth_fetcher": 300,
-    "solver": 120,
-    "storage_refresh": 720,  # expected every 300 s; alert if >2× late
-    "blah2_bridge": 10,      # polls every 1 s; stale if >10 s
-}
 
 
 def _get_stale_tasks() -> list[str]:
     now = time.time()
     stale = []
-    for task_name, expected_s in _TASK_EXPECTED_INTERVAL_S.items():
+    for task_name, expected_s in TASK_EXPECTED_INTERVAL_S.items():
         last = state.task_last_success.get(task_name)
         if last is None:
             continue

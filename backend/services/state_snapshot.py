@@ -91,7 +91,8 @@ def restore_snapshot() -> bool:
             # Verify integrity if checksum file exists
             sha_path = _SNAPSHOT_PATH + ".sha256"
             if os.path.exists(sha_path):
-                expected = open(sha_path).read().strip()
+                with open(sha_path) as _sha_f:
+                    expected = _sha_f.read().strip()
                 actual = hashlib.sha256(raw.encode()).hexdigest()
                 if actual != expected:
                     logging.error(

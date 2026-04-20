@@ -13,6 +13,7 @@ from fastapi.responses import Response
 
 from core import state
 from core.auth import require_admin
+from core.task_registry import TASK_EXPECTED_INTERVAL_S
 from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex
 
 router = APIRouter()
@@ -32,27 +33,11 @@ def _verify_sim_key(x_api_key: str = Header(default="", alias="X-API-Key")):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
 
-# ── Task staleness detection ──────────────────────────────────────────────────
-# Each task has an expected interval — if it hasn't reported success within
-# 2× that interval, it's considered stale.
-_TASK_EXPECTED_INTERVAL_S = {
-    "frame_processor": 10,
-    "analytics_refresh": 60,
-    "aircraft_flush": 5,
-    "archive_flush": 120,
-    "archive_lifecycle": 3600,
-    "reputation_evaluator": 120,
-    "adsb_truth_fetcher": 300,
-    "solver": 120,
-    "blah2_bridge": 10,
-}
-
-
 def _get_stale_tasks() -> list[str]:
     """Return names of tasks that haven't reported success within their expected interval."""
     now = time.time()
     stale = []
-    for task_name, expected_s in _TASK_EXPECTED_INTERVAL_S.items():
+    for task_name, expected_s in TASK_EXPECTED_INTERVAL_S.items():
         last = state.task_last_success.get(task_name)
         if last is None:
             continue  # task hasn't started yet — not stale
