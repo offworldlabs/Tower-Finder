@@ -1,6 +1,6 @@
 # RETINA Operations Runbook
 
-> Living document. Add notes after every real incident. Claude-assisted initial draft — **operators must validate and annotate these steps against real events.**
+> Living document. Add notes after every real incident.initial draft — **operators must validate and annotate these steps against real events.**
 
 ---
 
@@ -82,13 +82,15 @@ ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 'top -bn1 | head -8'
 
 **Trigger:** A background task hasn't reported success within its expected interval.
 
+The health check only monitors these three tasks (defined in `critical_tasks` in `routes/towers.py`):
+
 | Task | Expected interval | Stale after |
 |---|---|---|
-| `frame_processor` | 10 s | 20 s |
-| `aircraft_flush` | 5 s | 15 s |
-| `analytics_refresh` | 60 s | 120 s |
-| `blah2_bridge` | 10 s | 10 s |
-| `solver` | 120 s | — (task_registry uses separate check) |
+| `frame_processor` | ~10 s | 20 s |
+| `aircraft_flush` | ~5 s | 15 s |
+| `analytics_refresh` | 30 s | 120 s |
+
+`blah2_bridge` and `solver` update `task_last_success` but are **not** checked by `/api/health` — their alerts fire via separate mechanisms (`solver_latency_high`, `solver_queue_drops`).
 
 **Check logs for exceptions in the named task:**
 ```bash
@@ -258,6 +260,58 @@ grep R2 /opt/tower-finder/backend/.env
 ```
 
 Not an emergency. The local snapshot still runs every 60 s. Urgent only if combined with `snapshot_corrupt` (no local backup AND R2 backup stale).
+
+---
+
+### `disk_low`
+
+**Trigger:** Free disk space on `coverage_data` partition < 500 MB.  
+**What it means:** Archive flush or snapshot save is about to fail. If the disk fills completely, the frame processor will crash on the next archive write and the state snapshot won't save.
+
+**Check current usage:**
+```bash
+ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 \
+  'df -h /opt/tower-finder/backend/coverage_data && du -sh /opt/tower-finder/backend/coverage_data/*'
+```
+
+**What to clean first:**
+1. Old archive files — these are the biggest consumers. The `archive_lifecycle_task` background task should be rotating them, but it may not be running or its retention window may be too long.
+2. Log files: `docker compose logs` doesn't write to disk — check `/var/log` on the host.
+3. `coverage_data/` subdirectories — each node accumulates coverage map data here.
+
+**If you need space immediately:**
+```bash
+# Check archive files (oldest first)
+ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 \
+  'find /opt/tower-finder/backend/coverage_data -name "*.json.gz" | sort | head -20'
+```
+
+> **Do not delete the `state_snapshot.json` or `state_snapshot.json.sha256` files** — those are the restore point. Delete archive `.json.gz` files instead.
+
+---
+
+### `memory_high`
+
+**Trigger:** Process RSS > 3 GB on the 4 GB droplet.  
+**What it means:** Memory pressure. The OS will start swapping and the OOM killer may fire, which would crash the container without warning.
+
+**Check current memory:**
+```bash
+ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 \
+  'cat /proc/$(docker compose -f /opt/tower-finder/docker-compose.yml top | grep uvicorn | awk "{print \$1}" | head -1)/status | grep VmRSS'
+# Simpler:
+ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 'free -h && top -bn1 | head -10'
+```
+
+**Common causes:**
+1. `track_histories` or `ground_truth_trails` deques not bounded — check constants in `config/constants.py` for `TRACK_HISTORY_MAX` and `GROUND_TRUTH_MAX`.
+2. `accuracy_samples` deque — bounded at 5000 entries, shouldn't be a problem.
+3. `multinode_tracks` dict — grows unbounded if old entries aren't purged. Check if the analytics refresh task is evicting stale tracks.
+4. Memory leak in a dependency (e.g. retina-tracker, scipy) after many thousands of solve calls.
+
+**Immediate mitigation:** `docker compose restart` — restarts the process with fresh memory, state is restored from snapshot within a few seconds.
+
+If memory climbs back over 3 GB within an hour, there is a leak. File an issue with the output of `docker stats` sampled over time.
 
 ---
 
