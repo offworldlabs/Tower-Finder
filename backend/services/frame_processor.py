@@ -184,7 +184,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             if s_in["n_nodes"] < 2:
                 continue
             try:
-                state.solver_queue.put_nowait((s_in, node_cfgs))
+                state.solver_queue.put_nowait((s_in, node_cfgs, time.time()))
             except Exception:
                 state.solver_queue_drops += 1
                 if state.solver_queue_drops % 100 == 1:

@@ -77,7 +77,10 @@ _test_mod.init(radar_pipeline)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Restore persisted state before accepting connections
-    restore_snapshot()
+    restored = restore_snapshot()
+
+    from services.alerting import send_alert
+    send_alert("server_start", "RETINA server started", {"restored": restored})
 
     server = await asyncio.start_server(handle_tcp_client, "0.0.0.0", TCP_PORT)
     addrs = ", ".join(str(s.getsockname()) for s in server.sockets)

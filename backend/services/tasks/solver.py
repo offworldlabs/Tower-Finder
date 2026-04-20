@@ -16,9 +16,11 @@ def _run_solver_worker():
     from retina_geolocator.multinode_solver import solve_multinode
     while True:
         try:
-            s_in, node_cfgs = state.solver_queue.get(timeout=1.0)
+            item = state.solver_queue.get(timeout=1.0)
         except queue.Empty:
             continue
+        s_in, node_cfgs = item[0], item[1]
+        enqueued_at: float | None = item[2] if len(item) > 2 else None
         try:
             result = solve_multinode(s_in, node_cfgs)
         except Exception:
@@ -27,6 +29,21 @@ def _run_solver_worker():
             logging.exception("Multinode solver failed")
             result = None
         if result and result.get("success"):
+            if enqueued_at is not None:
+                latency = time.time() - enqueued_at
+                with state.solver_latency_lock:
+                    state.solver_last_latency_s = latency
+                    state.solver_total_latency_s += latency
+                    state.solver_total_solved += 1
+                if latency > 30.0:
+                    logging.warning("Solver latency high: %.1fs for %d-node candidate",
+                                    latency, s_in.get("n_nodes", 0))
+                    from services.alerting import send_alert
+                    send_alert(
+                        "solver_latency_high",
+                        f"Solver latency {latency:.1f}s — pipeline may be falling behind",
+                        {"latency_s": round(latency, 1), "n_nodes": s_in.get("n_nodes", 0)},
+                    )
             state.solver_successes += 1
             state.task_last_success["solver"] = time.time()
             for nid in result.get("contributing_node_ids", []):
