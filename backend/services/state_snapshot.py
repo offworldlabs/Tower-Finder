@@ -14,6 +14,7 @@ from collections import deque
 from dataclasses import asdict
 
 from core import state
+from services.alerting import send_alert
 
 _SNAPSHOT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 _SNAPSHOT_PATH = os.path.join(_SNAPSHOT_DIR, "state_snapshot.json")
@@ -73,6 +74,11 @@ def save_snapshot() -> None:
             logging.info("State snapshot replicated to R2")
         else:
             logging.warning("State snapshot R2 replication failed")
+            send_alert(
+                "r2_replication_failed",
+                "State snapshot R2 replication failed — backup is stale",
+                {},
+            )
 
 
 def restore_snapshot() -> bool:

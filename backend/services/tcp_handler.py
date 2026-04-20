@@ -189,6 +189,11 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                             "capabilities": msg.get("capabilities", {}),
                             "first_seen_ts": state.connected_nodes.get(node_id, {}).get("first_seen_ts", time.time()),
                         }
+                        active_count = sum(
+                            1 for n in state.connected_nodes.values()
+                            if n.get("status") != "disconnected"
+                        )
+                        state.peak_connected_nodes = max(state.peak_connected_nodes, active_count)
                     logging.info("Radar TCP: CONFIG from %s (hash=%s, synthetic=%s)",
                                  node_id, config_hash, is_synth)
                     _log_event(

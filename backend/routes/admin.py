@@ -369,7 +369,15 @@ async def system_metrics(_user=Depends(require_admin)):
         "solver_failures": state.solver_failures,
         "solver_queue_depth": state.solver_queue.qsize(),
         "solver_queue_drops": state.solver_queue_drops,
+        "solver_last_latency_s": round(state.solver_last_latency_s, 3),
+        "solver_avg_latency_s": round(
+            state.solver_total_latency_s / max(state.solver_total_solved, 1), 2
+        ),
+        "solver_queue_pct": round(
+            state.solver_queue.qsize() / max(state.solver_queue.maxsize, 1) * 100, 1
+        ),
         "connected_nodes": len([n for n in list(state.connected_nodes.values()) if n.get("status") == "active"]),
+        "peak_connected_nodes": state.peak_connected_nodes,
         "active_geo_aircraft": len(state.active_geo_aircraft),
         "multinode_tracks": len(state.multinode_tracks),
         "adsb_aircraft": len(state.adsb_aircraft),

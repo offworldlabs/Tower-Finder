@@ -99,6 +99,14 @@ solver_successes: int = 0
 solver_failures: int = 0
 solver_queue_drops: int = 0
 
+# Solver end-to-end latency (seconds from queue submission to solve completion)
+solver_last_latency_s: float = 0.0
+solver_total_latency_s: float = 0.0
+solver_total_solved: int = 0
+
+# Peak active node count since startup (high-water mark for dropout detection)
+peak_connected_nodes: int = 0
+
 # ── Thread safety locks ──────────────────────────────────────────────────────
 connected_nodes_lock = threading.Lock()
 geo_aircraft_lock = threading.Lock()
