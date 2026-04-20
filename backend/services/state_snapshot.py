@@ -5,6 +5,7 @@ Persists: trust_scores, reputations, accuracy_samples, chain_entries,
 node_identities, iq_commitments, anomaly_log.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -53,11 +54,16 @@ def save_snapshot() -> None:
 
     os.makedirs(_SNAPSHOT_DIR, exist_ok=True)
     tmp = _SNAPSHOT_PATH + ".tmp"
+    payload = json.dumps(snapshot)
+    checksum = hashlib.sha256(payload.encode()).hexdigest()
     with open(tmp, "w") as f:
-        json.dump(snapshot, f)
+        f.write(payload)
+    # Write checksum file atomically alongside
+    with open(_SNAPSHOT_PATH + ".sha256", "w") as f:
+        f.write(checksum)
     os.replace(tmp, _SNAPSHOT_PATH)
     size = os.path.getsize(_SNAPSHOT_PATH)
-    logging.info("State snapshot saved (%d bytes)", size)
+    logging.info("State snapshot saved (%d bytes, sha256=%s)", size, checksum[:12])
 
     # Replicate to R2 for durability across container recreates
     from services.r2_client import is_enabled as r2_enabled
@@ -81,7 +87,23 @@ def restore_snapshot() -> bool:
     if os.path.exists(_SNAPSHOT_PATH):
         try:
             with open(_SNAPSHOT_PATH) as f:
-                snap = json.load(f)
+                raw = f.read()
+            # Verify integrity if checksum file exists
+            sha_path = _SNAPSHOT_PATH + ".sha256"
+            if os.path.exists(sha_path):
+                with open(sha_path) as _sha_f:
+                    expected = _sha_f.read().strip()
+                actual = hashlib.sha256(raw.encode()).hexdigest()
+                if actual != expected:
+                    logging.error(
+                        "State snapshot checksum mismatch (expected=%s, got=%s) — skipping corrupt file",
+                        expected[:12], actual[:12],
+                    )
+                    from services.alerting import send_alert
+                    send_alert("snapshot_corrupt", "State snapshot checksum mismatch — starting with empty state")
+                    raw = None
+            if raw is not None:
+                snap = json.loads(raw)
         except Exception:
             logging.exception("Failed to read local state snapshot")
 

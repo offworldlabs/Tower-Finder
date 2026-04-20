@@ -69,7 +69,7 @@ class TestHealth:
             assert r.status_code == 200
             body = r.json()
             assert body["status"] == "degraded"
-            assert any("frame_processor" in i for i in body["issues"])
+            assert "issues" not in body  # details are logged, not exposed publicly
         finally:
             state.task_last_success.pop("frame_processor", None)
 
@@ -88,7 +88,7 @@ class TestHealth:
             assert r.status_code == 200
             body = r.json()
             assert body["status"] == "degraded"
-            assert any("frame_queue_saturated" in i for i in body["issues"])
+            assert "issues" not in body  # details are logged, not exposed publicly
         finally:
             state.frame_queue = orig_queue
 

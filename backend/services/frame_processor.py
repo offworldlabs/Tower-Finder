@@ -186,7 +186,18 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             try:
                 state.solver_queue.put_nowait((s_in, node_cfgs))
             except Exception:
-                pass
+                state.solver_queue_drops += 1
+                if state.solver_queue_drops % 100 == 1:
+                    logging.warning(
+                        "Solver queue full — dropped %d candidates total",
+                        state.solver_queue_drops,
+                    )
+                    from services.alerting import send_alert
+                    send_alert(
+                        "solver_queue_drops",
+                        f"Solver queue full — {state.solver_queue_drops} candidates dropped",
+                        {"total_drops": state.solver_queue_drops},
+                    )
     _prof_assoc += time.thread_time() - _t2
 
     # ADS-B extraction: TCP handler runs _apply_synthetic_adsb for synth nodes

@@ -50,7 +50,7 @@ from services.state_snapshot import SAVE_INTERVAL_S, restore_snapshot, save_snap
 from services.tcp_handler import handle_tcp_client
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO))
 
 TCP_PORT = int(os.getenv("RADAR_TCP_PORT", "3012"))
 

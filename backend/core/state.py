@@ -97,6 +97,7 @@ frames_dropped: int = 0
 frames_processed: int = 0
 solver_successes: int = 0
 solver_failures: int = 0
+solver_queue_drops: int = 0
 
 # ── Thread safety locks ──────────────────────────────────────────────────────
 connected_nodes_lock = threading.Lock()

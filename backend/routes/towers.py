@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from clients.fcc import fetch_fcc_broadcast_systems
 from clients.maprad import fetch_broadcast_systems
 from core.auth import require_admin
+from services.alerting import send_alert
 from services.tower_ranking import (
     _CONFIG_PATH,
     DEFAULT_LIMIT,
@@ -151,6 +152,9 @@ async def find_towers(
 
 @router.get("/api/health")
 async def health():
+    import resource
+    import shutil
+    import sys
     import time
 
     from core import state
@@ -170,8 +174,32 @@ async def health():
         if last is not None and (now - last) > max_age_s:
             issues.append(f"stale_task:{task}")
 
+    # Check solver queue drops (growing = solver can't keep up)
+    if state.solver_queue_drops > 0:
+        issues.append(f"solver_queue_drops:{state.solver_queue_drops}")
+
+    # Check disk space (<500 MB free = critical)
+    try:
+        disk = shutil.disk_usage(state.COVERAGE_STORAGE_DIR)
+        free_mb = disk.free / (1024 * 1024)
+        if free_mb < 500:
+            issues.append(f"disk_low:{free_mb:.0f}MB")
+    except Exception:
+        pass
+
+    # Check process memory (>3 GB on a 4 GB droplet = danger)
+    try:
+        rusage = resource.getrusage(resource.RUSAGE_SELF)
+        rss_mb = rusage.ru_maxrss / 1024 if sys.platform == "linux" else rusage.ru_maxrss / (1024 * 1024)
+        if rss_mb > 3000:
+            issues.append(f"memory_high:{rss_mb:.0f}MB")
+    except Exception:
+        pass
+
     if issues:
-        return {"status": "degraded", "issues": issues}
+        logging.warning("Health check degraded: %s", ", ".join(issues))
+        send_alert("health_degraded", f"Health check degraded: {', '.join(issues)}", {"issues": issues})
+        return {"status": "degraded"}
     return {"status": "ok"}
 
 
