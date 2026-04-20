@@ -163,10 +163,12 @@ async def blah2_bridge_task():
                             state.frames_dropped += 1
 
                 failures = 0
+                state.task_last_success["blah2_bridge"] = time.time()
                 await asyncio.sleep(POLL_INTERVAL_S)
 
             except (httpx.HTTPError, Exception) as exc:
                 failures += 1
+                state.task_error_counts["blah2_bridge"] += 1
                 if failures >= MAX_FAILURES:
                     log.warning(
                         "blah2_bridge: %d consecutive failures (%s), backing off %ds",

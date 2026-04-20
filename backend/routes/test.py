@@ -44,6 +44,7 @@ _TASK_EXPECTED_INTERVAL_S = {
     "reputation_evaluator": 120,
     "adsb_truth_fetcher": 300,
     "solver": 120,
+    "blah2_bridge": 10,
 }
 
 

@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures
 import json
 import logging
+import os
 import time
 from collections import deque
 from pathlib import Path
@@ -38,6 +39,7 @@ _TASK_EXPECTED_INTERVAL_S = {
     "adsb_truth_fetcher": 300,
     "solver": 120,
     "storage_refresh": 720,  # expected every 300 s; alert if >2× late
+    "blah2_bridge": 10,      # polls every 1 s; stale if >10 s
 }
 
 
@@ -358,6 +360,16 @@ async def user_alerts(_user=Depends(get_current_user)):
 @router.get("/metrics")
 async def system_metrics(_user=Depends(require_admin)):
     """Operational metrics: task health, error counts, queue depths."""
+    import resource
+    import shutil
+
+    rusage = resource.getrusage(resource.RUSAGE_SELF)
+    # ru_maxrss is in KB on Linux, bytes on macOS — normalise to MB
+    import sys
+    rss_mb = rusage.ru_maxrss / 1024 if sys.platform == "linux" else rusage.ru_maxrss / (1024 * 1024)
+
+    disk = shutil.disk_usage(state.COVERAGE_STORAGE_DIR)
+
     return {
         "task_last_success": dict(state.task_last_success),
         "task_error_counts": dict(state.task_error_counts),
@@ -368,6 +380,7 @@ async def system_metrics(_user=Depends(require_admin)):
         "solver_successes": state.solver_successes,
         "solver_failures": state.solver_failures,
         "solver_queue_depth": state.solver_queue.qsize(),
+        "solver_queue_drops": state.solver_queue_drops,
         "connected_nodes": len([n for n in list(state.connected_nodes.values()) if n.get("status") == "active"]),
         "active_geo_aircraft": len(state.active_geo_aircraft),
         "multinode_tracks": len(state.multinode_tracks),
@@ -375,4 +388,9 @@ async def system_metrics(_user=Depends(require_admin)):
         "ws_clients": len(state.ws_clients),
         "ws_live_clients": len(state.ws_live_clients),
         "stale_tasks": _get_stale_tasks(),
+        "process_rss_mb": round(rss_mb, 1),
+        "load_avg": list(os.getloadavg()),
+        "disk_total_gb": round(disk.total / (1024**3), 1),
+        "disk_used_gb": round(disk.used / (1024**3), 1),
+        "disk_free_gb": round(disk.free / (1024**3), 1),
     }
