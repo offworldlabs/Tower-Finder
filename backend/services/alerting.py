@@ -8,8 +8,8 @@ Deduplicates alerts: same alert_type is not re-sent within COOLDOWN_S seconds.
 
 import logging
 import os
-import time
 import threading
+import time
 
 import httpx
 
