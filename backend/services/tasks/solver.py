@@ -31,9 +31,10 @@ def _run_solver_worker():
         if result and result.get("success"):
             if enqueued_at is not None:
                 latency = time.time() - enqueued_at
-                state.solver_last_latency_s = latency
-                state.solver_total_latency_s += latency
-                state.solver_total_solved += 1
+                with state.solver_latency_lock:
+                    state.solver_last_latency_s = latency
+                    state.solver_total_latency_s += latency
+                    state.solver_total_solved += 1
                 if latency > 30.0:
                     logging.warning("Solver latency high: %.1fs for %d-node candidate",
                                     latency, s_in.get("n_nodes", 0))

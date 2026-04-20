@@ -111,6 +111,8 @@ peak_connected_nodes: int = 0
 connected_nodes_lock = threading.Lock()
 geo_aircraft_lock = threading.Lock()
 anomaly_lock = threading.Lock()
+# Guards solver_last_latency_s / solver_total_latency_s / solver_total_solved
+solver_latency_lock = threading.Lock()
 
 # ── Task health tracking ─────────────────────────────────────────────────────
 task_last_success: dict[str, float] = {}   # task_name → last success epoch

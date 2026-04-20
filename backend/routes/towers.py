@@ -5,6 +5,7 @@ import logging
 import os
 
 import httpx
+import orjson
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from clients.fcc import fetch_fcc_broadcast_systems
@@ -19,6 +20,8 @@ from services.tower_ranking import (
     process_and_rank,
     reload_config,
 )
+
+_NODE_DROPOUT_THRESHOLD = float(os.getenv("NODE_DROPOUT_THRESHOLD", "0.8"))
 
 router = APIRouter()
 
@@ -206,14 +209,14 @@ async def health():
         issues.append(f"solver_latency_high:{state.solver_last_latency_s:.0f}s")
 
     # Node dropout (active nodes <80% of peak — fleet disconnect or TCP issue)
-    _node_dropout_threshold = float(os.getenv("NODE_DROPOUT_THRESHOLD", "0.8"))
+    # threshold cached at module level (_NODE_DROPOUT_THRESHOLD)
     with state.connected_nodes_lock:
         active_nodes = sum(
             1 for n in state.connected_nodes.values() if n.get("status") != "disconnected"
         )
     if (
         state.peak_connected_nodes > 10
-        and active_nodes < state.peak_connected_nodes * _node_dropout_threshold
+        and active_nodes < state.peak_connected_nodes * _NODE_DROPOUT_THRESHOLD
     ):
         issues.append(f"node_dropout:{active_nodes}/{state.peak_connected_nodes}")
 
@@ -232,7 +235,6 @@ async def health():
 
     # Solver accuracy degradation (mean position error >10 km = output untrustworthy)
     try:
-        import orjson
         if state.latest_accuracy_bytes and state.latest_accuracy_bytes != b"{}":
             _acc = orjson.loads(state.latest_accuracy_bytes)
             if _acc.get("n_samples", 0) > 20 and _acc.get("mean_km", 0) > 10:
@@ -248,9 +250,10 @@ async def health():
                 for v in state.latest_missed_detections.values()
                 if v.get("in_range", 0) > 0
             ]
-            if _rates and sum(_rates) / len(_rates) > 0.7:
+            if _rates:
                 _avg = sum(_rates) / len(_rates)
-                issues.append(f"high_miss_rate:{_avg:.0%}")
+                if _avg > 0.7:
+                    issues.append(f"high_miss_rate:{_avg:.0%}")
     except Exception:
         pass
 

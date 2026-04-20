@@ -105,7 +105,6 @@ def restore_snapshot() -> bool:
                         "State snapshot checksum mismatch (expected=%s, got=%s) — skipping corrupt file",
                         expected[:12], actual[:12],
                     )
-                    from services.alerting import send_alert
                     send_alert("snapshot_corrupt", "State snapshot checksum mismatch — starting with empty state")
                     raw = None
             if raw is not None:
