@@ -178,6 +178,9 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                         await _send_msg(writer, {"type": "CONFIG_NACK", "error": cfg_err})
                         continue
                     is_synth = msg.get("is_synthetic", is_synthetic_node(node_id))
+                    _was_disconnected = (
+                        state.connected_nodes.get(node_id, {}).get("status") == "disconnected"
+                    )
                     with state.connected_nodes_lock:
                         state.connected_nodes[node_id] = {
                             "config_hash": config_hash,
@@ -196,12 +199,20 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                         state.peak_connected_nodes = max(state.peak_connected_nodes, active_count)
                     logging.info("Radar TCP: CONFIG from %s (hash=%s, synthetic=%s)",
                                  node_id, config_hash, is_synth)
-                    _log_event(
-                        "node",
-                        f"Node {node_id} connected (hash={config_hash[:8]}, synthetic={is_synth})",
-                        "info",
-                        {"node_id": node_id, "config_hash": config_hash, "is_synthetic": is_synth},
-                    )
+                    if _was_disconnected:
+                        _log_event(
+                            "node",
+                            f"Node {node_id} reconnected (hash={config_hash[:8]}, synthetic={is_synth})",
+                            "info",
+                            {"node_id": node_id, "config_hash": config_hash, "is_synthetic": is_synth, "reconnect": True},
+                        )
+                    else:
+                        _log_event(
+                            "node",
+                            f"Node {node_id} connected (hash={config_hash[:8]}, synthetic={is_synth})",
+                            "info",
+                            {"node_id": node_id, "config_hash": config_hash, "is_synthetic": is_synth},
+                        )
                     await _send_msg(writer, {
                         "type": "CONFIG_ACK",
                         "config_hash": config_hash,
@@ -432,6 +443,14 @@ def _enqueue_detection(msg: dict, node_id: str | None):
         if now_m - _last_drop_log > 30:
             _last_drop_log = now_m
             logging.warning("Frame queue full – %d total drops", state.frames_dropped)
+            _log_event(
+                "system",
+                f"Frame queue saturated — {state.frames_dropped} total drops",
+                "error",
+                {"frames_dropped": state.frames_dropped,
+                 "queue_depth": state.frame_queue.qsize(),
+                 "queue_max": state.frame_queue.maxsize},
+            )
 
 
 def _apply_synthetic_adsb(msg: dict, node_id: str):

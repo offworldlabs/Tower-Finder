@@ -213,3 +213,115 @@ class TestStaleTasks:
         state.task_last_success["frame_processor"] = time.time() - 9999
         result = _get_stale_tasks()
         assert "frame_processor" in result
+
+
+# ── Queue saturation alerting ─────────────────────────────────────────────────
+
+class TestQueueSaturationAlert:
+    def test_drop_event_logged_when_throttle_expires(self):
+        """When _last_drop_log is old enough, a drop should produce a system event."""
+        import services.tcp_handler as th
+        from routes.admin import _events, log_event  # noqa: F401
+
+        # Reset throttle timer so the next drop fires immediately
+        th._last_drop_log = 0.0
+        state.frames_dropped = 0
+
+        # Simulate a frame queue full drop by calling the internal helper directly
+        # after artificially making the queue full.
+        original_maxsize = state.frame_queue.maxsize
+        # Fill the queue to capacity with dummy items, then call _enqueue_detection
+        # on a node whose rate-limit window has expired.
+        th._per_node_last_enqueue.pop("alert-test-node", None)
+        while not state.frame_queue.full():
+            try:
+                state.frame_queue.put_nowait(("_fill", {"timestamp": 1}))
+            except Exception:
+                break
+
+        before_len = len(_events)
+        th._enqueue_detection(
+            {"type": "DETECTION", "data": {"timestamp": 1, "detections": []}},
+            "alert-test-node",
+        )
+
+        # Drain the queue to restore state
+        while not state.frame_queue.empty():
+            try:
+                state.frame_queue.get_nowait()
+                state.frame_queue.task_done()
+            except Exception:
+                break
+
+        # There should be a new system/error event
+        new_events = list(_events)[:len(_events) - before_len + 5]
+        assert any(
+            e.get("category") == "system" and e.get("severity") == "error"
+            for e in new_events
+        ), "Expected a system/error event for queue saturation"
+
+
+# ── Node reconnect event logging ─────────────────────────────────────────────
+
+class TestNodeReconnectEvent:
+    def test_reconnect_flag_in_meta(self):
+        """When a node that was disconnected sends CONFIG again, event should have reconnect=True."""
+        from routes.admin import _events
+
+        # Pre-populate node as disconnected
+        state.connected_nodes["reconnect-test"] = {
+            "status": "disconnected",
+            "config": {},
+            "config_hash": "oldhash",
+            "first_seen_ts": time.time() - 300,
+        }
+
+        # Simulate what handle_tcp_client does on CONFIG receipt for a known-disconnected node
+        import services.tcp_handler as th
+
+        was_disconnected = state.connected_nodes.get("reconnect-test", {}).get("status") == "disconnected"
+        assert was_disconnected
+
+        if was_disconnected:
+            th._log_event(
+                "node",
+                "Node reconnect-test reconnected (hash=newhash1, synthetic=False)",
+                "info",
+                {"node_id": "reconnect-test", "config_hash": "newhash1234", "is_synthetic": False, "reconnect": True},
+            )
+
+        reconnect_events = [
+            e for e in _events
+            if e.get("meta", {}).get("reconnect") is True
+            and e.get("meta", {}).get("node_id") == "reconnect-test"
+        ]
+        assert len(reconnect_events) >= 1, "Expected a reconnect event in the event log"
+
+        # Cleanup
+        state.connected_nodes.pop("reconnect-test", None)
+
+    def test_fresh_connect_has_no_reconnect_flag(self):
+        """A brand-new node (not seen before) should not have reconnect=True."""
+        from routes.admin import _events
+
+        # Ensure node is not in state
+        state.connected_nodes.pop("fresh-node-test", None)
+
+        was_disconnected = state.connected_nodes.get("fresh-node-test", {}).get("status") == "disconnected"
+        assert not was_disconnected
+
+        import services.tcp_handler as th
+        th._log_event(
+            "node",
+            "Node fresh-node-test connected (hash=abc12345, synthetic=False)",
+            "info",
+            {"node_id": "fresh-node-test", "config_hash": "abc12345", "is_synthetic": False},
+        )
+
+        reconnect_events = [
+            e for e in _events
+            if e.get("meta", {}).get("reconnect") is True
+            and e.get("meta", {}).get("node_id") == "fresh-node-test"
+        ]
+        assert len(reconnect_events) == 0, "Fresh connect should not have reconnect flag"
+

@@ -81,4 +81,5 @@ export const api = {
     }),
   adminConfigHistory: () => request("/api/admin/config/history"),
   adminStorage: () => request("/api/admin/storage"),
+  adminMetrics: () => request("/api/admin/metrics"),
 };

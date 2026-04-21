@@ -27,6 +27,7 @@ const StoragePage = lazy(() => import("./pages/admin/StoragePage"));
 const CustodyPage = lazy(() => import("./pages/admin/CustodyPage"));
 const UserManagementPage = lazy(() => import("./pages/admin/UserManagementPage"));
 const ConfigPage = lazy(() => import("./pages/admin/ConfigPage"));
+const SystemMetricsPage = lazy(() => import("./pages/admin/SystemMetricsPage"));
 
 const isAdminSite =
   window.location.hostname.startsWith("admin.") ||
@@ -70,6 +71,7 @@ export default function App() {
                       <Route path="custody" element={<CustodyPage />} />
                       <Route path="users" element={<UserManagementPage />} />
                       <Route path="config" element={<ConfigPage />} />
+                      <Route path="system" element={<SystemMetricsPage />} />
                     </>
                   ) : (
                     <>
