@@ -18,6 +18,7 @@ services:
       - "3012:3012"
     volumes:
       - /etc/ssl/cloudflare:/etc/ssl/cloudflare:ro
+      - staging-backend-config:/app/backend/config
     env_file:
       - backend/.env
     environment:
@@ -80,3 +81,6 @@ services:
       options:
         max-size: "20m"
         max-file: "3"
+
+volumes:
+  staging-backend-config:

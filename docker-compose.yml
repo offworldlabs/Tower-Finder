@@ -9,6 +9,7 @@ services:
       - /etc/ssl/cloudflare:/etc/ssl/cloudflare:ro
       - backend-data:/app/backend/data
       - backend-coverage-data:/app/backend/coverage_data
+      - backend-config:/app/backend/config
     env_file:
       - backend/.env
     restart: unless-stopped
@@ -31,3 +32,4 @@ services:
 volumes:
   backend-data:
   backend-coverage-data:
+  backend-config:
