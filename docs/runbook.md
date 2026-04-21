@@ -374,29 +374,3 @@ ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 \
 ```
 
 ---
-
-## Things Claude doesn't know and you should add here
-
-> These sections exist because they require operational experience, not just code reading. Fill them in after real incidents.
-
-### Typical "healthy" baseline numbers
-When 200 nodes are connected and the fleet is steady, what do you normally see for:
-- Active tracks: ~
-- Geolocated aircraft: ~
-- Solver avg latency: ~
-- Queue utilisation %: ~
-- Miss rate %: ~
-
-### Failure modes unique to real (non-simulated) nodes
-- Do real nodes lose connection for different reasons than simulated ones?
-- Is TCP flapping a known issue with any node hardware/firmware?
-- What does a real detection frame look like vs a synth one when diagnosing anomalies?
-
-### Known external dependencies that break silently
-- ADS-B source (`adsb.lol` or equivalent) — how often does it go down?
-- R2 — has it ever caused issues?
-- DigitalOcean networking — any known maintenance windows?
-
-### Escalation
-- Who to contact if something requires server-level access and you can't get in?
-- Is there a status page or monitoring dashboard beyond the API endpoints?
