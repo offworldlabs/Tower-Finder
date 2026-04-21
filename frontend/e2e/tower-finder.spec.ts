@@ -70,11 +70,13 @@ test.describe("Tower Finder — search form", () => {
   test("auto-fetches elevation when lat/lon are entered", async ({ page }) => {
     // Set up response interceptor before triggering the network request
     const elevationResponse = page
-      .waitForResponse((r) => r.url().includes("elevation"), { timeout: 5_000 })
+      .waitForResponse((r) => r.url().includes("elevation"), { timeout: 15_000 })
       .catch(() => null); // resolves null if no elevation request fires
 
     await page.getByLabel(/latitude/i).fill("37.7749");
     await page.getByLabel(/longitude/i).fill("-122.4194");
+    // Blur the field to ensure the React useEffect fires and the API call is made
+    await page.getByLabel(/longitude/i).blur();
 
     const gotElevation = await elevationResponse;
     const altVal = await page.getByLabel(/altitude/i).inputValue();

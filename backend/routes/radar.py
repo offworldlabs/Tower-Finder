@@ -187,6 +187,7 @@ async def ingest_detections_bulk(
                     "capabilities": {},
                 }
             state.node_analytics.register_node(node_id, entry_config)
+            state.node_associator.register_node(node_id, entry_config)
             registered += 1
         else:
             with state.connected_nodes_lock:

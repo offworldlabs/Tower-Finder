@@ -5,7 +5,7 @@ import { defineConfig, devices } from "@playwright/test";
  *
  * Environments (set via E2E_ENV):
  *   staging  → staging.retina.fm / staging-api.retina.fm / staging-testmap.retina.fm (default)
- *   prod     → retina.fm / api.retina.fm / testmap.retina.fm
+ *   prod     → towers.retina.fm / api.retina.fm / testmap.retina.fm
  *   local    → localhost:5173 / localhost:8000
  */
 
@@ -20,7 +20,7 @@ const HOSTS = {
     dash:      "https://staging-dash.retina.fm",
   },
   prod: {
-    frontend:  "https://retina.fm",
+    frontend:  "https://towers.retina.fm",
     api:       "https://api.retina.fm",
     map:       "https://map.retina.fm",
     testmap:   "https://testmap.retina.fm",
