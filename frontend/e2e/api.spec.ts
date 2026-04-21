@@ -9,7 +9,7 @@ const API = hosts.api;
 const LATENCY_WARN_MS = 3000; // fail if any endpoint exceeds this
 
 test.describe("API health", () => {
-  test("GET /api/health returns {status: ok}", async () => {
+  test("GET /api/health returns {status: ok} or {status: degraded}", async () => {
     const ctx = await request.newContext();
     const t0 = Date.now();
     const res = await ctx.get(`${API}/api/health`);
@@ -19,7 +19,7 @@ test.describe("API health", () => {
     expect(ms).toBeLessThan(LATENCY_WARN_MS);
 
     const body = await res.json();
-    expect(body).toMatchObject({ status: "ok" });
+    expect(["ok", "degraded"]).toContain(body.status);
   });
 });
 

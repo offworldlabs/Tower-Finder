@@ -204,6 +204,7 @@ test.describe("Node registration — main integration suite", () => {
   let singleResponseBody: { status: string; frames_queued: number; tracks: number };
 
   test.beforeAll(async () => {
+    test.setTimeout(90_000); // covers 35 s cache wait + registration + buffer
     if (!API_KEY) test.skip();
     ctx = await request.newContext();
 
@@ -597,11 +598,18 @@ test.describe("Node registration — main integration suite", () => {
     let overlapsBody: { overlaps: Record<string, unknown>[]; registered_nodes: string[] };
 
     test.beforeAll(async () => {
+      test.setTimeout(90_000);
       // Both latest_nodes_bytes and latest_overlaps_bytes are rebuilt in the same
-      // 30 s background task, so they are always consistent after waitForNodes.
-      const res = await ctx.get(`${API}/api/radar/association/overlaps`);
-      expect(res.status()).toBe(200);
-      overlapsBody = await res.json();
+      // 30 s background task. Poll until BULK_B_NODE appears in registered_nodes —
+      // it needs the associator cycle to fire after its bulk registration.
+      const deadline = Date.now() + CACHE_TIMEOUT_MS;
+      while (Date.now() < deadline) {
+        const res = await ctx.get(`${API}/api/radar/association/overlaps`);
+        expect(res.status()).toBe(200);
+        overlapsBody = await res.json();
+        if (overlapsBody.registered_nodes.includes(BULK_B_NODE_ID)) break;
+        await new Promise((r) => setTimeout(r, 2_000));
+      }
     });
 
     test("response has an overlaps array and a registered_nodes array", () => {
