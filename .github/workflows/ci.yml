@@ -213,6 +213,8 @@ jobs:
 
             git pull origin main
             git submodule update --init --recursive
+            pip3 install -e libs/retina-custody/ --break-system-packages --ignore-installed -q
+            pip3 install -e libs/retina-simulation/ --break-system-packages -q
             docker compose up -d --build
 
             # Wait for backend to become healthy (up to 60s)
@@ -239,7 +241,7 @@ jobs:
             done
             # Start fresh fleet
             systemd-run --unit="fleet${FLEET_NUM}" --working-directory=/opt/tower-finder \
-              python3 backend/simulation/orchestrator.py \
+              python3 -m retina_simulation.orchestrator \
               --nodes 200 --mode adsb \
               --validation-url https://localhost \
               --concurrency 20 --connect-retries 999 \
