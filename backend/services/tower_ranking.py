@@ -181,10 +181,17 @@ def parse_geom(geom) -> tuple[float, float] | None:
     wkt = geom.strip().upper()
 
     if wkt.startswith("POINT"):
-        inner = geom[geom.index("(") + 1 : geom.index(")")]
+        try:
+            inner = geom[geom.index("(") + 1 : geom.index(")")]
+        except ValueError:
+            # Malformed POINT WKT — missing opening or closing paren.
+            return None
         parts = inner.split()
         if len(parts) >= 2:
-            return float(parts[1]), float(parts[0])  # WKT is lng lat
+            try:
+                return float(parts[1]), float(parts[0])  # WKT is lng lat
+            except ValueError:
+                return None
         return None
 
     # For polygons / multipolygons, compute centroid from the first ring

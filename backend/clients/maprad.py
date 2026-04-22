@@ -102,6 +102,7 @@ async def _paginate_query(
 
         data = body.get("data", {}).get("systems", {})
         edges = data.get("edges") or []
+        prev_cursor = cursor
         for edge in edges:
             node = edge.get("node")
             if node:
@@ -109,6 +110,12 @@ async def _paginate_query(
             cursor = edge.get("cursor", cursor)
 
         if not data.get("pageInfo", {}).get("hasNextPage") or not edges:
+            break
+        # Defensive: if the API says "hasNextPage" but the cursor didn't advance
+        # (e.g. missing cursors on edges, or API quirk), stop to avoid re-fetching
+        # the same page indefinitely up to max_pages.
+        if cursor == prev_cursor:
+            log.warning("Pagination cursor did not advance on page %d — stopping", page + 1)
             break
     return systems
 
