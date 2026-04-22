@@ -229,7 +229,6 @@ class TestQueueSaturationAlert:
 
         # Simulate a frame queue full drop by calling the internal helper directly
         # after artificially making the queue full.
-        original_maxsize = state.frame_queue.maxsize
         # Fill the queue to capacity with dummy items, then call _enqueue_detection
         # on a node whose rate-limit window has expired.
         th._per_node_last_enqueue.pop("alert-test-node", None)
