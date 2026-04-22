@@ -8,6 +8,7 @@ addopts = [
     "--cov-fail-under=55",
     "-q",
 ]
+asyncio_mode = "auto"
 markers = [
     "external: requires external API (open-meteo.com)",
     "asyncio: mark test as async (requires pytest-asyncio)",
@@ -28,6 +29,8 @@ omit = [
     "clients/fcc.py",
     # blah2 bridge — requires live blah2 hardware/daemon:
     "services/blah2_bridge.py",
+    # Pure TypedDict definitions — no runtime code to cover:
+    "core/types.py",
 ]
 
 [tool.coverage.report]

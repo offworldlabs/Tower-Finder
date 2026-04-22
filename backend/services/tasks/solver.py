@@ -11,6 +11,49 @@ from core import state
 _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 
 
+def _process_solver_item(item: tuple, solve_fn) -> dict | None:
+    """Process a single solver queue entry. Returns the solver result (or None).
+
+    Extracted from the worker loop so the success/failure/latency bookkeeping
+    can be unit-tested without spinning up daemon threads.
+    """
+    s_in, node_cfgs = item[0], item[1]
+    enqueued_at: float | None = item[2] if len(item) > 2 else None
+    try:
+        result = solve_fn(s_in, node_cfgs)
+    except Exception:
+        state.task_error_counts["solver"] += 1
+        state.solver_failures += 1
+        logging.exception("Multinode solver failed")
+        result = None
+    if result and result.get("success"):
+        state.solver_successes += 1
+        with state.solver_latency_lock:
+            state.solver_total_solved += 1
+        if enqueued_at is not None:
+            latency = time.time() - enqueued_at
+            with state.solver_latency_lock:
+                state.solver_last_latency_s = latency
+                state.solver_total_latency_s += latency
+            if latency > 30.0:
+                logging.warning("Solver latency high: %.1fs for %d-node candidate",
+                                latency, s_in.get("n_nodes", 0))
+                from services.alerting import send_alert
+                send_alert(
+                    "solver_latency_high",
+                    f"Solver latency {latency:.1f}s — pipeline may be falling behind",
+                    {"latency_s": round(latency, 1), "n_nodes": s_in.get("n_nodes", 0)},
+                )
+        state.task_last_success["solver"] = time.time()
+        for nid in result.get("contributing_node_ids", []):
+            state.node_analytics.record_calibration_point(
+                nid, result["lat"], result["lon"]
+            )
+        key = f"mn-{result['timestamp_ms']}-{result['lat']:.3f}"
+        state.multinode_tracks[key] = result
+    return result
+
+
 def _run_solver_worker():
     """Drain state.solver_queue and run solve_multinode. Runs as a daemon thread."""
     from retina_geolocator.multinode_solver import solve_multinode
@@ -19,39 +62,7 @@ def _run_solver_worker():
             item = state.solver_queue.get(timeout=1.0)
         except queue.Empty:
             continue
-        s_in, node_cfgs = item[0], item[1]
-        enqueued_at: float | None = item[2] if len(item) > 2 else None
-        try:
-            result = solve_multinode(s_in, node_cfgs)
-        except Exception:
-            state.task_error_counts["solver"] += 1
-            state.solver_failures += 1
-            logging.exception("Multinode solver failed")
-            result = None
-        if result and result.get("success"):
-            if enqueued_at is not None:
-                latency = time.time() - enqueued_at
-                with state.solver_latency_lock:
-                    state.solver_last_latency_s = latency
-                    state.solver_total_latency_s += latency
-                    state.solver_total_solved += 1
-                if latency > 30.0:
-                    logging.warning("Solver latency high: %.1fs for %d-node candidate",
-                                    latency, s_in.get("n_nodes", 0))
-                    from services.alerting import send_alert
-                    send_alert(
-                        "solver_latency_high",
-                        f"Solver latency {latency:.1f}s — pipeline may be falling behind",
-                        {"latency_s": round(latency, 1), "n_nodes": s_in.get("n_nodes", 0)},
-                    )
-            state.solver_successes += 1
-            state.task_last_success["solver"] = time.time()
-            for nid in result.get("contributing_node_ids", []):
-                state.node_analytics.record_calibration_point(
-                    nid, result["lat"], result["lon"]
-                )
-            key = f"mn-{result['timestamp_ms']}-{result['lat']:.3f}"
-            state.multinode_tracks[key] = result
+        _process_solver_item(item, solve_multinode)
 
 
 def start_solver_workers():
