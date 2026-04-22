@@ -139,4 +139,4 @@ class TestProcessSolverItem:
         solver_mod._process_solver_item(item, solve_fn)
 
         assert state.solver_successes == 1
-        assert state.solver_total_solved == 0  # latency path skipped
+        assert state.solver_total_solved == 1  # counted even without latency info

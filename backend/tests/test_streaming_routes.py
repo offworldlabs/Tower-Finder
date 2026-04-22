@@ -23,10 +23,11 @@ class TestLiveWebSocket:
     def test_live_ws_accepts_no_token(self, client, monkeypatch):
         from routes import streaming as streaming_mod
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "")
-        with client.websocket_connect("/ws/aircraft/live"):
-            pass
-        # Client removed from set on close
-        # (no assertion needed — just verifies the socket opened/closed cleanly)
+        state.ws_live_clients.clear()
+        with client.websocket_connect("/ws/aircraft/live") as ws:
+            ws.receive_text()  # initial snapshot (may be empty bytes)
+        # After clean close the client is removed from the set
+        assert len(state.ws_live_clients) == 0
 
     def test_live_ws_sends_initial_snapshot(self, client, monkeypatch):
         from routes import streaming as streaming_mod
@@ -54,8 +55,10 @@ class TestLiveWebSocket:
     def test_live_ws_accepts_valid_token(self, client, monkeypatch):
         from routes import streaming as streaming_mod
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "secret-xyz")
-        with client.websocket_connect("/ws/aircraft/live?token=secret-xyz"):
-            pass
+        state.ws_live_clients.clear()
+        with client.websocket_connect("/ws/aircraft/live?token=secret-xyz") as ws:
+            ws.receive_text()
+        assert len(state.ws_live_clients) == 0
 
 
 class TestAircraftWSInitialSnapshot:

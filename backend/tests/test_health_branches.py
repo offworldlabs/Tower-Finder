@@ -64,6 +64,8 @@ class TestHealthDegradedBranches:
 
     def test_no_active_tracks(self, client):
         orig_frames = state.frames_processed
+        orig_aircraft = dict(state.adsb_aircraft)
+        orig_tracks = dict(state.multinode_tracks)
         state.frames_processed = 1000
         state.adsb_aircraft.clear()
         state.multinode_tracks.clear()
@@ -71,6 +73,8 @@ class TestHealthDegradedBranches:
             _assert_degraded(client.get("/api/health"))
         finally:
             state.frames_processed = orig_frames
+            state.adsb_aircraft.update(orig_aircraft)
+            state.multinode_tracks.update(orig_tracks)
 
     def test_anomaly_flood(self, client):
         # >10 aircraft, more than half flagged anomalous

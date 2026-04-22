@@ -27,12 +27,14 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
         logging.exception("Multinode solver failed")
         result = None
     if result and result.get("success"):
+        state.solver_successes += 1
+        with state.solver_latency_lock:
+            state.solver_total_solved += 1
         if enqueued_at is not None:
             latency = time.time() - enqueued_at
             with state.solver_latency_lock:
                 state.solver_last_latency_s = latency
                 state.solver_total_latency_s += latency
-                state.solver_total_solved += 1
             if latency > 30.0:
                 logging.warning("Solver latency high: %.1fs for %d-node candidate",
                                 latency, s_in.get("n_nodes", 0))
@@ -42,7 +44,6 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                     f"Solver latency {latency:.1f}s — pipeline may be falling behind",
                     {"latency_s": round(latency, 1), "n_nodes": s_in.get("n_nodes", 0)},
                 )
-        state.solver_successes += 1
         state.task_last_success["solver"] = time.time()
         for nid in result.get("contributing_node_ids", []):
             state.node_analytics.record_calibration_point(

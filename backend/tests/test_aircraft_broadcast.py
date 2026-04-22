@@ -6,7 +6,6 @@ Focuses on the WebSocket broadcast path and the real-only filtering logic.
 import os
 
 import orjson
-import pytest
 
 os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
@@ -86,7 +85,6 @@ class _FakeWS:
         self.closed = True
 
 
-@pytest.mark.asyncio
 class TestBroadcastAircraft:
     async def test_updates_state_and_sends_to_clients(self, monkeypatch):
         monkeypatch.setattr(state, "connected_nodes", {"n1": {"is_synthetic": False}})
