@@ -324,6 +324,121 @@ class TestPercentiles:
         assert data["position"]["max_km"] >= data["position"]["p95_km"]
 
 
+class TestRealSolverIntegration:
+    """Tests that run the actual solver on synthetic measurements.
+
+    These cover the path:
+      synthetic measurements → solve_multinode() → state.multinode_tracks
+      → _refresh_mlat_verification() → matched result
+
+    This is distinct from the other test classes, which inject pre-built solve
+    results directly and never exercise the solver itself.
+    """
+
+    _NODE_CONFIGS = {
+        "node_a": {
+            "rx_lat": 40.7128,
+            "rx_lon": -74.0060,
+            "rx_alt_ft": 100,
+            "tx_lat": 40.78,
+            "tx_lon": -73.95,
+            "tx_alt_ft": 500,
+            "fc_hz": 100e6,
+        },
+        "node_b": {
+            "rx_lat": 40.75,
+            "rx_lon": -73.90,
+            "rx_alt_ft": 150,
+            "tx_lat": 40.70,
+            "tx_lon": -73.85,
+            "tx_alt_ft": 400,
+            "fc_hz": 100e6,
+        },
+    }
+
+    def setup_method(self):
+        _clear()
+
+    @staticmethod
+    def _make_solver_input(node_configs, target_lat, target_lon, target_alt_km,
+                           vel_east=0.0, vel_north=0.0):
+        """Build a solver_input dict from a known target position.
+
+        Computes exact delay_us and doppler_hz for each node using the bistatic
+        forward models so that the solver should converge back to the truth.
+        """
+        from retina_geolocator.bistatic_models import bistatic_delay, bistatic_doppler
+        from retina_geolocator.multinode_solver import _lla_to_enu_km
+
+        ref_lat, ref_lon = target_lat, target_lon
+        target_enu = _lla_to_enu_km(
+            target_lat, target_lon, target_alt_km * 1000.0, ref_lat, ref_lon, 0.0
+        )
+        measurements = []
+        for nid, cfg in node_configs.items():
+            rx_enu = _lla_to_enu_km(
+                cfg["rx_lat"], cfg["rx_lon"], cfg.get("rx_alt_ft", 0) * 0.3048,
+                ref_lat, ref_lon, 0.0,
+            )
+            tx_enu = _lla_to_enu_km(
+                cfg["tx_lat"], cfg["tx_lon"], cfg.get("tx_alt_ft", 0) * 0.3048,
+                ref_lat, ref_lon, 0.0,
+            )
+            fc = cfg.get("fc_hz", 100e6)
+            delay = bistatic_delay(target_enu, tx_enu, rx_enu)
+            doppler = bistatic_doppler(
+                target_enu, (vel_east, vel_north, 0.0), tx_enu, rx_enu, fc
+            )
+            measurements.append(
+                {"node_id": nid, "delay_us": delay, "doppler_hz": doppler, "snr": 15.0}
+            )
+        return {
+            "initial_guess": {
+                "lat": target_lat + 0.01,
+                "lon": target_lon + 0.01,
+                "alt_km": target_alt_km,
+            },
+            "measurements": measurements,
+            "n_nodes": len(node_configs),
+            "timestamp_ms": int(time.time() * 1000),
+        }
+
+    def test_real_solver_result_matched_by_verification(self):
+        """Solver converges from synthetic measurements; _refresh_mlat_verification
+        matches the result to the known truth with a sub-5-km position error."""
+        from retina_geolocator.multinode_solver import solve_multinode
+
+        target_lat, target_lon, target_alt_km = 40.73, -73.95, 8.0
+
+        solver_input = self._make_solver_input(
+            self._NODE_CONFIGS, target_lat, target_lon, target_alt_km
+        )
+        result = solve_multinode(solver_input, self._NODE_CONFIGS)
+
+        assert result is not None, "Solver failed to converge on synthetic measurements"
+        assert result["success"] is True
+
+        state.multinode_tracks[_key(result)] = result
+        state.ground_truth_trails["abc123"] = deque(
+            [_trail_point(target_lat, target_lon, target_alt_km * 1000.0)]
+        )
+        state.ground_truth_meta["abc123"] = {
+            "object_type": "aircraft",
+            "is_anomalous": False,
+            "speed_ms": 0.0,
+        }
+
+        _refresh_mlat_verification()
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+
+        assert data["n_solves"] == 1
+        assert data["n_matched"] == 1
+        assert data["match_rate_pct"] == 100.0
+        # Clean synthetic measurements → solver should converge close to truth
+        assert data["position"]["mean_km"] < 5.0
+        assert data["tracks"][0]["truth_hex"] == "abc123"
+
+
 class TestHttpEndpoint:
     def setup_method(self):
         _clear()
