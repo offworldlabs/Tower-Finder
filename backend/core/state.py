@@ -50,17 +50,17 @@ track_histories: dict[str, deque] = {}
 
 # ── Ground truth trails from fleet_orchestrator ──────────────────────────
 ground_truth_trails: dict[str, deque] = {}
-ground_truth_meta: dict[str, dict] = {}   # hex → {object_type, is_anomalous}
+ground_truth_meta: dict[str, dict] = {}  # hex → {object_type, is_anomalous}
 
 # ── Chain of Custody ──────────────────────────────────────────────────────────
 sig_verifier = SignatureVerifier()
 node_identities: dict[str, NodeIdentity] = {}
-chain_entries: dict[str, list[dict]] = {}   # node_id → append-only list
+chain_entries: dict[str, list[dict]] = {}  # node_id → append-only list
 iq_commitments: dict[str, list[dict]] = {}
 
 # ── Anomaly flagging ─────────────────────────────────────────────────────────
-anomaly_log: list[dict] = []               # append-only timestamped anomaly events
-anomaly_hexes: set[str] = set()            # hex codes currently flagged as anomalous
+anomaly_log: list[dict] = []  # append-only timestamped anomaly events
+anomaly_hexes: set[str] = set()  # hex codes currently flagged as anomalous
 
 # ── External ADS-B truth (OpenSky cache) ──────────────────────────────────────
 external_adsb_cache: dict[str, dict] = {}
@@ -68,7 +68,7 @@ external_adsb_cache: dict[str, dict] = {}
 # ── WebSocket broadcast infrastructure ────────────────────────────────────────
 from fastapi import WebSocket  # noqa: E402  (deferred to avoid import loops)
 
-ws_clients: set[WebSocket] = set()       # all aircraft (simulated fleet)
+ws_clients: set[WebSocket] = set()  # all aircraft (simulated fleet)
 ws_live_clients: set[WebSocket] = set()  # real-node-only aircraft (map.retina.fm)
 latest_aircraft_json: dict = {"now": 0, "aircraft": [], "messages": 0}
 latest_aircraft_json_bytes: bytes = b'{"now":0,"aircraft":[],"messages":0}'
@@ -76,8 +76,12 @@ aircraft_dirty: bool = False
 latest_real_aircraft_json_bytes: bytes = b'{"now":0,"aircraft":[],"messages":0}'
 
 # ── Pre-serialized analytics / nodes / overlaps (refreshed by background task)
-latest_analytics_bytes: bytes = b'{"nodes":{},"cross_node":{"pair_overlaps":[],"coverage_suggestions":[],"blocked_nodes":[]}}'
-latest_analytics_real_bytes: bytes = b'{"nodes":{},"cross_node":{"pair_overlaps":[],"coverage_suggestions":[],"blocked_nodes":[]}}'
+latest_analytics_bytes: bytes = (
+    b'{"nodes":{},"cross_node":{"pair_overlaps":[],"coverage_suggestions":[],"blocked_nodes":[]}}'
+)
+latest_analytics_real_bytes: bytes = (
+    b'{"nodes":{},"cross_node":{"pair_overlaps":[],"coverage_suggestions":[],"blocked_nodes":[]}}'
+)
 latest_nodes_bytes: bytes = b'{"nodes":{},"connected":0,"total":0,"synthetic":0}'
 latest_overlaps_bytes: bytes = b'{"overlaps":[],"registered_nodes":[]}'
 
@@ -115,7 +119,7 @@ anomaly_lock = threading.Lock()
 solver_latency_lock = threading.Lock()
 
 # ── Task health tracking ─────────────────────────────────────────────────────
-task_last_success: dict[str, float] = {}   # task_name → last success epoch
+task_last_success: dict[str, float] = {}  # task_name → last success epoch
 task_error_counts: dict[str, int] = defaultdict(int)  # task_name → cumulative errors
 
 # ── Accuracy tracking (haversine solver vs ADS-B) ────────────────────────────
@@ -124,17 +128,22 @@ ACCURACY_MAX_SAMPLES = 5000
 accuracy_samples: deque = deque(maxlen=ACCURACY_MAX_SAMPLES)
 
 # Pre-serialised accuracy stats (refreshed by background task alongside analytics)
-latest_accuracy_bytes: bytes = b'{}'
+latest_accuracy_bytes: bytes = b"{}"
 
 # ── Per-node missed detections (refreshed every 30 s by analytics refresh) ────
 # {node_id: {in_range, detected, missed, miss_rate, missed_aircraft: [...]}}
 latest_missed_detections: dict[str, dict] = {}
 
 # Pre-serialised radar3 solver verification (refreshed by background task)
-latest_radar3_verification_bytes: bytes = b'{}'
+latest_radar3_verification_bytes: bytes = b"{}"
+
+# Pre-serialised MLAT (multinode) solver verification vs ground-truth trails
+# Initialised to the full zero-state so dashboard consumers can always access keys
+# like n_solves / match_rate_pct before the first background refresh fires.
+latest_mlat_verification_bytes: bytes = b'{"n_solves":0,"n_matched":0,"match_rate_pct":0.0,"match_threshold_km":8.0,"position":{"mean_km":0,"median_km":0,"p95_km":0,"max_km":0},"velocity":{"mean_ms":0,"median_ms":0,"p95_ms":0},"altitude":{"mean_m":0,"median_m":0,"p95_m":0},"by_node_count":{},"tracks":[]}'
 
 # Pre-serialised storage stats (refreshed every 5 min by storage_refresh_task)
-latest_storage_bytes: bytes = b'{}'
+latest_storage_bytes: bytes = b"{}"
 
 # ── Rate limiter buckets ──────────────────────────────────────────────────────
 rate_buckets: dict[str, list] = defaultdict(list)

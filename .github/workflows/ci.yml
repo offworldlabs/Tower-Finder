@@ -239,6 +239,14 @@ jobs:
               echo "Stopping old fleet: $unit"
               systemctl stop "$unit" || true
             done
+            # Guard: verify no fleet services remain before starting the new one
+            STILL_RUNNING=$(systemctl list-units --type=service --state=running --no-legend | grep '^fleet' | wc -l)
+            if [ "$STILL_RUNNING" -gt 0 ]; then
+              echo "ERROR: $STILL_RUNNING fleet service(s) still running after stop — aborting to prevent node count explosion"
+              systemctl list-units --type=service --state=running --no-legend | grep '^fleet'
+              exit 1
+            fi
+            echo "Fleet cleanup verified: 0 fleet services running"
             # Start fresh fleet
             systemd-run --unit="fleet${FLEET_NUM}" --working-directory=/opt/tower-finder \
               python3 -m retina_simulation.orchestrator \
@@ -288,6 +296,7 @@ jobs:
           check_status "GET /api/radar/nodes"     "${BASE_URL}/api/radar/nodes"       "200"
           check_status "GET /api/radar/analytics" "${BASE_URL}/api/radar/analytics"   "200"
           check_status "GET /api/test/dashboard"  "${BASE_URL}/api/test/dashboard"    "200"
+          check_status "GET /api/test/mlat-verification" "${BASE_URL}/api/test/mlat-verification" "200"
           check_status "GET /api/config"          "${BASE_URL}/api/config"            "200"
           check_status "GET / (frontend)"         "https://towers.retina.fm/"         "200"
           check_status "GET /api/health (api.retina.fm)" "${BASE_URL}/api/health"     "200"
@@ -297,6 +306,12 @@ jobs:
             | python3 -c "import sys,json; print(json.load(sys.stdin)['pipeline']['aircraft_on_map'])" 2>/dev/null) || AIRCRAFT=0
           printf "  %-40s " "Aircraft on map > 0"
           if [ "${AIRCRAFT:-0}" -gt 0 ]; then echo "OK ($AIRCRAFT)"; PASS=$((PASS+1)); else echo "WARN ($AIRCRAFT — fleet may still be connecting)"; fi
+
+          # Guard: active node count must not exceed 220 (multiple simultaneous fleets = 400+)
+          NODES=$(curl -sk "${BASE_URL}/api/test/dashboard" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['active'])" 2>/dev/null) || NODES=0
+          printf "  %-40s " "Active nodes ≤ 220 (single fleet)"
+          if [ "${NODES:-0}" -le 220 ]; then echo "OK ($NODES)"; PASS=$((PASS+1)); else echo "FAIL ($NODES > 220 — multiple fleet simulators may be running)"; FAIL=$((FAIL+1)); fi
 
           echo ""
           echo "Results: $PASS passed, $FAIL failed"
