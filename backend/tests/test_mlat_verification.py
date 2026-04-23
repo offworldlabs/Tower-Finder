@@ -9,9 +9,12 @@ Tests:
 - No double-matching: two solves close to the same truth only produce one match
 - ADS-B fallback: uses state.adsb_aircraft when ground_truth_trails is empty
 - HTTP endpoint returns 200 with the pre-computed bytes
+- Noisy measurements: solver still converges under realistic and aggressive noise
+- Multiple close targets: each solve result matches its own truth without cross-contamination
 """
 
 import math
+import random
 import time
 from collections import deque
 
@@ -371,11 +374,18 @@ class TestRealSolverIntegration:
 
     @staticmethod
     def _make_solver_input(node_configs, target_lat, target_lon, target_alt_km,
-                           vel_east=0.0, vel_north=0.0):
+                           vel_east=0.0, vel_north=0.0,
+                           delay_noise_us=0.0, doppler_noise_hz=0.0, rng=None):
         """Build a solver_input dict from a known target position.
 
         Computes exact delay_us and doppler_hz for each node using the bistatic
         forward models so that the solver should converge back to the truth.
+
+        Optional noise parameters add Gaussian jitter to the measurements to
+        simulate ADC quantisation and multipath interference:
+          delay_noise_us  — std-dev of Gaussian noise added to delay (µs)
+          doppler_noise_hz — std-dev of Gaussian noise added to Doppler (Hz)
+          rng             — random.Random instance (required when noise > 0)
         """
         from retina_geolocator.bistatic_models import bistatic_delay, bistatic_doppler
         from retina_geolocator.multinode_solver import _lla_to_enu_km
@@ -399,6 +409,10 @@ class TestRealSolverIntegration:
             doppler = bistatic_doppler(
                 target_enu, (vel_east, vel_north, 0.0), tx_enu, rx_enu, fc
             )
+            if delay_noise_us:
+                delay += rng.gauss(0, delay_noise_us)
+            if doppler_noise_hz:
+                doppler += rng.gauss(0, doppler_noise_hz)
             measurements.append(
                 {"node_id": nid, "delay_us": delay, "doppler_hz": doppler, "snr": 15.0}
             )
@@ -498,6 +512,98 @@ class TestRealSolverIntegration:
         assert data["position"]["mean_km"] < 0.5
         assert data["tracks"][0]["altitude_error_m"] < 200
         assert data["velocity"]["mean_ms"] < 20.0
+
+    @pytest.mark.parametrize("delay_noise_us,doppler_noise_hz", [
+        (0.5, 5.0),   # realistic: ~150 m path uncertainty, ~5 Hz Doppler jitter
+        (1.0, 10.0),  # aggressive: double realistic noise
+    ])
+    def test_noisy_measurements_still_converge(self, delay_noise_us, doppler_noise_hz):
+        """Solver stays within 0.5 km / 200 m altitude under measurement noise.
+
+        Noise is added as Gaussian jitter on delay_us and doppler_hz to simulate
+        ADC quantisation and multipath interference. Uses all 5 nodes so the
+        system remains well-overdetermined even with noisy inputs.
+        """
+        from retina_geolocator.multinode_solver import solve_multinode
+
+        rng = random.Random(42)
+        target_lat, target_lon, target_alt_km = 40.73, -73.95, 8.0
+
+        solver_input = self._make_solver_input(
+            self._NODE_CONFIGS, target_lat, target_lon, target_alt_km,
+            delay_noise_us=delay_noise_us, doppler_noise_hz=doppler_noise_hz, rng=rng,
+        )
+        result = solve_multinode(solver_input, self._NODE_CONFIGS)
+
+        assert result is not None, "Solver failed to converge under measurement noise"
+        assert result["success"] is True
+
+        state.multinode_tracks[_key(result)] = result
+        state.ground_truth_trails["abc123"] = deque(
+            [_trail_point(target_lat, target_lon, target_alt_km * 1000.0)]
+        )
+        state.ground_truth_meta["abc123"] = {
+            "object_type": "aircraft",
+            "is_anomalous": False,
+            "speed_ms": 0.0,
+        }
+
+        _refresh_mlat_verification()
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+
+        assert data["n_matched"] == 1
+        assert data["position"]["mean_km"] < 0.5
+        assert data["tracks"][0]["altitude_error_m"] < 200
+
+    def test_multiple_close_targets_each_matched(self):
+        """Two aircraft ~5 km apart are each matched to their own truth.
+
+        Verifies that the proximity-based matcher correctly assigns each solve
+        result to the nearest truth rather than cross-matching, even when the
+        aircraft are close relative to the 8 km match threshold.
+        """
+        from retina_geolocator.multinode_solver import solve_multinode
+
+        target_alt_km = 8.0
+        # Targets are ~5 km apart in latitude (0.045° ≈ 5 km)
+        targets = [
+            (40.730, -73.95, "hex_a"),
+            (40.775, -73.95, "hex_b"),
+        ]
+
+        for t_lat, t_lon, t_hex in targets:
+            solver_input = self._make_solver_input(
+                self._NODE_CONFIGS, t_lat, t_lon, target_alt_km
+            )
+            result = solve_multinode(solver_input, self._NODE_CONFIGS)
+            assert result is not None, f"Solver failed to converge for {t_hex}"
+            assert result["success"] is True, f"Solver returned success=False for {t_hex}"
+
+            state.multinode_tracks[_key(result)] = result
+            state.ground_truth_trails[t_hex] = deque(
+                [_trail_point(t_lat, t_lon, target_alt_km * 1000.0)]
+            )
+            state.ground_truth_meta[t_hex] = {
+                "object_type": "aircraft",
+                "is_anomalous": False,
+                "speed_ms": 0.0,
+            }
+
+        _refresh_mlat_verification()
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+
+        assert data["n_solves"] == 2
+        assert data["n_matched"] == 2
+        assert data["match_rate_pct"] == 100.0
+
+        # Each solve result must be assigned to its own truth, not cross-matched
+        matched_hexes = {t["truth_hex"] for t in data["tracks"]}
+        assert matched_hexes == {"hex_a", "hex_b"}
+
+        # Both should be sub-0.5 km position errors
+        for track in data["tracks"]:
+            assert track["position_error_km"] < 0.5
+            assert track["altitude_error_m"] < 200
 
 
 class TestHttpEndpoint:
