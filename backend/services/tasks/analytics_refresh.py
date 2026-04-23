@@ -7,6 +7,7 @@ import logging
 import math
 import time
 
+import numpy as np
 import orjson
 
 from config.constants import YAGI_BEAM_WIDTH_DEG, YAGI_MAX_RANGE_KM
@@ -21,12 +22,11 @@ _analytics_executor = concurrent.futures.ThreadPoolExecutor(
 _RADAR3_NODE_ID = "radar3-retnode"
 
 
-def _percentile(sorted_vals: list, pct: float) -> float:
-    """Return the pct-th percentile of a pre-sorted list. Returns 0.0 for empty input."""
-    if not sorted_vals:
+def _percentile(vals: list, pct: float) -> float:
+    """Return the pct-th percentile of a list using numpy. Returns 0.0 for empty input."""
+    if not vals:
         return 0.0
-    idx = int(pct / 100 * (len(sorted_vals) - 1))
-    return sorted_vals[min(idx, len(sorted_vals) - 1)]
+    return float(np.percentile(vals, pct))
 
 
 def _refresh_analytics_and_nodes():

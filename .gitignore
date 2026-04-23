@@ -24,3 +24,4 @@ backend/htmlcov/
 .github/prompts/
 backend/data/events.json
 backend/data/state_snapshot.json
+backend/data/state_snapshot.json.sha256
