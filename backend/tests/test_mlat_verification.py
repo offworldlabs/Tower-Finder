@@ -374,11 +374,18 @@ class TestRealSolverIntegration:
 
     @staticmethod
     def _make_solver_input(node_configs, target_lat, target_lon, target_alt_km,
-                           vel_east=0.0, vel_north=0.0):
+                           vel_east=0.0, vel_north=0.0,
+                           delay_noise_us=0.0, doppler_noise_hz=0.0, rng=None):
         """Build a solver_input dict from a known target position.
 
         Computes exact delay_us and doppler_hz for each node using the bistatic
         forward models so that the solver should converge back to the truth.
+
+        Optional noise parameters add Gaussian jitter to the measurements to
+        simulate ADC quantisation and multipath interference:
+          delay_noise_us  — std-dev of Gaussian noise added to delay (µs)
+          doppler_noise_hz — std-dev of Gaussian noise added to Doppler (Hz)
+          rng             — random.Random instance (required when noise > 0)
         """
         from retina_geolocator.bistatic_models import bistatic_delay, bistatic_doppler
         from retina_geolocator.multinode_solver import _lla_to_enu_km
@@ -402,6 +409,10 @@ class TestRealSolverIntegration:
             doppler = bistatic_doppler(
                 target_enu, (vel_east, vel_north, 0.0), tx_enu, rx_enu, fc
             )
+            if delay_noise_us:
+                delay += rng.gauss(0, delay_noise_us)
+            if doppler_noise_hz:
+                doppler += rng.gauss(0, doppler_noise_hz)
             measurements.append(
                 {"node_id": nid, "delay_us": delay, "doppler_hz": doppler, "snr": 15.0}
             )
@@ -513,46 +524,15 @@ class TestRealSolverIntegration:
         ADC quantisation and multipath interference. Uses all 5 nodes so the
         system remains well-overdetermined even with noisy inputs.
         """
-        from retina_geolocator.bistatic_models import bistatic_delay, bistatic_doppler
-        from retina_geolocator.multinode_solver import _lla_to_enu_km, solve_multinode
+        from retina_geolocator.multinode_solver import solve_multinode
 
         rng = random.Random(42)
         target_lat, target_lon, target_alt_km = 40.73, -73.95, 8.0
-        ref_lat, ref_lon = target_lat, target_lon
-        target_enu = _lla_to_enu_km(
-            target_lat, target_lon, target_alt_km * 1000.0, ref_lat, ref_lon, 0.0
+
+        solver_input = self._make_solver_input(
+            self._NODE_CONFIGS, target_lat, target_lon, target_alt_km,
+            delay_noise_us=delay_noise_us, doppler_noise_hz=doppler_noise_hz, rng=rng,
         )
-
-        measurements = []
-        for nid, cfg in self._NODE_CONFIGS.items():
-            rx_enu = _lla_to_enu_km(
-                cfg["rx_lat"], cfg["rx_lon"], cfg.get("rx_alt_ft", 0) * 0.3048,
-                ref_lat, ref_lon, 0.0,
-            )
-            tx_enu = _lla_to_enu_km(
-                cfg["tx_lat"], cfg["tx_lon"], cfg.get("tx_alt_ft", 0) * 0.3048,
-                ref_lat, ref_lon, 0.0,
-            )
-            fc = cfg.get("fc_hz", 100e6)
-            noisy_delay = bistatic_delay(target_enu, tx_enu, rx_enu) + rng.gauss(0, delay_noise_us)
-            noisy_doppler = (
-                bistatic_doppler(target_enu, (0.0, 0.0, 0.0), tx_enu, rx_enu, fc)
-                + rng.gauss(0, doppler_noise_hz)
-            )
-            measurements.append(
-                {"node_id": nid, "delay_us": noisy_delay, "doppler_hz": noisy_doppler, "snr": 15.0}
-            )
-
-        solver_input = {
-            "initial_guess": {
-                "lat": target_lat + 0.01,
-                "lon": target_lon + 0.01,
-                "alt_km": target_alt_km,
-            },
-            "measurements": measurements,
-            "n_nodes": len(self._NODE_CONFIGS),
-            "timestamp_ms": int(time.time() * 1000),
-        }
         result = solve_multinode(solver_input, self._NODE_CONFIGS)
 
         assert result is not None, "Solver failed to converge under measurement noise"
@@ -597,6 +577,7 @@ class TestRealSolverIntegration:
             )
             result = solve_multinode(solver_input, self._NODE_CONFIGS)
             assert result is not None, f"Solver failed to converge for {t_hex}"
+            assert result["success"] is True, f"Solver returned success=False for {t_hex}"
 
             state.multinode_tracks[_key(result)] = result
             state.ground_truth_trails[t_hex] = deque(
