@@ -21,6 +21,14 @@ _analytics_executor = concurrent.futures.ThreadPoolExecutor(
 _RADAR3_NODE_ID = "radar3-retnode"
 
 
+def _percentile(sorted_vals: list, pct: float) -> float:
+    """Return the pct-th percentile of a pre-sorted list. Returns 0.0 for empty input."""
+    if not sorted_vals:
+        return 0.0
+    idx = int(pct / 100 * (len(sorted_vals) - 1))
+    return sorted_vals[min(idx, len(sorted_vals) - 1)]
+
+
 def _refresh_analytics_and_nodes():
     """Heavy work: recompute analytics, nodes, and overlaps → store as bytes."""
     from services.tcp_handler import is_synthetic_node
@@ -272,10 +280,6 @@ def _refresh_accuracy_stats():
     errors.sort()
     n = len(errors)
 
-    def _percentile(sorted_vals, pct):
-        idx = int(pct / 100 * (len(sorted_vals) - 1))
-        return sorted_vals[min(idx, len(sorted_vals) - 1)]
-
     by_source: dict[str, list[float]] = {}
     for s in samples:
         by_source.setdefault(s["position_source"], []).append(s["error_km"])
@@ -328,12 +332,6 @@ def _refresh_radar3_verification():
             option=orjson.OPT_SERIALIZE_NUMPY,
         )
         return
-
-    def _percentile(sorted_vals, pct):
-        if not sorted_vals:
-            return 0.0
-        idx = int(pct / 100 * (len(sorted_vals) - 1))
-        return sorted_vals[min(idx, len(sorted_vals) - 1)]
 
     adsb_candidates: list[tuple[str, dict]] = []
     seen_adsb_hexes: set[str] = set()
@@ -554,10 +552,14 @@ def _refresh_mlat_verification():
         seen_truth_hexes.add(gt_hex)
 
     # Fallback: add fresh ADS-B entries not already covered by ground-truth trails
+    # Truth trails are rejected at > 60 s (updated every 2 s, so stale = missing).
+    # Solve results are kept up to _MLAT_SOLVE_MAX_AGE_S = 120 s because solves
+    # are infrequent (one per 40 s frame interval) — a 60 s window would discard
+    # most valid results before a second truth point arrives.
     for adsb_hex, entry in list(state.adsb_aircraft.items()):
         if adsb_hex in seen_truth_hexes:
             continue
-        if not entry.get("lat") or not entry.get("lon"):
+        if entry.get("lat") is None or entry.get("lon") is None:
             continue
         age_s = now - entry.get("last_seen_ms", 0) / 1000
         if age_s > 60:
@@ -606,12 +608,11 @@ def _refresh_mlat_verification():
             continue
         fresh_solves.append((key, r))
 
-    def _percentile(sorted_vals: list, pct: float) -> float:
-        if not sorted_vals:
-            return 0.0
-        idx = int(pct / 100 * (len(sorted_vals) - 1))
-        return sorted_vals[min(idx, len(sorted_vals) - 1)]
-
+    # Greedy first-match assignment: each truth hex is claimed by the nearest solve
+    # result that falls within _MLAT_MATCH_THRESHOLD_KM. If two solves are both close
+    # to the same truth, the first one wins and the second is unmatched. This prevents
+    # double-counting and is sufficient for 200-node simulation where aircraft are
+    # typically > 10 km apart. TestNoDoubleMatching covers this behaviour.
     matches: list[dict] = []
     pos_errors: list[float] = []
     vel_errors: list[float] = []

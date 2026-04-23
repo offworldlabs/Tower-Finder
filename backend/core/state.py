@@ -138,7 +138,9 @@ latest_missed_detections: dict[str, dict] = {}
 latest_radar3_verification_bytes: bytes = b"{}"
 
 # Pre-serialised MLAT (multinode) solver verification vs ground-truth trails
-latest_mlat_verification_bytes: bytes = b"{}"
+# Initialised to the full zero-state so dashboard consumers can always access keys
+# like n_solves / match_rate_pct before the first background refresh fires.
+latest_mlat_verification_bytes: bytes = b'{"n_solves":0,"n_matched":0,"match_rate_pct":0.0,"match_threshold_km":8.0,"position":{"mean_km":0,"median_km":0,"p95_km":0,"max_km":0},"velocity":{"mean_ms":0,"median_ms":0,"p95_ms":0},"altitude":{"mean_m":0,"median_m":0,"p95_m":0},"by_node_count":{},"tracks":[]}'
 
 # Pre-serialised storage stats (refreshed every 5 min by storage_refresh_task)
 latest_storage_bytes: bytes = b"{}"

@@ -210,8 +210,8 @@ class TestStaleFiltering:
         assert data["n_solves"] == 0
 
     def test_stale_truth_point_skipped(self):
-        # Truth point 120s old
-        state.ground_truth_trails["abc123"] = deque([_trail_point(33.9, -84.6, age_s=120)])
+        # Truth point 65s old — just over the 60s rejection threshold
+        state.ground_truth_trails["abc123"] = deque([_trail_point(33.9, -84.6, age_s=65)])
         state.ground_truth_meta["abc123"] = {"object_type": "aircraft", "is_anomalous": False, "speed_ms": 0.0}
 
         r = _make_solve_result(33.9, -84.6)
