@@ -578,6 +578,9 @@ def _refresh_mlat_verification():
     # truth_pool: list of (hex, lat, lon, alt_m, speed_ms, object_type, is_anomalous)
     truth_pool: list[tuple] = []
     seen_truth_hexes: set[str] = set()
+    n_truth_gt = 0
+    n_truth_live_adsb = 0
+    n_truth_external = 0
 
     for gt_hex, trail in list(state.ground_truth_trails.items()):
         if not trail:
@@ -599,8 +602,9 @@ def _refresh_mlat_verification():
             )
         )
         seen_truth_hexes.add(gt_hex)
+        n_truth_gt += 1
 
-    # Fallback: add fresh ADS-B entries not already covered by ground-truth trails
+    # Fallback 1: add fresh ADS-B entries not already covered by ground-truth trails.
     # Truth trails are rejected at > 60 s (updated every 2 s, so stale = missing).
     # Solve results are kept up to _MLAT_SOLVE_MAX_AGE_S = 120 s because solves
     # are infrequent (one per 40 s frame interval) — a 60 s window would discard
@@ -627,25 +631,34 @@ def _refresh_mlat_verification():
             )
         )
         seen_truth_hexes.add(adsb_hex)
+        n_truth_live_adsb += 1
 
-    if not truth_pool:
-        state.latest_mlat_verification_bytes = orjson.dumps(
-            {
-                "n_solves": 0,
-                "n_matched": 0,
-                "match_rate_pct": 0.0,
-                "match_threshold_km": _MLAT_MATCH_THRESHOLD_KM,
-                "position": {"mean_km": 0, "median_km": 0, "p95_km": 0, "max_km": 0},
-                "velocity": {"mean_ms": 0, "median_ms": 0, "p95_ms": 0},
-                "altitude": {"mean_m": 0, "median_m": 0, "p95_m": 0},
-                "by_node_count": {},
-                "tracks": [],
-            },
-            option=orjson.OPT_SERIALIZE_NUMPY,
-        )
-        return
+    # Fallback 2: OpenSky / external ADS-B snapshot — same pattern as
+    # _refresh_radar3_verification().  Useful when the live ADS-B injector
+    # is in its rate-limit backoff window (up to 300 s).
+    for adsb_hex, entry in list(state.external_adsb_cache.items()):
+        if not entry.get("lat") or not entry.get("lon"):
+            continue
+        if adsb_hex not in seen_truth_hexes:
+            gs_ms = (entry.get("gs", 0) or 0) * 0.514444
+            alt_m = (entry.get("alt_baro", 0) or 0) * 0.3048
+            truth_pool.append(
+                (
+                    adsb_hex,
+                    entry["lat"],
+                    entry["lon"],
+                    float(alt_m),
+                    float(gs_ms),
+                    "aircraft",
+                    False,
+                )
+            )
+            seen_truth_hexes.add(adsb_hex)
+            n_truth_external += 1
 
     # --- Walk multinode solve results -----------------------------------------
+    # Count fresh solves BEFORE the truth-pool check so n_solves is always honest
+    # even when we have no truth data to match against.
     mn_snapshot = list(state.multinode_tracks.items())
     fresh_solves = []
     for key, r in mn_snapshot:
@@ -656,6 +669,25 @@ def _refresh_mlat_verification():
         if not r.get("lat") or not r.get("lon"):
             continue
         fresh_solves.append((key, r))
+
+    if not truth_pool:
+        state.latest_mlat_verification_bytes = orjson.dumps(
+            {
+                "n_solves": len(fresh_solves),
+                "n_matched": 0,
+                "match_rate_pct": 0.0,
+                "match_threshold_km": _MLAT_MATCH_THRESHOLD_KM,
+                "n_truth_candidates": 0,
+                "truth_sources": {"ground_truth": 0, "live_adsb": 0, "external_adsb": 0},
+                "position": {"mean_km": 0, "median_km": 0, "p95_km": 0, "max_km": 0},
+                "velocity": {"mean_ms": 0, "median_ms": 0, "p95_ms": 0},
+                "altitude": {"mean_m": 0, "median_m": 0, "p95_m": 0},
+                "by_node_count": {},
+                "tracks": [],
+            },
+            option=orjson.OPT_SERIALIZE_NUMPY,
+        )
+        return
 
     # Greedy first-match assignment: each truth hex is claimed by the nearest solve
     # result that falls within _MLAT_MATCH_THRESHOLD_KM. If two solves are both close
@@ -764,6 +796,12 @@ def _refresh_mlat_verification():
         "n_matched": n_matched,
         "match_rate_pct": round(100.0 * n_matched / n_solves, 1) if n_solves else 0.0,
         "match_threshold_km": _MLAT_MATCH_THRESHOLD_KM,
+        "n_truth_candidates": len(truth_pool),
+        "truth_sources": {
+            "ground_truth": n_truth_gt,
+            "live_adsb": n_truth_live_adsb,
+            "external_adsb": n_truth_external,
+        },
         "position": {
             "mean_km": round(sum(pos_errors) / n_matched, 3) if n_matched else 0,
             "median_km": round(_percentile(pos_errors, 50), 3),
