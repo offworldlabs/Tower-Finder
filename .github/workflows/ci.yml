@@ -309,6 +309,15 @@ jobs:
           check_status "GET / (frontend)"         "https://towers.retina.fm/"         "200"
           check_status "GET /api/health (api.retina.fm)" "${BASE_URL}/api/health"     "200"
 
+          # Wait for storage scan (background du task, 202 = still scanning)
+          printf "  %-40s " "GET /api/admin/storage"
+          for i in $(seq 1 12); do
+            SCODE=$(curl -sk -o /dev/null -w "%{http_code}" "${BASE_URL}/api/admin/storage")
+            if [ "$SCODE" = "200" ]; then echo "OK (200)"; PASS=$((PASS+1)); break; fi
+            if [ "$i" = "12" ]; then echo "FAIL ($SCODE != 200 after 60s)"; FAIL=$((FAIL+1)); break; fi
+            sleep 5
+          done
+
           # Check aircraft data is flowing
           AIRCRAFT=$(curl -sk "${BASE_URL}/api/test/dashboard" \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['pipeline']['aircraft_on_map'])" 2>/dev/null) || AIRCRAFT=0
