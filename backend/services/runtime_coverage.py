@@ -21,6 +21,7 @@ Usage:
 
 import logging
 import os
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ _RUNTIME_COV_DIR = Path(__file__).resolve().parent.parent / "coverage_data" / "r
 _DATA_FILE = str(_RUNTIME_COV_DIR / ".coverage.runtime")
 
 _cov = None  # coverage.Coverage instance, or None when disabled
+_lock = threading.Lock()  # guards _cov against save()/stop() races
 
 
 def start() -> bool:
@@ -66,33 +68,35 @@ def save() -> str | None:
     resume collection.  Returns the HTML report directory path, or None if
     coverage is not running."""
     global _cov
-    if _cov is None:
-        return None
-    _cov.stop()
-    _cov.save()
-    html_dir = str(_RUNTIME_COV_DIR / "htmlcov")
-    try:
-        _cov.html_report(directory=html_dir, title="RETINA runtime coverage")
-    except Exception:
-        logger.exception("Coverage HTML report generation failed")
-    _cov.start()  # resume
-    logger.info("Runtime coverage saved → %s  HTML → %s", _DATA_FILE, html_dir)
-    return html_dir
+    with _lock:
+        if _cov is None:
+            return None
+        _cov.stop()
+        _cov.save()
+        html_dir = str(_RUNTIME_COV_DIR / "htmlcov")
+        try:
+            _cov.html_report(directory=html_dir, title="RETINA runtime coverage")
+        except Exception:
+            logger.exception("Coverage HTML report generation failed")
+        _cov.start()  # resume
+        logger.info("Runtime coverage saved → %s  HTML → %s", _DATA_FILE, html_dir)
+        return html_dir
 
 
 def stop() -> str | None:
     """Stop collection and flush data.  Called on server shutdown.
     Returns the HTML report directory path, or None if coverage was not running."""
     global _cov
-    if _cov is None:
-        return None
-    _cov.stop()
-    _cov.save()
-    html_dir = str(_RUNTIME_COV_DIR / "htmlcov")
-    try:
-        _cov.html_report(directory=html_dir, title="RETINA runtime coverage")
-        logger.info("Runtime coverage report written → %s", html_dir)
-    except Exception:
-        logger.exception("Coverage HTML report generation failed on shutdown")
-    _cov = None
-    return html_dir
+    with _lock:
+        if _cov is None:
+            return None
+        _cov.stop()
+        _cov.save()
+        html_dir = str(_RUNTIME_COV_DIR / "htmlcov")
+        try:
+            _cov.html_report(directory=html_dir, title="RETINA runtime coverage")
+            logger.info("Runtime coverage report written → %s", html_dir)
+        except Exception:
+            logger.exception("Coverage HTML report generation failed on shutdown")
+        _cov = None
+        return html_dir

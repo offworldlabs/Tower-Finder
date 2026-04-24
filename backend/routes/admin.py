@@ -400,7 +400,7 @@ async def coverage_dump(_user=Depends(require_admin)):
     Collection continues after the dump — no restart required.
     """
     import services.runtime_coverage as _rc
-    html_dir = await asyncio.get_event_loop().run_in_executor(
+    html_dir = await asyncio.get_running_loop().run_in_executor(
         _admin_executor, _rc.save
     )
     if html_dir is None:

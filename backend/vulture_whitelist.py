@@ -9,6 +9,9 @@ Add a name here only when you are certain it is NOT dead code but vulture
 cannot see the usage statically.  Real dead code should be deleted, not
 whitelisted.
 """
+# ruff: noqa: B018, F821
+# B018 — intentional bare-name expressions; this is how vulture whitelists work.
+# F821 — names are defined in other modules; this file is only read by vulture.
 
 # ── Dummy object ──────────────────────────────────────────────────────────────
 # Attribute accesses below (_.foo) tell vulture that "foo" is referenced
@@ -76,6 +79,7 @@ _.initial_altitude_m
 # ── routes/custody.py ─────────────────────────────────────────────────────────
 # Pydantic request-body fields that are accepted from clients for API
 # completeness / schema forward-compatibility but not read server-side yet.
+# TODO: remove when payload_hash / signature verification is implemented.
 payload_hash
 signature
 
@@ -95,3 +99,11 @@ list_keys
 delete_key
 delete_keys
 _clear_cache
+
+# ── Pydantic v2 model config ──────────────────────────────────────────────────
+# model_config is consumed by Pydantic internals; vulture cannot see this.
+_.model_config
+
+# ── ASGI / Starlette middleware ───────────────────────────────────────────────
+# dispatch() is the required override entry-point for BaseHTTPMiddleware.
+_.dispatch
