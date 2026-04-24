@@ -634,3 +634,231 @@ class TestHttpEndpoint:
         data = resp.json()
         assert data["n_matched"] == 1
         assert data["tracks"][0]["truth_hex"] == "abc123"
+
+
+class TestMlatSummaryHelper:
+    """Tests for _mlat_verification_summary() in routes/test.py.
+
+    This private helper is called by GET /api/test/dashboard and wraps
+    the raw bytes with a lightweight summary dict.  Its exception path
+    (corrupt bytes → {}) is the primary motivation for direct testing.
+    """
+
+    def setup_method(self):
+        _clear()
+
+    def test_summary_returns_expected_keys_after_refresh(self):
+        import routes.test as test_routes
+
+        state.ground_truth_trails["abc123"] = deque([_trail_point(33.9, -84.6, 10000.0)])
+        state.ground_truth_meta["abc123"] = {
+            "object_type": "aircraft", "is_anomalous": False, "speed_ms": 200.0,
+        }
+        r = _make_solve_result(33.9001, -84.6001)
+        state.multinode_tracks[_key(r)] = r
+        _refresh_mlat_verification()
+
+        summary = test_routes._mlat_verification_summary()
+
+        assert set(summary.keys()) == {
+            "n_solves", "n_matched", "match_rate_pct",
+            "position_mean_km", "position_p95_km", "altitude_mean_m",
+        }
+        assert summary["n_solves"] == 1
+        assert summary["n_matched"] == 1
+        assert summary["match_rate_pct"] == 100.0
+        assert summary["position_mean_km"] > 0
+
+    def test_summary_returns_empty_dict_on_corrupt_bytes(self):
+        import routes.test as test_routes
+
+        state.latest_mlat_verification_bytes = b"not valid json ][{"
+        summary = test_routes._mlat_verification_summary()
+        assert summary == {}
+
+    def test_summary_returns_zeros_when_no_matches(self):
+        import routes.test as test_routes
+
+        _refresh_mlat_verification()  # empty state → zero-counts JSON
+        summary = test_routes._mlat_verification_summary()
+        assert summary["n_solves"] == 0
+        assert summary["n_matched"] == 0
+        assert summary["position_mean_km"] == 0
+
+
+class TestAdsbFallbackEdgeCases:
+    """Edge cases in the ADS-B fallback branch of _refresh_mlat_verification()."""
+
+    def setup_method(self):
+        _clear()
+
+    def test_stale_adsb_entry_not_added_to_truth_pool(self):
+        # ADS-B entry 70 s old — beyond the 60 s cutoff
+        state.adsb_aircraft["aabbcc"] = {
+            "hex": "aabbcc",
+            "lat": 33.9,
+            "lon": -84.6,
+            "alt_baro": 32808,
+            "gs": 388.0,
+            "track": 76.0,
+            "last_seen_ms": int((time.time() - 70) * 1000),
+        }
+        r = _make_solve_result(33.9001, -84.6001)
+        state.multinode_tracks[_key(r)] = r
+
+        _refresh_mlat_verification()
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+        # Truth pool empty → early exit with n_solves=0
+        assert data["n_solves"] == 0
+        assert data["n_matched"] == 0
+
+    def test_adsb_entry_with_lat_none_filtered(self):
+        # Entry missing lat — must not be added to truth pool
+        state.adsb_aircraft["aabbcc"] = {
+            "hex": "aabbcc",
+            "lat": None,
+            "lon": -84.6,
+            "alt_baro": 32808,
+            "gs": 388.0,
+            "last_seen_ms": int(time.time() * 1000),
+        }
+        r = _make_solve_result(33.9001, -84.6001)
+        state.multinode_tracks[_key(r)] = r
+
+        _refresh_mlat_verification()
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+        assert data["n_solves"] == 0  # truth pool still empty
+
+    def test_adsb_hex_already_in_trails_not_duplicated(self):
+        # Same hex in both ground_truth_trails and adsb_aircraft — should
+        # only appear once in the truth pool (no double-match opportunity).
+        state.ground_truth_trails["aabbcc"] = deque([_trail_point(33.9, -84.6)])
+        state.ground_truth_meta["aabbcc"] = {
+            "object_type": "aircraft", "is_anomalous": False, "speed_ms": 200.0,
+        }
+        state.adsb_aircraft["aabbcc"] = {
+            "hex": "aabbcc",
+            "lat": 33.9,
+            "lon": -84.6,
+            "alt_baro": 32808,
+            "gs": 388.0,
+            "last_seen_ms": int(time.time() * 1000),
+        }
+
+        r = _make_solve_result(33.9001, -84.6001)
+        state.multinode_tracks[_key(r)] = r
+
+        _refresh_mlat_verification()
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+        # Only one truth entry in pool — one match maximum
+        assert data["n_matched"] == 1
+
+
+class TestTrackFields:
+    """Verify the fields written into each track entry in the result."""
+
+    def setup_method(self):
+        _clear()
+
+    def test_all_expected_track_keys_present(self):
+        state.ground_truth_trails["abc123"] = deque([_trail_point(33.9, -84.6, 10000.0)])
+        state.ground_truth_meta["abc123"] = {
+            "object_type": "aircraft", "is_anomalous": True, "speed_ms": 200.0,
+        }
+        r = _make_solve_result(33.9001, -84.6001, alt_m=10200.0, n_nodes=3,
+                               rms_delay=0.4, rms_doppler=4.5)
+        state.multinode_tracks[_key(r)] = r
+
+        _refresh_mlat_verification()
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+
+        assert data["n_matched"] == 1
+        track = data["tracks"][0]
+        expected_keys = {
+            "solve_key", "solver_lat", "solver_lon",
+            "truth_lat", "truth_lon", "truth_hex",
+            "position_error_km",
+            "solver_alt_m", "truth_alt_m", "altitude_error_m",
+            "solver_speed_ms", "truth_speed_ms", "velocity_error_ms",
+            "n_nodes", "rms_delay", "rms_doppler",
+            "object_type", "is_anomalous", "timestamp_ms",
+        }
+        assert expected_keys.issubset(set(track.keys()))
+
+    def test_rms_values_carried_through_to_track(self):
+        state.ground_truth_trails["abc123"] = deque([_trail_point(33.9, -84.6)])
+        state.ground_truth_meta["abc123"] = {
+            "object_type": "aircraft", "is_anomalous": False, "speed_ms": 0.0,
+        }
+        r = _make_solve_result(33.9001, -84.6001, rms_delay=0.75, rms_doppler=8.25)
+        state.multinode_tracks[_key(r)] = r
+
+        _refresh_mlat_verification()
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+
+        track = data["tracks"][0]
+        assert track["rms_delay"] == pytest.approx(0.75, abs=0.001)
+        assert track["rms_doppler"] == pytest.approx(8.25, abs=0.01)
+
+
+class TestTracksLimit:
+    """Verify the tracks list is capped at 100 entries."""
+
+    def setup_method(self):
+        _clear()
+
+    def test_tracks_list_capped_at_100(self):
+        # Place 105 truth+solve pairs, each > 8 km apart so no cross-matching.
+        # Lat spacing 0.1° ≈ 11.1 km; start at 1.0 to avoid lat=0 falsy filter.
+        base_ts = int(time.time() * 1000)
+        for i in range(105):
+            lat = 1.0 + i * 0.1
+            hex_id = f"hex{i:03d}"
+            state.ground_truth_trails[hex_id] = deque([_trail_point(lat, -84.6)])
+            state.ground_truth_meta[hex_id] = {
+                "object_type": "aircraft", "is_anomalous": False, "speed_ms": 0.0,
+            }
+            r = _make_solve_result(lat + 0.001, -84.6, ts_ms=base_ts - i * 10)
+            state.multinode_tracks[_key(r)] = r
+
+        _refresh_mlat_verification()
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+
+        assert data["n_solves"] == 105
+        assert data["n_matched"] == 105
+        assert len(data["tracks"]) == 100  # capped at 100
+
+
+class TestSolveResultFiltering:
+    """Edge cases in the fresh_solves filtering loop."""
+
+    def setup_method(self):
+        _clear()
+
+    def test_future_timestamp_skipped(self):
+        # age_s < 0: timestamp is 60 s in the future
+        state.ground_truth_trails["abc123"] = deque([_trail_point(33.9, -84.6)])
+        state.ground_truth_meta["abc123"] = {
+            "object_type": "aircraft", "is_anomalous": False, "speed_ms": 0.0,
+        }
+        future_ts_ms = int((time.time() + 60) * 1000)
+        r = _make_solve_result(33.9001, -84.6001, ts_ms=future_ts_ms)
+        state.multinode_tracks[_key(r)] = r
+
+        _refresh_mlat_verification()
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+        assert data["n_solves"] == 0  # future result filtered out
+
+    def test_solve_with_lat_zero_skipped(self):
+        # lat=0.0 is falsy — the code uses `not r.get("lat")` which skips equatorial
+        # coordinates. This test documents the current behaviour.
+        state.ground_truth_trails["abc123"] = deque([_trail_point(0.0001, -84.6)])
+        state.ground_truth_meta["abc123"] = {
+            "object_type": "aircraft", "is_anomalous": False, "speed_ms": 0.0,
+        }
+        r = _make_solve_result(0.0, -84.6)
+        state.multinode_tracks[_key(r)] = r
+
+        _refresh_mlat_verification()
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+        assert data["n_solves"] == 0  # lat=0 filtered by falsy check
