@@ -20,8 +20,8 @@ from config.constants import (
 )
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
+from services.id_utils import multinode_hex_from_key
 from services.storage import archive_detections
-from services.tasks._helpers import multinode_hex_from_key
 
 # ── Archive batching ──────────────────────────────────────────────────────────
 # Instead of writing every frame to disk immediately (slow I/O in the hot path),

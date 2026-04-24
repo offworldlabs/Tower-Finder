@@ -12,11 +12,11 @@ import orjson
 
 from config.constants import YAGI_BEAM_WIDTH_DEG, YAGI_MAX_RANGE_KM
 from core import state
+from services.id_utils import multinode_hex_from_key
 from services.tasks._helpers import (
     _DELAY_MATCH_THRESHOLD_US,
     bistatic_delay_us,
     haversine_km,
-    multinode_hex_from_key,
 )
 
 _analytics_executor = concurrent.futures.ThreadPoolExecutor(
