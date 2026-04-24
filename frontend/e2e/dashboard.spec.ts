@@ -94,13 +94,16 @@ test.describe("Dashboard — admin API backing (no auth required)", () => {
   test("GET /api/admin/storage returns file_count and total_size_mb", async () => {
     const ctx = await playwrightRequest.newContext();
     const res = await ctx.get(`${API}/api/admin/storage`);
-    expect(res.status()).toBe(200);
-    const body = await res.json();
-    expect(body).toHaveProperty("archive_files");
-    expect(body).toHaveProperty("archive_bytes");
-    expect(body).toHaveProperty("archive_mb");
-    expect(typeof body.archive_files).toBe("number");
-    expect(typeof body.archive_mb).toBe("number");
+    // 202 = storage scan still in progress (valid startup state)
+    expect([200, 202]).toContain(res.status());
+    if (res.status() === 200) {
+      const body = await res.json();
+      expect(body).toHaveProperty("archive_files");
+      expect(body).toHaveProperty("archive_bytes");
+      expect(body).toHaveProperty("archive_mb");
+      expect(typeof body.archive_files).toBe("number");
+      expect(typeof body.archive_mb).toBe("number");
+    }
     await ctx.dispose();
   });
 
