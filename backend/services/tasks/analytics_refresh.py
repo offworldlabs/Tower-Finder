@@ -683,6 +683,7 @@ def _refresh_mlat_verification():
                 "altitude": {"mean_m": 0, "median_m": 0, "p95_m": 0},
                 "by_node_count": {},
                 "tracks": [],
+                "unmatched": {"n": len(fresh_solves), "nearest_truth": {"mean_km": None, "median_km": None, "p95_km": None}, "tracks": []},
             },
             option=orjson.OPT_SERIALIZE_NUMPY,
         )
@@ -694,6 +695,8 @@ def _refresh_mlat_verification():
     # double-counting and is sufficient for 200-node simulation where aircraft are
     # typically > 10 km apart. TestNoDoubleMatching covers this behaviour.
     matches: list[dict] = []
+    unmatched: list[dict] = []
+    unmatched_nearest_km: list[float] = []
     pos_errors: list[float] = []
     vel_errors: list[float] = []
     alt_errors: list[float] = []
@@ -749,6 +752,35 @@ def _refresh_mlat_verification():
                     best_truth = truth_entry
 
         if best_truth is None:
+            # Diagnostic pass: find nearest truth at any distance (no threshold)
+            # so we can see whether unmatched solves are far from all truth or
+            # just slightly above the match threshold.
+            nearest_km = float("inf")
+            for gt_hex2, (trail2, _meta2) in gt_trails_snapshot.items():
+                closest2 = min(trail2, key=lambda p: abs(p[3] - solver_ts))
+                if abs(closest2[3] - solver_ts) > _MLAT_SOLVE_MAX_AGE_S + 30:
+                    continue
+                d = haversine_km(solver_lat, solver_lon, closest2[0], closest2[1])
+                if d < nearest_km:
+                    nearest_km = d
+            for truth_entry2 in adsb_truth_pool:
+                _, t_lat2, t_lon2 = truth_entry2[0], truth_entry2[1], truth_entry2[2]
+                d = haversine_km(solver_lat, solver_lon, t_lat2, t_lon2)
+                if d < nearest_km:
+                    nearest_km = d
+            nearest_km_val = round(nearest_km, 1) if nearest_km < float("inf") else None
+            if nearest_km_val is not None:
+                unmatched_nearest_km.append(nearest_km)
+            unmatched.append(
+                {
+                    "solve_key": key,
+                    "solver_lat": round(solver_lat, 6),
+                    "solver_lon": round(solver_lon, 6),
+                    "n_nodes": n_nodes,
+                    "nearest_truth_km": nearest_km_val,
+                    "timestamp_ms": int(r.get("timestamp_ms", 0)),
+                }
+            )
             continue
 
         truth_hex, t_lat, t_lon, t_alt, t_speed, t_type, t_anom = best_truth
@@ -846,6 +878,21 @@ def _refresh_mlat_verification():
         },
         "by_node_count": by_node_count_out,
         "tracks": matches[:100],
+        "unmatched": {
+            "n": len(unmatched),
+            "nearest_truth": {
+                "mean_km": round(sum(unmatched_nearest_km) / len(unmatched_nearest_km), 1)
+                if unmatched_nearest_km
+                else None,
+                "median_km": round(_percentile(sorted(unmatched_nearest_km), 50), 1)
+                if unmatched_nearest_km
+                else None,
+                "p95_km": round(_percentile(sorted(unmatched_nearest_km), 95), 1)
+                if unmatched_nearest_km
+                else None,
+            },
+            "tracks": sorted(unmatched, key=lambda x: x.get("nearest_truth_km") or 999)[:50],
+        },
     }
     state.latest_mlat_verification_bytes = orjson.dumps(result, option=orjson.OPT_SERIALIZE_NUMPY)
 
