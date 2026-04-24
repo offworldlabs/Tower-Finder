@@ -20,6 +20,7 @@ from config.constants import (
 )
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
+from services.id_utils import multinode_hex_from_key
 from services.storage import archive_detections
 
 # ── Archive batching ──────────────────────────────────────────────────────────
@@ -272,7 +273,7 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
     if speed_ms > _MACH_1:
         _mn_anomaly_types.append("supersonic")
     _mn_is_anom = bool(_mn_anomaly_types)
-    _mn_hex = f"mn{abs(hash(key)) % 0xFFFF:04x}"
+    _mn_hex = multinode_hex_from_key(key)
     with state.anomaly_lock:
         if _mn_is_anom:
             state.anomaly_hexes.add(_mn_hex)

@@ -23,7 +23,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from core import state
-from services.tasks.analytics_refresh import _refresh_mlat_verification
+from services.tasks.analytics_refresh import _refresh_mlat_accuracy_stats, _refresh_mlat_verification
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -72,6 +72,8 @@ def _clear():
     state.ground_truth_trails.clear()
     state.ground_truth_meta.clear()
     state.adsb_aircraft.clear()
+    state.mlat_samples.clear()
+    state.latest_mlat_accuracy_bytes = b"{}"
     state.latest_mlat_verification_bytes = b"{}"
 
 
@@ -635,6 +637,54 @@ class TestHttpEndpoint:
         assert data["n_matched"] == 1
         assert data["tracks"][0]["truth_hex"] == "abc123"
 
+    def test_mlat_accuracy_endpoint_reflects_refresh(self):
+        from main import app
+
+        client = TestClient(app)
+
+        state.ground_truth_trails["abc123"] = deque([_trail_point(33.9, -84.6)])
+        state.ground_truth_meta["abc123"] = {
+            "object_type": "aircraft", "is_anomalous": False, "speed_ms": 0.0,
+        }
+        r = _make_solve_result(33.9001, -84.6001, n_nodes=3)
+        state.multinode_tracks[_key(r)] = r
+        _refresh_mlat_verification()
+
+        resp = client.get("/api/test/mlat-accuracy")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["n_samples"] >= 1
+        assert "by_node_count" in data
+
+
+class TestMlatAccuracyStats:
+    def setup_method(self):
+        _clear()
+
+    def test_empty_samples_returns_zero_count(self):
+        _refresh_mlat_accuracy_stats()
+        data = orjson.loads(state.latest_mlat_accuracy_bytes)
+        assert data == {"n_samples": 0}
+
+    def test_stats_are_grouped_by_node_count(self):
+        state.mlat_samples.extend(
+            [
+                {"hex": "a", "error_km": 0.2, "n_nodes": 2, "ts": int(time.time() * 1000)},
+                {"hex": "b", "error_km": 0.5, "n_nodes": 2, "ts": int(time.time() * 1000)},
+                {"hex": "c", "error_km": 1.4, "n_nodes": 3, "ts": int(time.time() * 1000)},
+            ]
+        )
+
+        _refresh_mlat_accuracy_stats()
+        data = orjson.loads(state.latest_mlat_accuracy_bytes)
+
+        assert data["n_samples"] == 3
+        assert data["mean_km"] == pytest.approx(0.7, abs=0.0001)
+        assert data["by_node_count"]["2"]["n_samples"] == 2
+        assert data["by_node_count"]["2"]["mean_km"] == pytest.approx(0.35, abs=0.0001)
+        assert data["by_node_count"]["3"]["n_samples"] == 1
+        assert data["by_node_count"]["3"]["max_km"] == pytest.approx(1.4, abs=0.0001)
+
 
 class TestMlatSummaryHelper:
     """Tests for _mlat_verification_summary() in routes/test.py.
@@ -775,7 +825,7 @@ class TestTrackFields:
         assert data["n_matched"] == 1
         track = data["tracks"][0]
         expected_keys = {
-            "solve_key", "solver_lat", "solver_lon",
+            "solve_key", "solver_hex", "solver_lat", "solver_lon",
             "truth_lat", "truth_lon", "truth_hex",
             "position_error_km",
             "solver_alt_m", "truth_alt_m", "altitude_error_m",

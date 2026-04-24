@@ -12,7 +12,12 @@ import orjson
 
 from config.constants import YAGI_BEAM_WIDTH_DEG, YAGI_MAX_RANGE_KM
 from core import state
-from services.tasks._helpers import _DELAY_MATCH_THRESHOLD_US, bistatic_delay_us, haversine_km
+from services.id_utils import multinode_hex_from_key
+from services.tasks._helpers import (
+    _DELAY_MATCH_THRESHOLD_US,
+    bistatic_delay_us,
+    haversine_km,
+)
 
 _analytics_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=1,
@@ -513,6 +518,50 @@ _MLAT_SOLVE_MAX_AGE_S = 120
 _MLAT_MATCH_THRESHOLD_KM = 8.0
 
 
+def _refresh_mlat_accuracy_stats() -> None:
+    """Compute rolling MLAT solver accuracy from the mlat_samples deque.
+
+    Mirrors _refresh_accuracy_stats() for single-node solves, but broken
+    down by node count (2-node vs 3-node etc.) instead of position_source.
+    Written to state.latest_mlat_accuracy_bytes, served by /api/test/mlat-accuracy.
+    """
+    samples = list(state.mlat_samples)
+    if not samples:
+        state.latest_mlat_accuracy_bytes = orjson.dumps({"n_samples": 0})
+        return
+
+    errors = [s["error_km"] for s in samples]
+    errors.sort()
+    n = len(errors)
+
+    by_nodes: dict[int, list[float]] = {}
+    for s in samples:
+        by_nodes.setdefault(int(s["n_nodes"]), []).append(s["error_km"])
+
+    node_stats = {}
+    for nc, errs in sorted(by_nodes.items()):
+        sorted_errs = sorted(errs)
+        sn = len(sorted_errs)
+        node_stats[str(nc)] = {
+            "n_samples": sn,
+            "mean_km": round(sum(sorted_errs) / sn, 4),
+            "median_km": round(_percentile(sorted_errs, 50), 4),
+            "p95_km": round(_percentile(sorted_errs, 95), 4),
+            "max_km": round(sorted_errs[-1], 4),
+        }
+
+    state.latest_mlat_accuracy_bytes = orjson.dumps(
+        {
+            "n_samples": n,
+            "mean_km": round(sum(errors) / n, 4),
+            "median_km": round(_percentile(errors, 50), 4),
+            "p95_km": round(_percentile(errors, 95), 4),
+            "max_km": round(errors[-1], 4),
+            "by_node_count": node_stats,
+        }
+    )
+
+
 def _refresh_mlat_verification():
     """Compare multinode solve results to ground-truth trails pushed by the fleet orchestrator.
 
@@ -659,6 +708,7 @@ def _refresh_mlat_verification():
         matches.append(
             {
                 "solve_key": key,
+                "solver_hex": multinode_hex_from_key(key),
                 "solver_lat": round(solver_lat, 6),
                 "solver_lon": round(solver_lon, 6),
                 "truth_lat": round(t_lat, 6),
@@ -685,6 +735,20 @@ def _refresh_mlat_verification():
     pos_errors.sort()
     vel_errors.sort()
     alt_errors.sort()
+
+    # Feed rolling sample buffer for trend monitoring (one sample per matched track)
+    ts_now_ms = int(now * 1000)
+    for m in matches:
+        state.mlat_samples.append(
+            {
+                "hex": m["truth_hex"],
+                "error_km": m["position_error_km"],
+                "n_nodes": m["n_nodes"],
+                "ts": ts_now_ms,
+            }
+        )
+
+    _refresh_mlat_accuracy_stats()
 
     by_node_count_out = {
         str(k): {

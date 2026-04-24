@@ -624,6 +624,20 @@ async def mlat_verification():
     )
 
 
+@router.get("/api/test/mlat-accuracy")
+async def mlat_accuracy():
+    """Rolling MLAT solver accuracy stats aggregated from the last 5 000 matched tracks.
+
+    Mirrors GET /api/radar/accuracy (single-node) but broken down by node count
+    instead of position_source.  Updates every 30 s alongside the main verification
+    refresh and is useful for detecting long-term accuracy degradation.
+    """
+    return Response(
+        content=state.latest_mlat_accuracy_bytes,
+        media_type="application/json",
+    )
+
+
 @router.get("/api/test/radar3/detection-range")
 async def radar3_detection_range():
     """Return radar3 empirical detection range and furthest detections."""

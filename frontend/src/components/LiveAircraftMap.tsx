@@ -34,7 +34,7 @@ import {
   PlaybackBar,
 } from "./map";
 
-import { fetchRadar3Verification, fetchRadar3DetectionRange } from "../api";
+import { fetchRadar3Verification, fetchRadar3DetectionRange, fetchMlatVerification } from "../api";
 
 // Fix default icon paths
 delete L.Icon.Default.prototype._getIconUrl;
@@ -368,6 +368,114 @@ const Radar3RangeLayer = memo(function Radar3RangeLayer({ visible }) {
       layersRef.current = [];
     };
   }, [map, visible]);
+
+  return null;
+});
+
+/* ── MlatVerificationLayer: shows multinode (MLAT) solver positions vs ground-truth.
+      Fetches verification data every 15 s and renders magenta truth dots,
+      pink error lines, and distance labels — always active (renders nothing
+      when n_matched is zero). Complements Radar3VerificationLayer which covers
+      the single-node radar3-retnode case. ── */
+const _mlatCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
+
+const MlatVerificationLayer = memo(function MlatVerificationLayer() {
+  const map = useMap();
+  const markersRef = useRef(new Map());
+
+  useEffect(() => {
+    const ACTIVE_POLL_MS = 15000;
+    const IDLE_POLL_MS = 60000;
+    let cancelled = false;
+    let timerId = null;
+
+    const scheduleNext = (delayMs) => {
+      if (cancelled) return;
+      timerId = window.setTimeout(() => {
+        refresh();
+      }, delayMs);
+    };
+
+    const refresh = async () => {
+      let nextDelayMs = ACTIVE_POLL_MS;
+      try {
+        const data = await fetchMlatVerification();
+        if (cancelled) return;
+        if (!data) {
+          nextDelayMs = IDLE_POLL_MS;
+          return;
+        }
+
+        const markers = markersRef.current;
+        const seen = new Set();
+
+        for (const t of data.tracks || []) {
+          if (!t.truth_lat || !t.truth_lon || !t.solver_lat || !t.solver_lon) continue;
+          const id = t.solve_key;
+          seen.add(id);
+
+          let entry = markers.get(id);
+          if (!entry) {
+            const dot = L.circleMarker([t.truth_lat, t.truth_lon], {
+              renderer: _mlatCanvas,
+              radius: 4,
+              color: "#e879f9",
+              weight: 2,
+              fillColor: "#e879f9",
+              fillOpacity: 0.85,
+            });
+            const line = L.polyline(
+              [[t.truth_lat, t.truth_lon], [t.solver_lat, t.solver_lon]],
+              { color: "#f0abfc", weight: 1.5, opacity: 0.7, dashArray: "3 4" },
+            );
+            const label = L.tooltip({
+              permanent: true,
+              direction: "center",
+              className: "radar3-error-label",
+            });
+            line.bindTooltip(label);
+            line.setTooltipContent(`${t.position_error_km.toFixed(1)} km`);
+            dot.addTo(map);
+            line.addTo(map);
+            entry = { dot, line };
+            markers.set(id, entry);
+          } else {
+            entry.dot.setLatLng([t.truth_lat, t.truth_lon]);
+            entry.line.setLatLngs([[t.truth_lat, t.truth_lon], [t.solver_lat, t.solver_lon]]);
+            entry.line.setTooltipContent(`${t.position_error_km.toFixed(1)} km`);
+          }
+        }
+
+        for (const [id, entry] of markers) {
+          if (!seen.has(id)) {
+            entry.dot.remove();
+            entry.line.remove();
+            markers.delete(id);
+          }
+        }
+
+        nextDelayMs = (data.n_matched || 0) > 0 ? ACTIVE_POLL_MS : IDLE_POLL_MS;
+      } catch {
+        // Silently ignore fetch errors
+        nextDelayMs = IDLE_POLL_MS;
+      } finally {
+        scheduleNext(nextDelayMs);
+      }
+    };
+
+    refresh();
+    return () => {
+      cancelled = true;
+      if (timerId !== null) {
+        window.clearTimeout(timerId);
+      }
+      for (const entry of markersRef.current.values()) {
+        entry.dot.remove();
+        entry.line.remove();
+      }
+      markersRef.current.clear();
+    };
+  }, [map]);
 
   return null;
 });
@@ -1170,6 +1278,9 @@ export default function LiveAircraftMap() {
 
             {/* Radar3 detection range circle + furthest detection markers */}
             <Radar3RangeLayer visible={selectedNodeId === "radar3-retnode"} />
+
+            {/* MLAT (multinode) solver verification — magenta truth dots + pink error lines */}
+            <MlatVerificationLayer />
           </MapContainer>
 
           {selectedAc && (

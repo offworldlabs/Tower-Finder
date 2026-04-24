@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { fetchRadar3Verification } from "../../api";
+import { fetchMlatAccuracy, fetchMlatVerification, fetchRadar3Verification } from "../../api";
 
 export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError }) {
   if (!ac) return null;
@@ -181,6 +181,11 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
           <Radar3VerificationSection hex={ac.hex} />
         )}
 
+        {/* MLAT solver verification — show when this is a multinode solve */}
+        {ac.position_source === "multinode_solve" && (
+          <MlatVerificationSection solverHex={ac.hex} />
+        )}
+
         {/* Accuracy */}
         <div className="detail-section">
           <div className="detail-section-title">Accuracy</div>
@@ -262,6 +267,60 @@ function Radar3VerificationSection({ hex }) {
       {data.position && <Field label="P95 Pos" value={`${data.position.p95_km} km`} />}
       {data.velocity && <Field label="Median Vel" value={`${data.velocity.median_ms} m/s`} />}
       {data.altitude && <Field label="Median Alt" value={`${data.altitude.median_m} m`} />}
+    </div>
+  );
+}
+
+function MlatVerificationSection({ solverHex }) {
+  const [data, setData] = useState(null);
+  const [accuracy, setAccuracy] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      Promise.all([fetchMlatVerification(), fetchMlatAccuracy()]).then(([verification, rolling]) => {
+        if (cancelled) return;
+        if (verification) setData(verification);
+        if (rolling) setAccuracy(rolling);
+      });
+    };
+    load();
+    const interval = setInterval(load, 30000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  if (!data || !data.n_matched) return null;
+
+  // Match by synthetic solver hex — same hash the backend uses to generate the map hex.
+  // More reliable than proximity matching against dead-reckoned frontend positions.
+  const match = (data.tracks || []).find((t) => t.solver_hex === solverHex);
+  const nodeStats = match && accuracy?.by_node_count
+    ? accuracy.by_node_count[String(match.n_nodes)]
+    : null;
+
+  return (
+    <div className="detail-section">
+      <div className="detail-section-title" style={{ color: "#e879f9" }}>
+        MLAT Verification
+      </div>
+      {match && (
+        <>
+          <Field label="Pos Error" value={
+            <span className={match.position_error_km < 3 ? "good" : match.position_error_km < 8 ? "warn" : "bad"}>
+              {match.position_error_km.toFixed(1)} km
+            </span>
+          } />
+          <Field label="Vel Error" value={`${match.velocity_error_ms.toFixed(1)} m/s`} />
+          <Field label="Alt Error" value={`${match.altitude_error_m} m`} />
+          <Field label="Nodes" value={match.n_nodes} />
+        </>
+      )}
+      <Field label="Match rate" value={`${data.n_matched}/${data.n_solves} (${data.match_rate_pct}%)`} />
+      {data.position && <Field label="Median Pos" value={`${data.position.median_km} km`} />}
+      {data.position && <Field label="P95 Pos" value={`${data.position.p95_km} km`} />}
+      {accuracy?.n_samples > 0 && <Field label="Rolling N" value={accuracy.n_samples} />}
+      {accuracy?.n_samples > 0 && <Field label="Rolling P95" value={`${accuracy.p95_km} km`} />}
+      {nodeStats && <Field label={`Nodes=${match.n_nodes} P95`} value={`${nodeStats.p95_km} km`} />}
     </div>
   );
 }
