@@ -34,21 +34,6 @@ for _ch in range(14, 37):
     _TV_CHANNEL_FREQ[_ch] = 470 + (_ch - 14) * 6 + 3
 
 
-def _dd_to_dms(dd: float) -> tuple[int, int, int]:
-    """Convert decimal degrees to (degrees, minutes, seconds)."""
-    d = int(abs(dd))
-    remainder = (abs(dd) - d) * 60
-    m = int(remainder)
-    s = round((remainder - m) * 60)
-    if s == 60:
-        s = 0
-        m += 1
-    if m == 60:
-        m = 0
-        d += 1
-    return d, m, s
-
-
 def _parse_erp_kw(erp_str: str) -> float | None:
     """Parse ERP string like '180.   kW' or '0.01   kW' to float kW."""
     if not erp_str:

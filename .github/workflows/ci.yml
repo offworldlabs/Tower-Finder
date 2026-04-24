@@ -25,6 +25,13 @@ jobs:
       - run: pip install ../libs/retina-geolocator ../libs/retina-tracker ../libs/retina-custody ../libs/retina-simulation ../libs/retina-analytics
       - name: Lint (ruff)
         run: ruff check .
+      - name: Dead code (vulture)
+        run: |
+          vulture . vulture_whitelist.py \
+            --min-confidence 60 \
+            --exclude ".venv,tests,scripts,htmlcov,__pycache__" \
+            --ignore-decorators "@router.*,@app.*" \
+            --ignore-names "model_config,dispatch"
       - run: pytest tests/ -v --tb=short -m "not external"
 
   frontend-build:
