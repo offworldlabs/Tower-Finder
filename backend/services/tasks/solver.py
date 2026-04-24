@@ -10,6 +10,12 @@ from core import state
 
 _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 
+# Reject solver results whose RMS delay residual exceeds this value.
+# A correct solve converges to rms_delay < 2 µs (measurement noise).
+# False convergence to a local minimum (collinear geometry, bad initial guess)
+# produces rms_delay O(10–1000 µs), so 5 µs is a conservative cutoff.
+_SOLVER_RMS_DELAY_MAX_US = 5.0
+
 
 def _process_solver_item(item: tuple, solve_fn) -> dict | None:
     """Process a single solver queue entry. Returns the solver result (or None).
@@ -27,6 +33,16 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
         logging.exception("Multinode solver failed")
         result = None
     if result and result.get("success"):
+        rms_delay = result.get("rms_delay", 0) or 0
+        if rms_delay > _SOLVER_RMS_DELAY_MAX_US:
+            logging.debug(
+                "Solver result rejected: rms_delay=%.1f µs > %.1f µs threshold "
+                "(n_nodes=%d, lat=%.3f, lon=%.3f)",
+                rms_delay, _SOLVER_RMS_DELAY_MAX_US,
+                result.get("n_nodes", 0), result.get("lat", 0), result.get("lon", 0),
+            )
+            state.solver_failures += 1
+            return result
         state.solver_successes += 1
         with state.solver_latency_lock:
             state.solver_total_solved += 1

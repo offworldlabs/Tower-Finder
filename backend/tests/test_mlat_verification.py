@@ -178,7 +178,7 @@ class TestProximityThreshold:
         _clear()
 
     def test_solve_within_threshold_matched(self):
-        # 3 km away — within 8 km threshold
+        # 3 km away — within 12 km threshold
         state.ground_truth_trails["abc123"] = deque([_trail_point(33.9, -84.6)])
         state.ground_truth_meta["abc123"] = {"object_type": "aircraft", "is_anomalous": False, "speed_ms": 0.0}
 
@@ -191,7 +191,7 @@ class TestProximityThreshold:
         assert data["n_matched"] == 1
 
     def test_solve_beyond_threshold_not_matched(self):
-        # 20 km away — beyond 8 km threshold
+        # 20 km away — beyond 12 km threshold
         state.ground_truth_trails["abc123"] = deque([_trail_point(33.9, -84.6)])
         state.ground_truth_meta["abc123"] = {"object_type": "aircraft", "is_anomalous": False, "speed_ms": 0.0}
 

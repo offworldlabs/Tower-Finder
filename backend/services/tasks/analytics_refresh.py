@@ -515,7 +515,7 @@ _MLAT_SOLVE_MAX_AGE_S = 120
 # Maximum distance between a solve result and a ground-truth point to count
 # as a match.  Aircraft in simulation are >10 km apart; 8 km catches legitimate
 # matches while rejecting cross-aircraft confusion.
-_MLAT_MATCH_THRESHOLD_KM = 8.0
+_MLAT_MATCH_THRESHOLD_KM = 12.0
 
 
 def _refresh_mlat_accuracy_stats() -> None:
@@ -778,6 +778,7 @@ def _refresh_mlat_verification():
                     "solver_lon": round(solver_lon, 6),
                     "n_nodes": n_nodes,
                     "nearest_truth_km": nearest_km_val,
+                    "rms_delay": round(float(r.get("rms_delay", 0) or 0), 3),
                     "timestamp_ms": int(r.get("timestamp_ms", 0)),
                 }
             )

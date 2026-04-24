@@ -140,3 +140,54 @@ class TestProcessSolverItem:
 
         assert state.solver_successes == 1
         assert state.solver_total_solved == 1  # counted even without latency info
+
+
+class TestRmsDelayFilter:
+    def test_high_rms_delay_rejected(self, monkeypatch):
+        """Results with rms_delay > _SOLVER_RMS_DELAY_MAX_US must not enter multinode_tracks."""
+        _reset_state()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+
+        def solve_fn(s_in, cfgs):
+            return {
+                "success": True,
+                "lat": 37.5,
+                "lon": -122.1,
+                "alt_m": 8000.0,
+                "rms_delay": 230.0,  # ~70 km lateral error residual
+                "timestamp_ms": 5000,
+                "contributing_node_ids": ["n1", "n2"],
+                "n_nodes": 2,
+            }
+
+        item = ({"n_nodes": 2}, {}, time.time())
+        solver_mod._process_solver_item(item, solve_fn)
+
+        assert not state.multinode_tracks, "false solve must not be stored"
+        assert state.solver_successes == 0
+        assert state.solver_failures == 1
+
+    def test_low_rms_delay_accepted(self, monkeypatch):
+        """Results with rms_delay within threshold are stored normally."""
+        _reset_state()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+
+        def solve_fn(s_in, cfgs):
+            return {
+                "success": True,
+                "lat": 37.5,
+                "lon": -122.1,
+                "alt_m": 8000.0,
+                "rms_delay": 1.2,  # good solve
+                "timestamp_ms": 6000,
+                "contributing_node_ids": ["n1", "n2"],
+                "n_nodes": 2,
+            }
+
+        item = ({"n_nodes": 2}, {}, time.time())
+        solver_mod._process_solver_item(item, solve_fn)
+
+        assert any(k.startswith("mn-6000-") for k in state.multinode_tracks)
+        assert state.solver_successes == 1
