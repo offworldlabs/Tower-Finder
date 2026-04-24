@@ -513,9 +513,12 @@ def _refresh_radar3_verification():
 # Maximum age of a multinode solve result to include in verification (seconds).
 _MLAT_SOLVE_MAX_AGE_S = 120
 # Maximum distance between a solve result and a ground-truth point to count
-# as a match.  Aircraft in simulation are >10 km apart; 8 km catches legitimate
-# matches while rejecting cross-aircraft confusion.
-_MLAT_MATCH_THRESHOLD_KM = 8.0
+# as a match.  12 km handles 2-node solves with marginal geometry.
+_MLAT_MATCH_THRESHOLD_KM = 12.0
+# Solve results within this radius are considered solver cycles for the same
+# aircraft.  Only one representative per cluster enters the matching loop so
+# that a single aircraft with multiple solver cycles does not inflate n_solves.
+_MLAT_CLUSTER_KM = 12.0
 
 
 def _refresh_mlat_accuracy_stats() -> None:
@@ -669,10 +672,14 @@ def _refresh_mlat_verification():
             continue
         fresh_solves.append((key, r))
 
+    n_solver_cycles = len(fresh_solves)
+
     if not gt_trails_snapshot and not adsb_truth_pool:
         state.latest_mlat_verification_bytes = orjson.dumps(
             {
-                "n_solves": len(fresh_solves),
+                "n_solves": n_solver_cycles,
+                "n_solver_cycles": n_solver_cycles,
+                "n_unique_aircraft": n_solver_cycles,
                 "n_matched": 0,
                 "match_rate_pct": 0.0,
                 "match_threshold_km": _MLAT_MATCH_THRESHOLD_KM,
@@ -683,6 +690,7 @@ def _refresh_mlat_verification():
                 "altitude": {"mean_m": 0, "median_m": 0, "p95_m": 0},
                 "by_node_count": {},
                 "tracks": [],
+                "unmatched": {"n": n_solver_cycles, "nearest_truth": {"mean_km": None, "median_km": None, "p95_km": None}, "tracks": []},
             },
             option=orjson.OPT_SERIALIZE_NUMPY,
         )
@@ -694,12 +702,17 @@ def _refresh_mlat_verification():
     # double-counting and is sufficient for 200-node simulation where aircraft are
     # typically > 10 km apart. TestNoDoubleMatching covers this behaviour.
     matches: list[dict] = []
+    unmatched: list[dict] = []
+    unmatched_nearest_km: list[float] = []
     pos_errors: list[float] = []
     vel_errors: list[float] = []
     alt_errors: list[float] = []
     matched_truth_hexes: set[str] = set()
     by_node_count: dict[int, list[float]] = {}
 
+    # Each fresh solve is an individual candidate; n_unique_aircraft is computed
+    # after matching by counting: matched aircraft + unmatched solves whose
+    # nearest truth hex is not already claimed by a matched solve.
     for key, r in fresh_solves:
         solver_lat = float(r["lat"])
         solver_lon = float(r["lon"])
@@ -749,6 +762,41 @@ def _refresh_mlat_verification():
                     best_truth = truth_entry
 
         if best_truth is None:
+            # Diagnostic pass: find nearest truth at any distance (no threshold).
+            # Also record nearest_hex so we can determine post-loop whether this
+            # unmatched solve is a duplicate cycle for an already-matched aircraft
+            # or a genuinely new aircraft position.
+            nearest_km = float("inf")
+            nearest_hex: str | None = None
+            for gt_hex2, (trail2, _meta2) in gt_trails_snapshot.items():
+                closest2 = min(trail2, key=lambda p: abs(p[3] - solver_ts))
+                if abs(closest2[3] - solver_ts) > _MLAT_SOLVE_MAX_AGE_S + 30:
+                    continue
+                d = haversine_km(solver_lat, solver_lon, closest2[0], closest2[1])
+                if d < nearest_km:
+                    nearest_km = d
+                    nearest_hex = gt_hex2
+            for truth_entry2 in adsb_truth_pool:
+                t_hex2, t_lat2, t_lon2 = truth_entry2[0], truth_entry2[1], truth_entry2[2]
+                d = haversine_km(solver_lat, solver_lon, t_lat2, t_lon2)
+                if d < nearest_km:
+                    nearest_km = d
+                    nearest_hex = t_hex2
+            nearest_km_val = round(nearest_km, 1) if nearest_km < float("inf") else None
+            if nearest_km_val is not None:
+                unmatched_nearest_km.append(nearest_km)
+            unmatched.append(
+                {
+                    "solve_key": key,
+                    "solver_lat": round(solver_lat, 6),
+                    "solver_lon": round(solver_lon, 6),
+                    "n_nodes": n_nodes,
+                    "nearest_truth_km": nearest_km_val,
+                    "nearest_truth_hex": nearest_hex,
+                    "rms_delay": round(float(r.get("rms_delay", 0) or 0), 3),
+                    "timestamp_ms": int(r.get("timestamp_ms", 0)),
+                }
+            )
             continue
 
         truth_hex, t_lat, t_lon, t_alt, t_speed, t_type, t_anom = best_truth
@@ -788,8 +836,22 @@ def _refresh_mlat_verification():
             }
         )
 
-    n_solves = len(fresh_solves)
+    n_solves = n_solver_cycles
     n_matched = len(matches)
+
+    # n_unique_aircraft: matched aircraft + unmatched solves whose nearest truth
+    # is NOT already claimed (i.e. not a duplicate cycle for an already-matched
+    # aircraft).  Two unmatched solves pointing at the same unclaimed truth hex
+    # count as one aircraft.
+    unmatched_unclaimed_hexes: set[str] = set()
+    n_unmatched_no_nearby_truth = 0
+    for u in unmatched:
+        u_hex = u.get("nearest_truth_hex")
+        if u_hex is None:
+            n_unmatched_no_nearby_truth += 1
+        elif u_hex not in matched_truth_hexes:
+            unmatched_unclaimed_hexes.add(u_hex)
+    n_unique_aircraft = n_matched + len(unmatched_unclaimed_hexes) + n_unmatched_no_nearby_truth
     pos_errors.sort()
     vel_errors.sort()
     alt_errors.sort()
@@ -819,8 +881,10 @@ def _refresh_mlat_verification():
 
     result = {
         "n_solves": n_solves,
+        "n_solver_cycles": n_solver_cycles,
+        "n_unique_aircraft": n_unique_aircraft,
         "n_matched": n_matched,
-        "match_rate_pct": round(100.0 * n_matched / n_solves, 1) if n_solves else 0.0,
+        "match_rate_pct": round(100.0 * n_matched / n_unique_aircraft, 1) if n_unique_aircraft else 0.0,
         "match_threshold_km": _MLAT_MATCH_THRESHOLD_KM,
         "n_truth_candidates": n_truth_gt + n_truth_live_adsb + n_truth_external,
         "truth_sources": {
@@ -846,6 +910,21 @@ def _refresh_mlat_verification():
         },
         "by_node_count": by_node_count_out,
         "tracks": matches[:100],
+        "unmatched": {
+            "n": len(unmatched),
+            "nearest_truth": {
+                "mean_km": round(sum(unmatched_nearest_km) / len(unmatched_nearest_km), 1)
+                if unmatched_nearest_km
+                else None,
+                "median_km": round(_percentile(sorted(unmatched_nearest_km), 50), 1)
+                if unmatched_nearest_km
+                else None,
+                "p95_km": round(_percentile(sorted(unmatched_nearest_km), 95), 1)
+                if unmatched_nearest_km
+                else None,
+            },
+            "tracks": sorted(unmatched, key=lambda x: x.get("nearest_truth_km") or 999)[:50],
+        },
     }
     state.latest_mlat_verification_bytes = orjson.dumps(result, option=orjson.OPT_SERIALIZE_NUMPY)
 

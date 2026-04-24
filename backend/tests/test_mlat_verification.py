@@ -112,11 +112,14 @@ class TestEmptyState:
         _refresh_mlat_verification()
         data = orjson.loads(state.latest_mlat_verification_bytes)
         assert "n_solves" in data
+        assert "n_solver_cycles" in data
+        assert "n_unique_aircraft" in data
         assert "position" in data
         assert "velocity" in data
         assert "altitude" in data
         assert "by_node_count" in data
         assert "tracks" in data
+        assert "unmatched" in data
         assert "n_truth_candidates" in data
         assert "truth_sources" in data
         assert set(data["truth_sources"]) == {"ground_truth", "live_adsb", "external_adsb"}
@@ -178,7 +181,7 @@ class TestProximityThreshold:
         _clear()
 
     def test_solve_within_threshold_matched(self):
-        # 3 km away — within 8 km threshold
+        # 3 km away — within 12 km threshold
         state.ground_truth_trails["abc123"] = deque([_trail_point(33.9, -84.6)])
         state.ground_truth_meta["abc123"] = {"object_type": "aircraft", "is_anomalous": False, "speed_ms": 0.0}
 
@@ -191,7 +194,7 @@ class TestProximityThreshold:
         assert data["n_matched"] == 1
 
     def test_solve_beyond_threshold_not_matched(self):
-        # 20 km away — beyond 8 km threshold
+        # 20 km away — beyond 12 km threshold
         state.ground_truth_trails["abc123"] = deque([_trail_point(33.9, -84.6)])
         state.ground_truth_meta["abc123"] = {"object_type": "aircraft", "is_anomalous": False, "speed_ms": 0.0}
 
