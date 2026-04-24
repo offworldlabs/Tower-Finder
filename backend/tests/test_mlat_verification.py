@@ -72,6 +72,7 @@ def _clear():
     state.ground_truth_trails.clear()
     state.ground_truth_meta.clear()
     state.adsb_aircraft.clear()
+    state.external_adsb_cache.clear()
     state.mlat_samples.clear()
     state.latest_mlat_accuracy_bytes = b"{}"
     state.latest_mlat_verification_bytes = b"{}"
@@ -95,13 +96,17 @@ class TestEmptyState:
         assert data["tracks"] == []
 
     def test_empty_truth_pool(self):
-        # Add a multinode track but no truth
+        # Add a multinode track but no truth.
+        # With the fix, n_solves reflects the real fresh-solve count even when
+        # no truth candidates are available; n_matched stays 0.
         r = _make_solve_result(33.9, -84.6)
         state.multinode_tracks[_key(r)] = r
         _refresh_mlat_verification()
         data = orjson.loads(state.latest_mlat_verification_bytes)
-        assert data["n_solves"] == 0  # truth pool empty → early exit
+        assert data["n_solves"] == 1  # honest count even without truth pool
         assert data["n_matched"] == 0
+        assert data["n_truth_candidates"] == 0
+        assert data["truth_sources"] == {"ground_truth": 0, "live_adsb": 0, "external_adsb": 0}
 
     def test_returns_valid_json_always(self):
         _refresh_mlat_verification()
@@ -112,6 +117,9 @@ class TestEmptyState:
         assert "altitude" in data
         assert "by_node_count" in data
         assert "tracks" in data
+        assert "n_truth_candidates" in data
+        assert "truth_sources" in data
+        assert set(data["truth_sources"]) == {"ground_truth", "live_adsb", "external_adsb"}
 
 
 class TestSingleMatch:
@@ -298,6 +306,76 @@ class TestAdsbFallback:
 
         assert data["n_matched"] == 1
         assert data["tracks"][0]["truth_hex"] == "aabbcc"
+
+
+class TestExternalAdsbFallback:
+    """external_adsb_cache is used as truth when live ADS-B and ground-truth trails are empty."""
+
+    def setup_method(self):
+        _clear()
+
+    def test_external_adsb_used_as_truth(self):
+        state.external_adsb_cache["ccddeeff"] = {
+            "hex": "ccddeeff",
+            "lat": 33.9,
+            "lon": -84.6,
+            "alt_baro": 32808,  # 10 000 m
+            "gs": 388.0,        # ~200 m/s
+        }
+
+        r = _make_solve_result(33.9001, -84.6001)
+        state.multinode_tracks[_key(r)] = r
+
+        _refresh_mlat_verification()
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+
+        assert data["n_matched"] == 1
+        assert data["tracks"][0]["truth_hex"] == "ccddeeff"
+        assert data["truth_sources"]["external_adsb"] == 1
+        assert data["truth_sources"]["live_adsb"] == 0
+        assert data["truth_sources"]["ground_truth"] == 0
+
+    def test_external_adsb_skipped_when_already_in_live(self):
+        """If a hex is already in adsb_aircraft, external_adsb_cache must not add a duplicate."""
+        hex_id = "aabb1122"
+        state.adsb_aircraft[hex_id] = {
+            "hex": hex_id,
+            "lat": 33.9,
+            "lon": -84.6,
+            "alt_baro": 32808,
+            "gs": 0.0,
+            "last_seen_ms": int(time.time() * 1000) - 5000,
+        }
+        # Same hex in external cache — should NOT be counted twice
+        state.external_adsb_cache[hex_id] = {
+            "hex": hex_id,
+            "lat": 33.9,
+            "lon": -84.6,
+            "alt_baro": 32808,
+            "gs": 0.0,
+        }
+
+        r = _make_solve_result(33.9001, -84.6001)
+        state.multinode_tracks[_key(r)] = r
+
+        _refresh_mlat_verification()
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+
+        assert data["n_truth_candidates"] == 1  # not 2
+        assert data["truth_sources"]["live_adsb"] == 1
+        assert data["truth_sources"]["external_adsb"] == 0
+
+    def test_external_adsb_skipped_when_no_coords(self):
+        state.external_adsb_cache["nolat"] = {"hex": "nolat", "gs": 100.0}
+
+        r = _make_solve_result(33.9001, -84.6001)
+        state.multinode_tracks[_key(r)] = r
+
+        _refresh_mlat_verification()
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+
+        assert data["n_truth_candidates"] == 0
+        assert data["n_matched"] == 0
 
 
 class TestPercentiles:
@@ -758,9 +836,10 @@ class TestAdsbFallbackEdgeCases:
 
         _refresh_mlat_verification()
         data = orjson.loads(state.latest_mlat_verification_bytes)
-        # Truth pool empty → early exit with n_solves=0
-        assert data["n_solves"] == 0
+        # Stale ADS-B → truth pool empty → early exit; n_solves is honest (1)
+        assert data["n_solves"] == 1
         assert data["n_matched"] == 0
+        assert data["n_truth_candidates"] == 0
 
     def test_adsb_entry_with_lat_none_filtered(self):
         # Entry missing lat — must not be added to truth pool
@@ -777,7 +856,10 @@ class TestAdsbFallbackEdgeCases:
 
         _refresh_mlat_verification()
         data = orjson.loads(state.latest_mlat_verification_bytes)
-        assert data["n_solves"] == 0  # truth pool still empty
+        # lat=None → truth pool empty → early exit; n_solves is honest (1)
+        assert data["n_solves"] == 1
+        assert data["n_matched"] == 0
+        assert data["n_truth_candidates"] == 0
 
     def test_adsb_hex_already_in_trails_not_duplicated(self):
         # Same hex in both ground_truth_trails and adsb_aircraft — should
