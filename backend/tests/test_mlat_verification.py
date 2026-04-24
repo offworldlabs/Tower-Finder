@@ -235,6 +235,27 @@ class TestStaleFiltering:
         # truth pool is empty → early exit
         assert data["n_matched"] == 0
 
+    def test_time_matched_trail_point_used(self):
+        # Solver result is 80 s old.  Truth trail has two points:
+        #   - one 80 s ago at (33.9, -84.6)  ← closest in time to solver
+        #   - one 5 s ago at (34.1, -83.0)   ← current position, far away
+        # With current-position matching the solve would miss (>8 km).
+        # With time-matched matching it should match (≈0 km error).
+        ts_ms_80s_ago = int((time.time() - 80) * 1000)
+        r = _make_solve_result(33.9, -84.6, ts_ms=ts_ms_80s_ago)
+        state.multinode_tracks[_key(r)] = r
+
+        trail = deque(maxlen=120)
+        trail.append(_trail_point(33.9, -84.6, age_s=80))   # matches solver time
+        trail.append(_trail_point(34.1, -83.0, age_s=5))    # current — far away
+        state.ground_truth_trails["abc123"] = trail
+        state.ground_truth_meta["abc123"] = {"object_type": "aircraft", "is_anomalous": False, "speed_ms": 200.0}
+
+        _refresh_mlat_verification()
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+        assert data["n_matched"] == 1, "time-matched trail point should produce a match"
+        assert data["tracks"][0]["position_error_km"] < 0.5
+
 
 class TestByNodeCount:
     def setup_method(self):
