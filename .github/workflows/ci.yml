@@ -160,6 +160,7 @@ jobs:
             # Ensure tar1090 static assets are present
             [ -d tar1090/html ] || git clone --depth 1 https://github.com/wiedehopf/tar1090.git tar1090
             docker compose -f docker-compose.staging.yml down --timeout 30
+            docker builder prune -f
             docker compose -f docker-compose.staging.yml up -d --build
             # Wait for server to become healthy (up to 90s)
             for i in $(seq 1 18); do
