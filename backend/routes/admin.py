@@ -390,3 +390,19 @@ async def system_metrics(_user=Depends(require_admin)):
         "disk_used_gb": round(disk.used / (1024**3), 1),
         "disk_free_gb": round(disk.free / (1024**3), 1),
     }
+
+
+@router.post("/coverage/dump")
+async def coverage_dump(_user=Depends(require_admin)):
+    """Flush runtime coverage data to disk and generate an HTML report.
+
+    Only meaningful when the server was started with ``COVERAGE_ENABLED=1``.
+    Collection continues after the dump — no restart required.
+    """
+    import services.runtime_coverage as _rc
+    html_dir = await asyncio.get_running_loop().run_in_executor(
+        _admin_executor, _rc.save
+    )
+    if html_dir is None:
+        return {"status": "disabled", "detail": "COVERAGE_ENABLED is not set"}
+    return {"status": "ok", "html_report": html_dir}

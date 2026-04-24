@@ -411,27 +411,6 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     seen_hex: set[str] = set()
     aircraft: list[dict] = []
 
-    def _dead_reckon(entry: dict, ts: float):
-        """Return dead-reckoned (lat, lon) from the last ADS-B fix.
-
-        Uses stored gs (knots) and track (degrees from north) to extrapolate
-        the aircraft's current position since the last fix.  Capped at 60s to
-        avoid large extrapolation errors.
-        """
-        lat_fix = entry.get("lat", 0.0)
-        lon_fix = entry.get("lon", 0.0)
-        elapsed = min(ts - entry.get("last_seen_ms", 0) / 1000.0, 60.0)
-        gs_knots = entry.get("gs", 0.0)
-        track_deg = entry.get("track", 0.0)
-        if elapsed <= 0.0 or gs_knots <= 0.0:
-            return lat_fix, lon_fix
-        gs_m_s = gs_knots * 0.514444
-        track_rad = math.radians(track_deg)
-        cos_lat = math.cos(math.radians(lat_fix)) or 1e-9
-        lat_dr = lat_fix + (gs_m_s * math.cos(track_rad) / 111_320.0) * elapsed
-        lon_dr = lon_fix + (gs_m_s * math.sin(track_rad) / (111_320.0 * cos_lat)) * elapsed
-        return lat_dr, lon_dr
-
     def _fresh_adsb(ac_hex: str):
         """Return ADS-B entry for ac_hex, or None if unavailable/stale.
 

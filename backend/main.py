@@ -46,6 +46,8 @@ from services.background import (
     storage_refresh_task,
 )
 from services.blah2_bridge import blah2_bridge_task
+from services.runtime_coverage import start as _start_coverage
+from services.runtime_coverage import stop as _stop_coverage
 from services.state_snapshot import SAVE_INTERVAL_S, restore_snapshot, save_snapshot
 from services.tcp_handler import handle_tcp_client
 
@@ -76,6 +78,9 @@ _test_mod.init(radar_pipeline)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Start runtime coverage if COVERAGE_ENABLED=1
+    _start_coverage()
+
     # Restore persisted state before accepting connections
     restored = restore_snapshot()
 
@@ -128,6 +133,8 @@ async def lifespan(app: FastAPI):
         from services.frame_processor import flush_all_archive_buffers
         flush_all_archive_buffers()
         state.node_analytics.save_coverage_maps()
+        # Stop runtime coverage and flush report
+        _stop_coverage()
         logging.info("Coverage maps saved to %s", state.COVERAGE_STORAGE_DIR)
 
 
