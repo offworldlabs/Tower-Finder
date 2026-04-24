@@ -384,12 +384,27 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer() {
   const markersRef = useRef(new Map());
 
   useEffect(() => {
+    const ACTIVE_POLL_MS = 15000;
+    const IDLE_POLL_MS = 60000;
     let cancelled = false;
+    let timerId = null;
+
+    const scheduleNext = (delayMs) => {
+      if (cancelled) return;
+      timerId = window.setTimeout(() => {
+        refresh();
+      }, delayMs);
+    };
 
     const refresh = async () => {
+      let nextDelayMs = ACTIVE_POLL_MS;
       try {
         const data = await fetchMlatVerification();
-        if (cancelled || !data) return;
+        if (cancelled) return;
+        if (!data) {
+          nextDelayMs = IDLE_POLL_MS;
+          return;
+        }
 
         const markers = markersRef.current;
         const seen = new Set();
@@ -438,16 +453,22 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer() {
             markers.delete(id);
           }
         }
+
+        nextDelayMs = (data.n_matched || 0) > 0 ? ACTIVE_POLL_MS : IDLE_POLL_MS;
       } catch {
         // Silently ignore fetch errors
+        nextDelayMs = IDLE_POLL_MS;
+      } finally {
+        scheduleNext(nextDelayMs);
       }
     };
 
     refresh();
-    const intervalId = setInterval(refresh, 15000);
     return () => {
       cancelled = true;
-      clearInterval(intervalId);
+      if (timerId !== null) {
+        window.clearTimeout(timerId);
+      }
       for (const entry of markersRef.current.values()) {
         entry.dot.remove();
         entry.line.remove();

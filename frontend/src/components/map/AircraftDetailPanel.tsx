@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { fetchRadar3Verification, fetchMlatVerification } from "../../api";
+import { fetchMlatAccuracy, fetchMlatVerification, fetchRadar3Verification } from "../../api";
 
 export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError }) {
   if (!ac) return null;
@@ -273,12 +273,19 @@ function Radar3VerificationSection({ hex }) {
 
 function MlatVerificationSection({ solverHex }) {
   const [data, setData] = useState(null);
+  const [accuracy, setAccuracy] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
-    const load = () => fetchMlatVerification().then((d) => { if (!cancelled && d) setData(d); });
+    const load = () => {
+      Promise.all([fetchMlatVerification(), fetchMlatAccuracy()]).then(([verification, rolling]) => {
+        if (cancelled) return;
+        if (verification) setData(verification);
+        if (rolling) setAccuracy(rolling);
+      });
+    };
     load();
-    const interval = setInterval(load, 15000);
+    const interval = setInterval(load, 30000);
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
@@ -287,11 +294,14 @@ function MlatVerificationSection({ solverHex }) {
   // Match by synthetic solver hex — same hash the backend uses to generate the map hex.
   // More reliable than proximity matching against dead-reckoned frontend positions.
   const match = (data.tracks || []).find((t) => t.solver_hex === solverHex);
+  const nodeStats = match && accuracy?.by_node_count
+    ? accuracy.by_node_count[String(match.n_nodes)]
+    : null;
 
   return (
     <div className="detail-section">
       <div className="detail-section-title" style={{ color: "#e879f9" }}>
-        🛰 MLAT Verification
+        MLAT Verification
       </div>
       {match && (
         <>
@@ -308,6 +318,9 @@ function MlatVerificationSection({ solverHex }) {
       <Field label="Match rate" value={`${data.n_matched}/${data.n_solves} (${data.match_rate_pct}%)`} />
       {data.position && <Field label="Median Pos" value={`${data.position.median_km} km`} />}
       {data.position && <Field label="P95 Pos" value={`${data.position.p95_km} km`} />}
+      {accuracy?.n_samples > 0 && <Field label="Rolling N" value={accuracy.n_samples} />}
+      {accuracy?.n_samples > 0 && <Field label="Rolling P95" value={`${accuracy.p95_km} km`} />}
+      {nodeStats && <Field label={`Nodes=${match.n_nodes} P95`} value={`${nodeStats.p95_km} km`} />}
     </div>
   );
 }

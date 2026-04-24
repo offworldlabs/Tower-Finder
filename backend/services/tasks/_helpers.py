@@ -1,10 +1,17 @@
 """Shared helper functions for background tasks."""
 
+import hashlib
 import math
 
 from config.constants import C_KM_US as _C_KM_US
 from config.constants import DELAY_MATCH_THRESHOLD_US as _DELAY_MATCH_THRESHOLD_US  # noqa: F401 — re-exported
 from config.constants import R_EARTH_KM
+
+
+def multinode_hex_from_key(key: str) -> str:
+    """Return deterministic synthetic hex ID for a multinode solve key."""
+    digest = hashlib.sha256(str(key).encode("utf-8")).hexdigest()[:10]
+    return f"mn{digest}"
 
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

@@ -12,7 +12,12 @@ import orjson
 
 from config.constants import YAGI_BEAM_WIDTH_DEG, YAGI_MAX_RANGE_KM
 from core import state
-from services.tasks._helpers import _DELAY_MATCH_THRESHOLD_US, bistatic_delay_us, haversine_km
+from services.tasks._helpers import (
+    _DELAY_MATCH_THRESHOLD_US,
+    bistatic_delay_us,
+    haversine_km,
+    multinode_hex_from_key,
+)
 
 _analytics_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=1,
@@ -535,14 +540,14 @@ def _refresh_mlat_accuracy_stats() -> None:
 
     node_stats = {}
     for nc, errs in sorted(by_nodes.items()):
-        errs.sort()
-        sn = len(errs)
+        sorted_errs = sorted(errs)
+        sn = len(sorted_errs)
         node_stats[str(nc)] = {
             "n_samples": sn,
-            "mean_km": round(sum(errs) / sn, 4),
-            "median_km": round(_percentile(errs, 50), 4),
-            "p95_km": round(_percentile(errs, 95), 4),
-            "max_km": round(errs[-1], 4),
+            "mean_km": round(sum(sorted_errs) / sn, 4),
+            "median_km": round(_percentile(sorted_errs, 50), 4),
+            "p95_km": round(_percentile(sorted_errs, 95), 4),
+            "max_km": round(sorted_errs[-1], 4),
         }
 
     state.latest_mlat_accuracy_bytes = orjson.dumps(
@@ -703,7 +708,7 @@ def _refresh_mlat_verification():
         matches.append(
             {
                 "solve_key": key,
-                "solver_hex": f"mn{abs(hash(key)) % 0xFFFF:04x}",
+                "solver_hex": multinode_hex_from_key(key),
                 "solver_lat": round(solver_lat, 6),
                 "solver_lon": round(solver_lon, 6),
                 "truth_lat": round(t_lat, 6),
@@ -732,14 +737,14 @@ def _refresh_mlat_verification():
     alt_errors.sort()
 
     # Feed rolling sample buffer for trend monitoring (one sample per matched track)
-    _ts_now_ms = int(now * 1000)
+    ts_now_ms = int(now * 1000)
     for m in matches:
         state.mlat_samples.append(
             {
                 "hex": m["truth_hex"],
                 "error_km": m["position_error_km"],
                 "n_nodes": m["n_nodes"],
-                "ts": _ts_now_ms,
+                "ts": ts_now_ms,
             }
         )
 
