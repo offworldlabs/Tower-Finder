@@ -574,38 +574,37 @@ def _refresh_mlat_verification():
     """
     now = time.time()
 
-    # --- Build truth candidate pool -------------------------------------------
-    # truth_pool: list of (hex, lat, lon, alt_m, speed_ms, object_type, is_anomalous)
-    truth_pool: list[tuple] = []
-    seen_truth_hexes: set[str] = set()
+    # --- Build truth sources --------------------------------------------------
     n_truth_gt = 0
     n_truth_live_adsb = 0
     n_truth_external = 0
 
+    # Ground-truth trails: kept as a {hex → (trail_list, meta)} snapshot for
+    # time-matched lookup in the matching loop.  Aircraft positions are pushed
+    # every 2 s and stored in a deque of up to 120 points (240 s of history).
+    # Matching uses the trail point whose timestamp is closest to the solver's
+    # timestamp_ms so that aircraft movement between capture and verification
+    # time does not inflate position errors.
+    gt_trails_snapshot: dict[str, tuple[list, dict]] = {}
+    seen_gt_hexes: set[str] = set()
     for gt_hex, trail in list(state.ground_truth_trails.items()):
         if not trail:
             continue
         last = trail[-1]
+        # Only include trails whose most-recent point is fresh (orchestrator
+        # still running for this aircraft).
         if len(last) < 4 or (now - last[3]) > 60:
             continue
-        meta = state.ground_truth_meta.get(gt_hex, {})
-        speed_ms = meta.get("speed_ms", 0.0) or 0.0
-        truth_pool.append(
-            (
-                gt_hex,
-                last[0],
-                last[1],
-                last[2],
-                float(speed_ms),
-                meta.get("object_type", "aircraft"),
-                bool(meta.get("is_anomalous", False)),
-            )
-        )
-        seen_truth_hexes.add(gt_hex)
+        gt_trails_snapshot[gt_hex] = (list(trail), state.ground_truth_meta.get(gt_hex, {}))
+        seen_gt_hexes.add(gt_hex)
         n_truth_gt += 1
 
-    # Fallback 1: add fresh ADS-B entries not already covered by ground-truth trails.
-    # Truth trails are rejected at > 60 s (updated every 2 s, so stale = missing).
+    # Fallback pools (current snapshot only — no trail history):
+    # truth_pool: list of (hex, lat, lon, alt_m, speed_ms, object_type, is_anomalous)
+    adsb_truth_pool: list[tuple] = []
+    seen_truth_hexes: set[str] = set(seen_gt_hexes)
+
+    # Fallback 1: live ADS-B entries not already covered by ground-truth trails.
     # Solve results are kept up to _MLAT_SOLVE_MAX_AGE_S = 120 s because solves
     # are infrequent (one per 40 s frame interval) — a 60 s window would discard
     # most valid results before a second truth point arrives.
@@ -619,7 +618,7 @@ def _refresh_mlat_verification():
             continue
         gs_ms = (entry.get("gs", 0) or 0) * 0.514444
         alt_m = (entry.get("alt_baro", 0) or 0) * 0.3048
-        truth_pool.append(
+        adsb_truth_pool.append(
             (
                 adsb_hex,
                 entry["lat"],
@@ -642,7 +641,7 @@ def _refresh_mlat_verification():
         if adsb_hex not in seen_truth_hexes:
             gs_ms = (entry.get("gs", 0) or 0) * 0.514444
             alt_m = (entry.get("alt_baro", 0) or 0) * 0.3048
-            truth_pool.append(
+            adsb_truth_pool.append(
                 (
                     adsb_hex,
                     entry["lat"],
@@ -670,7 +669,7 @@ def _refresh_mlat_verification():
             continue
         fresh_solves.append((key, r))
 
-    if not truth_pool:
+    if not gt_trails_snapshot and not adsb_truth_pool:
         state.latest_mlat_verification_bytes = orjson.dumps(
             {
                 "n_solves": len(fresh_solves),
@@ -709,18 +708,45 @@ def _refresh_mlat_verification():
         solver_vel_n = float(r.get("vel_north", 0) or 0)
         solver_speed_ms = math.sqrt(solver_vel_e**2 + solver_vel_n**2)
         n_nodes = int(r.get("n_nodes", 0))
+        solver_ts = r.get("timestamp_ms", 0) / 1000.0
 
         best_truth: tuple | None = None
         best_dist_km = _MLAT_MATCH_THRESHOLD_KM
 
-        for truth_entry in truth_pool:
-            truth_hex, t_lat, t_lon, t_alt, t_speed, t_type, t_anom = truth_entry
-            if truth_hex in matched_truth_hexes:
+        # 1. Ground-truth trails: find the trail point whose timestamp is
+        #    closest to the solver's capture time so aircraft movement between
+        #    frame capture and now does not inflate the position error.
+        for gt_hex, (trail, meta) in gt_trails_snapshot.items():
+            if gt_hex in matched_truth_hexes:
                 continue
-            dist_km = haversine_km(solver_lat, solver_lon, t_lat, t_lon)
+            closest = min(trail, key=lambda p: abs(p[3] - solver_ts))
+            # Skip if the closest point is too far in time (trail too sparse)
+            if abs(closest[3] - solver_ts) > _MLAT_SOLVE_MAX_AGE_S + 30:
+                continue
+            dist_km = haversine_km(solver_lat, solver_lon, closest[0], closest[1])
             if dist_km < best_dist_km:
                 best_dist_km = dist_km
-                best_truth = truth_entry
+                speed_ms = float(meta.get("speed_ms", 0) or 0)
+                best_truth = (
+                    gt_hex,
+                    closest[0],
+                    closest[1],
+                    float(closest[2]),
+                    speed_ms,
+                    meta.get("object_type", "aircraft"),
+                    bool(meta.get("is_anomalous", False)),
+                )
+
+        # 2. ADS-B fallback (current position — no trail history).
+        if best_truth is None:
+            for truth_entry in adsb_truth_pool:
+                truth_hex, t_lat, t_lon, t_alt, t_speed, t_type, t_anom = truth_entry
+                if truth_hex in matched_truth_hexes:
+                    continue
+                dist_km = haversine_km(solver_lat, solver_lon, t_lat, t_lon)
+                if dist_km < best_dist_km:
+                    best_dist_km = dist_km
+                    best_truth = truth_entry
 
         if best_truth is None:
             continue
@@ -796,7 +822,7 @@ def _refresh_mlat_verification():
         "n_matched": n_matched,
         "match_rate_pct": round(100.0 * n_matched / n_solves, 1) if n_solves else 0.0,
         "match_threshold_km": _MLAT_MATCH_THRESHOLD_KM,
-        "n_truth_candidates": len(truth_pool),
+        "n_truth_candidates": n_truth_gt + n_truth_live_adsb + n_truth_external,
         "truth_sources": {
             "ground_truth": n_truth_gt,
             "live_adsb": n_truth_live_adsb,
