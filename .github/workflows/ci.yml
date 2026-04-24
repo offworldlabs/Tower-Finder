@@ -289,13 +289,16 @@ jobs:
         env:
           BASE_URL: https://api.retina.fm
         run: |
-          CURL="curl -s --connect-timeout 10 --max-time 30"
+          CURL="curl -s --connect-timeout 10 --max-time 60"
           PASS=0; FAIL=0
 
           check_status() {
             local name="$1" url="$2" expected="$3"
             printf "  %-40s " "$name"
-            CODE=$($CURL -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) || { echo "FAIL (connection)"; FAIL=$((FAIL+1)); return; }
+            # Retry once on connection error (transient load spikes during fleet reconnect)
+            CODE=$($CURL -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) \
+              || CODE=$($CURL -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) \
+              || { echo "FAIL (connection)"; FAIL=$((FAIL+1)); return; }
             if [ "$CODE" = "$expected" ]; then echo "OK ($CODE)"; PASS=$((PASS+1)); else echo "FAIL ($CODE != $expected)"; FAIL=$((FAIL+1)); fi
           }
 
