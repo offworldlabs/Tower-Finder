@@ -112,11 +112,14 @@ class TestEmptyState:
         _refresh_mlat_verification()
         data = orjson.loads(state.latest_mlat_verification_bytes)
         assert "n_solves" in data
+        assert "n_solver_cycles" in data
+        assert "n_unique_aircraft" in data
         assert "position" in data
         assert "velocity" in data
         assert "altitude" in data
         assert "by_node_count" in data
         assert "tracks" in data
+        assert "unmatched" in data
         assert "n_truth_candidates" in data
         assert "truth_sources" in data
         assert set(data["truth_sources"]) == {"ground_truth", "live_adsb", "external_adsb"}
