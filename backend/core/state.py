@@ -137,6 +137,14 @@ latest_missed_detections: dict[str, dict] = {}
 # Pre-serialised radar3 solver verification (refreshed by background task)
 latest_radar3_verification_bytes: bytes = b"{}"
 
+# Rolling sample buffer for MLAT (multinode) solver accuracy — one entry per
+# matched track per 30-s refresh cycle, for long-term trend monitoring.
+MLAT_SAMPLES_MAX = 5000
+mlat_samples: deque = deque(maxlen=MLAT_SAMPLES_MAX)
+
+# Pre-serialised rolling MLAT accuracy stats (updated alongside mlat verification)
+latest_mlat_accuracy_bytes: bytes = b"{}"
+
 # Pre-serialised MLAT (multinode) solver verification vs ground-truth trails
 # Initialised to the full zero-state so dashboard consumers can always access keys
 # like n_solves / match_rate_pct before the first background refresh fires.

@@ -41,3 +41,9 @@ export async function fetchRadar3DetectionRange() {
   if (!res.ok) return null;
   return res.json();
 }
+
+export async function fetchMlatVerification() {
+  const res = await fetch(`${API_BASE}/test/mlat-verification`);
+  if (!res.ok) return null;
+  return res.json();
+}

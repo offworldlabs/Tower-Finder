@@ -775,7 +775,7 @@ class TestTrackFields:
         assert data["n_matched"] == 1
         track = data["tracks"][0]
         expected_keys = {
-            "solve_key", "solver_lat", "solver_lon",
+            "solve_key", "solver_hex", "solver_lat", "solver_lon",
             "truth_lat", "truth_lon", "truth_hex",
             "position_error_km",
             "solver_alt_m", "truth_alt_m", "altitude_error_m",
