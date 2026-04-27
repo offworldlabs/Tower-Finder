@@ -10,6 +10,8 @@ Covers the bookkeeping that happens around a single solver call:
 import os
 import time
 
+import pytest
+
 os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
@@ -113,8 +115,9 @@ class TestProcessSolverItem:
                 "contributing_node_ids": [],
             }
 
-        # enqueued 60 seconds in the past → latency > 30 triggers alert
-        item = ({"n_nodes": 4}, {}, time.time() - 60.0)
+        # enqueued 35 seconds in the past → latency > 30 triggers alert
+        # (must be < _SOLVER_MAX_QUEUE_AGE_S = 45s so the item is not discarded)
+        item = ({"n_nodes": 4}, {}, time.time() - 35.0)
         solver_mod._process_solver_item(item, solve_fn)
 
         assert any(a[0] == "solver_latency_high" for a in alerts)
@@ -191,3 +194,201 @@ class TestRmsDelayFilter:
 
         assert any(k.startswith("mn-6000-") for k in state.multinode_tracks)
         assert state.solver_successes == 1
+
+    def test_high_rms_doppler_rejected(self, monkeypatch):
+        """Results with rms_doppler > _SOLVER_RMS_DOPPLER_MAX_HZ must not be stored.
+
+        Mirrors the 3-node false-association case observed in production:
+        rms_delay=1.233 µs (passes delay filter) but rms_doppler=248 Hz
+        (physically unrealisable for FM illuminator ⇒ false association).
+        """
+        _reset_state()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+
+        def solve_fn(s_in, cfgs):
+            return {
+                "success": True,
+                "lat": 32.97,
+                "lon": -96.83,
+                "alt_m": 3000.0,
+                "rms_delay": 1.2,       # passes delay threshold
+                "rms_doppler": 248.87,  # physically impossible (> 196 Hz FM max)
+                "timestamp_ms": 7000,
+                "contributing_node_ids": ["n1", "n2", "n3"],
+                "n_nodes": 3,
+            }
+
+        item = ({"n_nodes": 3}, {}, time.time())
+        solver_mod._process_solver_item(item, solve_fn)
+
+        assert not state.multinode_tracks, "false association must not be stored"
+        assert state.solver_successes == 0
+        assert state.solver_failures == 1
+
+    def test_low_rms_doppler_accepted(self, monkeypatch):
+        """Results with rms_doppler below threshold are stored normally."""
+        _reset_state()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+
+        def solve_fn(s_in, cfgs):
+            return {
+                "success": True,
+                "lat": 32.97,
+                "lon": -96.83,
+                "alt_m": 9000.0,
+                "rms_delay": 0.8,
+                "rms_doppler": 12.5,    # well within FM physics
+                "timestamp_ms": 8000,
+                "contributing_node_ids": ["n1", "n2", "n3"],
+                "n_nodes": 3,
+            }
+
+        item = ({"n_nodes": 3}, {}, time.time())
+        solver_mod._process_solver_item(item, solve_fn)
+
+        assert any(k.startswith("mn-8000-") for k in state.multinode_tracks)
+        assert state.solver_successes == 1
+
+
+class TestStaleItemSkip:
+    """Items that have been waiting too long in the queue must be discarded."""
+
+    def test_stale_item_is_skipped(self, monkeypatch):
+        """Item enqueued > _SOLVER_MAX_QUEUE_AGE_S seconds ago is dropped without solving."""
+        _reset_state()
+        solve_called = []
+
+        def solve_fn(s_in, cfgs):
+            solve_called.append(True)
+            return {
+                "success": True,
+                "lat": 37.5,
+                "lon": -122.1,
+                "rms_delay": 0.5,
+                "timestamp_ms": 1000,
+                "contributing_node_ids": ["n1", "n2"],
+                "n_nodes": 2,
+            }
+
+        old_enqueued_at = time.time() - (solver_mod._SOLVER_MAX_QUEUE_AGE_S + 1.0)
+        item = ({"n_nodes": 2}, {}, old_enqueued_at)
+        result = solver_mod._process_solver_item(item, solve_fn)
+
+        assert result is None
+        assert not solve_called, "solver must not be invoked for stale items"
+        assert state.solver_successes == 0
+        assert state.solver_failures == 0
+        assert not state.multinode_tracks
+
+    def test_fresh_item_is_solved(self, monkeypatch):
+        """Item enqueued just now must be passed to the solver normally."""
+        _reset_state()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+
+        def solve_fn(s_in, cfgs):
+            return {
+                "success": True,
+                "lat": 37.5,
+                "lon": -122.1,
+                "rms_delay": 0.5,
+                "timestamp_ms": 9000,
+                "contributing_node_ids": ["n1", "n2"],
+                "n_nodes": 2,
+            }
+
+        item = ({"n_nodes": 2}, {}, time.time())
+        result = solver_mod._process_solver_item(item, solve_fn)
+
+        assert result is not None and result.get("success")
+        assert state.solver_successes == 1
+
+
+class TestSolveBestAltitude:
+    """Altitude-sweep helpers: n_nodes >= 3 uses a layer sweep, n_nodes = 2 uses initial_guess directly."""
+
+    def test_n3_picks_minimum_rms_altitude(self, monkeypatch):
+        """For n_nodes=3, _process_solver_item tries all altitude layers and picks best."""
+        _reset_state()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+
+        calls: list[float] = []
+
+        def solve_fn(s_in, cfgs):
+            alt = s_in["initial_guess"]["alt_km"]
+            calls.append(alt)
+            # Simulate: 9 km layer gives best rms_delay; others give poor rms
+            rms = 0.1 if abs(alt - 9.0) < 0.1 else 4.0
+            return {
+                "success": True,
+                "lat": 37.5,
+                "lon": -122.1,
+                "alt_m": alt * 1000,
+                "rms_delay": rms,
+                "timestamp_ms": 7000,
+                "contributing_node_ids": ["n1", "n2", "n3"],
+                "n_nodes": 3,
+            }
+
+        s_in = {
+            "n_nodes": 3,
+            "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 3.0},
+            "measurements": [],
+        }
+        item = (s_in, {}, time.time())
+        result = solver_mod._process_solver_item(item, solve_fn)
+
+        # All four altitude layers tried [3, 6, 9, 12] km
+        assert set(calls) == {3.0, 6.0, 9.0, 12.0}
+        # Best result (rms=0.1 at 9 km) selected
+        assert result is not None
+        assert result["alt_m"] == pytest.approx(9000.0)
+        assert state.solver_successes == 1
+
+    def test_n2_uses_initial_guess_altitude_directly(self, monkeypatch):
+        """For n_nodes=2, solver is called once with initial_guess.alt_km.
+
+        rms_delay≈0 and rms_doppler≈0 at every altitude layer for n=2 (exactly
+        determined delay system; underdetermined velocity system).  Neither metric
+        discriminates altitude.  The initial_guess.alt_km from association.py is
+        the weighted-mean altitude from the association grid (delay-residual
+        weighting; ties fall back to the ≈7.5 km grid mean) and is used directly.
+        """
+        _reset_state()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+
+        calls: list[float] = []
+
+        def solve_fn(s_in, cfgs):
+            alt = s_in["initial_guess"]["alt_km"]
+            calls.append(alt)
+            return {
+                "success": True,
+                "lat": 37.5,
+                "lon": -122.1,
+                "alt_m": alt * 1000,
+                "rms_delay": 0.0,
+                "rms_doppler": 0.0,
+                "timestamp_ms": 8000,
+                "contributing_node_ids": ["n1", "n2"],
+                "n_nodes": 2,
+            }
+
+        s_in = {
+            "n_nodes": 2,
+            "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 7.5},
+            "measurements": [],
+        }
+        item = (s_in, {}, time.time())
+        result = solver_mod._process_solver_item(item, solve_fn)
+
+        # Exactly one solver call, at the initial_guess altitude
+        assert calls == [7.5]
+        assert result is not None
+        assert result["alt_m"] == pytest.approx(7500.0)
+        assert state.solver_successes == 1
+

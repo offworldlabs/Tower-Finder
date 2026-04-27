@@ -10,11 +10,107 @@ from core import state
 
 _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 
+# Altitude layers (km) tried when n_nodes ≥ 3.  For an overdetermined system
+# (3+ delay equations, 2 unknowns after altitude pinning) only the correct
+# altitude layer yields rms_delay ≈ 0; wrong layers give rms > 0, so picking
+# the minimum selects the true altitude.  Layers match the association grid
+# (3, 6, 9, 12) so that the correct altitude is always ≤ 1.5 km from a layer.
+_SOLVER_ALT_LAYERS_KM = [3.0, 6.0, 9.0, 12.0]
+
 # Reject solver results whose RMS delay residual exceeds this value.
-# A correct solve converges to rms_delay < 2 µs (measurement noise).
-# False convergence to a local minimum (collinear geometry, bad initial guess)
-# produces rms_delay O(10–1000 µs), so 5 µs is a conservative cutoff.
-_SOLVER_RMS_DELAY_MAX_US = 5.0
+# For n≥3 nodes with altitude pinned (overdetermined: 3 equations, 2 unknowns),
+# a true association converges with rms_delay ≈ measurement_noise ≈ 1-2 µs.
+# False associations (delay measurements from different aircraft) produce
+# inconsistent equations → rms_delay = 3-10 µs.
+# For n=2, rms=0 at BOTH the true and mirror positions (exactly determined),
+# so the threshold can't distinguish mirror from truth — keep generous.
+# A single threshold of 3.0 µs cleans up false n≥3 associations while
+# letting all n=2 results through (n=2 mirrors always have rms ≈ 0).
+_SOLVER_RMS_DELAY_MAX_US = 3.0
+
+# Reject solver results whose RMS Doppler residual exceeds this value.
+# Physics: for FM illuminators (fc ≈ 98–108 MHz, λ ≈ 2.8–3.1 m), the maximum
+# bistatic Doppler for any real aircraft is 2 × v_max / λ ≈ 2 × 300 / 3.06 ≈ 196 Hz.
+# For a true n-node association the solver fits velocity to n Doppler equations;
+# with n=2 the system is exactly determined → rms_doppler ≈ 0 regardless.
+# With n≥3 it is overdetermined → rms_doppler reflects measurement noise (< 20 Hz).
+# False associations (delays/Dopplers from different aircraft) leave large, physically
+# unrealisable Doppler residuals (observed: 248 Hz for confirmed false associations).
+# Threshold at 200 Hz = max bistatic Doppler + 2% margin; only rejects impossible cases.
+_SOLVER_RMS_DOPPLER_MAX_HZ = 200.0
+
+
+def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn,
+                     layers_km: list[float], metric: str) -> dict | None:
+    """Try each altitude layer; return the result with lowest value of `metric`.
+
+    Args:
+        metric: Solver output key to minimise across layers.  Currently always
+                'rms_delay' (used by n≥3 where the overdetermined system gives
+                rms≈0 at the correct altitude).
+    """
+    base_guess = s_in["initial_guess"]
+    best_result: dict | None = None
+    best_rms = float("inf")
+    last_exc: BaseException | None = None
+
+    for alt_km in layers_km:
+        s_try = dict(s_in)
+        s_try["initial_guess"] = dict(base_guess, alt_km=alt_km)
+        try:
+            result = solve_fn(s_try, node_cfgs)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            continue
+        if result and result.get("success"):
+            rms_raw = result.get(metric)
+            rms = float("inf") if rms_raw is None else float(rms_raw)
+            logging.debug(
+                "altitude sweep: z=%.1fkm %s=%.3f (best so far=%.3f)",
+                alt_km, metric, rms, best_rms,
+            )
+            if rms < best_rms:
+                best_rms = rms
+                best_result = result
+
+    if best_result is None and last_exc is not None:
+        raise last_exc
+
+    return best_result
+
+
+def _solve_best_altitude(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
+    """Altitude sweep for n≥3: pick by minimum rms_delay."""
+    return _sweep_altitudes(s_in, node_cfgs, solve_fn, _SOLVER_ALT_LAYERS_KM, "rms_delay")
+
+
+def _solve_best_altitude_n2(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
+    """Altitude solve for n=2: use the initial_guess altitude from association.
+
+    For n=2 the solver state [x, y, vx, vy, vz] with altitude fixed is:
+    - Exactly determined by the 2 delay equations for (x, y)
+    - Underdetermined for (vx, vy, vz): 2 Doppler equations, 3 unknowns
+
+    Both rms_delay and rms_doppler are ≈0 at every altitude layer (the solver
+    always finds a zero-residual solution within bounds).  Neither metric can
+    discriminate altitude.
+
+    The initial_guess.alt_km from association.py is set to the delay-residual
+    weighted mean of all candidate altitudes in the group.  When the correct
+    altitude layer has smaller delay residuals it is upweighted; when all layers
+    tie (high altitude ambiguity), the mean falls back to ≈(3+6+9+12)/4 = 7.5 km,
+    which is far more accurate than always using the first/lowest layer (3 km).
+    """
+    return solve_fn(s_in, node_cfgs)
+
+
+
+# Maximum age (seconds) of a solver queue item before it is discarded without
+# solving.  Items older than this are already stale — the multinode_tracks
+# expiry is 60 s, and a solve itself can take a few seconds — so spending CPU
+# on them can never produce a visible result.  Raising this number allows a
+# deeper backlog but increases latency; lowering it drops items too aggressively.
+_SOLVER_MAX_QUEUE_AGE_S = 45.0
 
 
 def _process_solver_item(item: tuple, solve_fn) -> dict | None:
@@ -25,8 +121,26 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
     """
     s_in, node_cfgs = item[0], item[1]
     enqueued_at: float | None = item[2] if len(item) > 2 else None
+    # Discard items that have been waiting too long in the queue.  By the time
+    # they are solved, the result's timestamp_ms will be > 60 s old and the
+    # entry will be immediately pruned from multinode_tracks — wasting CPU.
+    age_s = time.time() - enqueued_at if enqueued_at is not None else 0.0
+    if enqueued_at is not None and age_s > _SOLVER_MAX_QUEUE_AGE_S:
+        logging.debug(
+            "Solver: dropping stale item (age=%.1fs > %.1fs, n_nodes=%d)",
+            age_s,
+            _SOLVER_MAX_QUEUE_AGE_S,
+            s_in.get("n_nodes", 0) if isinstance(s_in, dict) else 0,
+        )
+        return None
+    n_nodes = s_in.get("n_nodes", 0) if isinstance(s_in, dict) else 0
     try:
-        result = solve_fn(s_in, node_cfgs)
+        if "initial_guess" not in s_in:
+            result = solve_fn(s_in, node_cfgs)
+        elif n_nodes >= 3:
+            result = _solve_best_altitude(s_in, node_cfgs, solve_fn)
+        else:
+            result = _solve_best_altitude_n2(s_in, node_cfgs, solve_fn)
     except Exception:
         state.task_error_counts["solver"] += 1
         state.solver_failures += 1
@@ -39,6 +153,16 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                 "Solver result rejected: rms_delay=%.1f µs > %.1f µs threshold "
                 "(n_nodes=%d, lat=%.3f, lon=%.3f)",
                 rms_delay, _SOLVER_RMS_DELAY_MAX_US,
+                result.get("n_nodes", 0), result.get("lat", 0), result.get("lon", 0),
+            )
+            state.solver_failures += 1
+            return result
+        rms_doppler = result.get("rms_doppler", 0) or 0
+        if rms_doppler > _SOLVER_RMS_DOPPLER_MAX_HZ:
+            logging.debug(
+                "Solver result rejected: rms_doppler=%.1f Hz > %.1f Hz threshold "
+                "(n_nodes=%d, lat=%.3f, lon=%.3f) — physically unrealisable Doppler",
+                rms_doppler, _SOLVER_RMS_DOPPLER_MAX_HZ,
                 result.get("n_nodes", 0), result.get("lat", 0), result.get("lon", 0),
             )
             state.solver_failures += 1
