@@ -13,12 +13,14 @@ _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 # Altitude layers (km) tried when n_nodes ≥ 3.  For an overdetermined system
 # (3+ delay equations, 2 unknowns after altitude pinning) only the correct
 # altitude layer yields rms_delay ≈ 0; wrong layers give rms > 0, so picking
-# the minimum selects the true altitude.  With n=2, bistatic mirror ambiguity
-# means rms=0 at every layer for two different positions, so the sweep is
-# counterproductive — fall back to the association-provided altitude.
-# Two layers (low cruise ~5 km, high cruise ~10 km) cover >99% of commercial
-# traffic and halve sweep cost vs the previous 4-layer [3,6,9,12] set.
+# the minimum selects the true altitude.  Two layers cover the simulation range.
 _SOLVER_ALT_LAYERS_KM = [5.0, 10.0]
+
+# Altitude layers (km) tried when n_nodes == 2.  For exactly-determined systems
+# (2 delay equations, 2 unknowns) rms_delay ≈ 0 at EVERY altitude, so the
+# altitude must be selected by rms_doppler instead.  Use 4 layers matching the
+# association grid (3, 6, 9, 12) so the true altitude is ≤ 1.5 km from a layer.
+_SOLVER_ALT_LAYERS_N2_KM = [3.0, 6.0, 9.0, 12.0]
 
 # Reject solver results whose RMS delay residual exceeds this value.
 # For n≥3 nodes with altitude pinned (overdetermined: 3 equations, 2 unknowns),
@@ -43,18 +45,21 @@ _SOLVER_RMS_DELAY_MAX_US = 3.0
 _SOLVER_RMS_DOPPLER_MAX_HZ = 200.0
 
 
-def _solve_best_altitude(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
-    """Try each altitude layer; return the result with lowest rms_delay.
+def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn,
+                     layers_km: list[float], metric: str) -> dict | None:
+    """Try each altitude layer; return the result with lowest value of `metric`.
 
-    Only called for n_nodes >= 3 where the system is overdetermined and the
-    correct altitude uniquely minimises rms_delay.
+    Args:
+        metric: 'rms_delay' for n≥3 (overdetermined → correct altitude gives
+                rms≈0) or 'rms_doppler' for n=2 (exactly determined by delay →
+                altitude must be selected by Doppler fit quality).
     """
     base_guess = s_in["initial_guess"]
     best_result: dict | None = None
     best_rms = float("inf")
     last_exc: BaseException | None = None
 
-    for alt_km in _SOLVER_ALT_LAYERS_KM:
+    for alt_km in layers_km:
         s_try = dict(s_in)
         s_try["initial_guess"] = dict(base_guess, alt_km=alt_km)
         try:
@@ -63,10 +68,11 @@ def _solve_best_altitude(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
             last_exc = exc
             continue
         if result and result.get("success"):
-            rms = result.get("rms_delay", float("inf")) or float("inf")
+            rms_raw = result.get(metric)
+            rms = float("inf") if rms_raw is None else float(rms_raw)
             logging.debug(
-                "altitude sweep: z=%.1fkm rms=%.3fµs (best so far=%.3fµs)",
-                alt_km, rms, best_rms,
+                "altitude sweep: z=%.1fkm %s=%.3f (best so far=%.3f)",
+                alt_km, metric, rms, best_rms,
             )
             if rms < best_rms:
                 best_rms = rms
@@ -76,6 +82,33 @@ def _solve_best_altitude(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
         raise last_exc from last_exc
 
     return best_result
+
+
+def _solve_best_altitude(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
+    """Altitude sweep for n≥3: pick by minimum rms_delay."""
+    return _sweep_altitudes(s_in, node_cfgs, solve_fn, _SOLVER_ALT_LAYERS_KM, "rms_delay")
+
+
+def _solve_best_altitude_n2(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
+    """Altitude sweep for n=2: pick by minimum rms_doppler.
+
+    With only 2 bistatic delay measurements the position is exactly determined
+    given the altitude (2 equations, 2 unknowns), so rms_delay≈0 at every
+    altitude and cannot discriminate layers.  The Doppler fit IS sensitive to
+    altitude because the geometry (LOS unit vectors) changes with z, so the
+    layer that matches the true altitude produces the lowest rms_doppler.
+
+    Tie-breaking: when rms_doppler≈0 at all layers (degenerate low-elevation
+    geometry), the association's initial_guess altitude should win.  We achieve
+    this by sorting the layers so that the initial_guess altitude comes first —
+    since _sweep_altitudes keeps only strict improvements (rms < best_rms),
+    the first valid result holds when later layers tie.
+    """
+    initial_alt = s_in.get("initial_guess", {}).get("alt_km", _SOLVER_ALT_LAYERS_N2_KM[1])
+    # Put initial_guess altitude first; keep remaining layers in original order,
+    # deduplicating in case initial_alt is already in the list.
+    ordered = [initial_alt] + [a for a in _SOLVER_ALT_LAYERS_N2_KM if a != initial_alt]
+    return _sweep_altitudes(s_in, node_cfgs, solve_fn, ordered, "rms_doppler")
 
 
 
@@ -108,10 +141,12 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
         return None
     n_nodes = s_in.get("n_nodes", 0) if isinstance(s_in, dict) else 0
     try:
-        if n_nodes >= 3 and "initial_guess" in s_in:
+        if "initial_guess" not in s_in:
+            result = solve_fn(s_in, node_cfgs)
+        elif n_nodes >= 3:
             result = _solve_best_altitude(s_in, node_cfgs, solve_fn)
         else:
-            result = solve_fn(s_in, node_cfgs)
+            result = _solve_best_altitude_n2(s_in, node_cfgs, solve_fn)
     except Exception:
         state.task_error_counts["solver"] += 1
         state.solver_failures += 1

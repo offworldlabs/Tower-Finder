@@ -307,7 +307,7 @@ class TestStaleItemSkip:
 
 
 class TestSolveBestAltitude:
-    """The altitude-sweep helper is used only for n_nodes >= 3."""
+    """Altitude-sweep helpers used for n_nodes >= 2."""
 
     def test_n3_picks_minimum_rms_altitude(self, monkeypatch):
         """For n_nodes=3, _process_solver_item tries all altitude layers and picks best."""
@@ -348,8 +348,8 @@ class TestSolveBestAltitude:
         assert result["alt_m"] == pytest.approx(10000.0)
         assert state.solver_successes == 1
 
-    def test_n2_uses_association_altitude_directly(self, monkeypatch):
-        """For n_nodes=2, no altitude sweep; association altitude used as-is."""
+    def test_n2_altitude_sweep_uses_rms_doppler(self, monkeypatch):
+        """For n_nodes=2, altitude sweep runs across N2 layers using rms_doppler."""
         _reset_state()
         stub = _StubAnalytics()
         monkeypatch.setattr(state, "node_analytics", stub)
@@ -357,12 +357,17 @@ class TestSolveBestAltitude:
         calls: list[float] = []
 
         def solve_fn(s_in, cfgs):
-            calls.append(s_in.get("initial_guess", {}).get("alt_km"))
+            alt = s_in["initial_guess"]["alt_km"]
+            calls.append(alt)
+            # Simulate: 9 km layer gives best rms_doppler
+            rms_dop = 1.0 if abs(alt - 9.0) < 0.1 else 50.0
             return {
                 "success": True,
                 "lat": 37.5,
                 "lon": -122.1,
-                "rms_delay": 0.5,
+                "alt_m": alt * 1000,
+                "rms_delay": 0.0,
+                "rms_doppler": rms_dop,
                 "timestamp_ms": 8000,
                 "contributing_node_ids": ["n1", "n2"],
                 "n_nodes": 2,
@@ -374,8 +379,49 @@ class TestSolveBestAltitude:
             "measurements": [],
         }
         item = (s_in, {}, time.time())
-        solver_mod._process_solver_item(item, solve_fn)
+        result = solver_mod._process_solver_item(item, solve_fn)
 
-        # Exactly one call with the original association altitude
-        assert calls == [6.0]
+        # All N2 layers tried (initial_guess=6 first, then 3, 9, 12)
+        assert set(calls) == set(solver_mod._SOLVER_ALT_LAYERS_N2_KM)
+        # Best rms_doppler at 9 km wins
+        assert result is not None
+        assert result["alt_m"] == pytest.approx(9000.0)
+        assert state.solver_successes == 1
+
+    def test_n2_altitude_sweep_tiebreak_uses_initial_guess(self, monkeypatch):
+        """For n_nodes=2, when all rms_doppler equal, initial_guess altitude wins."""
+        _reset_state()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+
+        calls: list[float] = []
+
+        def solve_fn(s_in, cfgs):
+            alt = s_in["initial_guess"]["alt_km"]
+            calls.append(alt)
+            # All layers return same rms_doppler (degenerate low-elevation geometry)
+            return {
+                "success": True,
+                "lat": 37.5,
+                "lon": -122.1,
+                "alt_m": alt * 1000,
+                "rms_delay": 0.0,
+                "rms_doppler": 0.0,
+                "timestamp_ms": 8000,
+                "contributing_node_ids": ["n1", "n2"],
+                "n_nodes": 2,
+            }
+
+        s_in = {
+            "n_nodes": 2,
+            "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 9.0},
+            "measurements": [],
+        }
+        item = (s_in, {}, time.time())
+        result = solver_mod._process_solver_item(item, solve_fn)
+
+        # initial_guess altitude (9.0 km) wins the tie
+        assert result is not None
+        assert result["alt_m"] == pytest.approx(9000.0)
+        assert state.solver_successes == 1
 
