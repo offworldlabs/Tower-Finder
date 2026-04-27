@@ -85,22 +85,23 @@ def _solve_best_altitude(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
 
 
 def _solve_best_altitude_n2(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
-    """Altitude sweep for n=2: pick by minimum rms_doppler.
+    """Altitude solve for n=2: use the initial_guess altitude from association.
 
-    For n=2, altitude is pinned and the 2 delay equations exactly determine
-    (x, y).  In theory the 2-Doppler / 3-velocity system is underdetermined
-    (3 velocity unknowns, 2 equations), so rms_doppler should be ≈0 at every
-    altitude layer.  In practice, when the wrong altitude is used the delay
-    intersection falls at a spatial position where the measured Dopplers require
-    a velocity outside the ±300 m/s solver bounds, or require an unrealisable
-    velocity direction — leaving rms_doppler significantly > 0 (observed: ~42 Hz
-    at the wrong layer vs <1 Hz at the correct layer for production tracks).
+    For n=2 the solver state [x, y, vx, vy, vz] with altitude fixed is:
+    - Exactly determined by the 2 delay equations for (x, y)
+    - Underdetermined for (vx, vy, vz): 2 Doppler equations, 3 unknowns
 
-    Sweeping the same [3, 6, 9, 12] km layers as the association grid and
-    selecting the minimum rms_doppler result gives the best available altitude
-    estimate when the association grid's initial_guess.alt_km is ambiguous.
+    Both rms_delay and rms_doppler are ≈0 at every altitude layer (the solver
+    always finds a zero-residual solution within bounds).  Neither metric can
+    discriminate altitude.
+
+    The initial_guess.alt_km from association.py is set to the delay-residual
+    weighted mean of all candidate altitudes in the group.  When the correct
+    altitude layer has smaller delay residuals it is upweighted; when all layers
+    tie (high altitude ambiguity), the mean falls back to ≈(3+6+9+12)/4 = 7.5 km,
+    which is far more accurate than always using the first/lowest layer (3 km).
     """
-    return _sweep_altitudes(s_in, node_cfgs, solve_fn, _SOLVER_ALT_LAYERS_KM, "rms_doppler")
+    return solve_fn(s_in, node_cfgs)
 
 
 
