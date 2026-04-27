@@ -19,7 +19,15 @@ _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 _SOLVER_ALT_LAYERS_KM = [3.0, 6.0, 9.0, 12.0]
 
 # Reject solver results whose RMS delay residual exceeds this value.
-_SOLVER_RMS_DELAY_MAX_US = 5.0
+# For n≥3 nodes with altitude pinned (overdetermined: 3 equations, 2 unknowns),
+# a true association converges with rms_delay ≈ measurement_noise ≈ 1-2 µs.
+# False associations (delay measurements from different aircraft) produce
+# inconsistent equations → rms_delay = 3-10 µs.
+# For n=2, rms=0 at BOTH the true and mirror positions (exactly determined),
+# so the threshold can't distinguish mirror from truth — keep generous.
+# A single threshold of 3.0 µs cleans up false n≥3 associations while
+# letting all n=2 results through (n=2 mirrors always have rms ≈ 0).
+_SOLVER_RMS_DELAY_MAX_US = 3.0
 
 
 def _solve_best_altitude(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
