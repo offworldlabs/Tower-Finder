@@ -320,8 +320,8 @@ class TestSolveBestAltitude:
         def solve_fn(s_in, cfgs):
             alt = s_in["initial_guess"]["alt_km"]
             calls.append(alt)
-            # Simulate: 10 km layer gives best rms; other gives poor rms
-            rms = 0.1 if abs(alt - 10.0) < 0.1 else 4.0
+            # Simulate: 9 km layer gives best rms_delay; others give poor rms
+            rms = 0.1 if abs(alt - 9.0) < 0.1 else 4.0
             return {
                 "success": True,
                 "lat": 37.5,
@@ -341,55 +341,21 @@ class TestSolveBestAltitude:
         item = (s_in, {}, time.time())
         result = solver_mod._process_solver_item(item, solve_fn)
 
-        # Both altitude layers tried
-        assert set(calls) == {5.0, 10.0}
-        # Best result (rms=0.1 at 10 km) selected
-        assert result is not None
-        assert result["alt_m"] == pytest.approx(10000.0)
-        assert state.solver_successes == 1
-
-    def test_n2_altitude_sweep_uses_rms_doppler(self, monkeypatch):
-        """For n_nodes=2, altitude sweep runs across N2 layers using rms_doppler."""
-        _reset_state()
-        stub = _StubAnalytics()
-        monkeypatch.setattr(state, "node_analytics", stub)
-
-        calls: list[float] = []
-
-        def solve_fn(s_in, cfgs):
-            alt = s_in["initial_guess"]["alt_km"]
-            calls.append(alt)
-            # Simulate: 9 km layer gives best rms_doppler
-            rms_dop = 1.0 if abs(alt - 9.0) < 0.1 else 50.0
-            return {
-                "success": True,
-                "lat": 37.5,
-                "lon": -122.1,
-                "alt_m": alt * 1000,
-                "rms_delay": 0.0,
-                "rms_doppler": rms_dop,
-                "timestamp_ms": 8000,
-                "contributing_node_ids": ["n1", "n2"],
-                "n_nodes": 2,
-            }
-
-        s_in = {
-            "n_nodes": 2,
-            "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 6.0},
-            "measurements": [],
-        }
-        item = (s_in, {}, time.time())
-        result = solver_mod._process_solver_item(item, solve_fn)
-
-        # All N2 layers tried (initial_guess=6 first, then 3, 9, 12)
-        assert set(calls) == set(solver_mod._SOLVER_ALT_LAYERS_N2_KM)
-        # Best rms_doppler at 9 km wins
+        # All four altitude layers tried [3, 6, 9, 12] km
+        assert set(calls) == {3.0, 6.0, 9.0, 12.0}
+        # Best result (rms=0.1 at 9 km) selected
         assert result is not None
         assert result["alt_m"] == pytest.approx(9000.0)
         assert state.solver_successes == 1
 
-    def test_n2_altitude_sweep_tiebreak_uses_initial_guess(self, monkeypatch):
-        """For n_nodes=2, when all rms_doppler equal, initial_guess altitude wins."""
+    def test_n2_uses_initial_guess_altitude_directly(self, monkeypatch):
+        """For n_nodes=2, solver is called once with the initial_guess altitude.
+
+        rms_delay≈0 and rms_doppler≈0 at every altitude layer for n=2 (exactly
+        determined system), so no sweep is performed.  The association's
+        initial_guess.alt_km is the best available altitude estimate and is
+        used directly.
+        """
         _reset_state()
         stub = _StubAnalytics()
         monkeypatch.setattr(state, "node_analytics", stub)
@@ -399,7 +365,6 @@ class TestSolveBestAltitude:
         def solve_fn(s_in, cfgs):
             alt = s_in["initial_guess"]["alt_km"]
             calls.append(alt)
-            # All layers return same rms_doppler (degenerate low-elevation geometry)
             return {
                 "success": True,
                 "lat": 37.5,
@@ -420,7 +385,8 @@ class TestSolveBestAltitude:
         item = (s_in, {}, time.time())
         result = solver_mod._process_solver_item(item, solve_fn)
 
-        # initial_guess altitude (9.0 km) wins the tie
+        # Exactly one solver call, at the initial_guess altitude
+        assert calls == [9.0]
         assert result is not None
         assert result["alt_m"] == pytest.approx(9000.0)
         assert state.solver_successes == 1

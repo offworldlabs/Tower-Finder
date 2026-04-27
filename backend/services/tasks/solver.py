@@ -13,14 +13,9 @@ _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 # Altitude layers (km) tried when n_nodes ≥ 3.  For an overdetermined system
 # (3+ delay equations, 2 unknowns after altitude pinning) only the correct
 # altitude layer yields rms_delay ≈ 0; wrong layers give rms > 0, so picking
-# the minimum selects the true altitude.  Two layers cover the simulation range.
-_SOLVER_ALT_LAYERS_KM = [5.0, 10.0]
-
-# Altitude layers (km) tried when n_nodes == 2.  For exactly-determined systems
-# (2 delay equations, 2 unknowns) rms_delay ≈ 0 at EVERY altitude, so the
-# altitude must be selected by rms_doppler instead.  Use 4 layers matching the
-# association grid (3, 6, 9, 12) so the true altitude is ≤ 1.5 km from a layer.
-_SOLVER_ALT_LAYERS_N2_KM = [3.0, 6.0, 9.0, 12.0]
+# the minimum selects the true altitude.  Layers match the association grid
+# (3, 6, 9, 12) so that the correct altitude is always ≤ 1.5 km from a layer.
+_SOLVER_ALT_LAYERS_KM = [3.0, 6.0, 9.0, 12.0]
 
 # Reject solver results whose RMS delay residual exceeds this value.
 # For n≥3 nodes with altitude pinned (overdetermined: 3 equations, 2 unknowns),
@@ -90,25 +85,20 @@ def _solve_best_altitude(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
 
 
 def _solve_best_altitude_n2(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
-    """Altitude sweep for n=2: pick by minimum rms_doppler.
+    """Altitude solve for n=2: use the association's initial_guess altitude.
 
-    With only 2 bistatic delay measurements the position is exactly determined
-    given the altitude (2 equations, 2 unknowns), so rms_delay≈0 at every
-    altitude and cannot discriminate layers.  The Doppler fit IS sensitive to
-    altitude because the geometry (LOS unit vectors) changes with z, so the
-    layer that matches the true altitude produces the lowest rms_doppler.
+    With only 2 bistatic delay measurements the system is exactly determined
+    given altitude (2 equations, 2 unknowns), so rms_delay≈0 at EVERY altitude
+    layer.  Likewise, rms_doppler≈0 at every layer because the 2-Doppler /
+    3-velocity system is underdetermined and the solver always finds an exact
+    fit within the velocity bounds.  Neither metric discriminates altitude.
 
-    Tie-breaking: when rms_doppler≈0 at all layers (degenerate low-elevation
-    geometry), the association's initial_guess altitude should win.  We achieve
-    this by sorting the layers so that the initial_guess altitude comes first —
-    since _sweep_altitudes keeps only strict improvements (rms < best_rms),
-    the first valid result holds when later layers tie.
+    The best available altitude estimate is the one from the association grid
+    (the grid point whose predicted delays best matched the measured delays).
+    That estimate is already stored in initial_guess.alt_km and is used directly
+    — no sweep is needed.
     """
-    initial_alt = s_in.get("initial_guess", {}).get("alt_km", _SOLVER_ALT_LAYERS_N2_KM[1])
-    # Put initial_guess altitude first; keep remaining layers in original order,
-    # deduplicating in case initial_alt is already in the list.
-    ordered = [initial_alt] + [a for a in _SOLVER_ALT_LAYERS_N2_KM if a != initial_alt]
-    return _sweep_altitudes(s_in, node_cfgs, solve_fn, ordered, "rms_doppler")
+    return solve_fn(s_in, node_cfgs)
 
 
 
