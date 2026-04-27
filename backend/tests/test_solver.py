@@ -100,42 +100,44 @@ class TestResidualFunction:
 
     def test_perfect_state_has_small_residuals(self, two_node_setup):
         """If measurements match the state perfectly, residuals are near zero."""
-        state = np.array([10, 5, 5, 100, 50, 0], dtype=float)
+        z_fixed_km = 5.0
+        pos = np.array([10.0, 5.0, z_fixed_km])
+        vel = np.array([100.0, 50.0, 0.0])
+        state = np.array([pos[0], pos[1], vel[0], vel[1], vel[2]])
         # Generate synthetic measurements from the state itself
         measurements = []
         for nid, ns in two_node_setup.items():
-            d = bistatic_delay(state[:3], ns.tx_enu, ns.rx_enu)
-            f = bistatic_doppler(state[:3], state[3:6], ns.tx_enu, ns.rx_enu, ns.fc_hz)
+            d = bistatic_delay(pos, ns.tx_enu, ns.rx_enu)
+            f = bistatic_doppler(pos, vel, ns.tx_enu, ns.rx_enu, ns.fc_hz)
             measurements.append(MultiNodeMeasurement(nid, d, f, snr=10.0))
-        res = _residual_function(state, two_node_setup, measurements)
-        # Delay and doppler residuals should be near zero
-        assert np.max(np.abs(res[:-1])) < 1e-6
-        # Altitude constraint: 5 km is in range, should be 0
-        assert abs(res[-1]) < 1e-6
+        res = _residual_function(state, two_node_setup, measurements, z_fixed_km)
+        # All residuals should be near zero
+        assert np.max(np.abs(res)) < 1e-6
 
-    def test_altitude_below_ground_penalty(self, two_node_setup):
-        """Below-ground altitude gets penalized."""
-        state = np.array([10, 5, 0.01, 0, 0, 0], dtype=float)
-        meas = [MultiNodeMeasurement("node_a", 50, 0, snr=10)]
-        res = _residual_function(state, two_node_setup, meas)
-        alt_penalty = res[-1]
-        assert alt_penalty > 1.0  # strong penalty for 0.01 km < 0.05 km
-
-    def test_altitude_above_ceiling_penalty(self, two_node_setup):
-        """Above-ceiling altitude gets penalized."""
-        state = np.array([10, 5, 20.0, 0, 0, 0], dtype=float)
-        meas = [MultiNodeMeasurement("node_a", 50, 0, snr=10)]
-        res = _residual_function(state, two_node_setup, meas)
-        alt_penalty = res[-1]
-        assert alt_penalty > 1.0  # strong penalty for 20 km > 15 km
+    def test_z_fixed_is_used_not_state(self, two_node_setup):
+        """Altitude comes from z_fixed_km, not from the state vector."""
+        z_fixed_km = 5.0
+        pos = np.array([10.0, 5.0, z_fixed_km])
+        vel = np.array([0.0, 0.0, 0.0])
+        state = np.array([pos[0], pos[1], vel[0], vel[1], vel[2]])
+        meas = []
+        for nid, ns in two_node_setup.items():
+            d = bistatic_delay(pos, ns.tx_enu, ns.rx_enu)
+            meas.append(MultiNodeMeasurement(nid, d, 0.0, snr=10.0))
+        # Correct z_fixed → near-zero residuals
+        res_correct = _residual_function(state, two_node_setup, meas, z_fixed_km)
+        # Wrong z_fixed → non-zero residuals
+        res_wrong = _residual_function(state, two_node_setup, meas, z_fixed_km + 3.0)
+        assert np.max(np.abs(res_correct)) < 1e-6
+        assert np.max(np.abs(res_wrong)) > 0.1
 
     def test_snr_weighting(self, two_node_setup):
         """Higher SNR gives larger residuals for same offset."""
-        state = np.array([10, 5, 5, 0, 0, 0], dtype=float)
+        state = np.array([10.0, 5.0, 0.0, 0.0, 0.0], dtype=float)
         m_low = [MultiNodeMeasurement("node_a", 100, 50, snr=5)]
         m_high = [MultiNodeMeasurement("node_a", 100, 50, snr=30)]
-        res_low = _residual_function(state, two_node_setup, m_low)
-        res_high = _residual_function(state, two_node_setup, m_high)
+        res_low = _residual_function(state, two_node_setup, m_low, z_fixed_km=5.0)
+        res_high = _residual_function(state, two_node_setup, m_high, z_fixed_km=5.0)
         # High SNR capped at 3.0 weight, low at 0.5 → high residuals are larger
         assert np.sum(res_high[:2] ** 2) > np.sum(res_low[:2] ** 2)
 
