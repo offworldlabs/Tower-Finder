@@ -115,8 +115,9 @@ class TestProcessSolverItem:
                 "contributing_node_ids": [],
             }
 
-        # enqueued 60 seconds in the past → latency > 30 triggers alert
-        item = ({"n_nodes": 4}, {}, time.time() - 60.0)
+        # enqueued 35 seconds in the past → latency > 30 triggers alert
+        # (must be < _SOLVER_MAX_QUEUE_AGE_S = 45s so the item is not discarded)
+        item = ({"n_nodes": 4}, {}, time.time() - 35.0)
         solver_mod._process_solver_item(item, solve_fn)
 
         assert any(a[0] == "solver_latency_high" for a in alerts)
@@ -248,6 +249,60 @@ class TestRmsDelayFilter:
         solver_mod._process_solver_item(item, solve_fn)
 
         assert any(k.startswith("mn-8000-") for k in state.multinode_tracks)
+        assert state.solver_successes == 1
+
+
+class TestStaleItemSkip:
+    """Items that have been waiting too long in the queue must be discarded."""
+
+    def test_stale_item_is_skipped(self, monkeypatch):
+        """Item enqueued > _SOLVER_MAX_QUEUE_AGE_S seconds ago is dropped without solving."""
+        _reset_state()
+        solve_called = []
+
+        def solve_fn(s_in, cfgs):
+            solve_called.append(True)
+            return {
+                "success": True,
+                "lat": 37.5,
+                "lon": -122.1,
+                "rms_delay": 0.5,
+                "timestamp_ms": 1000,
+                "contributing_node_ids": ["n1", "n2"],
+                "n_nodes": 2,
+            }
+
+        old_enqueued_at = time.time() - (solver_mod._SOLVER_MAX_QUEUE_AGE_S + 1.0)
+        item = ({"n_nodes": 2}, {}, old_enqueued_at)
+        result = solver_mod._process_solver_item(item, solve_fn)
+
+        assert result is None
+        assert not solve_called, "solver must not be invoked for stale items"
+        assert state.solver_successes == 0
+        assert state.solver_failures == 0
+        assert not state.multinode_tracks
+
+    def test_fresh_item_is_solved(self, monkeypatch):
+        """Item enqueued just now must be passed to the solver normally."""
+        _reset_state()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+
+        def solve_fn(s_in, cfgs):
+            return {
+                "success": True,
+                "lat": 37.5,
+                "lon": -122.1,
+                "rms_delay": 0.5,
+                "timestamp_ms": 9000,
+                "contributing_node_ids": ["n1", "n2"],
+                "n_nodes": 2,
+            }
+
+        item = ({"n_nodes": 2}, {}, time.time())
+        result = solver_mod._process_solver_item(item, solve_fn)
+
+        assert result is not None and result.get("success")
         assert state.solver_successes == 1
 
 

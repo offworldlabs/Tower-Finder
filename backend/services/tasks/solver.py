@@ -76,6 +76,15 @@ def _solve_best_altitude(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
     return best_result
 
 
+
+# Maximum age (seconds) of a solver queue item before it is discarded without
+# solving.  Items older than this are already stale — the multinode_tracks
+# expiry is 60 s, and a solve itself can take a few seconds — so spending CPU
+# on them can never produce a visible result.  Raising this number allows a
+# deeper backlog but increases latency; lowering it drops items too aggressively.
+_SOLVER_MAX_QUEUE_AGE_S = 45.0
+
+
 def _process_solver_item(item: tuple, solve_fn) -> dict | None:
     """Process a single solver queue entry. Returns the solver result (or None).
 
@@ -84,6 +93,17 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
     """
     s_in, node_cfgs = item[0], item[1]
     enqueued_at: float | None = item[2] if len(item) > 2 else None
+    # Discard items that have been waiting too long in the queue.  By the time
+    # they are solved, the result's timestamp_ms will be > 60 s old and the
+    # entry will be immediately pruned from multinode_tracks — wasting CPU.
+    if enqueued_at is not None and time.time() - enqueued_at > _SOLVER_MAX_QUEUE_AGE_S:
+        logging.debug(
+            "Solver: dropping stale item (age=%.1fs > %.1fs, n_nodes=%d)",
+            time.time() - enqueued_at,
+            _SOLVER_MAX_QUEUE_AGE_S,
+            s_in.get("n_nodes", 0) if isinstance(s_in, dict) else 0,
+        )
+        return None
     n_nodes = s_in.get("n_nodes", 0) if isinstance(s_in, dict) else 0
     try:
         if n_nodes >= 3 and "initial_guess" in s_in:
