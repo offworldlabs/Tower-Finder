@@ -348,13 +348,13 @@ class TestSolveBestAltitude:
         assert result["alt_m"] == pytest.approx(9000.0)
         assert state.solver_successes == 1
 
-    def test_n2_uses_initial_guess_altitude_directly(self, monkeypatch):
-        """For n_nodes=2, solver is called once with the initial_guess altitude.
+    def test_n2_sweeps_altitudes_by_rms_doppler(self, monkeypatch):
+        """For n_nodes=2, solver sweeps all altitude layers and picks minimum rms_doppler.
 
-        rms_delay≈0 and rms_doppler≈0 at every altitude layer for n=2 (exactly
-        determined system), so no sweep is performed.  The association's
-        initial_guess.alt_km is the best available altitude estimate and is
-        used directly.
+        Wrong altitude layers push the delay intersection to a position where
+        the measured Dopplers require an out-of-bounds velocity → rms_doppler > 0.
+        The correct altitude gives rms_doppler ≈ 0.  Sweeping [3, 6, 9, 12] km
+        and picking the minimum selects the best altitude estimate.
         """
         _reset_state()
         stub = _StubAnalytics()
@@ -365,13 +365,15 @@ class TestSolveBestAltitude:
         def solve_fn(s_in, cfgs):
             alt = s_in["initial_guess"]["alt_km"]
             calls.append(alt)
+            # Simulate: 9 km layer gives lowest rms_doppler
+            rdop = 0.5 if alt == 9.0 else 40.0
             return {
                 "success": True,
                 "lat": 37.5,
                 "lon": -122.1,
                 "alt_m": alt * 1000,
                 "rms_delay": 0.0,
-                "rms_doppler": 0.0,
+                "rms_doppler": rdop,
                 "timestamp_ms": 8000,
                 "contributing_node_ids": ["n1", "n2"],
                 "n_nodes": 2,
@@ -379,14 +381,15 @@ class TestSolveBestAltitude:
 
         s_in = {
             "n_nodes": 2,
-            "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 9.0},
+            "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 3.0},
             "measurements": [],
         }
         item = (s_in, {}, time.time())
         result = solver_mod._process_solver_item(item, solve_fn)
 
-        # Exactly one solver call, at the initial_guess altitude
-        assert calls == [9.0]
+        # All 4 altitude layers tried
+        assert set(calls) == {3.0, 6.0, 9.0, 12.0}
+        # Best rms_doppler (0.5) is at 9 km
         assert result is not None
         assert result["alt_m"] == pytest.approx(9000.0)
         assert state.solver_successes == 1

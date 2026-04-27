@@ -85,20 +85,22 @@ def _solve_best_altitude(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
 
 
 def _solve_best_altitude_n2(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
-    """Altitude solve for n=2: use the association's initial_guess altitude.
+    """Altitude sweep for n=2: pick by minimum rms_doppler.
 
-    With only 2 bistatic delay measurements the system is exactly determined
-    given altitude (2 equations, 2 unknowns), so rms_delay≈0 at EVERY altitude
-    layer.  Likewise, rms_doppler≈0 at every layer because the 2-Doppler /
-    3-velocity system is underdetermined and the solver always finds an exact
-    fit within the velocity bounds.  Neither metric discriminates altitude.
+    For n=2, altitude is pinned and the 2 delay equations exactly determine
+    (x, y).  In theory the 2-Doppler / 3-velocity system is underdetermined
+    (3 velocity unknowns, 2 equations), so rms_doppler should be ≈0 at every
+    altitude layer.  In practice, when the wrong altitude is used the delay
+    intersection falls at a spatial position where the measured Dopplers require
+    a velocity outside the ±300 m/s solver bounds, or require an unrealisable
+    velocity direction — leaving rms_doppler significantly > 0 (observed: ~42 Hz
+    at the wrong layer vs <1 Hz at the correct layer for production tracks).
 
-    The best available altitude estimate is the one from the association grid
-    (the grid point whose predicted delays best matched the measured delays).
-    That estimate is already stored in initial_guess.alt_km and is used directly
-    — no sweep is needed.
+    Sweeping the same [3, 6, 9, 12] km layers as the association grid and
+    selecting the minimum rms_doppler result gives the best available altitude
+    estimate when the association grid's initial_guess.alt_km is ambiguous.
     """
-    return solve_fn(s_in, node_cfgs)
+    return _sweep_altitudes(s_in, node_cfgs, solve_fn, _SOLVER_ALT_LAYERS_KM, "rms_doppler")
 
 
 
