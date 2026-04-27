@@ -98,7 +98,7 @@ sleep 2
 
 echo "Starting fleet: PROFILE=$PROFILE  NODES=$NODES  INTERVAL=$INTERVAL  fps=$(echo "$NODES / $INTERVAL" | bc -l | head -c5)"
 
-nohup python3 backend/simulation/orchestrator.py \
+nohup python3 -m retina_simulation.orchestrator \
   --nodes "$NODES" \
   --mode "$MODE" \
   --validate \
