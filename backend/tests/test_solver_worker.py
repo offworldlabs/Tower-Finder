@@ -219,7 +219,7 @@ class TestRmsDelayFilter:
                 "n_nodes": 3,
             }
 
-        item = ({"n_nodes": 2}, {}, time.time())
+        item = ({"n_nodes": 3}, {}, time.time())
         solver_mod._process_solver_item(item, solve_fn)
 
         assert not state.multinode_tracks, "false association must not be stored"
@@ -245,7 +245,7 @@ class TestRmsDelayFilter:
                 "n_nodes": 3,
             }
 
-        item = ({"n_nodes": 2}, {}, time.time())
+        item = ({"n_nodes": 3}, {}, time.time())
         solver_mod._process_solver_item(item, solve_fn)
 
         assert any(k.startswith("mn-8000-") for k in state.multinode_tracks)
@@ -307,7 +307,7 @@ class TestStaleItemSkip:
 
 
 class TestSolveBestAltitude:
-    """Altitude-sweep helpers used for n_nodes >= 2."""
+    """Altitude-sweep helpers: n_nodes >= 3 uses a layer sweep, n_nodes = 2 uses initial_guess directly."""
 
     def test_n3_picks_minimum_rms_altitude(self, monkeypatch):
         """For n_nodes=3, _process_solver_item tries all altitude layers and picks best."""

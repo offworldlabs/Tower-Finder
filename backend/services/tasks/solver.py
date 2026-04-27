@@ -45,9 +45,9 @@ def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn,
     """Try each altitude layer; return the result with lowest value of `metric`.
 
     Args:
-        metric: 'rms_delay' for n≥3 (overdetermined → correct altitude gives
-                rms≈0) or 'rms_doppler' for n=2 (exactly determined by delay →
-                altitude must be selected by Doppler fit quality).
+        metric: Solver output key to minimise across layers.  Currently always
+                'rms_delay' (used by n≥3 where the overdetermined system gives
+                rms≈0 at the correct altitude).
     """
     base_guess = s_in["initial_guess"]
     best_result: dict | None = None
@@ -74,7 +74,7 @@ def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn,
                 best_result = result
 
     if best_result is None and last_exc is not None:
-        raise last_exc from last_exc
+        raise last_exc
 
     return best_result
 
@@ -124,10 +124,11 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
     # Discard items that have been waiting too long in the queue.  By the time
     # they are solved, the result's timestamp_ms will be > 60 s old and the
     # entry will be immediately pruned from multinode_tracks — wasting CPU.
-    if enqueued_at is not None and time.time() - enqueued_at > _SOLVER_MAX_QUEUE_AGE_S:
+    age_s = time.time() - enqueued_at if enqueued_at is not None else 0.0
+    if enqueued_at is not None and age_s > _SOLVER_MAX_QUEUE_AGE_S:
         logging.debug(
             "Solver: dropping stale item (age=%.1fs > %.1fs, n_nodes=%d)",
-            time.time() - enqueued_at,
+            age_s,
             _SOLVER_MAX_QUEUE_AGE_S,
             s_in.get("n_nodes", 0) if isinstance(s_in, dict) else 0,
         )
