@@ -16,7 +16,9 @@ _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 # the minimum selects the true altitude.  With n=2, bistatic mirror ambiguity
 # means rms=0 at every layer for two different positions, so the sweep is
 # counterproductive — fall back to the association-provided altitude.
-_SOLVER_ALT_LAYERS_KM = [3.0, 6.0, 9.0, 12.0]
+# Two layers (low cruise ~5 km, high cruise ~10 km) cover >99% of commercial
+# traffic and halve sweep cost vs the previous 4-layer [3,6,9,12] set.
+_SOLVER_ALT_LAYERS_KM = [5.0, 10.0]
 
 # Reject solver results whose RMS delay residual exceeds this value.
 # For n≥3 nodes with altitude pinned (overdetermined: 3 equations, 2 unknowns),

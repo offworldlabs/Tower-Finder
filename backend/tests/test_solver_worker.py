@@ -320,8 +320,8 @@ class TestSolveBestAltitude:
         def solve_fn(s_in, cfgs):
             alt = s_in["initial_guess"]["alt_km"]
             calls.append(alt)
-            # Simulate: 9 km layer gives best rms; others give poor rms
-            rms = 0.1 if abs(alt - 9.0) < 0.1 else 4.0
+            # Simulate: 10 km layer gives best rms; other gives poor rms
+            rms = 0.1 if abs(alt - 10.0) < 0.1 else 4.0
             return {
                 "success": True,
                 "lat": 37.5,
@@ -341,11 +341,11 @@ class TestSolveBestAltitude:
         item = (s_in, {}, time.time())
         result = solver_mod._process_solver_item(item, solve_fn)
 
-        # All 4 altitude layers tried
-        assert set(calls) == {3.0, 6.0, 9.0, 12.0}
-        # Best result (rms=0.1 at 9 km) selected
+        # Both altitude layers tried
+        assert set(calls) == {5.0, 10.0}
+        # Best result (rms=0.1 at 10 km) selected
         assert result is not None
-        assert result["alt_m"] == pytest.approx(9000.0)
+        assert result["alt_m"] == pytest.approx(10000.0)
         assert state.solver_successes == 1
 
     def test_n2_uses_association_altitude_directly(self, monkeypatch):
