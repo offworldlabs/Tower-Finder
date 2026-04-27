@@ -29,6 +29,17 @@ _SOLVER_ALT_LAYERS_KM = [3.0, 6.0, 9.0, 12.0]
 # letting all n=2 results through (n=2 mirrors always have rms ≈ 0).
 _SOLVER_RMS_DELAY_MAX_US = 3.0
 
+# Reject solver results whose RMS Doppler residual exceeds this value.
+# Physics: for FM illuminators (fc ≈ 98–108 MHz, λ ≈ 2.8–3.1 m), the maximum
+# bistatic Doppler for any real aircraft is 2 × v_max / λ ≈ 2 × 300 / 3.06 ≈ 196 Hz.
+# For a true n-node association the solver fits velocity to n Doppler equations;
+# with n=2 the system is exactly determined → rms_doppler ≈ 0 regardless.
+# With n≥3 it is overdetermined → rms_doppler reflects measurement noise (< 20 Hz).
+# False associations (delays/Dopplers from different aircraft) leave large, physically
+# unrealisable Doppler residuals (observed: 248 Hz for confirmed false associations).
+# Threshold at 200 Hz = max bistatic Doppler + 2% margin; only rejects impossible cases.
+_SOLVER_RMS_DOPPLER_MAX_HZ = 200.0
+
 
 def _solve_best_altitude(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
     """Try each altitude layer; return the result with lowest rms_delay.
@@ -91,6 +102,16 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                 "Solver result rejected: rms_delay=%.1f µs > %.1f µs threshold "
                 "(n_nodes=%d, lat=%.3f, lon=%.3f)",
                 rms_delay, _SOLVER_RMS_DELAY_MAX_US,
+                result.get("n_nodes", 0), result.get("lat", 0), result.get("lon", 0),
+            )
+            state.solver_failures += 1
+            return result
+        rms_doppler = result.get("rms_doppler", 0) or 0
+        if rms_doppler > _SOLVER_RMS_DOPPLER_MAX_HZ:
+            logging.debug(
+                "Solver result rejected: rms_doppler=%.1f Hz > %.1f Hz threshold "
+                "(n_nodes=%d, lat=%.3f, lon=%.3f) — physically unrealisable Doppler",
+                rms_doppler, _SOLVER_RMS_DOPPLER_MAX_HZ,
                 result.get("n_nodes", 0), result.get("lat", 0), result.get("lon", 0),
             )
             state.solver_failures += 1

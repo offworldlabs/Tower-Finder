@@ -194,6 +194,62 @@ class TestRmsDelayFilter:
         assert any(k.startswith("mn-6000-") for k in state.multinode_tracks)
         assert state.solver_successes == 1
 
+    def test_high_rms_doppler_rejected(self, monkeypatch):
+        """Results with rms_doppler > _SOLVER_RMS_DOPPLER_MAX_HZ must not be stored.
+
+        Mirrors the 3-node false-association case observed in production:
+        rms_delay=1.233 µs (passes delay filter) but rms_doppler=248 Hz
+        (physically unrealisable for FM illuminator ⇒ false association).
+        """
+        _reset_state()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+
+        def solve_fn(s_in, cfgs):
+            return {
+                "success": True,
+                "lat": 32.97,
+                "lon": -96.83,
+                "alt_m": 3000.0,
+                "rms_delay": 1.2,       # passes delay threshold
+                "rms_doppler": 248.87,  # physically impossible (> 196 Hz FM max)
+                "timestamp_ms": 7000,
+                "contributing_node_ids": ["n1", "n2", "n3"],
+                "n_nodes": 3,
+            }
+
+        item = ({"n_nodes": 2}, {}, time.time())
+        solver_mod._process_solver_item(item, solve_fn)
+
+        assert not state.multinode_tracks, "false association must not be stored"
+        assert state.solver_successes == 0
+        assert state.solver_failures == 1
+
+    def test_low_rms_doppler_accepted(self, monkeypatch):
+        """Results with rms_doppler below threshold are stored normally."""
+        _reset_state()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+
+        def solve_fn(s_in, cfgs):
+            return {
+                "success": True,
+                "lat": 32.97,
+                "lon": -96.83,
+                "alt_m": 9000.0,
+                "rms_delay": 0.8,
+                "rms_doppler": 12.5,    # well within FM physics
+                "timestamp_ms": 8000,
+                "contributing_node_ids": ["n1", "n2", "n3"],
+                "n_nodes": 3,
+            }
+
+        item = ({"n_nodes": 2}, {}, time.time())
+        solver_mod._process_solver_item(item, solve_fn)
+
+        assert any(k.startswith("mn-8000-") for k in state.multinode_tracks)
+        assert state.solver_successes == 1
+
 
 class TestSolveBestAltitude:
     """The altitude-sweep helper is used only for n_nodes >= 3."""
