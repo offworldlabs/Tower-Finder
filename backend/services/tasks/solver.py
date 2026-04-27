@@ -10,37 +10,26 @@ from core import state
 
 _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 
-# Altitude layers (km) to try when solving. The association provides an
-# initial altitude guess, but it can be wrong by 1-2 grid steps (3-6 km)
-# due to bistatic delay ambiguity across altitude layers. We try all 4
-# standard layers and pick the result with minimum rms_delay — this always
-# selects the layer where the measured delays best match the grid geometry,
-# which is the true altitude layer.
+# Altitude layers (km) tried when n_nodes ≥ 3.  For an overdetermined system
+# (3+ delay equations, 2 unknowns after altitude pinning) only the correct
+# altitude layer yields rms_delay ≈ 0; wrong layers give rms > 0, so picking
+# the minimum selects the true altitude.  With n=2, bistatic mirror ambiguity
+# means rms=0 at every layer for two different positions, so the sweep is
+# counterproductive — fall back to the association-provided altitude.
 _SOLVER_ALT_LAYERS_KM = [3.0, 6.0, 9.0, 12.0]
 
 # Reject solver results whose RMS delay residual exceeds this value.
-# With altitude pinned to the CORRECT layer, a clean solve produces
-# rms_delay < 1 µs. We keep 5 µs as the upper cutoff (generous for noisy
-# measurements) — the multi-altitude selection above handles the filtering
-# by picking the minimum rms result.
 _SOLVER_RMS_DELAY_MAX_US = 5.0
 
 
 def _solve_best_altitude(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
-    """Run solve_multinode at each standard altitude layer; return best result.
+    """Try each altitude layer; return the result with lowest rms_delay.
 
-    The association's initial_guess["alt_km"] may be wrong by several km due
-    to bistatic delay ambiguity across altitude layers. Trying all 4 standard
-    layers (3, 6, 9, 12 km) and picking the one with minimum rms_delay ensures
-    we use the altitude where the measured delays best match the geometry —
-    i.e., the true altitude layer.
+    Only called for n_nodes >= 3 where the system is overdetermined and the
+    correct altitude uniquely minimises rms_delay.
     """
-    if "initial_guess" not in s_in:
-        # Legacy / test path: no altitude to vary; fall back to single call.
-        return solve_fn(s_in, node_cfgs)
-
     base_guess = s_in["initial_guess"]
-    best_result = None
+    best_result: dict | None = None
     best_rms = float("inf")
     last_exc: BaseException | None = None
 
@@ -58,7 +47,6 @@ def _solve_best_altitude(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
                 best_rms = rms
                 best_result = result
 
-    # All attempts raised → re-raise so the caller can count the failure.
     if best_result is None and last_exc is not None:
         raise last_exc from last_exc
 
@@ -73,8 +61,12 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
     """
     s_in, node_cfgs = item[0], item[1]
     enqueued_at: float | None = item[2] if len(item) > 2 else None
+    n_nodes = s_in.get("n_nodes", 0) if isinstance(s_in, dict) else 0
     try:
-        result = _solve_best_altitude(s_in, node_cfgs, solve_fn)
+        if n_nodes >= 3 and "initial_guess" in s_in:
+            result = _solve_best_altitude(s_in, node_cfgs, solve_fn)
+        else:
+            result = solve_fn(s_in, node_cfgs)
     except Exception:
         state.task_error_counts["solver"] += 1
         state.solver_failures += 1

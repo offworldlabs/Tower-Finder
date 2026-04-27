@@ -10,6 +10,8 @@ Covers the bookkeeping that happens around a single solver call:
 import os
 import time
 
+import pytest
+
 os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
@@ -191,3 +193,78 @@ class TestRmsDelayFilter:
 
         assert any(k.startswith("mn-6000-") for k in state.multinode_tracks)
         assert state.solver_successes == 1
+
+
+class TestSolveBestAltitude:
+    """The altitude-sweep helper is used only for n_nodes >= 3."""
+
+    def test_n3_picks_minimum_rms_altitude(self, monkeypatch):
+        """For n_nodes=3, _process_solver_item tries all altitude layers and picks best."""
+        _reset_state()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+
+        calls: list[float] = []
+
+        def solve_fn(s_in, cfgs):
+            alt = s_in["initial_guess"]["alt_km"]
+            calls.append(alt)
+            # Simulate: 9 km layer gives best rms; others give poor rms
+            rms = 0.1 if abs(alt - 9.0) < 0.1 else 4.0
+            return {
+                "success": True,
+                "lat": 37.5,
+                "lon": -122.1,
+                "alt_m": alt * 1000,
+                "rms_delay": rms,
+                "timestamp_ms": 7000,
+                "contributing_node_ids": ["n1", "n2", "n3"],
+                "n_nodes": 3,
+            }
+
+        s_in = {
+            "n_nodes": 3,
+            "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 3.0},
+            "measurements": [],
+        }
+        item = (s_in, {}, time.time())
+        result = solver_mod._process_solver_item(item, solve_fn)
+
+        # All 4 altitude layers tried
+        assert set(calls) == {3.0, 6.0, 9.0, 12.0}
+        # Best result (rms=0.1 at 9 km) selected
+        assert result is not None
+        assert result["alt_m"] == pytest.approx(9000.0)
+        assert state.solver_successes == 1
+
+    def test_n2_uses_association_altitude_directly(self, monkeypatch):
+        """For n_nodes=2, no altitude sweep; association altitude used as-is."""
+        _reset_state()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+
+        calls: list[float] = []
+
+        def solve_fn(s_in, cfgs):
+            calls.append(s_in.get("initial_guess", {}).get("alt_km"))
+            return {
+                "success": True,
+                "lat": 37.5,
+                "lon": -122.1,
+                "rms_delay": 0.5,
+                "timestamp_ms": 8000,
+                "contributing_node_ids": ["n1", "n2"],
+                "n_nodes": 2,
+            }
+
+        s_in = {
+            "n_nodes": 2,
+            "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 6.0},
+            "measurements": [],
+        }
+        item = (s_in, {}, time.time())
+        solver_mod._process_solver_item(item, solve_fn)
+
+        # Exactly one call with the original association altitude
+        assert calls == [6.0]
+
