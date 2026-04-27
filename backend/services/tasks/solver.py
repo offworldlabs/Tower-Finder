@@ -43,6 +43,10 @@ def _solve_best_altitude(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
             continue
         if result and result.get("success"):
             rms = result.get("rms_delay", float("inf")) or float("inf")
+            logging.debug(
+                "altitude sweep: z=%.1fkm rms=%.3fµs (best so far=%.3fµs)",
+                alt_km, rms, best_rms,
+            )
             if rms < best_rms:
                 best_rms = rms
                 best_result = result
