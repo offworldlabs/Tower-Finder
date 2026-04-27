@@ -85,26 +85,32 @@ def _scan_archive_dir(archive_dir: Path) -> tuple[int, int, dict]:
     if total_bytes == 0:
         total_bytes = sum(e["bytes"] for e in per_node.values())
 
-    # ── File count + per-node counts via find ────────────────────────────────
+    # ── File count via du --inodes ───────────────────────────────────────────
+    # Using du --inodes instead of `find -printf` avoids iterating file content
+    # on Docker overlay FS; `du --inodes --max-depth=4` reads kernel inode
+    # counts (one syscall per directory) and completes in ~1 s for 200k+ files.
     try:
-        r = subprocess.run(
-            ["find", str(archive_dir), "-type", "f", "-printf", "x"],
-            capture_output=True, timeout=120,
+        r_inodes = subprocess.run(
+            ["du", "--inodes", "--max-depth=4", str(archive_dir)],
+            capture_output=True, text=True, timeout=60,
         )
-        if r.returncode == 0:
-            total_files = len(r.stdout)
-            r2 = subprocess.run(
-                ["find", str(archive_dir), "-mindepth", "5", "-maxdepth", "5",
-                 "-type", "f", "-printf", "%P\n"],
-                capture_output=True, text=True, timeout=120,
-            )
-            if r2.returncode == 0:
-                for rel_path in r2.stdout.splitlines():
-                    if not rel_path:
-                        continue
-                    parts = Path(rel_path).parts
-                    node_id = parts[3] if len(parts) > 3 else "unknown"
-                    per_node.setdefault(node_id, {"files": 0, "bytes": 0})["files"] += 1
+        if r_inodes.returncode == 0:
+            for line in r_inodes.stdout.splitlines():
+                if "\t" not in line:
+                    continue
+                cnt_str, path = line.split("\t", 1)
+                cnt = int(cnt_str)
+                try:
+                    rel = Path(path).relative_to(archive_dir)
+                except ValueError:
+                    total_files = cnt  # archive root line (total inodes)
+                    continue
+                parts = rel.parts
+                if len(parts) == 0:
+                    total_files = cnt
+                elif len(parts) == 4:  # YYYY/MM/DD/NODE_ID leaf dir
+                    node_id = parts[3]
+                    per_node.setdefault(node_id, {"files": 0, "bytes": 0})["files"] += cnt
     except Exception:
         pass
 
