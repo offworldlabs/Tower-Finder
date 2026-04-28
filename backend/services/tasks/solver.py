@@ -113,10 +113,13 @@ _SOLVER_RMS_DOPPLER_MAX_HZ = 200.0
 # 15–50 km from the true position, meaning they are ≥12 km from an
 # initial_guess that was placed near the truth.
 #
-# Threshold of 12 km: safely above the maximum expected good displacement
-# (~5–6 km when altitude is missing and the grid has quantisation error)
-# while reliably below the minimum mirror displacement (≥ 12 km).
-_N2_MAX_DISPLACEMENT_KM = 12.0
+# Threshold of 5 km: with the ADS-B position override in find_associations(),
+# the initial_guess is within ~100 m of the true aircraft position.
+# Displacement from initial_guess therefore approximates the position error.
+# n=2 pairs with GDOP > ~15 km/µs (flat bistatic angle) produce displacements
+# of 6–12 km even with a perfect initial guess; those solves carry little
+# useful position information and are discarded here.
+_N2_MAX_DISPLACEMENT_KM = 5.0
 
 
 def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn,
