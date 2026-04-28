@@ -139,8 +139,17 @@ def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn,
 
 
 def _solve_best_altitude(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
-    """Altitude sweep for n≥3: pick by minimum rms_delay."""
-    return _sweep_altitudes(s_in, node_cfgs, solve_fn, _SOLVER_ALT_LAYERS_KM, "rms_delay")
+    """Altitude sweep for n≥3: pick by minimum rms_delay.
+
+    If the initial_guess already carries an ADS-B altitude (not one of the fixed
+    grid layers), include it in the sweep so the correct exact altitude is tried.
+    """
+    ig_alt = s_in.get("initial_guess", {}).get("alt_km")
+    if ig_alt is not None and ig_alt not in _SOLVER_ALT_LAYERS_KM:
+        layers = sorted(set(_SOLVER_ALT_LAYERS_KM + [round(float(ig_alt), 3)]))
+    else:
+        layers = _SOLVER_ALT_LAYERS_KM
+    return _sweep_altitudes(s_in, node_cfgs, solve_fn, layers, "rms_delay")
 
 
 def _solve_best_altitude_n2(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
