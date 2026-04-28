@@ -113,13 +113,15 @@ _SOLVER_RMS_DOPPLER_MAX_HZ = 200.0
 # 15–50 km from the true position, meaning they are ≥12 km from an
 # initial_guess that was placed near the truth.
 #
-# Threshold of 5 km: with the ADS-B position override in find_associations(),
-# the initial_guess is within ~100 m of the true aircraft position.
-# Displacement from initial_guess therefore approximates the position error.
-# n=2 pairs with GDOP > ~15 km/µs (flat bistatic angle) produce displacements
-# of 6–12 km even with a perfect initial guess; those solves carry little
-# useful position information and are discarded here.
-_N2_MAX_DISPLACEMENT_KM = 5.0
+# Threshold of 4 km: with the ADS-B position override in find_associations(),
+# the initial_guess is within ~100 m of the true aircraft position at the time
+# the ADS-B was reported.  Aircraft drift between paired-frame timestamps adds
+# up to ~1 km of additional offset.  A 4 km gate caps the solver's
+# along-hyperboloid drift while leaving headroom for aircraft motion.
+# n=2 pairs with GDOP > ~12 km/µs (flat bistatic angle) produce displacements
+# of 5–10 km even with a perfect initial guess; those low-information solves
+# carry little useful position information and are discarded here.
+_N2_MAX_DISPLACEMENT_KM = 4.0
 
 
 def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn,
