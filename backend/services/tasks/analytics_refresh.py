@@ -696,11 +696,31 @@ def _refresh_mlat_verification():
         )
         return
 
-    # Greedy first-match assignment: each truth hex is claimed by the nearest solve
-    # result that falls within _MLAT_MATCH_THRESHOLD_KM. If two solves are both close
-    # to the same truth, the first one wins and the second is unmatched. This prevents
-    # double-counting and is sufficient for 200-node simulation where aircraft are
-    # typically > 10 km apart. TestNoDoubleMatching covers this behaviour.
+    # Greedy best-match assignment: pre-sort fresh_solves by distance to nearest
+    # truth so the globally-closest (solver, truth) pair is always matched first.
+    # Without this sort, when two solver cycles from different node pairs both
+    # resolve near the same aircraft (e.g. one at 3 km error, one at 10 km), the
+    # dict-insertion-order winner claims the truth even if it is the worse result,
+    # leaving the better result unmatched and recording the inflated error.
+    def _min_truth_dist_km(kv: tuple) -> float:
+        _r = kv[1]
+        _slat = float(_r.get("lat", 0))
+        _slon = float(_r.get("lon", 0))
+        _sts = _r.get("timestamp_ms", 0) / 1000.0
+        _best = float(_MLAT_MATCH_THRESHOLD_KM)
+        for _gt_hex, (_trail, _meta) in gt_trails_snapshot.items():
+            _cl = min(_trail, key=lambda p: abs(p[3] - _sts))
+            if abs(_cl[3] - _sts) > _MLAT_SOLVE_MAX_AGE_S + 30:
+                continue
+            _best = min(_best, haversine_km(_slat, _slon, _cl[0], _cl[1]))
+        for _te in adsb_truth_pool:
+            _best = min(_best, haversine_km(_slat, _slon, _te[1], _te[2]))
+        return _best
+
+    fresh_solves.sort(key=_min_truth_dist_km)
+
+    # Greedy assignment after best-first sort: each truth hex is now claimed by
+    # the closest solver result, preventing worse duplicates from displacing it.
     matches: list[dict] = []
     unmatched: list[dict] = []
     unmatched_nearest_km: list[float] = []

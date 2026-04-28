@@ -98,6 +98,26 @@ _SOLVER_RMS_DELAY_MAX_US = 3.0
 # Threshold at 200 Hz = max bistatic Doppler + 2% margin; only rejects impossible cases.
 _SOLVER_RMS_DOPPLER_MAX_HZ = 200.0
 
+# Reject n=2 solver results whose position moved more than this many km from
+# the initial_guess supplied by the association layer.
+#
+# For n=2 (exactly-determined position), the LM solver can converge to the
+# false bistatic ellipse intersection (the mirror point) instead of the true
+# one.  The beam-coverage check above catches mirror points that land outside
+# a node's detection beam; this check catches the remainder.
+#
+# The association grid step is 3 km, so the initial_guess is within ~3 km of
+# the true aircraft position (the delay-residual-minimising grid point is
+# always close to the real bistatic intersection).  A good solve therefore
+# stays within a few km of the initial_guess.  Mirror points are typically
+# 15–50 km from the true position, meaning they are ≥12 km from an
+# initial_guess that was placed near the truth.
+#
+# Threshold of 12 km: safely above the maximum expected good displacement
+# (~5–6 km when altitude is missing and the grid has quantisation error)
+# while reliably below the minimum mirror displacement (≥ 12 km).
+_N2_MAX_DISPLACEMENT_KM = 12.0
+
 
 def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn,
                      layers_km: list[float], metric: str) -> dict | None:
@@ -252,6 +272,27 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                         float(cfg.get("beam_azimuth_deg") or 0),
                         float(cfg.get("beam_width_deg") or 41),
                         float(cfg.get("max_range_km") or 50),
+                    )
+                    state.solver_failures += 1
+                    return None
+        # For n=2: reject if the solution drifted more than _N2_MAX_DISPLACEMENT_KM
+        # from the initial_guess.  Mirror-point convergences (the false bistatic
+        # ellipse intersection not caught by the beam filter) move the solution
+        # 15–50 km from the initial_guess, while good solves stay within ~5 km.
+        if n_nodes == 2 and "initial_guess" in s_in:
+            _ig = s_in["initial_guess"]
+            _ig_lat = _ig.get("lat")
+            _ig_lon = _ig.get("lon")
+            if _ig_lat and _ig_lon:
+                _disp_km = _haversine_km(
+                    float(_ig_lat), float(_ig_lon),
+                    result["lat"], result["lon"],
+                )
+                if _disp_km > _N2_MAX_DISPLACEMENT_KM:
+                    logging.debug(
+                        "n=2 result rejected: %.1f km from initial_guess "
+                        "(lat=%.3f lon=%.3f) — likely mirror-point convergence",
+                        _disp_km, result["lat"], result["lon"],
                     )
                     state.solver_failures += 1
                     return None
