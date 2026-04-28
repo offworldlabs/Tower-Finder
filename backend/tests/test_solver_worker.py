@@ -341,8 +341,8 @@ class TestSolveBestAltitude:
         item = (s_in, {}, time.time())
         result = solver_mod._process_solver_item(item, solve_fn)
 
-        # All three altitude layers tried [7, 9, 11] km
-        assert set(calls) == {7.0, 9.0, 11.0}
+        # All four altitude layers tried [5, 7, 9, 11] km
+        assert set(calls) == {5.0, 7.0, 9.0, 11.0}
         # Best result (rms=0.1 at 9 km) selected
         assert result is not None
         assert result["alt_m"] == pytest.approx(9000.0)

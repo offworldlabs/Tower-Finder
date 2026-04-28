@@ -70,9 +70,11 @@ _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 # (3+ delay equations, 2 unknowns after altitude pinning) only the correct
 # altitude layer yields rms_delay ≈ 0; wrong layers give rms > 0, so picking
 # the minimum selects the true altitude.  Layers match the association grid
-# (7, 9, 11) so that the correct altitude is always ≤ 1 km from a layer for
-# commercial aviation (cruise altitude 7–12 km).
-_SOLVER_ALT_LAYERS_KM = [7.0, 9.0, 11.0]
+# (5, 7, 9, 11) so that the correct altitude is always ≤ 1 km from a layer for
+# commercial aviation (cruise altitude 5–12 km).  The 5 km layer covers
+# aircraft at 3–7 km that were previously unserved by the [7,9,11] set;
+# beam-coverage checks handle any TX-ghost artefacts from low altitude layers.
+_SOLVER_ALT_LAYERS_KM = [5.0, 7.0, 9.0, 11.0]
 
 # Reject solver results whose RMS delay residual exceeds this value.
 # For n≥3 nodes with altitude pinned (overdetermined: 3 equations, 2 unknowns),
