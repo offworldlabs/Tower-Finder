@@ -153,6 +153,7 @@ jobs:
           host: ${{ secrets.STAGING_HOST }}
           username: root
           key: ${{ secrets.STAGING_SSH_KEY }}
+          command_timeout: 20m
           script: |
             cd /opt/tower-finder
             git pull origin main
@@ -213,6 +214,7 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: root
           key: ${{ secrets.SERVER_SSH_KEY }}
+          command_timeout: 20m
           script: |
             cd /opt/tower-finder
 
