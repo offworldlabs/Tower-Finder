@@ -1,6 +1,7 @@
 """Multinode solver worker threads — drain state.solver_queue → solve_multinode."""
 
 import logging
+import math
 import os
 import queue
 import threading
@@ -8,14 +9,53 @@ import time
 
 from core import state
 
+# ── Beam-coverage geometry helpers ────────────────────────────────────────────
+# Used to reject solver results whose position falls outside the detection beam
+# of a contributing node (ghost-solution disambiguation for n=2 bistatic pairs).
+
+_R_EARTH_KM = 6371.0
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
+         * math.sin(dlon / 2) ** 2)
+    return _R_EARTH_KM * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _bearing_deg_geo(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    dlon = math.radians(lon2 - lon1)
+    lat1r, lat2r = math.radians(lat1), math.radians(lat2)
+    x = math.sin(dlon) * math.cos(lat2r)
+    y = math.cos(lat1r) * math.sin(lat2r) - math.sin(lat1r) * math.cos(lat2r) * math.cos(dlon)
+    return math.degrees(math.atan2(x, y)) % 360
+
+
+def _in_node_beam(lat: float, lon: float, node_cfg: dict) -> bool:
+    """Return True iff (lat, lon) is within the node's detection beam."""
+    rx_lat = float(node_cfg.get("rx_lat") or 0)
+    rx_lon = float(node_cfg.get("rx_lon") or 0)
+    max_range = float(node_cfg.get("max_range_km") or 50)
+    if _haversine_km(rx_lat, rx_lon, lat, lon) > max_range:
+        return False
+    beam_az = float(node_cfg.get("beam_azimuth_deg") or 0)
+    beam_w = float(node_cfg.get("beam_width_deg") or 41)
+    bearing = _bearing_deg_geo(rx_lat, rx_lon, lat, lon)
+    angle_diff = abs((bearing - beam_az + 180) % 360 - 180)
+    return angle_diff <= beam_w / 2
+
+
 _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 
 # Altitude layers (km) tried when n_nodes ≥ 3.  For an overdetermined system
 # (3+ delay equations, 2 unknowns after altitude pinning) only the correct
 # altitude layer yields rms_delay ≈ 0; wrong layers give rms > 0, so picking
 # the minimum selects the true altitude.  Layers match the association grid
-# (3, 6, 9, 12) so that the correct altitude is always ≤ 1.5 km from a layer.
-_SOLVER_ALT_LAYERS_KM = [3.0, 6.0, 9.0, 12.0]
+# (7, 9, 11) so that the correct altitude is always ≤ 1 km from a layer for
+# commercial aviation (cruise altitude 7–12 km).
+_SOLVER_ALT_LAYERS_KM = [7.0, 9.0, 11.0]
 
 # Reject solver results whose RMS delay residual exceeds this value.
 # For n≥3 nodes with altitude pinned (overdetermined: 3 equations, 2 unknowns),
@@ -98,8 +138,8 @@ def _solve_best_altitude_n2(s_in: dict, node_cfgs: dict, solve_fn) -> dict | Non
     The initial_guess.alt_km from association.py is set to the delay-residual
     weighted mean of all candidate altitudes in the group.  When the correct
     altitude layer has smaller delay residuals it is upweighted; when all layers
-    tie (high altitude ambiguity), the mean falls back to ≈(3+6+9+12)/4 = 7.5 km,
-    which is far more accurate than always using the first/lowest layer (3 km).
+    tie (high altitude ambiguity), the mean falls back to ≈(7+9+11)/3 = 9 km,
+    which covers the typical commercial aviation cruise band (7–12 km).
     """
     return solve_fn(s_in, node_cfgs)
 
@@ -167,6 +207,26 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             )
             state.solver_failures += 1
             return result
+        # Reject solutions outside the beam coverage of contributing nodes.
+        # For n=2 the solver has two geometric solutions (two bistatic ellipse
+        # intersections); the ghost intersection typically falls outside one of
+        # the node beams.  This check rejects it without needing Doppler data.
+        # Skipped when node_cfgs lacks beam info (cfg is None) — safe fallback.
+        contributing_ids = result.get("contributing_node_ids", [])
+        if contributing_ids and isinstance(node_cfgs, dict):
+            for nid in contributing_ids:
+                cfg = node_cfgs.get(nid)
+                if cfg and not _in_node_beam(result["lat"], result["lon"], cfg):
+                    logging.debug(
+                        "Solver result rejected: outside beam of node %s "
+                        "(lat=%.3f lon=%.3f beam_az=%.0f beam_w=%.0f range_km=%.0f)",
+                        nid, result["lat"], result["lon"],
+                        float(cfg.get("beam_azimuth_deg") or 0),
+                        float(cfg.get("beam_width_deg") or 41),
+                        float(cfg.get("max_range_km") or 50),
+                    )
+                    state.solver_failures += 1
+                    return None
         state.solver_successes += 1
         with state.solver_latency_lock:
             state.solver_total_solved += 1

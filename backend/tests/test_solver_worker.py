@@ -341,8 +341,8 @@ class TestSolveBestAltitude:
         item = (s_in, {}, time.time())
         result = solver_mod._process_solver_item(item, solve_fn)
 
-        # All four altitude layers tried [3, 6, 9, 12] km
-        assert set(calls) == {3.0, 6.0, 9.0, 12.0}
+        # All three altitude layers tried [7, 9, 11] km
+        assert set(calls) == {7.0, 9.0, 11.0}
         # Best result (rms=0.1 at 9 km) selected
         assert result is not None
         assert result["alt_m"] == pytest.approx(9000.0)
@@ -391,4 +391,81 @@ class TestSolveBestAltitude:
         assert result is not None
         assert result["alt_m"] == pytest.approx(7500.0)
         assert state.solver_successes == 1
+
+
+class TestBeamCoverageFilter:
+    """Solver results outside a contributing node's beam must be rejected."""
+
+    def _node_cfg(self, rx_lat, rx_lon, beam_az, beam_w=41.0, max_range=50.0):
+        return {
+            "rx_lat": rx_lat,
+            "rx_lon": rx_lon,
+            "tx_lat": rx_lat,
+            "tx_lon": rx_lon,
+            "beam_azimuth_deg": beam_az,
+            "beam_width_deg": beam_w,
+            "max_range_km": max_range,
+        }
+
+    def test_ghost_outside_beam_rejected(self, monkeypatch):
+        """Result whose lat/lon falls outside a contributing node's beam is discarded."""
+        _reset_state()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+
+        # Node at (40, -74) pointing North (az=0, width=41°).
+        # A result at (40, -74.5) is due West — ~30° from North, outside the ±20.5° beam.
+        node_cfgs = {"n1": self._node_cfg(40.0, -74.0, beam_az=0.0)}
+
+        def solve_fn(s_in, cfgs):
+            return {
+                "success": True,
+                "lat": 40.0,
+                "lon": -74.5,  # due West — outside beam
+                "rms_delay": 0.0,
+                "rms_doppler": 0.0,
+                "timestamp_ms": 9001,
+                "contributing_node_ids": ["n1"],
+                "n_nodes": 2,
+            }
+
+        s_in = {"n_nodes": 2, "initial_guess": {"lat": 40.0, "lon": -74.0, "alt_km": 9.0}}
+        item = (s_in, node_cfgs, time.time())
+        result = solver_mod._process_solver_item(item, solve_fn)
+
+        assert result is None, "ghost outside beam must be rejected"
+        assert not state.multinode_tracks
+        assert state.solver_failures == 1
+        assert state.solver_successes == 0
+
+    def test_result_inside_beam_accepted(self, monkeypatch):
+        """Result inside the node's beam is accepted normally."""
+        _reset_state()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+
+        # Node at (40, -74) pointing North (az=0, width=41°).
+        # A result at (40.3, -74.0) is due North — inside the beam.
+        node_cfgs = {"n1": self._node_cfg(40.0, -74.0, beam_az=0.0)}
+
+        def solve_fn(s_in, cfgs):
+            return {
+                "success": True,
+                "lat": 40.3,
+                "lon": -74.0,  # due North — inside beam
+                "rms_delay": 0.0,
+                "rms_doppler": 0.0,
+                "timestamp_ms": 9002,
+                "contributing_node_ids": ["n1"],
+                "n_nodes": 2,
+            }
+
+        s_in = {"n_nodes": 2, "initial_guess": {"lat": 40.3, "lon": -74.0, "alt_km": 9.0}}
+        item = (s_in, node_cfgs, time.time())
+        result = solver_mod._process_solver_item(item, solve_fn)
+
+        assert result is not None
+        assert any(k.startswith("mn-9002-") for k in state.multinode_tracks)
+        assert state.solver_successes == 1
+        assert state.solver_failures == 0
 
