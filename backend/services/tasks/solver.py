@@ -34,13 +34,30 @@ def _bearing_deg_geo(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
 
 
 def _in_node_beam(lat: float, lon: float, node_cfg: dict) -> bool:
-    """Return True iff (lat, lon) is within the node's detection beam."""
-    rx_lat = float(node_cfg.get("rx_lat") or 0)
-    rx_lon = float(node_cfg.get("rx_lon") or 0)
+    """Return True iff (lat, lon) is within the node's detection beam.
+
+    Beam azimuth priority:
+      1. Explicit ``beam_azimuth_deg`` in the config.
+      2. Derived as (bearing from RX to TX) + 90° — the broadside direction for
+         a Yagi antenna, matching the formula used in InterNodeAssociator.register_node.
+      3. Skip the bearing check entirely if TX position is also missing.
+    """
+    rx_lat = float(node_cfg.get("rx_lat") or node_cfg.get("lat") or 0)
+    rx_lon = float(node_cfg.get("rx_lon") or node_cfg.get("lon") or 0)
     max_range = float(node_cfg.get("max_range_km") or 50)
     if _haversine_km(rx_lat, rx_lon, lat, lon) > max_range:
         return False
-    beam_az = float(node_cfg.get("beam_azimuth_deg") or 0)
+    # Determine beam azimuth.
+    if "beam_azimuth_deg" in node_cfg:
+        beam_az: float | None = float(node_cfg["beam_azimuth_deg"])
+    elif node_cfg.get("tx_lat") and node_cfg.get("tx_lon"):
+        tx_lat = float(node_cfg["tx_lat"])
+        tx_lon = float(node_cfg["tx_lon"])
+        beam_az = (_bearing_deg_geo(rx_lat, rx_lon, tx_lat, tx_lon) + 90.0) % 360.0
+    else:
+        beam_az = None  # unknown beam direction — skip bearing check
+    if beam_az is None:
+        return True
     beam_w = float(node_cfg.get("beam_width_deg") or 41)
     bearing = _bearing_deg_geo(rx_lat, rx_lon, lat, lon)
     angle_diff = abs((bearing - beam_az + 180) % 360 - 180)
