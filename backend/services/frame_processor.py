@@ -6,6 +6,7 @@ and the combined aircraft.json builder used by the flush task.
 
 import logging
 import math
+import threading
 import time
 from collections import defaultdict, deque
 
@@ -27,13 +28,15 @@ from services.storage import archive_detections
 # Instead of writing every frame to disk immediately (slow I/O in the hot path),
 # collect frames in memory and flush them periodically from a background task.
 _archive_buffer: dict[str, list[dict]] = defaultdict(list)
+_archive_buffer_lock = threading.Lock()
 _ARCHIVE_FLUSH_INTERVAL = ARCHIVE_FLUSH_INTERVAL_S
 _ARCHIVE_BATCH_MAX = ARCHIVE_BATCH_MAX
 
 
 def _flush_archive_node(node_id: str):
     """Write buffered frames for one node to disk in a single call."""
-    frames = _archive_buffer.pop(node_id, [])
+    with _archive_buffer_lock:
+        frames = _archive_buffer.pop(node_id, [])
     if not frames:
         return
     try:
@@ -44,7 +47,8 @@ def _flush_archive_node(node_id: str):
 
 def flush_all_archive_buffers():
     """Flush every node's buffered frames. Called from the background task."""
-    node_ids = list(_archive_buffer.keys())
+    with _archive_buffer_lock:
+        node_ids = list(_archive_buffer.keys())
     for nid in node_ids:
         _flush_archive_node(nid)
 
@@ -240,8 +244,10 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # frame workers during 915-file coverage-map save.
     _prof_save += time.thread_time() - _t4
 
-    _archive_buffer[node_id].append(frame)
-    if len(_archive_buffer[node_id]) >= _ARCHIVE_BATCH_MAX:
+    with _archive_buffer_lock:
+        _archive_buffer[node_id].append(frame)
+        _should_flush = len(_archive_buffer[node_id]) >= _ARCHIVE_BATCH_MAX
+    if _should_flush:
         _flush_archive_node(node_id)
 
     _dt_cpu = time.thread_time() - _t0_cpu
