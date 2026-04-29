@@ -6,6 +6,7 @@ import os
 import queue
 import threading
 import time
+from collections import deque
 
 from core import state
 
@@ -71,10 +72,12 @@ _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 # altitude layer yields rms_delay ≈ 0; wrong layers give rms > 0, so picking
 # the minimum selects the true altitude.  Layers match the association grid
 # (5, 7, 9, 11) so that the correct altitude is always ≤ 1 km from a layer for
-# commercial aviation (cruise altitude 5–12 km).  The 5 km layer covers
-# aircraft at 3–7 km that were previously unserved by the [7,9,11] set;
-# beam-coverage checks handle any TX-ghost artefacts from low altitude layers.
-_SOLVER_ALT_LAYERS_KM = [5.0, 7.0, 9.0, 11.0]
+# Altitude sweep layers for n≥3 solver. Must match the altitudes_km used in
+# compute_overlap_zone so the initial_guess alt from association matches a sweep
+# point. Range 1.5–11 km covers simulation aircraft (0.3–15 km spawns) and
+# commercial aviation. The 1.5 and 3.0 km layers fix systematic 7–10 km errors
+# for low-altitude aircraft where the old [5,7,9,11] set forced wrong altitude.
+_SOLVER_ALT_LAYERS_KM = [1.5, 3.0, 5.0, 7.0, 9.0, 11.0]
 
 # Reject solver results whose RMS delay residual exceeds this value.
 # For n≥3 nodes with altitude pinned (overdetermined: 3 equations, 2 unknowns),
@@ -113,16 +116,13 @@ _SOLVER_RMS_DOPPLER_MAX_HZ = 200.0
 # 15–50 km from the true position, meaning they are ≥12 km from an
 # initial_guess that was placed near the truth.
 #
-# Threshold of 5 km: with the ADS-B position override in find_associations(),
+# Threshold: with the ADS-B position override in find_associations(),
 # the initial_guess is within ~100 m of the true aircraft position.
 # Displacement from initial_guess therefore approximates the position error.
-# n=2 pairs with GDOP > ~15 km/µs (flat bistatic angle) produce displacements
-# of 6–12 km even with a perfect initial guess; those solves carry little
-# useful position information and are discarded here.
-# A 4 km gate was tested and regressed: it rejected too many good solves
-# while letting through outliers whose initial_guess was a cluster-centroid
-# average rather than an exact ADS-B point.  5 km is the sweet spot.
-_N2_MAX_DISPLACEMENT_KM = 5.0
+# With σ_delay = 0.1 µs the displacement = GDOP × 0.1 × 0.3 km.
+# 2.0 km → GDOP ≤ 67 (reasonable bistatic geometry).
+# Mirror-point ghosts land 15–50 km away and are safely rejected.
+_N2_MAX_DISPLACEMENT_KM = 2.0
 
 
 def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn,
@@ -197,6 +197,95 @@ def _solve_best_altitude_n2(s_in: dict, node_cfgs: dict, solve_fn) -> dict | Non
     """
     return solve_fn(s_in, node_cfgs)
 
+
+# ── Multi-epoch EWMA position smoother (n=2) ─────────────────────────────────
+# For n=2 TDOA, each solve has position error σ_pos = GDOP × σ_delay.  By
+# accumulating K successive solver positions for the same aircraft (identified
+# by ICAO hex) and dead-reckoning earlier positions forward to the current
+# solve time using ADS-B velocity, we average K independent noise realisations
+# and reduce the effective σ_pos by 1/√K.
+#
+# K=3 frames (every ~40 s) reduces mean error by ~√3 = 1.73×.
+# Dead-reckoning uses ADS-B ground-speed + track (always available in
+# simulation; state.adsb_aircraft is populated by the frame processor for every
+# ADS-B-tagged detection).  If ADS-B velocity is missing the smoother returns
+# the raw solver result unchanged.
+
+# Per-hex rolling buffer: hex → deque of (lat, lon, timestamp_s)
+_MN_POS_HISTORY: dict[str, deque] = {}
+_MN_POS_HISTORY_LOCK = threading.Lock()
+_MN_HISTORY_K = 3   # number of past frames to average (including current)
+_MN_DR_MAX_AGE_S = 160.0  # discard history entries older than 4 frame intervals
+
+
+def _ewma_smooth_n2(result: dict, adsb_hex: str | None) -> dict:
+    """Apply dead-reckoned multi-epoch averaging to an n=2 solver result.
+
+    Dead-reckon previous solve positions to the current solve timestamp using
+    ADS-B ground-speed and track, then return the simple mean of the
+    dead-reckoned history and the current solve.  Thread-safe via lock.
+
+    Returns the original result dict if hex is unknown, ADS-B velocity is
+    unavailable, or there is no prior history yet.
+    """
+    if not adsb_hex:
+        return result
+
+    r_lat = result["lat"]
+    r_lon = result["lon"]
+    r_ts = result.get("timestamp_ms", 0) / 1000.0
+
+    # Retrieve ADS-B velocity for dead-reckoning.
+    adsb = state.adsb_aircraft.get(adsb_hex)
+    if not adsb:
+        with _MN_POS_HISTORY_LOCK:
+            _MN_POS_HISTORY.setdefault(adsb_hex, deque(maxlen=_MN_HISTORY_K)).append(
+                (r_lat, r_lon, r_ts)
+            )
+        return result
+
+    gs_knots = float(adsb.get("gs", 0) or 0)
+    track_deg = float(adsb.get("track", 0) or 0)
+    gs_kms = gs_knots * 0.514444 / 1000.0   # knots → km/s
+    # Geographic track: 0° = North, 90° = East.
+    vel_north_kms = gs_kms * math.cos(math.radians(track_deg))
+    vel_east_kms  = gs_kms * math.sin(math.radians(track_deg))
+
+    with _MN_POS_HISTORY_LOCK:
+        hist = _MN_POS_HISTORY.setdefault(adsb_hex, deque(maxlen=_MN_HISTORY_K))
+
+        # Dead-reckon each past position forward to the current solve time
+        # and collect valid points (not too stale, not too far after dr).
+        cos_lat = math.cos(math.radians(r_lat)) or 1e-9
+        km_per_deg_lat = 111.32
+        km_per_deg_lon = 111.32 * cos_lat
+        positions: list[tuple[float, float]] = [(r_lat, r_lon)]
+
+        for prev_lat, prev_lon, prev_ts in hist:
+            dt = r_ts - prev_ts
+            if dt <= 0 or dt > _MN_DR_MAX_AGE_S:
+                continue  # skip future or stale entries
+            dr_lat = prev_lat + vel_north_kms * dt / km_per_deg_lat
+            dr_lon = prev_lon + vel_east_kms  * dt / km_per_deg_lon
+            positions.append((dr_lat, dr_lon))
+
+        # Push current position before averaging (so it is included next time).
+        hist.append((r_lat, r_lon, r_ts))
+
+    if len(positions) < 2:
+        return result  # no usable history yet—return raw solve
+
+    avg_lat = sum(p[0] for p in positions) / len(positions)
+    avg_lon = sum(p[1] for p in positions) / len(positions)
+
+    smoothed = dict(result)
+    smoothed["lat"] = round(avg_lat, 6)
+    smoothed["lon"] = round(avg_lon, 6)
+    logging.debug(
+        "n=2 EWMA: hex=%s K=%d raw=(%.4f,%.4f) → smooth=(%.4f,%.4f)",
+        adsb_hex, len(positions), r_lat, r_lon, avg_lat, avg_lon,
+    )
+    return smoothed
 
 
 # Maximum age (seconds) of a solver queue item before it is discarded without
@@ -320,6 +409,12 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                     {"latency_s": round(latency, 1), "n_nodes": s_in.get("n_nodes", 0)},
                 )
         state.task_last_success["solver"] = time.time()
+        # For n=2 solves with a known ADS-B hex, apply dead-reckoned multi-epoch
+        # EWMA smoothing to reduce single-frame measurement noise (reduces mean
+        # position error by ~√K where K is the number of history frames used).
+        if n_nodes == 2:
+            _adsb_hex = s_in.get("adsb_hex") if isinstance(s_in, dict) else None
+            result = _ewma_smooth_n2(result, _adsb_hex)
         for nid in result.get("contributing_node_ids", []):
             state.node_analytics.record_calibration_point(
                 nid, result["lat"], result["lon"]

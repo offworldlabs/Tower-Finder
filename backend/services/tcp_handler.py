@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from retina_custody.hash_chain import HashChainEntry, HashChainVerifier
 
+from config.constants import CHAIN_ENTRIES_MAX_PER_NODE, IQ_COMMITMENTS_MAX_PER_NODE
 from core import state
 
 # Optional shared token for node authentication. If not set, any node can connect.
@@ -89,8 +90,8 @@ def _validate_node_config(config: dict) -> str | None:
 
 
 def is_synthetic_node(node_id: str) -> bool:
-    """Detect synthetic nodes by their 'synth-' ID prefix."""
-    return node_id.startswith("synth-")
+    """Detect synthetic/test nodes by their ID prefix."""
+    return node_id.startswith(("synth-", "e2e-"))
 
 
 async def _send_msg(writer: asyncio.StreamWriter, msg: dict):
@@ -340,6 +341,8 @@ async def _handle_chain_entry(msg: dict, node_id: str | None, writer):
     entry_data["_verified"] = verified
     entry_data["_received_at"] = datetime.now(timezone.utc).isoformat()
     state.chain_entries[ce_node_id].append(entry_data)
+    if len(state.chain_entries[ce_node_id]) > CHAIN_ENTRIES_MAX_PER_NODE:
+        state.chain_entries[ce_node_id] = state.chain_entries[ce_node_id][-CHAIN_ENTRIES_MAX_PER_NODE:]
     logging.info("Chain entry from %s (hour=%s, verified=%s)",
                  ce_node_id, entry_data.get("hour_utc"), verified)
     await _send_msg(writer, {
@@ -359,6 +362,8 @@ async def _handle_iq_commitment(msg: dict, node_id: str | None, writer):
         state.iq_commitments[iq_node_id] = []
     iq_data["_received_at"] = datetime.now(timezone.utc).isoformat()
     state.iq_commitments[iq_node_id].append(iq_data)
+    if len(state.iq_commitments[iq_node_id]) > IQ_COMMITMENTS_MAX_PER_NODE:
+        state.iq_commitments[iq_node_id] = state.iq_commitments[iq_node_id][-IQ_COMMITMENTS_MAX_PER_NODE:]
     logging.info("IQ commitment from %s (capture=%s, hash=%s...)",
                  iq_node_id, iq_data.get("capture_id"), iq_data.get("iq_hash", "")[:12])
     await _send_msg(writer, {

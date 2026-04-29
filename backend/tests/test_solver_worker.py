@@ -341,9 +341,9 @@ class TestSolveBestAltitude:
         item = (s_in, {}, time.time())
         result = solver_mod._process_solver_item(item, solve_fn)
 
-        # Initial_guess alt_km=3.0 is not in the fixed layers so it is added.
-        # All layers tried: [3, 5, 7, 9, 11] km
-        assert set(calls) == {3.0, 5.0, 7.0, 9.0, 11.0}
+        # Initial_guess alt_km=3.0 is already in the fixed layers [1.5, 3, 5, 7, 9, 11].
+        # All layers tried: [1.5, 3, 5, 7, 9, 11] km
+        assert set(calls) == {1.5, 3.0, 5.0, 7.0, 9.0, 11.0}
         # Best result (rms=0.1 at 9 km) selected
         assert result is not None
         assert result["alt_m"] == pytest.approx(9000.0)
