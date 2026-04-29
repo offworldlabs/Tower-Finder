@@ -114,16 +114,13 @@ _SOLVER_RMS_DOPPLER_MAX_HZ = 200.0
 # 15–50 km from the true position, meaning they are ≥12 km from an
 # initial_guess that was placed near the truth.
 #
-# Threshold of 5 km: with the ADS-B position override in find_associations(),
+# Threshold: with the ADS-B position override in find_associations(),
 # the initial_guess is within ~100 m of the true aircraft position.
 # Displacement from initial_guess therefore approximates the position error.
-# n=2 pairs with GDOP > ~15 km/µs (flat bistatic angle) produce displacements
-# of 6–12 km even with a perfect initial guess; those solves carry little
-# useful position information and are discarded here.
-# A 4 km gate was tested and regressed: it rejected too many good solves
-# while letting through outliers whose initial_guess was a cluster-centroid
-# average rather than an exact ADS-B point.  5 km is the sweet spot.
-_N2_MAX_DISPLACEMENT_KM = 5.0
+# With σ_delay = 0.1 µs the displacement = GDOP × 0.1 × 0.3 km.
+# 2.0 km → GDOP ≤ 67 (reasonable bistatic geometry).
+# Mirror-point ghosts land 15–50 km away and are safely rejected.
+_N2_MAX_DISPLACEMENT_KM = 2.0
 
 
 def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn,
