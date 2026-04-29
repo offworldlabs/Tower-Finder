@@ -604,6 +604,43 @@ def _refresh_mlat_accuracy_stats() -> None:
         else {"n_samples": 0, "bistatic_angle_threshold_deg": _GOOD_GEOM_THRESH_DEG}
     )
 
+    # Normal-only filter: exclude anomalous/spoofed aircraft whose ADS-B reports
+    # a fake position.  The solver correctly converges near the fake position,
+    # but ground-truth comparison uses the real position → large apparent error
+    # that does NOT reflect solver accuracy.  The "normal_only" section shows
+    # clean solver accuracy for non-anomalous aircraft (production-realistic).
+    normal_errors = sorted(
+        s["error_km"] for s in samples if not s.get("is_anomalous")
+    )
+    nn = len(normal_errors)
+    by_nodes_normal: dict[int, list[float]] = {}
+    for s in samples:
+        if not s.get("is_anomalous"):
+            by_nodes_normal.setdefault(int(s["n_nodes"]), []).append(s["error_km"])
+    node_stats_normal = {}
+    for nc, errs in sorted(by_nodes_normal.items()):
+        sorted_errs = sorted(errs)
+        sn = len(sorted_errs)
+        node_stats_normal[str(nc)] = {
+            "n_samples": sn,
+            "mean_km": round(sum(sorted_errs) / sn, 4),
+            "median_km": round(_percentile(sorted_errs, 50), 4),
+            "p95_km": round(_percentile(sorted_errs, 95), 4),
+            "max_km": round(sorted_errs[-1], 4),
+        }
+    normal_stats: dict = (
+        {
+            "n_samples": nn,
+            "mean_km": round(sum(normal_errors) / nn, 4),
+            "median_km": round(_percentile(normal_errors, 50), 4),
+            "p95_km": round(_percentile(normal_errors, 95), 4),
+            "max_km": round(normal_errors[-1], 4),
+            "by_node_count": node_stats_normal,
+        }
+        if nn
+        else {"n_samples": 0}
+    )
+
     state.latest_mlat_accuracy_bytes = orjson.dumps(
         {
             "n_samples": n,
@@ -613,6 +650,7 @@ def _refresh_mlat_accuracy_stats() -> None:
             "max_km": round(errors[-1], 4),
             "by_node_count": node_stats,
             "good_geometry": good_geom_stats,
+            "normal_only": normal_stats,
         }
     )
 
@@ -977,6 +1015,7 @@ def _refresh_mlat_verification():
                 "error_km": m["position_error_km"],
                 "n_nodes": m["n_nodes"],
                 "max_bistatic_deg": m["max_bistatic_angle_deg"],
+                "is_anomalous": bool(m.get("is_anomalous")),
                 "ts": ts_now_ms,
             }
         )
