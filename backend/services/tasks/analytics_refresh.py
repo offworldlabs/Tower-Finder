@@ -127,6 +127,26 @@ def _refresh_analytics_and_nodes():
 # ── Missed detection analysis ─────────────────────────────────────────────────
 
 
+def _bistatic_angle_deg(
+    ac_lat: float, ac_lon: float,
+    tx_lat: float, tx_lon: float,
+    rx_lat: float, rx_lon: float,
+) -> float:
+    """Bistatic angle (degrees) at the aircraft for a single TX-RX pair.
+
+    Uses the law of cosines on the (TX, aircraft, RX) triangle.  Returns 180
+    for degenerate cases where the aircraft is essentially on top of a node.
+    """
+    a = haversine_km(ac_lat, ac_lon, tx_lat, tx_lon)  # aircraft → TX
+    b = haversine_km(ac_lat, ac_lon, rx_lat, rx_lon)  # aircraft → RX
+    c = haversine_km(tx_lat, tx_lon, rx_lat, rx_lon)  # baseline
+    if a < 0.01 or b < 0.01:
+        return 180.0
+    cos_beta = (a * a + b * b - c * c) / (2.0 * a * b)
+    cos_beta = max(-1.0, min(1.0, cos_beta))
+    return math.degrees(math.acos(cos_beta))
+
+
 def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Bearing from (lat1, lon1) to (lat2, lon2) in degrees [0, 360)."""
     lat1r = math.radians(lat1)
@@ -559,6 +579,31 @@ def _refresh_mlat_accuracy_stats() -> None:
             "max_km": round(sorted_errs[-1], 4),
         }
 
+    # Good-geometry filter: exclude solves where the aircraft was nearly
+    # between TX and RX (high bistatic angle → bad GDOP).  Threshold 150° is
+    # chosen to match the analytical crossover where single-ellipse cross-error
+    # exceeds ~0.6 km/µs.  Samples without a bistatic angle (older entries
+    # recorded before this field was added) are included unfiltered.
+    _GOOD_GEOM_THRESH_DEG = 150.0
+    good_geom_errors = sorted(
+        s["error_km"]
+        for s in samples
+        if (s.get("max_bistatic_deg") or 0.0) < _GOOD_GEOM_THRESH_DEG
+    )
+    ng = len(good_geom_errors)
+    good_geom_stats: dict = (
+        {
+            "n_samples": ng,
+            "mean_km": round(sum(good_geom_errors) / ng, 4),
+            "median_km": round(_percentile(good_geom_errors, 50), 4),
+            "p95_km": round(_percentile(good_geom_errors, 95), 4),
+            "max_km": round(good_geom_errors[-1], 4),
+            "bistatic_angle_threshold_deg": _GOOD_GEOM_THRESH_DEG,
+        }
+        if ng
+        else {"n_samples": 0, "bistatic_angle_threshold_deg": _GOOD_GEOM_THRESH_DEG}
+    )
+
     state.latest_mlat_accuracy_bytes = orjson.dumps(
         {
             "n_samples": n,
@@ -567,6 +612,7 @@ def _refresh_mlat_accuracy_stats() -> None:
             "p95_km": round(_percentile(errors, 95), 4),
             "max_km": round(errors[-1], 4),
             "by_node_count": node_stats,
+            "good_geometry": good_geom_stats,
         }
     )
 
@@ -667,6 +713,15 @@ def _refresh_mlat_verification():
     # --- Walk multinode solve results -----------------------------------------
     # Count fresh solves BEFORE the truth-pool check so n_solves is always honest
     # even when we have no truth data to match against.
+    # Snapshot node configs (tx_lat/tx_lon/rx_lat/rx_lon) keyed by node_id so
+    # we can compute the bistatic angle at each solver position without touching
+    # state.connected_nodes inside the per-solve loop.
+    node_cfg_snap: dict[str, dict] = {
+        nid: info.get("config", {})
+        for nid, info in list(state.connected_nodes.items())
+        if isinstance(info, dict)
+    }
+
     mn_snapshot = list(state.multinode_tracks.items())
     fresh_solves = []
     for key, r in mn_snapshot:
@@ -842,6 +897,26 @@ def _refresh_mlat_verification():
         vel_err = abs(solver_speed_ms - t_speed)
         alt_err = abs(solver_alt_m - t_alt)
 
+        # Max bistatic angle across all contributing nodes (worst-geometry pair).
+        # A high angle (→ 180°) means the aircraft is nearly between TX and RX,
+        # which degrades GDOP and inflates position error.
+        max_bistatic_deg: float | None = None
+        for cid in r.get("contributing_node_ids", []):
+            cfg = node_cfg_snap.get(cid, {})
+            t_tx_lat = cfg.get("tx_lat")
+            t_tx_lon = cfg.get("tx_lon")
+            t_rx_lat = cfg.get("rx_lat")
+            t_rx_lon = cfg.get("rx_lon")
+            if not all((t_tx_lat, t_tx_lon, t_rx_lat, t_rx_lon)):
+                continue
+            ang = _bistatic_angle_deg(
+                solver_lat, solver_lon,
+                float(t_tx_lat), float(t_tx_lon),
+                float(t_rx_lat), float(t_rx_lon),
+            )
+            if max_bistatic_deg is None or ang > max_bistatic_deg:
+                max_bistatic_deg = ang
+
         pos_errors.append(pos_err)
         vel_errors.append(vel_err)
         alt_errors.append(alt_err)
@@ -868,6 +943,7 @@ def _refresh_mlat_verification():
                 "rms_doppler": round(float(r.get("rms_doppler", 0) or 0), 2),
                 "object_type": t_type,
                 "is_anomalous": t_anom,
+                "max_bistatic_angle_deg": round(max_bistatic_deg, 1) if max_bistatic_deg is not None else None,
                 "timestamp_ms": int(r.get("timestamp_ms", 0)),
             }
         )
@@ -900,6 +976,7 @@ def _refresh_mlat_verification():
                 "hex": m["truth_hex"],
                 "error_km": m["position_error_km"],
                 "n_nodes": m["n_nodes"],
+                "max_bistatic_deg": m["max_bistatic_angle_deg"],
                 "ts": ts_now_ms,
             }
         )
