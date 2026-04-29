@@ -242,30 +242,9 @@ jobs:
               fi
             done
 
-            # Restart fleet simulator (stop old units, start new one)
-            FLEET_NUM=$(date +%s | tail -c 5)
-            # Stop any running fleet units
-            for unit in $(systemctl list-units --type=service --state=running --no-legend | grep '^fleet' | awk '{print $1}'); do
-              echo "Stopping old fleet: $unit"
-              systemctl stop "$unit" || true
-            done
-            # Guard: verify no fleet services remain before starting the new one
-            STILL_RUNNING=$(systemctl list-units --type=service --state=running --no-legend | grep '^fleet' | wc -l)
-            if [ "$STILL_RUNNING" -gt 0 ]; then
-              echo "ERROR: $STILL_RUNNING fleet service(s) still running after stop — aborting to prevent node count explosion"
-              systemctl list-units --type=service --state=running --no-legend | grep '^fleet'
-              exit 1
-            fi
-            echo "Fleet cleanup verified: 0 fleet services running"
-            # Start fresh fleet
-            systemd-run --unit="fleet${FLEET_NUM}" --working-directory=/opt/tower-finder \
-              python3 -m retina_simulation.orchestrator \
-              --nodes 200 --mode adsb \
-              --validation-url https://localhost \
-              --concurrency 20 --connect-retries 999 \
-              --interval 40.0 --time-scale 1.0 \
-              --min-aircraft 60 --max-aircraft 100
-            echo "Fleet fleet${FLEET_NUM} started"
+            # Restart fleet simulator (stop old units, start new one with API key)
+            RADAR_API_KEY=${{ secrets.RADAR_API_KEY }} \
+              bash /opt/tower-finder/deploy/restart-fleet-prod.sh
 
   production-smoke-tests:
     name: Production smoke tests
