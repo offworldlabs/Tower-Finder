@@ -193,9 +193,11 @@ class NodeOwnerUpdate(BaseModel):
 async def admin_list_node_owners(_admin=Depends(require_admin)):
     """Return {node_id: {user_id, email, name}} for every owned node."""
     owners = list_node_owners()
+    # Build a users map in one disk read rather than N per-user reads.
+    users_map = {u["id"]: u for u in get_all_users()}
     result = {}
     for nid, uid in owners.items():
-        u = get_user_by_id(uid)
+        u = users_map.get(uid)
         result[nid] = {
             "user_id": uid,
             "email": u["email"] if u else None,

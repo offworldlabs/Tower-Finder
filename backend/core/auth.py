@@ -185,11 +185,18 @@ def get_user_nodes(user_id: str) -> list[str]:
 
 # ── Claim codes (user-issued, used by node in HELLO to self-claim) ────────────
 
+_MAX_ACTIVE_CLAIM_CODES_PER_USER = 10
+
+
 def create_claim_code(user_id: str) -> dict:
-    """Create a one-time claim code for the user."""
+    """Create a one-time claim code for the user.
+
+    Raises ValueError if the user already has MAX_ACTIVE_CLAIM_CODES_PER_USER
+    active (unused, non-expired) codes — prevents indefinite file growth.
+    """
     now = time.time()
-    # 8-char base32-style code, easy to type
-    code = secrets.token_hex(4).upper()
+    # 12-char hex code = 48 bits of entropy, brute-force resistant
+    code = secrets.token_hex(6).upper()
     record = {
         "code": code,
         "user_id": user_id,
@@ -200,6 +207,17 @@ def create_claim_code(user_id: str) -> dict:
     }
     with _lock:
         codes = _load_json(CLAIM_CODES_FILE)
+        active = [
+            c for c in codes.values()
+            if c.get("user_id") == user_id
+            and c.get("used_at") is None
+            and c.get("expires_at", 0) >= now
+        ]
+        if len(active) >= _MAX_ACTIVE_CLAIM_CODES_PER_USER:
+            raise ValueError(
+                f"Maximum of {_MAX_ACTIVE_CLAIM_CODES_PER_USER} active claim codes allowed per user. "
+                "Revoke an existing code first."
+            )
         codes[code] = record
         _save_json(CLAIM_CODES_FILE, codes)
     return record
@@ -250,13 +268,24 @@ def consume_claim_code(code: str, node_id: str) -> str | None:
             return None
         if rec.get("expires_at", 0) < now:
             return None
+        # Pre-load owners before marking the code used so that if the
+        # ownership write fails we can roll back the used_at mark — keeping
+        # both stores consistent even under crash/disk-full conditions.
+        owners = _load_json(NODE_OWNERS_FILE)
+        owner_user_id = rec["user_id"]
+        owners[node_id] = owner_user_id
+
         rec["used_at"] = now
         rec["used_by_node_id"] = node_id
+        try:
+            _save_json(NODE_OWNERS_FILE, owners)
+        except Exception:
+            # Ownership write failed — roll back so the code can be retried.
+            rec["used_at"] = None
+            rec["used_by_node_id"] = None
+            raise
         _save_json(CLAIM_CODES_FILE, codes)
-        owners = _load_json(NODE_OWNERS_FILE)
-        owners[node_id] = rec["user_id"]
-        _save_json(NODE_OWNERS_FILE, owners)
-    return rec["user_id"]
+    return owner_user_id
 
 
 def get_or_create_user(email: str, name: str, avatar: str, provider: str) -> dict:
@@ -284,11 +313,18 @@ def get_or_create_user(email: str, name: str, avatar: str, provider: str) -> dic
             users[user_id]["name"] = name
             users[user_id]["avatar"] = avatar
             users[user_id]["last_login"] = now
-            # Allow a pending invite to upgrade role on subsequent login
+            # Allow a pending invite to upgrade (never downgrade) role on subsequent login.
+            # An "admin" invite on an existing admin is a no-op; a "user" invite on an
+            # existing admin is intentionally ignored to prevent accidental demotion.
             invited_role = _consume_invite_for_email_locked(email)
-            if invited_role and users[user_id].get("role") != invited_role:
+            current_role = users[user_id].get("role", "user")
+            _ROLE_RANK = {"user": 0, "admin": 1}
+            if (
+                invited_role
+                and _ROLE_RANK.get(invited_role, 0) > _ROLE_RANK.get(current_role, 0)
+            ):
                 users[user_id]["role"] = invited_role
-                logger.info("Updated %s role to %s via pending invite", email, invited_role)
+                logger.info("Upgraded %s role from %s to %s via pending invite", email, current_role, invited_role)
         _save_users(users)
         return users[user_id]
 

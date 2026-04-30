@@ -5,7 +5,7 @@ import os
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 
 from core.auth import (
@@ -226,16 +226,19 @@ async def create_my_claim_code(request: Request):
     """Generate a new one-time claim code for the current user.
 
     The code is included in the node's HELLO message to bind that node_id to
-    this user account. Codes expire after 30 days and can be used once.
+    this user account. Codes expire after 30 days and are single-use.
+    Raises 429 if the user already has 10 active codes.
     """
     user = await get_current_user(request)
-    return create_claim_code(user["id"])
+    try:
+        return create_claim_code(user["id"])
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e))
 
 
 @router.delete("/me/claim-codes/{code}")
 async def revoke_my_claim_code(code: str, request: Request):
     user = await get_current_user(request)
     if not revoke_claim_code(code, user["id"]):
-        from fastapi import HTTPException
         raise HTTPException(404, "Code not found, already used, or not yours")
     return {"ok": True}

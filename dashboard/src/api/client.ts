@@ -1,6 +1,6 @@
 const BASE = "";
 
-async function request(path, opts: any = {}) {
+async function request(path: string, opts: any = {}) {
   const controller = new AbortController();
   const timeoutMs = path === "/api/auth/me" ? 30000 : 10000;
   const timer = setTimeout(() => controller.abort(), timeoutMs);

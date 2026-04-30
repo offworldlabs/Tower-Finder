@@ -195,10 +195,11 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                             else:
                                 # Already owned — silently acknowledge so re-running with the
                                 # same code on a re-flashed node is harmless.
+                                # Do NOT echo back user_id to avoid leaking ownership
+                                # to any client that knows the node_id.
                                 await _send_msg(writer, {
                                     "type": "CLAIM_ACK",
                                     "node_id": node_id,
-                                    "user_id": existing_owner,
                                     "note": "already_owned",
                                 })
                         except Exception:

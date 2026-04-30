@@ -177,7 +177,6 @@ export default function OnboardingPage() {
                       </tr>
                     );
                   })}
-                  {usedCodes.length === 0 && activeCodes.length === 0 && null}
                 </tbody>
               </table>
             </div>
