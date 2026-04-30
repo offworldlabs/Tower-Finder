@@ -91,7 +91,7 @@ def _validate_node_config(config: dict) -> str | None:
 
 def is_synthetic_node(node_id: str) -> bool:
     """Detect synthetic/test nodes by their ID prefix."""
-    return node_id.startswith(("synth-", "e2e-"))
+    return node_id.startswith("synth-")
 
 
 async def _send_msg(writer: asyncio.StreamWriter, msg: dict):
