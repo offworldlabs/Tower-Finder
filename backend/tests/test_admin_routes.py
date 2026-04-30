@@ -46,22 +46,6 @@ class TestEvents:
         assert len(r.json()) <= 3
 
 
-# ── Users ─────────────────────────────────────────────────────────────────────
-
-class TestUsers:
-    def test_list_users(self, client):
-        r = client.get("/api/admin/users")
-        assert r.status_code == 200
-
-    def test_set_role_invalid_user(self, client):
-        r = client.put(
-            "/api/admin/users/nonexistent-user-id/role",
-            json={"role": "admin"},
-        )
-        # 404 because user doesn't exist
-        assert r.status_code == 404
-
-
 # ── Config ────────────────────────────────────────────────────────────────────
 
 class TestConfig:

@@ -25,7 +25,7 @@ from config.constants import (
     NODE_OFFLINE_THRESHOLD_S,
 )
 from core import state
-from core.auth import get_all_users, get_current_user, require_admin, update_user_role
+from core.auth import get_current_user, require_admin
 from core.task_registry import TASK_EXPECTED_INTERVAL_S
 
 logger = logging.getLogger(__name__)
@@ -117,26 +117,6 @@ def check_node_health():
                 "warning",
                 {"node_id": node_id, "age_s": int(age_s)},
             )
-
-
-# ── Users ─────────────────────────────────────────────────────────────────────
-
-@router.get("/users")
-async def list_users(_admin=Depends(require_admin)):
-    return get_all_users()
-
-
-class RoleUpdate(BaseModel):
-    role: str
-
-
-@router.put("/users/{user_id}/role")
-async def set_user_role(user_id: str, body: RoleUpdate, _admin=Depends(require_admin)):
-    user = update_user_role(user_id, body.role)
-    if not user:
-        raise HTTPException(404, "User not found or invalid role")
-    log_event("user", f"Role changed to {body.role} for {user['email']}", "warning")
-    return user
 
 
 # ── Events ────────────────────────────────────────────────────────────────────
