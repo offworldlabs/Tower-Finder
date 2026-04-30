@@ -19,6 +19,7 @@ from core import state
 from services.frame_processor import flush_all_archive_buffers
 
 _opensky_client: httpx.AsyncClient | None = None
+_adsb_lol_client: object | None = None
 
 
 async def archive_flush_task():
@@ -96,13 +97,10 @@ async def _fetch_external_adsb() -> bool:
         logging.debug("All nodes synthetic — skipping external ADS-B fetch")
         return False
 
-    lats = [n["config"].get("rx_lat", 0) for n in active_nodes]
-    lons = [n["config"].get("rx_lon", 0) for n in active_nodes]
-
     real_nodes = [n for n in active_nodes if not n.get("is_synthetic", False)]
-    if real_nodes:
-        lats = [n["config"].get("rx_lat", 0) for n in real_nodes]
-        lons = [n["config"].get("rx_lon", 0) for n in real_nodes]
+    source_nodes = real_nodes if real_nodes else active_nodes
+    lats = [n["config"].get("rx_lat", 0) for n in source_nodes]
+    lons = [n["config"].get("rx_lon", 0) for n in source_nodes]
     if not lats or all(la == 0 for la in lats):
         return False
 
@@ -163,7 +161,7 @@ async def _fetch_external_adsb() -> bool:
                 logging.debug("adsb.lol fallback: cached %d aircraft positions", len(fallback_cache))
                 _cross_validate_adsb_reports()
         except Exception:
-            logging.debug("adsb.lol fallback also failed")
+            logging.warning("adsb.lol fallback also failed — external ADS-B cache may be stale")
 
     return rate_limited
 
@@ -174,10 +172,15 @@ async def _fetch_adsb_lol(lat: float, lon: float) -> dict:
     Returns {hex: {lat, lon, alt_m, velocity, heading}} matching external_adsb_cache format.
     """
     from clients.adsb_lol import AdsbLolClient
-    loop = asyncio.get_event_loop()
+    global _adsb_lol_client
+    loop = asyncio.get_running_loop()
     area = {"name": "auto", "lat": lat, "lon": lon, "radius_nm": 200}
-    client = AdsbLolClient([area])
-    aircraft = await loop.run_in_executor(None, client.fetch_all)
+    if _adsb_lol_client is None:
+        _adsb_lol_client = AdsbLolClient([area])
+    else:
+        # Update area center so the rate-limit cache key stays consistent
+        _adsb_lol_client.areas = [area]
+    aircraft = await loop.run_in_executor(None, _adsb_lol_client.fetch_all)
     result = {}
     for ac in aircraft:
         h = (ac.get("hex") or "").lower()

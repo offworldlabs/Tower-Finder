@@ -19,7 +19,7 @@ export default function ContributionPage() {
       .then(([a, o, lb]) => {
         setAnalytics(a);
         setOverlaps(Array.isArray(o) ? o : o.overlaps || []);
-        setLeaderboard(Array.isArray(lb) ? lb : lb.rankings || []);
+        setLeaderboard(Array.isArray(lb) ? lb : lb.leaderboard || []);
       })
       .catch(console.error)
       .finally(() => setLoading(false));

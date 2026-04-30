@@ -11,13 +11,14 @@ export default function LeaderboardPage() {
   const [search, setSearch] = useState("");
   const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
+  const fetchData = () => {
+    api.leaderboard()
+      .then(setData)
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  };
+
   useEffect(() => {
-    const fetchData = () => {
-      api.leaderboard()
-        .then(setData)
-        .catch(console.error)
-        .finally(() => setLoading(false));
-    };
     fetchData();
     timerRef.current = setInterval(fetchData, 30000);
     return () => clearInterval(timerRef.current);
