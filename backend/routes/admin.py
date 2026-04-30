@@ -25,7 +25,18 @@ from config.constants import (
     NODE_OFFLINE_THRESHOLD_S,
 )
 from core import state
-from core.auth import get_current_user, require_admin
+from core.auth import (
+    create_invite,
+    get_all_users,
+    get_current_user,
+    get_user_by_id,
+    list_invites,
+    list_node_owners,
+    revoke_invite,
+    set_node_owner,
+    require_admin,
+    update_user_role,
+)
 from core.task_registry import TASK_EXPECTED_INTERVAL_S
 
 logger = logging.getLogger(__name__)
@@ -117,6 +128,95 @@ def check_node_health():
                 "warning",
                 {"node_id": node_id, "age_s": int(age_s)},
             )
+
+
+# ── Users ─────────────────────────────────────────────────────────────────────
+
+@router.get("/users")
+async def list_users(_admin=Depends(require_admin)):
+    return get_all_users()
+
+
+class RoleUpdate(BaseModel):
+    role: str
+
+
+@router.put("/users/{user_id}/role")
+async def set_user_role(user_id: str, body: RoleUpdate, _admin=Depends(require_admin)):
+    user = update_user_role(user_id, body.role)
+    if not user:
+        raise HTTPException(404, "User not found or invalid role")
+    log_event("user", f"Role changed to {body.role} for {user['email']}", "warning")
+    return user
+
+
+# ── Invites (admin pre-approves users by email) ──────────────────────────────
+
+class InviteCreate(BaseModel):
+    email: str
+    role: str = "user"
+
+
+@router.get("/invites")
+async def admin_list_invites(_admin=Depends(require_admin)):
+    invites = list_invites()
+    invites.sort(key=lambda i: i.get("created_at", 0), reverse=True)
+    return invites
+
+
+@router.post("/invites")
+async def admin_create_invite(body: InviteCreate, admin=Depends(require_admin)):
+    try:
+        invite = create_invite(body.email, body.role, admin["id"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    log_event("user", f"Invited {body.email} as {body.role}", "info",
+              {"email": body.email, "role": body.role, "by": admin["email"]})
+    return invite
+
+
+@router.delete("/invites/{token}")
+async def admin_revoke_invite(token: str, admin=Depends(require_admin)):
+    if not revoke_invite(token):
+        raise HTTPException(404, "Invite not found")
+    log_event("user", "Invite revoked", "info", {"token": token, "by": admin["email"]})
+    return {"ok": True}
+
+
+# ── Node ownership (admin override) ──────────────────────────────────────────
+
+class NodeOwnerUpdate(BaseModel):
+    user_id: str | None = None
+
+
+@router.get("/node-owners")
+async def admin_list_node_owners(_admin=Depends(require_admin)):
+    """Return {node_id: {user_id, email, name}} for every owned node."""
+    owners = list_node_owners()
+    result = {}
+    for nid, uid in owners.items():
+        u = get_user_by_id(uid)
+        result[nid] = {
+            "user_id": uid,
+            "email": u["email"] if u else None,
+            "name": u["name"] if u else None,
+        }
+    return result
+
+
+@router.put("/nodes/{node_id}/owner")
+async def admin_set_node_owner(node_id: str, body: NodeOwnerUpdate, admin=Depends(require_admin)):
+    """Assign or clear node ownership. Pass user_id=null to unassign."""
+    if body.user_id is not None and get_user_by_id(body.user_id) is None:
+        raise HTTPException(404, "User not found")
+    set_node_owner(node_id, body.user_id)
+    log_event(
+        "user",
+        f"Node {node_id} owner set to {body.user_id or '(unassigned)'}",
+        "info",
+        {"node_id": node_id, "user_id": body.user_id, "by": admin["email"]},
+    )
+    return {"ok": True, "node_id": node_id, "user_id": body.user_id}
 
 
 # ── Events ────────────────────────────────────────────────────────────────────

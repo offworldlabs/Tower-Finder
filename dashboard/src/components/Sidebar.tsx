@@ -29,6 +29,7 @@ const userNav = [
   {
     title: "Account",
     items: [
+      { to: "/onboarding", label: "My Nodes", icon: "server" },
       { to: "/settings", label: "Settings", icon: "settings" },
     ],
   },
@@ -58,6 +59,7 @@ const adminNav = [
     title: "Management",
     items: [
       { to: "/users", label: "Users", icon: "users" },
+      { to: "/invites", label: "Invites", icon: "bell" },
     ],
   },
 ];
