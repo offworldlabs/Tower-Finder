@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
@@ -12,8 +12,9 @@ export default function ContributionPage() {
   const [leaderboard, setLeaderboard] = useState([]);
   const [loading, setLoading] = useState(true);
   const [overlapPage, setOverlapPage] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
-  useEffect(() => {
+  const fetchData = () => {
     Promise.all([api.analytics(), api.overlaps(), api.leaderboard().catch(() => [])])
       .then(([a, o, lb]) => {
         setAnalytics(a);
@@ -22,6 +23,12 @@ export default function ContributionPage() {
       })
       .catch(console.error)
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    fetchData();
+    timerRef.current = setInterval(fetchData, 30000);
+    return () => clearInterval(timerRef.current);
   }, []);
 
   if (loading) return <div className="empty-state">Loading…</div>;
