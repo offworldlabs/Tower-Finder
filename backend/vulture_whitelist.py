@@ -77,18 +77,15 @@ _.initial_altitude_m
 
 
 # ── routes/custody.py ─────────────────────────────────────────────────────────
-# Pydantic request-body fields that are accepted from clients for API
-# completeness / schema forward-compatibility but not read server-side yet.
-# TODO: remove when payload_hash / signature verification is implemented.
+# Pydantic request-body fields passed through body.model_dump() → HashChainEntry.from_dict()
+# and verified by HashChainVerifier. Vulture can't trace dict access.
 payload_hash
 signature
 
 
 # ── clients/adsb_lol.py ───────────────────────────────────────────────────────
-# Public client class — tested in tests/test_adsb_lol.py; may be wired into
-# the truth-fetcher pipeline in a future iteration.
+# Used as OpenSky fallback in services/tasks/periodic.py _fetch_adsb_lol().
 AdsbLolClient
-_.fetch_all
 
 
 # ── services/r2_client.py ─────────────────────────────────────────────────────

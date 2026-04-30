@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -11,8 +11,9 @@ export default function OverviewPage() {
   const [aircraftCount, setAircraftCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
+  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
-  useEffect(() => {
+  const fetchData = () => {
     Promise.all([api.nodes(), api.analytics(), api.aircraft()])
       .then(([n, a, ac]) => {
         // n.nodes is a dict {node_id: {status, ...}}
@@ -30,6 +31,12 @@ export default function OverviewPage() {
       })
       .catch(console.error)
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    fetchData();
+    timerRef.current = setInterval(fetchData, 15000);
+    return () => clearInterval(timerRef.current);
   }, []);
 
   if (loading) return <div className="empty-state">Loading…</div>;

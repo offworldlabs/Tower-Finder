@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { api } from "../../api/client";
 
 const PAGE_SIZE = 25;
@@ -9,12 +9,19 @@ export default function LeaderboardPage() {
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
+  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
-  useEffect(() => {
+  const fetchData = () => {
     api.leaderboard()
       .then(setData)
       .catch(console.error)
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    fetchData();
+    timerRef.current = setInterval(fetchData, 30000);
+    return () => clearInterval(timerRef.current);
   }, []);
 
   if (loading) return <div className="empty-state">Loading…</div>;
