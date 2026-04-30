@@ -170,7 +170,7 @@ app.add_middleware(
         "https://towers.retina.fm,https://map.retina.fm",
     ).split(","),
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "HEAD", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-API-Key"],
     max_age=3600,
 )

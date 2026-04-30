@@ -162,6 +162,49 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                             writer.close()
                             return
 
+                    # Optional node-to-user claim. If `claim_code` is present we
+                    # try to consume it; an invalid code is non-fatal — the node
+                    # still connects but ownership stays unassigned.
+                    claim_code = msg.get("claim_code")
+                    if claim_code:
+                        try:
+                            from core.auth import consume_claim_code, get_node_owner
+                            existing_owner = get_node_owner(node_id)
+                            if existing_owner is None:
+                                owner_uid = consume_claim_code(claim_code, node_id)
+                                if owner_uid:
+                                    logging.info("Radar TCP: node %s claimed by user %s", node_id, owner_uid)
+                                    _log_event(
+                                        "user",
+                                        f"Node {node_id} claimed by user {owner_uid}",
+                                        "info",
+                                        {"node_id": node_id, "user_id": owner_uid},
+                                    )
+                                    await _send_msg(writer, {
+                                        "type": "CLAIM_ACK",
+                                        "node_id": node_id,
+                                        "user_id": owner_uid,
+                                    })
+                                else:
+                                    logging.info("Radar TCP: invalid claim_code from %s", node_id)
+                                    await _send_msg(writer, {
+                                        "type": "CLAIM_NACK",
+                                        "node_id": node_id,
+                                        "error": "invalid or expired claim code",
+                                    })
+                            else:
+                                # Already owned — silently acknowledge so re-running with the
+                                # same code on a re-flashed node is harmless.
+                                # Do NOT echo back user_id to avoid leaking ownership
+                                # to any client that knows the node_id.
+                                await _send_msg(writer, {
+                                    "type": "CLAIM_ACK",
+                                    "node_id": node_id,
+                                    "note": "already_owned",
+                                })
+                        except Exception:
+                            logging.exception("Radar TCP: claim handler error for %s", node_id)
+
                     logging.info("Radar TCP: HELLO from %s (v%s, synthetic=%s, caps=%s)",
                                  node_id, version, is_synth, list(caps.keys()))
                     continue

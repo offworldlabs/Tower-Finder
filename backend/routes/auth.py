@@ -5,10 +5,21 @@ import os
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 
-from core.auth import _ANONYMOUS_USER, AUTH_ENABLED, create_token, get_current_user, get_or_create_user
+from core import state
+from core.auth import (
+    _ANONYMOUS_USER,
+    AUTH_ENABLED,
+    create_claim_code,
+    create_token,
+    get_current_user,
+    get_or_create_user,
+    get_user_nodes,
+    list_claim_codes,
+    revoke_claim_code,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -173,3 +184,61 @@ async def logout():
     response = Response(content='{"ok":true}', media_type="application/json")
     response.delete_cookie("auth_token", path="/")
     return response
+
+
+# ── Node ownership self-service ──────────────────────────────────────────────
+
+@router.get("/me/nodes")
+async def my_nodes(request: Request):
+    """List nodes owned by the currently logged-in user, with live status."""
+    user = await get_current_user(request)
+    node_ids = get_user_nodes(user["id"])
+    out = []
+    with state.connected_nodes_lock:
+        snapshot = {nid: dict(state.connected_nodes.get(nid, {})) for nid in node_ids}
+    for nid in node_ids:
+        info = snapshot.get(nid) or {}
+        cfg = info.get("config", {}) or {}
+        out.append({
+            "node_id": nid,
+            "name": cfg.get("name", nid),
+            "status": info.get("status", "never_connected"),
+            "last_heartbeat": info.get("last_heartbeat"),
+            "is_synthetic": info.get("is_synthetic", False),
+            "rx_lat": cfg.get("rx_lat"),
+            "rx_lon": cfg.get("rx_lon"),
+            "frequency": cfg.get("FC", cfg.get("frequency")),
+        })
+    return out
+
+
+@router.get("/me/claim-codes")
+async def my_claim_codes(request: Request):
+    """List the current user's claim codes (used and unused)."""
+    user = await get_current_user(request)
+    codes = list_claim_codes(user["id"])
+    codes.sort(key=lambda c: c.get("created_at", 0), reverse=True)
+    return codes
+
+
+@router.post("/me/claim-codes")
+async def create_my_claim_code(request: Request):
+    """Generate a new one-time claim code for the current user.
+
+    The code is included in the node's HELLO message to bind that node_id to
+    this user account. Codes expire after 30 days and are single-use.
+    Raises 429 if the user already has 10 active codes.
+    """
+    user = await get_current_user(request)
+    try:
+        return create_claim_code(user["id"])
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
+
+
+@router.delete("/me/claim-codes/{code}")
+async def revoke_my_claim_code(code: str, request: Request):
+    user = await get_current_user(request)
+    if not revoke_claim_code(code, user["id"]):
+        raise HTTPException(404, "Code not found, already used, or not yours")
+    return {"ok": True}

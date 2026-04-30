@@ -252,16 +252,10 @@ const Radar3VerificationLayer = memo(function Radar3VerificationLayer({ visible 
               [[t.truth_lat, t.truth_lon], [t.solver_lat, t.solver_lon]],
               { color: "#facc15", weight: 1.5, opacity: 0.7, dashArray: "3 4" },
             );
-            const label = L.tooltip({
-              permanent: true,
-              direction: "center",
-              className: "radar3-error-label",
-            });
-            line.bindTooltip(label);
-            line.setTooltipContent(`${t.position_error_km.toFixed(1)} km`);
+            line.bindTooltip(`${t.position_error_km.toFixed(1)} km`, { direction: "center", className: "radar3-error-label" });
             dot.addTo(map);
             line.addTo(map);
-            entry = { dot, line, label };
+            entry = { dot, line };
             markers.set(t.hex, entry);
           } else {
             entry.dot.setLatLng([t.truth_lat, t.truth_lon]);
@@ -428,13 +422,7 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer() {
               [[t.truth_lat, t.truth_lon], [t.solver_lat, t.solver_lon]],
               { color: "#f0abfc", weight: 1.5, opacity: 0.7, dashArray: "3 4" },
             );
-            const label = L.tooltip({
-              permanent: true,
-              direction: "center",
-              className: "radar3-error-label",
-            });
-            line.bindTooltip(label);
-            line.setTooltipContent(`${t.position_error_km.toFixed(1)} km`);
+            line.bindTooltip(`${t.position_error_km.toFixed(1)} km`, { direction: "center", className: "radar3-error-label" });
             dot.addTo(map);
             line.addTo(map);
             entry = { dot, line };

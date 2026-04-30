@@ -7,11 +7,8 @@ export default function SettingsPage() {
   const [nodes, setNodes] = useState([]);
 
   useEffect(() => {
-    api.nodes()
-      .then((n) => {
-        const nodeMap = n.nodes || {};
-        setNodes(Object.entries(nodeMap).map(([id, info]: [string, any]) => ({ node_id: id, ...info })));
-      })
+    api.myNodes()
+      .then((n) => setNodes(Array.isArray(n) ? n : []))
       .catch(console.error);
   }, []);
 
@@ -66,7 +63,7 @@ export default function SettingsPage() {
           <div className="card-body">
             {nodes.length === 0 ? (
               <div className="empty-state">
-                <p>Kit assignment and hardware information will be available once your node is provisioned.</p>
+                <p>You don&rsquo;t own any nodes yet. Visit <a href="/onboarding">My Nodes</a> to generate a claim code.</p>
               </div>
             ) : (
               <table>

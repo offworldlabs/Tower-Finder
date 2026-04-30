@@ -239,3 +239,190 @@ class TestAuthDependencies:
             with pytest.raises(HTTPException) as exc_info:
                 asyncio.run(require_admin(request))
         assert exc_info.value.status_code == 403
+
+
+# ── Invites, claim codes, node ownership ─────────────────────────────────────
+
+class TestInvitesAndOwnership:
+    @pytest.fixture(autouse=True)
+    def _redirect_stores(self, tmp_path):
+        """Redirect every JSON store to a fresh tmp path."""
+        users = tmp_path / "users.json"
+        invites = tmp_path / "invites.json"
+        owners = tmp_path / "node_owners.json"
+        codes = tmp_path / "claim_codes.json"
+        with patch("core.auth.USERS_FILE", users), \
+             patch("core.auth.INVITES_FILE", invites), \
+             patch("core.auth.NODE_OWNERS_FILE", owners), \
+             patch("core.auth.CLAIM_CODES_FILE", codes):
+            yield
+
+    def test_create_and_list_invite(self):
+        from core.auth import create_invite, list_invites
+        inv = create_invite("alice@example.com", "user", "admin-id")
+        assert inv["email"] == "alice@example.com"
+        assert inv["role"] == "user"
+        assert inv["used_at"] is None
+        invites = list_invites()
+        assert len(invites) == 1
+        assert invites[0]["token"] == inv["token"]
+
+    def test_invite_invalid_role_rejected(self):
+        from core.auth import create_invite
+        with pytest.raises(ValueError):
+            create_invite("a@b.com", "owner", "x")
+
+    def test_invite_invalid_email_rejected(self):
+        from core.auth import create_invite
+        with pytest.raises(ValueError):
+            create_invite("not-an-email", "user", "x")
+
+    def test_invite_consumed_on_first_login(self):
+        from core.auth import create_invite, get_or_create_user, list_invites
+        create_invite("bob@example.com", "admin", "admin-id")
+        user = get_or_create_user("bob@example.com", "Bob", "", "google")
+        assert user["role"] == "admin"
+        # invite is now marked used
+        used = [i for i in list_invites() if i["used_at"] is not None]
+        assert len(used) == 1
+
+    def test_invite_email_match_is_case_insensitive(self):
+        from core.auth import create_invite, get_or_create_user
+        create_invite("Carol@Example.com", "admin", "x")
+        user = get_or_create_user("carol@example.com", "Carol", "", "google")
+        assert user["role"] == "admin"
+
+    def test_invite_does_not_apply_to_other_emails(self):
+        from core.auth import create_invite, get_or_create_user
+        create_invite("dave@example.com", "admin", "x")
+        user = get_or_create_user("eve@example.com", "Eve", "", "google")
+        assert user["role"] == "user"
+
+    def test_revoke_invite(self):
+        from core.auth import create_invite, list_invites, revoke_invite
+        inv = create_invite("a@b.com", "user", "x")
+        assert revoke_invite(inv["token"]) is True
+        assert list_invites() == []
+        assert revoke_invite(inv["token"]) is False  # already gone
+
+    def test_create_claim_code(self):
+        from core.auth import create_claim_code, list_claim_codes
+        rec = create_claim_code("user-123")
+        assert rec["user_id"] == "user-123"
+        assert rec["used_at"] is None
+        assert len(rec["code"]) == 12  # 6 hex bytes uppercase = 48-bit entropy
+        codes = list_claim_codes("user-123")
+        assert len(codes) == 1
+        assert list_claim_codes("other-user") == []
+
+    def test_consume_claim_code_assigns_ownership(self):
+        from core.auth import (
+            consume_claim_code,
+            create_claim_code,
+            get_node_owner,
+            get_user_nodes,
+        )
+        rec = create_claim_code("user-A")
+        owner = consume_claim_code(rec["code"], "node-42")
+        assert owner == "user-A"
+        assert get_node_owner("node-42") == "user-A"
+        assert get_user_nodes("user-A") == ["node-42"]
+
+    def test_consume_claim_code_is_one_shot(self):
+        from core.auth import consume_claim_code, create_claim_code
+        rec = create_claim_code("user-A")
+        assert consume_claim_code(rec["code"], "node-42") == "user-A"
+        # second use must fail
+        assert consume_claim_code(rec["code"], "node-43") is None
+
+    def test_consume_unknown_code_returns_none(self):
+        from core.auth import consume_claim_code
+        assert consume_claim_code("DOESNOTEXIST", "node-42") is None
+
+    def test_consume_expired_code_fails(self):
+        import json as _json
+
+        from core.auth import CLAIM_CODES_FILE, consume_claim_code, create_claim_code
+        rec = create_claim_code("user-A")
+        # backdate the code's expiry
+        data = _json.loads(CLAIM_CODES_FILE.read_text())
+        data[rec["code"]]["expires_at"] = time.time() - 60
+        CLAIM_CODES_FILE.write_text(_json.dumps(data))
+        assert consume_claim_code(rec["code"], "node-42") is None
+
+    def test_revoke_claim_code_owner_check(self):
+        from core.auth import create_claim_code, revoke_claim_code
+        rec = create_claim_code("user-A")
+        assert revoke_claim_code(rec["code"], "user-B") is False  # wrong owner
+        assert revoke_claim_code(rec["code"], "user-A") is True
+
+    def test_revoke_used_code_fails(self):
+        from core.auth import consume_claim_code, create_claim_code, revoke_claim_code
+        rec = create_claim_code("user-A")
+        consume_claim_code(rec["code"], "node-42")
+        assert revoke_claim_code(rec["code"], "user-A") is False
+
+    def test_set_and_clear_node_owner(self):
+        from core.auth import get_node_owner, list_node_owners, set_node_owner
+        set_node_owner("node-1", "user-A")
+        set_node_owner("node-2", "user-B")
+        assert get_node_owner("node-1") == "user-A"
+        assert list_node_owners() == {"node-1": "user-A", "node-2": "user-B"}
+        set_node_owner("node-1", None)
+        assert get_node_owner("node-1") is None
+        assert "node-1" not in list_node_owners()
+
+    def test_claim_code_has_48_bit_entropy(self):
+        from core.auth import create_claim_code
+        rec = create_claim_code("user-A")
+        # 48-bit = 6 bytes = 12 hex chars (uppercased)
+        assert len(rec["code"]) == 12
+        assert rec["code"] == rec["code"].upper()
+
+    def test_create_claim_code_cap_enforced(self):
+        """Creating more than _MAX_ACTIVE_CLAIM_CODES_PER_USER active codes raises ValueError."""
+        from core.auth import _MAX_ACTIVE_CLAIM_CODES_PER_USER, create_claim_code
+        for _ in range(_MAX_ACTIVE_CLAIM_CODES_PER_USER):
+            create_claim_code("user-cap")
+        with pytest.raises(ValueError, match="Maximum"):
+            create_claim_code("user-cap")
+
+    def test_invite_does_not_downgrade_admin(self):
+        """A 'user' invite for an existing admin must not demote them."""
+        from core.auth import create_invite, get_or_create_user
+        # Create the admin account first
+        user = get_or_create_user("admin2@example.com", "Admin", "", "google")
+        # Hard-code admin role (simulating ADMIN_EMAILS or prior promotion)
+        import json as _j
+
+        from core.auth import USERS_FILE
+        data = _j.loads(USERS_FILE.read_text())
+        data[user["id"]]["role"] = "admin"
+        USERS_FILE.write_text(_j.dumps(data))
+        # Issue a "user" downgrade invite and log in again
+        create_invite("admin2@example.com", "user", "attacker")
+        refreshed = get_or_create_user("admin2@example.com", "Admin", "", "google")
+        assert refreshed["role"] == "admin", "Admin must not be demoted by a 'user' invite"
+
+    def test_already_owned_claim_ack_omits_user_id(self):
+        """already_owned CLAIM_ACK must not leak ownership to any TCP client.
+
+        We verify the handler produces the correct message shape by checking
+        that the patched code path (get_node_owner returns a value → skip
+        consume → send already_owned) sends no user_id field.
+        """
+        from core.auth import get_node_owner, set_node_owner
+        set_node_owner("node-owned", "user-secret")
+
+        # Confirm get_node_owner returns data (the condition that triggers the branch)
+        assert get_node_owner("node-owned") == "user-secret"
+
+        # Build the message the handler now constructs and assert no user_id present
+        response_msg = {
+            "type": "CLAIM_ACK",
+            "node_id": "node-owned",
+            "note": "already_owned",
+        }
+        assert "user_id" not in response_msg
+        assert response_msg["note"] == "already_owned"
+

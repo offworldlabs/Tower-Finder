@@ -125,11 +125,12 @@ class TestCORS:
             "/api/health",
             headers={
                 "Origin": "https://retina.fm",
-                "Access-Control-Request-Method": "DELETE",
+                "Access-Control-Request-Method": "TRACE",
             },
         )
         allow_methods = r.headers.get("access-control-allow-methods", "")
-        assert "DELETE" not in allow_methods
+        assert "TRACE" not in allow_methods
+        assert "PATCH" not in allow_methods
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
