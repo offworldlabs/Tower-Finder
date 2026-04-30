@@ -32,9 +32,9 @@ from core.auth import (
     get_user_by_id,
     list_invites,
     list_node_owners,
+    require_admin,
     revoke_invite,
     set_node_owner,
-    require_admin,
     update_user_role,
 )
 from core.task_registry import TASK_EXPECTED_INTERVAL_S
@@ -169,7 +169,7 @@ async def admin_create_invite(body: InviteCreate, admin=Depends(require_admin)):
     try:
         invite = create_invite(body.email, body.role, admin["id"])
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     log_event("user", f"Invited {body.email} as {body.role}", "info",
               {"email": body.email, "role": body.role, "by": admin["email"]})
     return invite

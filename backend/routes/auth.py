@@ -8,6 +8,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 
+from core import state
 from core.auth import (
     _ANONYMOUS_USER,
     AUTH_ENABLED,
@@ -19,7 +20,6 @@ from core.auth import (
     list_claim_codes,
     revoke_claim_code,
 )
-from core import state
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -233,7 +233,7 @@ async def create_my_claim_code(request: Request):
     try:
         return create_claim_code(user["id"])
     except ValueError as e:
-        raise HTTPException(status_code=429, detail=str(e))
+        raise HTTPException(status_code=429, detail=str(e)) from e
 
 
 @router.delete("/me/claim-codes/{code}")

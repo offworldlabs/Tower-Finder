@@ -341,6 +341,7 @@ class TestInvitesAndOwnership:
 
     def test_consume_expired_code_fails(self):
         import json as _json
+
         from core.auth import CLAIM_CODES_FILE, consume_claim_code, create_claim_code
         rec = create_claim_code("user-A")
         # backdate the code's expiry
@@ -393,6 +394,7 @@ class TestInvitesAndOwnership:
         user = get_or_create_user("admin2@example.com", "Admin", "", "google")
         # Hard-code admin role (simulating ADMIN_EMAILS or prior promotion)
         import json as _j
+
         from core.auth import USERS_FILE
         data = _j.loads(USERS_FILE.read_text())
         data[user["id"]]["role"] = "admin"
