@@ -14,9 +14,11 @@ from pathlib import Path
 _admin_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="admin-io")
 
 import orjson
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.constants import (
     CONFIG_LIVE_CACHE_TTL_S,
@@ -27,17 +29,20 @@ from config.constants import (
 from core import state
 from core.auth import (
     create_invite,
-    get_all_users,
-    get_current_user,
-    get_user_by_id,
     list_invites,
     list_node_owners,
-    require_admin,
     revoke_invite,
     set_node_owner,
-    update_user_role,
 )
 from core.task_registry import TASK_EXPECTED_INTERVAL_S
+from core.users import (
+    User,
+    _user_to_dict,
+    async_session_maker,
+    get_async_session,
+    get_current_user,
+    require_admin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,8 +138,13 @@ def check_node_health():
 # ── Users ─────────────────────────────────────────────────────────────────────
 
 @router.get("/users")
-async def list_users(_admin=Depends(require_admin)):
-    return get_all_users()
+async def list_users(
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+    _admin=Depends(require_admin),
+):
+    result = await session.execute(select(User))
+    return [_user_to_dict(u) for u in result.scalars().all()]
 
 
 class RoleUpdate(BaseModel):
@@ -142,12 +152,28 @@ class RoleUpdate(BaseModel):
 
 
 @router.put("/users/{user_id}/role")
-async def set_user_role(user_id: str, body: RoleUpdate, _admin=Depends(require_admin)):
-    user = update_user_role(user_id, body.role)
+async def set_user_role(
+    user_id: str,
+    body: RoleUpdate,
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+    _admin=Depends(require_admin),
+):
+    if body.role not in ("user", "admin"):
+        raise HTTPException(400, "Invalid role — must be 'user' or 'admin'")
+    try:
+        import uuid as _uuid
+        uid = _uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(404, "User not found")
+    user = await session.get(User, uid)
     if not user:
-        raise HTTPException(404, "User not found or invalid role")
-    log_event("user", f"Role changed to {body.role} for {user['email']}", "warning")
-    return user
+        raise HTTPException(404, "User not found")
+    user.is_superuser = body.role == "admin"
+    await session.commit()
+    await session.refresh(user)
+    log_event("user", f"Role changed to {body.role} for {user.email}", "warning")
+    return _user_to_dict(user)
 
 
 # ── Invites (admin pre-approves users by email) ──────────────────────────────
@@ -190,27 +216,45 @@ class NodeOwnerUpdate(BaseModel):
 
 
 @router.get("/node-owners")
-async def admin_list_node_owners(_admin=Depends(require_admin)):
+async def admin_list_node_owners(
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+    _admin=Depends(require_admin),
+):
     """Return {node_id: {user_id, email, name}} for every owned node."""
     owners = list_node_owners()
-    # Build a users map in one disk read rather than N per-user reads.
-    users_map = {u["id"]: u for u in get_all_users()}
+    # Build users map in one DB query rather than N per-user lookups.
+    all_users_result = await session.execute(select(User))
+    users_map = {str(u.id): u for u in all_users_result.scalars().all()}
     result = {}
     for nid, uid in owners.items():
         u = users_map.get(uid)
         result[nid] = {
             "user_id": uid,
-            "email": u["email"] if u else None,
-            "name": u["name"] if u else None,
+            "email": u.email if u else None,
+            "name": u.name if u else None,
         }
     return result
 
 
 @router.put("/nodes/{node_id}/owner")
-async def admin_set_node_owner(node_id: str, body: NodeOwnerUpdate, admin=Depends(require_admin)):
+async def admin_set_node_owner(
+    node_id: str,
+    body: NodeOwnerUpdate,
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+    admin=Depends(require_admin),
+):
     """Assign or clear node ownership. Pass user_id=null to unassign."""
-    if body.user_id is not None and get_user_by_id(body.user_id) is None:
-        raise HTTPException(404, "User not found")
+    if body.user_id is not None:
+        try:
+            import uuid as _uuid
+            uid = _uuid.UUID(body.user_id)
+        except ValueError:
+            raise HTTPException(404, "User not found")
+        user = await session.get(User, uid)
+        if not user:
+            raise HTTPException(404, "User not found")
     set_node_owner(node_id, body.user_id)
     log_event(
         "user",

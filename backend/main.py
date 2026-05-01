@@ -82,6 +82,10 @@ async def lifespan(app: FastAPI):
     # Start runtime coverage if COVERAGE_ENABLED=1
     _start_coverage()
 
+    # Initialise SQLite user database (creates tables on first run)
+    from core.users import create_db_and_tables
+    await create_db_and_tables()
+
     # Restore persisted state before accepting connections
     restored = restore_snapshot()
 
