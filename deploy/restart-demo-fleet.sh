@@ -85,7 +85,6 @@ esac
 MODE="${MODE:-adsb}"
 BEAM_WIDTH_DEG="${BEAM_WIDTH_DEG:-0}"
 MAX_RANGE_KM="${MAX_RANGE_KM:-0}"
-METROS="${METROS:-atl,gvl,clt}"
 CONNECT_RETRIES="${CONNECT_RETRIES:-5}"
 FRAME_QUEUE_SIZE="${FRAME_QUEUE_SIZE:-10000}"
 
@@ -112,7 +111,6 @@ nohup python3 -m retina_simulation.orchestrator \
   --max-aircraft "$MAX_AIRCRAFT" \
   --beam-width-deg "$BEAM_WIDTH_DEG" \
   --max-range-km "$MAX_RANGE_KM" \
-  --metros "$METROS" \
   > "$LOG_FILE" 2>&1 &
 
 echo $! > "$PID_FILE"
