@@ -104,3 +104,17 @@ _.model_config
 # ── ASGI / Starlette middleware ───────────────────────────────────────────────
 # dispatch() is the required override entry-point for BaseHTTPMiddleware.
 _.dispatch
+
+
+# ── core/users.py ─────────────────────────────────────────────────────────────
+# fastapi-users schemas — UserRead/UserUpdate are the public API shapes
+# consumed by fastapi-users' router factory and the OpenAPI schema.
+UserRead
+UserUpdate
+# Class-level attributes on UserManager; fastapi-users reads them via
+# class introspection, not direct assignment.
+_.reset_password_token_secret
+_.verification_token_secret
+# fastapi_users is the top-level registry object; its sub-routers are
+# mounted in main.py via fastapi_users.get_*_router() calls.
+fastapi_users
