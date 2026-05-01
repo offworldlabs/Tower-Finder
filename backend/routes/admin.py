@@ -184,7 +184,7 @@ class InviteCreate(BaseModel):
 
 @router.get("/invites")
 async def admin_list_invites(_admin=Depends(require_admin)):
-    invites = list_invites()
+    invites = await list_invites()
     invites.sort(key=lambda i: i.get("created_at", 0), reverse=True)
     return invites
 
@@ -192,7 +192,7 @@ async def admin_list_invites(_admin=Depends(require_admin)):
 @router.post("/invites")
 async def admin_create_invite(body: InviteCreate, admin=Depends(require_admin)):
     try:
-        invite = create_invite(body.email, body.role, admin["id"])
+        invite = await create_invite(body.email, body.role, admin["id"])
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     log_event("user", f"Invited {body.email} as {body.role}", "info",
@@ -202,7 +202,7 @@ async def admin_create_invite(body: InviteCreate, admin=Depends(require_admin)):
 
 @router.delete("/invites/{token}")
 async def admin_revoke_invite(token: str, admin=Depends(require_admin)):
-    if not revoke_invite(token):
+    if not await revoke_invite(token):
         raise HTTPException(404, "Invite not found")
     log_event("user", "Invite revoked", "info", {"token": token, "by": admin["email"]})
     return {"ok": True}
@@ -221,7 +221,7 @@ async def admin_list_node_owners(
     _admin=Depends(require_admin),
 ):
     """Return {node_id: {user_id, email, name}} for every owned node."""
-    owners = list_node_owners()
+    owners = await list_node_owners()
     # Build users map in one DB query rather than N per-user lookups.
     all_users_result = await session.execute(select(User))
     users_map = {str(u.id): u for u in all_users_result.scalars().all()}
@@ -253,7 +253,7 @@ async def admin_set_node_owner(
         user = await session.get(User, uid)
         if not user:
             raise HTTPException(404, "User not found")
-    set_node_owner(node_id, body.user_id)
+    await set_node_owner(node_id, body.user_id)
     log_event(
         "user",
         f"Node {node_id} owner set to {body.user_id or '(unassigned)'}",

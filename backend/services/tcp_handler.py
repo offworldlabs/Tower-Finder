@@ -176,9 +176,9 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                     if claim_code:
                         try:
                             from core.auth import consume_claim_code, get_node_owner
-                            existing_owner = get_node_owner(node_id)
+                            existing_owner = await get_node_owner(node_id)
                             if existing_owner is None:
-                                owner_uid = consume_claim_code(claim_code, node_id)
+                                owner_uid = await consume_claim_code(claim_code, node_id)
                                 if owner_uid:
                                     logging.info("Radar TCP: node %s claimed by user %s", node_id, owner_uid)
                                     _log_event(

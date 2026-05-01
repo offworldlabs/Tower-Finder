@@ -118,3 +118,16 @@ _.verification_token_secret
 # fastapi_users is the top-level registry object; its sub-routers are
 # mounted in main.py via fastapi_users.get_*_router() calls.
 fastapi_users
+# SQLAlchemy model attributes — accessed via ORM column descriptors,
+# not direct attribute lookups that vulture can trace.
+_.token
+_.email
+_.role
+_.created_by
+_.created_at
+_.expires_at
+_.used_at
+_.node_id
+_.user_id
+_.code
+_.used_by_node_id

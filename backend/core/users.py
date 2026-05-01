@@ -17,7 +17,7 @@ from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin, schemas
 from fastapi_users.authentication import AuthenticationBackend, CookieTransport, JWTStrategy
 from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
 from fastapi_users.exceptions import UserAlreadyExists, UserNotExists
-from sqlalchemy import DateTime, String, func
+from sqlalchemy import DateTime, Float, String, func
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -68,6 +68,36 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
         server_default=func.now(),
         nullable=False,
     )
+
+
+class Invite(Base):
+    __tablename__ = "invites"
+
+    token: Mapped[str] = mapped_column(String(32), primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    role: Mapped[str] = mapped_column(String(20))
+    created_by: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[float] = mapped_column(Float)
+    expires_at: Mapped[float] = mapped_column(Float)
+    used_at: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+
+
+class NodeOwner(Base):
+    __tablename__ = "node_owners"
+
+    node_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+
+
+class ClaimCode(Base):
+    __tablename__ = "claim_codes"
+
+    code: Mapped[str] = mapped_column(String(12), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(255), index=True)
+    created_at: Mapped[float] = mapped_column(Float)
+    expires_at: Mapped[float] = mapped_column(Float)
+    used_at: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
+    used_by_node_id: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
 
 
 engine = create_async_engine(DATABASE_URL)
@@ -260,7 +290,7 @@ async def get_or_create_oauth_user(
             user.avatar = avatar
             user.provider = provider
             # Allow a pending "admin" invite to upgrade an existing user's role
-            invited_role = consume_invite_fn(email)
+            invited_role = await consume_invite_fn(email)
             if invited_role == "admin" and not user.is_superuser:
                 user.is_superuser = True
             await session.commit()
@@ -268,7 +298,7 @@ async def get_or_create_oauth_user(
             return user
 
         except UserNotExists:
-            invited_role = consume_invite_fn(email)
+            invited_role = await consume_invite_fn(email)
             is_superuser = email in ADMIN_EMAILS or invited_role == "admin"
             user_create = UserCreate(
                 email=email,
