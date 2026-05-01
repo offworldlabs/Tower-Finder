@@ -95,9 +95,10 @@ def is_synthetic_node(node_id: str) -> bool:
     Marks as synthetic any node with a test/simulation prefix:
     - synth-* — simulated fleet orchestrator nodes
     - e2e-* — frontend E2E test nodes (including bulk registration)
+    - realnode-* — legacy E2E test nodes from prior CI runs
     - test-* — backend test suite nodes
     """
-    return any(node_id.startswith(p) for p in ("synth-", "e2e-", "test-"))
+    return any(node_id.startswith(p) for p in ("synth-", "e2e-", "realnode-", "test-"))
 
 
 async def _send_msg(writer: asyncio.StreamWriter, msg: dict):
@@ -175,9 +176,9 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                     if claim_code:
                         try:
                             from core.auth import consume_claim_code, get_node_owner
-                            existing_owner = get_node_owner(node_id)
+                            existing_owner = await get_node_owner(node_id)
                             if existing_owner is None:
-                                owner_uid = consume_claim_code(claim_code, node_id)
+                                owner_uid = await consume_claim_code(claim_code, node_id)
                                 if owner_uid:
                                     logging.info("Radar TCP: node %s claimed by user %s", node_id, owner_uid)
                                     _log_event(

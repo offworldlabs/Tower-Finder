@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from clients.fcc import fetch_fcc_broadcast_systems
 from clients.maprad import fetch_broadcast_systems
-from core.auth import require_admin
+from core.users import require_admin
 from services.alerting import send_alert
 from services.tower_ranking import (
     _CONFIG_PATH,

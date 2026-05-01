@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from config.constants import RATE_BUCKETS_MAX_IPS
 from core import state
-from core.auth import require_admin
+from core.users import require_admin
 from pipeline.passive_radar import PassiveRadarPipeline
 from services.tcp_handler import is_synthetic_node
 

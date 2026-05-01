@@ -1,7 +1,15 @@
-"""OAuth2 authentication routes — Google & GitHub SSO."""
+"""OAuth2 authentication routes — Google & GitHub SSO.
 
+The OAuth flow is implemented here (custom routes keep the URL paths stable
+so the frontend needs no changes). JWT issuance and cookie management are
+fully delegated to fastapi-users' JWTStrategy + CookieTransport.
+"""
+
+import hashlib
+import hmac as _hmac
 import logging
 import os
+import secrets
 from urllib.parse import urlencode
 
 import httpx
@@ -10,15 +18,20 @@ from fastapi.responses import RedirectResponse
 
 from core import state
 from core.auth import (
-    _ANONYMOUS_USER,
-    AUTH_ENABLED,
+    consume_invite_for_email,
     create_claim_code,
-    create_token,
-    get_current_user,
-    get_or_create_user,
     get_user_nodes,
     list_claim_codes,
     revoke_claim_code,
+)
+from core.users import (
+    ANONYMOUS_USER,
+    AUTH_BYPASS,
+    JWT_LIFETIME_SECONDS,
+    JWT_SECRET,
+    get_current_user,
+    get_jwt_strategy,
+    get_or_create_oauth_user,
 )
 
 logger = logging.getLogger(__name__)
@@ -31,10 +44,52 @@ GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "")
 
 
 def _fix_scheme(url: str) -> str:
-    """Ensure HTTPS when behind a reverse proxy."""
     if os.getenv("FORCE_HTTPS", "true").lower() == "true":
         return url.replace("http://", "https://", 1)
     return url
+
+
+def _safe_redirect(state_param: str) -> str:
+    """Validate the redirect target to prevent open-redirect attacks."""
+    if state_param and state_param.startswith("/") and not state_param.startswith("//"):
+        return state_param
+    return "/"
+
+
+def _make_oauth_state(redirect: str) -> str:
+    """Return an HMAC-signed state token: {nonce}:{sig}:{redirect}."""
+    nonce = secrets.token_urlsafe(16)
+    msg = f"{nonce}:{redirect}".encode()
+    sig = _hmac.new(JWT_SECRET.encode(), msg, hashlib.sha256).hexdigest()
+    return f"{nonce}:{sig}:{redirect}"
+
+
+def _verify_oauth_state(state: str) -> str | None:
+    """Verify HMAC-signed OAuth state. Returns safe redirect URL or None on failure."""
+    parts = state.split(":", 2)
+    if len(parts) != 3:
+        return None
+    nonce, sig, redirect = parts
+    msg = f"{nonce}:{redirect}".encode()
+    expected = _hmac.new(JWT_SECRET.encode(), msg, hashlib.sha256).hexdigest()
+    if not _hmac.compare_digest(expected, sig):
+        return None
+    return _safe_redirect(redirect)
+
+
+async def _set_auth_cookie(response: Response, user) -> None:
+    """Write the fastapi-users JWT into the auth_token cookie."""
+    strategy = get_jwt_strategy()
+    token = await strategy.write_token(user)
+    response.set_cookie(
+        "auth_token",
+        token,
+        max_age=JWT_LIFETIME_SECONDS,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
 
 
 # ── Google OAuth ──────────────────────────────────────────────────────────────
@@ -47,14 +102,19 @@ async def login_google(request: Request, redirect: str = "/"):
         "redirect_uri": callback,
         "response_type": "code",
         "scope": "openid email profile",
-        "state": redirect,
+        "state": _make_oauth_state(redirect),
         "prompt": "select_account",
     }
-    return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}")
+    return RedirectResponse(
+        f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
+    )
 
 
 @router.get("/callback/google", name="callback_google")
-async def callback_google(request: Request, code: str = "", state: str = "/"):
+async def callback_google(request: Request, code: str = "", state: str = ""):
+    redirect_url = _verify_oauth_state(state)
+    if redirect_url is None:
+        return RedirectResponse("/login?error=invalid_state")
     callback = _fix_scheme(str(request.url_for("callback_google")))
     async with httpx.AsyncClient(timeout=15) as client:
         tok = await client.post(
@@ -78,21 +138,19 @@ async def callback_google(request: Request, code: str = "", state: str = "/"):
         )
         userinfo = info.json()
 
-    user = get_or_create_user(
-        email=userinfo["email"],
+    email = userinfo.get("email")
+    if not email:
+        return RedirectResponse("/login?error=no_email")
+
+    user = await get_or_create_oauth_user(
+        email=email,
         name=userinfo.get("name", ""),
         avatar=userinfo.get("picture", ""),
         provider="google",
+        consume_invite_fn=consume_invite_for_email,
     )
-    token = create_token(user)
-    # Validate redirect to prevent open-redirect attacks
-    safe_redirect = state if state and state.startswith("/") and not state.startswith("//") else "/"
-    response = RedirectResponse(safe_redirect)
-    response.set_cookie(
-        "auth_token", token,
-        httponly=True, secure=True, samesite="lax",
-        max_age=86400 * 7, path="/",
-    )
+    response = RedirectResponse(redirect_url)
+    await _set_auth_cookie(response, user)
     return response
 
 
@@ -105,13 +163,18 @@ async def login_github(request: Request, redirect: str = "/"):
         "client_id": GITHUB_CLIENT_ID,
         "redirect_uri": callback,
         "scope": "read:user user:email",
-        "state": redirect,
+        "state": _make_oauth_state(redirect),
     }
-    return RedirectResponse(f"https://github.com/login/oauth/authorize?{urlencode(params)}")
+    return RedirectResponse(
+        f"https://github.com/login/oauth/authorize?{urlencode(params)}"
+    )
 
 
 @router.get("/callback/github", name="callback_github")
-async def callback_github(request: Request, code: str = "", state: str = "/"):
+async def callback_github(request: Request, code: str = "", state: str = ""):
+    redirect_url = _verify_oauth_state(state)
+    if redirect_url is None:
+        return RedirectResponse("/login?error=invalid_state")
     async with httpx.AsyncClient(timeout=15) as client:
         tok = await client.post(
             "https://github.com/login/oauth/access_token",
@@ -128,43 +191,36 @@ async def callback_github(request: Request, code: str = "", state: str = "/"):
         tokens = tok.json()
         access_token = tokens.get("access_token", "")
 
-        # Get user profile
         user_resp = await client.get(
             "https://api.github.com/user",
             headers={"Authorization": f"Bearer {access_token}"},
         )
         profile = user_resp.json()
 
-        # Get primary email (may be private)
         email = profile.get("email")
         if not email:
             emails_resp = await client.get(
                 "https://api.github.com/user/emails",
                 headers={"Authorization": f"Bearer {access_token}"},
             )
-            for e in emails_resp.json():
-                if e.get("primary"):
-                    email = e["email"]
-                    break
+            if emails_resp.status_code == 200:
+                for e in emails_resp.json():
+                    if e.get("primary"):
+                        email = e["email"]
+                        break
 
     if not email:
         return RedirectResponse("/login?error=no_email")
 
-    user = get_or_create_user(
+    user = await get_or_create_oauth_user(
         email=email,
         name=profile.get("name") or profile.get("login", ""),
         avatar=profile.get("avatar_url", ""),
         provider="github",
+        consume_invite_fn=consume_invite_for_email,
     )
-    token = create_token(user)
-    # Validate redirect to prevent open-redirect attacks
-    safe_redirect = state if state and state.startswith("/") and not state.startswith("//") else "/"
-    response = RedirectResponse(safe_redirect)
-    response.set_cookie(
-        "auth_token", token,
-        httponly=True, secure=True, samesite="lax",
-        max_age=86400 * 7, path="/",
-    )
+    response = RedirectResponse(redirect_url)
+    await _set_auth_cookie(response, user)
     return response
 
 
@@ -172,11 +228,10 @@ async def callback_github(request: Request, code: str = "", state: str = "/"):
 
 @router.get("/me")
 async def me(request: Request):
-    """Return current user info (or 401). When AUTH_ENABLED=False, returns anonymous admin."""
-    if not AUTH_ENABLED:
-        return {**_ANONYMOUS_USER, "auth_enabled": False}
-    user = await get_current_user(request)
-    return {**{k: v for k, v in user.items()}, "auth_enabled": True}
+    if AUTH_BYPASS:
+        return {**ANONYMOUS_USER, "auth_enabled": False}
+    user_dict = await get_current_user(request)
+    return {**user_dict, "auth_enabled": True}
 
 
 @router.post("/logout")
@@ -186,13 +241,12 @@ async def logout():
     return response
 
 
-# ── Node ownership self-service ──────────────────────────────────────────────
+# ── Node ownership self-service ───────────────────────────────────────────────
 
 @router.get("/me/nodes")
 async def my_nodes(request: Request):
-    """List nodes owned by the currently logged-in user, with live status."""
     user = await get_current_user(request)
-    node_ids = get_user_nodes(user["id"])
+    node_ids = await get_user_nodes(user["id"])
     out = []
     with state.connected_nodes_lock:
         snapshot = {nid: dict(state.connected_nodes.get(nid, {})) for nid in node_ids}
@@ -214,24 +268,17 @@ async def my_nodes(request: Request):
 
 @router.get("/me/claim-codes")
 async def my_claim_codes(request: Request):
-    """List the current user's claim codes (used and unused)."""
     user = await get_current_user(request)
-    codes = list_claim_codes(user["id"])
+    codes = await list_claim_codes(user["id"])
     codes.sort(key=lambda c: c.get("created_at", 0), reverse=True)
     return codes
 
 
 @router.post("/me/claim-codes")
 async def create_my_claim_code(request: Request):
-    """Generate a new one-time claim code for the current user.
-
-    The code is included in the node's HELLO message to bind that node_id to
-    this user account. Codes expire after 30 days and are single-use.
-    Raises 429 if the user already has 10 active codes.
-    """
     user = await get_current_user(request)
     try:
-        return create_claim_code(user["id"])
+        return await create_claim_code(user["id"])
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
 
@@ -239,6 +286,6 @@ async def create_my_claim_code(request: Request):
 @router.delete("/me/claim-codes/{code}")
 async def revoke_my_claim_code(code: str, request: Request):
     user = await get_current_user(request)
-    if not revoke_claim_code(code, user["id"]):
+    if not await revoke_claim_code(code, user["id"]):
         raise HTTPException(404, "Code not found, already used, or not yours")
     return {"ok": True}
