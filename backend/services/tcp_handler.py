@@ -95,9 +95,10 @@ def is_synthetic_node(node_id: str) -> bool:
     Marks as synthetic any node with a test/simulation prefix:
     - synth-* — simulated fleet orchestrator nodes
     - e2e-* — frontend E2E test nodes (including bulk registration)
+    - realnode-* — legacy E2E test nodes from prior CI runs
     - test-* — backend test suite nodes
     """
-    return any(node_id.startswith(p) for p in ("synth-", "e2e-", "test-"))
+    return any(node_id.startswith(p) for p in ("synth-", "e2e-", "realnode-", "test-"))
 
 
 async def _send_msg(writer: asyncio.StreamWriter, msg: dict):

@@ -115,6 +115,9 @@ class TestIsSyntheticNode:
     def test_test_prefix(self):
         assert is_synthetic_node("test-node-001") is True
 
+    def test_realnode_prefix(self):
+        assert is_synthetic_node("realnode-mommpy5s") is True
+
     def test_non_synthetic(self):
         assert is_synthetic_node("net13") is False
 
