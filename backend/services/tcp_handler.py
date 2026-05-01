@@ -90,8 +90,14 @@ def _validate_node_config(config: dict) -> str | None:
 
 
 def is_synthetic_node(node_id: str) -> bool:
-    """Detect synthetic/test nodes by their ID prefix."""
-    return node_id.startswith("synth-")
+    """Detect synthetic/test nodes by their ID prefix.
+
+    Marks as synthetic any node with a test/simulation prefix:
+    - synth-* — simulated fleet orchestrator nodes
+    - e2e-* — frontend E2E test nodes (including bulk registration)
+    - test-* — backend test suite nodes
+    """
+    return any(node_id.startswith(p) for p in ("synth-", "e2e-", "test-"))
 
 
 async def _send_msg(writer: asyncio.StreamWriter, msg: dict):

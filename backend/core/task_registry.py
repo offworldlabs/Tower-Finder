@@ -13,6 +13,7 @@ TASK_EXPECTED_INTERVAL_S: dict[str, int] = {
     "archive_flush": 120,
     "archive_lifecycle": 3600,
     "reputation_evaluator": 120,
+    "prune_synthetic_nodes": 21600,  # Every 6 hours
     "adsb_truth_fetcher": 300,
     "solver": 120,
     "storage_refresh": 720,   # expected every 300 s; alert if >2× late

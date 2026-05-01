@@ -23,6 +23,7 @@ MAX_AIRCRAFT="${MAX_AIRCRAFT:-100}"
 CONCURRENCY="${CONCURRENCY:-20}"
 VALIDATION_URL="${VALIDATION_URL:-https://localhost}"
 CONNECT_RETRIES="${CONNECT_RETRIES:-999}"
+METROS="${METROS:-atl,gvl,clt}"
 APP_DIR="${APP_DIR:-/opt/tower-finder}"
 
 # RADAR_API_KEY MUST be set — refuse to start without it so ground-truth
@@ -51,7 +52,7 @@ sleep 3
 
 # ── Start new fleet unit ──────────────────────────────────────────────────────
 UNIT_NAME="fleet$(date +%s | tail -c 5)"  # e.g. fleet48422
-echo "==> Starting $UNIT_NAME (nodes=$NODES, interval=${INTERVAL}s, time_scale=${TIME_SCALE}x)..."
+echo "==> Starting $UNIT_NAME (nodes=$NODES, interval=${INTERVAL}s, time_scale=${TIME_SCALE}x, metros=$METROS)..."
 
 systemd-run \
     --unit="$UNIT_NAME" \
@@ -66,7 +67,8 @@ systemd-run \
         --interval "$INTERVAL" \
         --time-scale "$TIME_SCALE" \
         --min-aircraft "$MIN_AIRCRAFT" \
-        --max-aircraft "$MAX_AIRCRAFT"
+        --max-aircraft "$MAX_AIRCRAFT" \
+        --metros "$METROS"
 
 # ── Verify it's running ───────────────────────────────────────────────────────
 sleep 2
