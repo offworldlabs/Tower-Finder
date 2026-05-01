@@ -338,14 +338,14 @@ class TestGoldenPath_Layer3_HttpApi:
         """
         from pathlib import Path
 
-        import core.auth as _auth
+        import core.users as _users
         from services.tower_ranking import _CONFIG_PATH
 
         # Snapshot the real config file so we can restore it even if auth bypasses.
         _cfg_path = Path(_CONFIG_PATH)
         _original = _cfg_path.read_bytes()
         try:
-            with patch.object(_auth, "AUTH_ENABLED", True):
+            with patch.object(_users, "AUTH_ENABLED", True):
                 r = client.put("/api/config", json={"golden_path_test": True})
             # Without a valid JWT the server must refuse the write.
             assert r.status_code in (401, 403), (
