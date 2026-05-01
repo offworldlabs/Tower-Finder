@@ -42,9 +42,9 @@ ADMIN_EMAILS: set[str] = {
 
 AUTH_ENABLED = bool(os.getenv("GOOGLE_CLIENT_ID") or os.getenv("GITHUB_CLIENT_ID"))
 
-# Anonymous admin bypass is only available in dev/test when no OAuth is configured.
+# Anonymous admin bypass is available in dev/test/staging when no OAuth is configured.
 # In production, missing OAuth keys must yield 401 — not open admin access.
-AUTH_BYPASS = not AUTH_ENABLED and _RETINA_ENV in ("dev", "test")
+AUTH_BYPASS = not AUTH_ENABLED and _RETINA_ENV in ("dev", "test", "staging")
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
