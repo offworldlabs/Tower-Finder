@@ -4,6 +4,7 @@ User model, auth backend, and FastAPI dependency helpers live here.
 All JWT issuance/verification is delegated to fastapi-users' JWTStrategy.
 """
 
+import hashlib
 import os
 import secrets
 import uuid
@@ -15,7 +16,7 @@ from fastapi import Depends, HTTPException, Request
 from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin, schemas
 from fastapi_users.authentication import AuthenticationBackend, CookieTransport, JWTStrategy
 from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
-from fastapi_users.exceptions import UserNotExists
+from fastapi_users.exceptions import UserAlreadyExists, UserNotExists
 from sqlalchemy import DateTime, String, func
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -109,10 +110,14 @@ class UserUpdate(schemas.BaseUserUpdate):
 
 # ── UserManager ──────────────────────────────────────────────────────────────
 
+# Derive distinct secrets so reset and verify tokens can't be cross-used
+_RESET_SECRET = hashlib.sha256(b"reset:" + JWT_SECRET.encode()).hexdigest()
+_VERIFY_SECRET = hashlib.sha256(b"verify:" + JWT_SECRET.encode()).hexdigest()
+
 
 class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
-    reset_password_token_secret = JWT_SECRET
-    verification_token_secret = JWT_SECRET
+    reset_password_token_secret = _RESET_SECRET
+    verification_token_secret = _VERIFY_SECRET
 
 
 async def get_user_manager(
@@ -146,7 +151,7 @@ fastapi_users = FastAPIUsers[User, uuid.UUID](get_user_manager, [auth_backend])
 
 # ── Helper: anonymous user (auth disabled in dev) ─────────────────────────────
 
-_ANONYMOUS_USER: dict = {
+ANONYMOUS_USER: dict = {
     "id": "00000000-0000-0000-0000-000000000000",
     "email": "admin@retina.fm",
     "name": "Admin (no auth)",
@@ -158,7 +163,7 @@ _ANONYMOUS_USER: dict = {
 }
 
 
-def _user_to_dict(user: User) -> dict:
+def user_to_dict(user: User) -> dict:
     return {
         "id": str(user.id),
         "email": user.email,
@@ -175,39 +180,50 @@ def _user_to_dict(user: User) -> dict:
 # These wrap fastapi-users' JWT strategy so the rest of the codebase can call
 # them with just a Request — no change to route signatures needed.
 
+_SENTINEL = object()
+
 
 async def _read_user_from_request(request: Request) -> User | None:
-    """Validate the auth_token cookie using fastapi-users' JWTStrategy."""
+    """Validate the auth_token cookie using fastapi-users' JWTStrategy.
+
+    Result is cached on request.state to avoid repeated DB lookups per request.
+    """
+    cached = getattr(request.state, "_auth_user", _SENTINEL)
+    if cached is not _SENTINEL:
+        return cached
     token = request.cookies.get("auth_token")
     if not token:
+        request.state._auth_user = None
         return None
     strategy = get_jwt_strategy()
     async with async_session_maker() as session:
         user_db = SQLAlchemyUserDatabase(session, User)
         user_manager = UserManager(user_db)
-        return await strategy.read_token(token, user_manager)
+        user = await strategy.read_token(token, user_manager)
+    request.state._auth_user = user
+    return user
 
 
 async def get_current_user(request: Request) -> dict:
     """Return user dict or raise 401. When AUTH_ENABLED=False, returns anonymous admin."""
     if not AUTH_ENABLED:
-        return _ANONYMOUS_USER
+        return dict(ANONYMOUS_USER)
     user = await _read_user_from_request(request)
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return _user_to_dict(user)
+    return user_to_dict(user)
 
 
 async def require_admin(request: Request) -> dict:
     """Like get_current_user but also enforces superuser/admin role."""
     if not AUTH_ENABLED:
-        return _ANONYMOUS_USER
+        return dict(ANONYMOUS_USER)
     user = await _read_user_from_request(request)
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="Not authenticated")
     if not user.is_superuser:
         raise HTTPException(status_code=403, detail="Admin access required")
-    return _user_to_dict(user)
+    return user_to_dict(user)
 
 
 # ── OAuth user creation helper ────────────────────────────────────────────────
@@ -259,4 +275,8 @@ async def get_or_create_oauth_user(
                 is_verified=True,
                 is_superuser=is_superuser,
             )
-            return await user_manager.create(user_create)
+            try:
+                return await user_manager.create(user_create)
+            except UserAlreadyExists:
+                # Race: another request created this user between our get and create.
+                return await user_manager.get_by_email(email)

@@ -5,8 +5,11 @@ so the frontend needs no changes). JWT issuance and cookie management are
 fully delegated to fastapi-users' JWTStrategy + CookieTransport.
 """
 
+import hashlib
+import hmac as _hmac
 import logging
 import os
+import secrets
 from urllib.parse import urlencode
 
 import httpx
@@ -22,9 +25,10 @@ from core.auth import (
     revoke_claim_code,
 )
 from core.users import (
-    _ANONYMOUS_USER,
+    ANONYMOUS_USER,
     AUTH_ENABLED,
     JWT_LIFETIME_SECONDS,
+    JWT_SECRET,
     get_current_user,
     get_jwt_strategy,
     get_or_create_oauth_user,
@@ -52,6 +56,27 @@ def _safe_redirect(state_param: str) -> str:
     return "/"
 
 
+def _make_oauth_state(redirect: str) -> str:
+    """Return an HMAC-signed state token: {nonce}:{sig}:{redirect}."""
+    nonce = secrets.token_urlsafe(16)
+    msg = f"{nonce}:{redirect}".encode()
+    sig = _hmac.new(JWT_SECRET.encode(), msg, hashlib.sha256).hexdigest()
+    return f"{nonce}:{sig}:{redirect}"
+
+
+def _verify_oauth_state(state: str) -> str | None:
+    """Verify HMAC-signed OAuth state. Returns safe redirect URL or None on failure."""
+    parts = state.split(":", 2)
+    if len(parts) != 3:
+        return None
+    nonce, sig, redirect = parts
+    msg = f"{nonce}:{redirect}".encode()
+    expected = _hmac.new(JWT_SECRET.encode(), msg, hashlib.sha256).hexdigest()
+    if not _hmac.compare_digest(expected, sig):
+        return None
+    return _safe_redirect(redirect)
+
+
 async def _set_auth_cookie(response: Response, user) -> None:
     """Write the fastapi-users JWT into the auth_token cookie."""
     strategy = get_jwt_strategy()
@@ -77,7 +102,7 @@ async def login_google(request: Request, redirect: str = "/"):
         "redirect_uri": callback,
         "response_type": "code",
         "scope": "openid email profile",
-        "state": redirect,
+        "state": _make_oauth_state(redirect),
         "prompt": "select_account",
     }
     return RedirectResponse(
@@ -86,7 +111,10 @@ async def login_google(request: Request, redirect: str = "/"):
 
 
 @router.get("/callback/google", name="callback_google")
-async def callback_google(request: Request, code: str = "", state: str = "/"):
+async def callback_google(request: Request, code: str = "", state: str = ""):
+    redirect_url = _verify_oauth_state(state)
+    if redirect_url is None:
+        return RedirectResponse("/login?error=invalid_state")
     callback = _fix_scheme(str(request.url_for("callback_google")))
     async with httpx.AsyncClient(timeout=15) as client:
         tok = await client.post(
@@ -110,14 +138,18 @@ async def callback_google(request: Request, code: str = "", state: str = "/"):
         )
         userinfo = info.json()
 
+    email = userinfo.get("email")
+    if not email:
+        return RedirectResponse("/login?error=no_email")
+
     user = await get_or_create_oauth_user(
-        email=userinfo["email"],
+        email=email,
         name=userinfo.get("name", ""),
         avatar=userinfo.get("picture", ""),
         provider="google",
         consume_invite_fn=consume_invite_for_email,
     )
-    response = RedirectResponse(_safe_redirect(state))
+    response = RedirectResponse(redirect_url)
     await _set_auth_cookie(response, user)
     return response
 
@@ -131,7 +163,7 @@ async def login_github(request: Request, redirect: str = "/"):
         "client_id": GITHUB_CLIENT_ID,
         "redirect_uri": callback,
         "scope": "read:user user:email",
-        "state": redirect,
+        "state": _make_oauth_state(redirect),
     }
     return RedirectResponse(
         f"https://github.com/login/oauth/authorize?{urlencode(params)}"
@@ -139,7 +171,10 @@ async def login_github(request: Request, redirect: str = "/"):
 
 
 @router.get("/callback/github", name="callback_github")
-async def callback_github(request: Request, code: str = "", state: str = "/"):
+async def callback_github(request: Request, code: str = "", state: str = ""):
+    redirect_url = _verify_oauth_state(state)
+    if redirect_url is None:
+        return RedirectResponse("/login?error=invalid_state")
     async with httpx.AsyncClient(timeout=15) as client:
         tok = await client.post(
             "https://github.com/login/oauth/access_token",
@@ -168,10 +203,11 @@ async def callback_github(request: Request, code: str = "", state: str = "/"):
                 "https://api.github.com/user/emails",
                 headers={"Authorization": f"Bearer {access_token}"},
             )
-            for e in emails_resp.json():
-                if e.get("primary"):
-                    email = e["email"]
-                    break
+            if emails_resp.status_code == 200:
+                for e in emails_resp.json():
+                    if e.get("primary"):
+                        email = e["email"]
+                        break
 
     if not email:
         return RedirectResponse("/login?error=no_email")
@@ -183,7 +219,7 @@ async def callback_github(request: Request, code: str = "", state: str = "/"):
         provider="github",
         consume_invite_fn=consume_invite_for_email,
     )
-    response = RedirectResponse(_safe_redirect(state))
+    response = RedirectResponse(redirect_url)
     await _set_auth_cookie(response, user)
     return response
 
@@ -193,7 +229,7 @@ async def callback_github(request: Request, code: str = "", state: str = "/"):
 @router.get("/me")
 async def me(request: Request):
     if not AUTH_ENABLED:
-        return {**_ANONYMOUS_USER, "auth_enabled": False}
+        return {**ANONYMOUS_USER, "auth_enabled": False}
     user_dict = await get_current_user(request)
     return {**user_dict, "auth_enabled": True}
 

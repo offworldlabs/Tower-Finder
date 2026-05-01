@@ -6,7 +6,9 @@ import json
 import logging
 import os
 import time
+import uuid
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Dedicated executor for blocking admin operations so they never compete with
@@ -37,10 +39,10 @@ from core.auth import (
 from core.task_registry import TASK_EXPECTED_INTERVAL_S
 from core.users import (
     User,
-    _user_to_dict,
     get_async_session,
     get_current_user,
     require_admin,
+    user_to_dict,
 )
 
 logger = logging.getLogger(__name__)
@@ -118,7 +120,6 @@ def check_node_health():
         if not hb:
             continue
         try:
-            from datetime import datetime, timezone
             hb_time = datetime.fromisoformat(hb.replace("Z", "+00:00"))
             age_s = (datetime.now(timezone.utc) - hb_time).total_seconds()
         except Exception:
@@ -143,7 +144,7 @@ async def list_users(
     _admin=Depends(require_admin),
 ):
     result = await session.execute(select(User))
-    return [_user_to_dict(u) for u in result.scalars().all()]
+    return [user_to_dict(u) for u in result.scalars().all()]
 
 
 class RoleUpdate(BaseModel):
@@ -161,8 +162,7 @@ async def set_user_role(
     if body.role not in ("user", "admin"):
         raise HTTPException(400, "Invalid role — must be 'user' or 'admin'")
     try:
-        import uuid as _uuid
-        uid = _uuid.UUID(user_id)
+        uid = uuid.UUID(user_id)
     except ValueError as e:
         raise HTTPException(404, "User not found") from e
     user = await session.get(User, uid)
@@ -172,7 +172,7 @@ async def set_user_role(
     await session.commit()
     await session.refresh(user)
     log_event("user", f"Role changed to {body.role} for {user.email}", "warning")
-    return _user_to_dict(user)
+    return user_to_dict(user)
 
 
 # ── Invites (admin pre-approves users by email) ──────────────────────────────
@@ -247,8 +247,7 @@ async def admin_set_node_owner(
     """Assign or clear node ownership. Pass user_id=null to unassign."""
     if body.user_id is not None:
         try:
-            import uuid as _uuid
-            uid = _uuid.UUID(body.user_id)
+            uid = uuid.UUID(body.user_id)
         except ValueError as e:
             raise HTTPException(404, "User not found") from e
         user = await session.get(User, uid)

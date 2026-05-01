@@ -4,10 +4,9 @@ import asyncio
 import json
 import time
 import uuid
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 
 # ── JWT via fastapi-users JWTStrategy ─────────────────────────────────────────
 
@@ -22,11 +21,9 @@ class TestJWT:
         user.is_superuser = is_superuser
         return user
 
-    def test_write_and_read_token_roundtrip(self, tmp_path):
+    def test_write_and_read_token_roundtrip(self):
         """A token written by JWTStrategy must be readable back to the same user id."""
-        from core.users import JWT_SECRET, UserManager, async_session_maker, get_jwt_strategy
-        from fastapi_users.db import SQLAlchemyUserDatabase
-        from core.users import User
+        from core.users import get_jwt_strategy
 
         strategy = get_jwt_strategy()
         user = self._make_user()
@@ -35,9 +32,18 @@ class TestJWT:
         assert isinstance(token, str)
         assert len(token) > 0
 
+        # read_token looks up the user by id — mock the manager to return our user
+        mock_manager = MagicMock()
+        mock_manager.get = AsyncMock(return_value=user)
+
+        result = asyncio.run(strategy.read_token(token, mock_manager))
+        assert result is not None
+        assert result.id == user.id
+
     def test_token_contains_subject(self):
         """The JWT sub claim must equal the user's id."""
         import jwt as pyjwt
+
         from core.users import JWT_SECRET, get_jwt_strategy
 
         strategy = get_jwt_strategy()
@@ -54,7 +60,8 @@ class TestJWT:
     def test_token_has_expiry(self):
         """Token must include an exp claim set in the future."""
         import jwt as pyjwt
-        from core.users import JWT_SECRET, JWT_LIFETIME_SECONDS, get_jwt_strategy
+
+        from core.users import JWT_LIFETIME_SECONDS, JWT_SECRET, get_jwt_strategy
 
         strategy = get_jwt_strategy()
         user = self._make_user()
@@ -89,6 +96,7 @@ class TestJWT:
     def test_expired_token_rejected(self):
         """A token with a past exp must be rejected by read_token."""
         import jwt as pyjwt
+
         from core.users import JWT_SECRET, get_jwt_strategy
 
         payload = {
@@ -133,11 +141,13 @@ class TestAuthDependencies:
 
     def test_get_current_user_missing_cookie_raises_401(self):
         from fastapi import HTTPException
+        from starlette.datastructures import State
 
         from core.users import get_current_user
 
         request = MagicMock()
         request.cookies = {}
+        request.state = State()
         with patch("core.users.AUTH_ENABLED", True):
             with pytest.raises(HTTPException) as exc_info:
                 asyncio.run(get_current_user(request))
@@ -145,11 +155,13 @@ class TestAuthDependencies:
 
     def test_get_current_user_invalid_token_raises_401(self):
         from fastapi import HTTPException
+        from starlette.datastructures import State
 
         from core.users import get_current_user
 
         request = MagicMock()
         request.cookies = {"auth_token": "invalid.jwt.token"}
+        request.state = State()
         with patch("core.users.AUTH_ENABLED", True):
             with pytest.raises(HTTPException) as exc_info:
                 asyncio.run(get_current_user(request))
@@ -230,7 +242,7 @@ class TestInvites:
         assert revoke_invite(inv["token"]) is False
 
     def test_consume_invite_for_email(self):
-        from core.auth import consume_invite_for_email, create_invite, list_invites
+        from core.auth import consume_invite_for_email, create_invite
 
         create_invite("bob@example.com", "admin", "admin-id")
         role = consume_invite_for_email("bob@example.com")
