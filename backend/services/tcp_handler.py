@@ -91,7 +91,7 @@ def _validate_node_config(config: dict) -> str | None:
 
 def is_synthetic_node(node_id: str) -> bool:
     """Detect synthetic/test nodes by their ID prefix.
-    
+
     Marks as synthetic any node with a test/simulation prefix:
     - synth-* — simulated fleet orchestrator nodes
     - e2e-* — frontend E2E test nodes (including bulk registration)

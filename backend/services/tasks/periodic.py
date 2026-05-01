@@ -70,7 +70,7 @@ async def prune_synthetic_nodes():
     # to avoid accumulating stale state in memory across CI/CD cycles.
     PRUNE_INTERVAL_S = 6 * 3600  # Every 6 hours
     MAX_AGE_DISCONNECTED_S = 7 * 86400  # 7 days
-    
+
     while True:
         await asyncio.sleep(PRUNE_INTERVAL_S)
         try:
@@ -92,7 +92,7 @@ async def prune_synthetic_nodes():
                         pruned.append(node_id)
                 for node_id in to_remove:
                     del state.connected_nodes[node_id]
-            
+
             if pruned:
                 logging.info("Pruned %d old synthetic nodes: %s", len(pruned), pruned[:5])
             state.task_last_success["prune_synthetic_nodes"] = time.time()
