@@ -18,7 +18,8 @@
  *  - /api/radar/association/overlaps same pre-computed bytes refresh as nodes (same function)
  *
  * Node IDs used:
- *  REAL_NODE_ID   — non-synth- prefix → is_synthetic=false, registered via single POST
+ *  REAL_NODE_ID   — non-synthetic prefix (not synth-/e2e-/test-) → is_synthetic=false,
+ *                   registered via single POST
  *  SYNTH_NODE_ID  — synth- prefix     → is_synthetic=true,  registered via single POST
  *  BULK_A_NODE_ID — real prefix, no config,       registered via bulk POST
  *  BULK_B_NODE_ID — real prefix, full geo config, registered via bulk POST
@@ -30,7 +31,7 @@ const API = hosts.api;
 const API_KEY = process.env.RADAR_API_KEY ?? "";
 
 const RUN_ID = Date.now().toString(36);
-const REAL_NODE_ID   = `e2e-real-${RUN_ID}`;
+const REAL_NODE_ID   = `realnode-${RUN_ID}`;
 const SYNTH_NODE_ID  = `synth-e2e-${RUN_ID}`;
 const BULK_A_NODE_ID = `e2e-bulk-a-${RUN_ID}`;
 const BULK_B_NODE_ID = `e2e-bulk-b-${RUN_ID}`;
@@ -288,7 +289,7 @@ test.describe("Node registration — main integration suite", () => {
       expect(nodesBody.nodes[REAL_NODE_ID].peer).toBe("http");
     });
 
-    test("REAL_NODE is_synthetic is false (non-synth- prefix)", () => {
+    test("REAL_NODE is_synthetic is false (non-synthetic prefix)", () => {
       expect(nodesBody.nodes[REAL_NODE_ID].is_synthetic).toBe(false);
     });
 
