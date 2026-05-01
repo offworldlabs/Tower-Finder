@@ -34,3 +34,5 @@ skills-lock.json
 frontend/test-results/.last-run.json
 backend/data/state_snapshot.json.sha256
 backend/data/state_snapshot.json.sha256
+.playwright-mcp/console-2026-05-01T11-11-43-897Z.log
+backend/data/state_snapshot.json.sha256

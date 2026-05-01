@@ -12,7 +12,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from fastapi.responses import Response
 
 from core import state
-from core.auth import require_admin
+from core.users import require_admin
 from core.task_registry import TASK_EXPECTED_INTERVAL_S
 from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex
 
