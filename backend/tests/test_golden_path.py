@@ -332,9 +332,9 @@ class TestGoldenPath_Layer3_HttpApi:
     def test_unauthenticated_config_write_rejected(self, client):
         """PUT /api/config without admin JWT is rejected when auth is enabled.
 
-        In the test suite AUTH_ENABLED=False (no OAuth keys configured), so auth
+        In the test suite _AUTH_BYPASS=True (dev/test env, no OAuth keys), so auth
         is intentionally bypassed.  We simulate a production-like environment by
-        patching AUTH_ENABLED to True and verify the guard rejects the request.
+        patching _AUTH_BYPASS to False and verify the guard rejects the request.
         """
         from pathlib import Path
 
@@ -345,11 +345,11 @@ class TestGoldenPath_Layer3_HttpApi:
         _cfg_path = Path(_CONFIG_PATH)
         _original = _cfg_path.read_bytes()
         try:
-            with patch.object(_users, "AUTH_ENABLED", True):
+            with patch.object(_users, "_AUTH_BYPASS", False):
                 r = client.put("/api/config", json={"golden_path_test": True})
             # Without a valid JWT the server must refuse the write.
             assert r.status_code in (401, 403), (
-                f"Expected 401/403 with AUTH_ENABLED=True; got {r.status_code}"
+                f"Expected 401/403 with auth enforced; got {r.status_code}"
             )
         finally:
             _cfg_path.write_bytes(_original)

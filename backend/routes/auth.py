@@ -25,8 +25,8 @@ from core.auth import (
     revoke_claim_code,
 )
 from core.users import (
+    _AUTH_BYPASS,
     ANONYMOUS_USER,
-    AUTH_ENABLED,
     JWT_LIFETIME_SECONDS,
     JWT_SECRET,
     get_current_user,
@@ -228,7 +228,7 @@ async def callback_github(request: Request, code: str = "", state: str = ""):
 
 @router.get("/me")
 async def me(request: Request):
-    if not AUTH_ENABLED:
+    if _AUTH_BYPASS:
         return {**ANONYMOUS_USER, "auth_enabled": False}
     user_dict = await get_current_user(request)
     return {**user_dict, "auth_enabled": True}
