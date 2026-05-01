@@ -125,7 +125,7 @@ class TestAuthDependencies:
         from core.users import get_current_user
 
         request = MagicMock()
-        with patch("core.users._AUTH_BYPASS", True):
+        with patch("core.users.AUTH_BYPASS", True):
             user = asyncio.run(get_current_user(request))
         assert user["role"] == "admin"
         assert user["id"] == "00000000-0000-0000-0000-000000000000"
@@ -134,7 +134,7 @@ class TestAuthDependencies:
         from core.users import require_admin
 
         request = MagicMock()
-        with patch("core.users._AUTH_BYPASS", True):
+        with patch("core.users.AUTH_BYPASS", True):
             user = asyncio.run(require_admin(request))
         assert user["role"] == "admin"
 
@@ -147,7 +147,7 @@ class TestAuthDependencies:
         request = MagicMock()
         request.cookies = {}
         request.state = State()
-        with patch("core.users._AUTH_BYPASS", False):
+        with patch("core.users.AUTH_BYPASS", False):
             with pytest.raises(HTTPException) as exc_info:
                 asyncio.run(get_current_user(request))
         assert exc_info.value.status_code == 401
@@ -161,7 +161,7 @@ class TestAuthDependencies:
         request = MagicMock()
         request.cookies = {"auth_token": "invalid.jwt.token"}
         request.state = State()
-        with patch("core.users._AUTH_BYPASS", False):
+        with patch("core.users.AUTH_BYPASS", False):
             with pytest.raises(HTTPException) as exc_info:
                 asyncio.run(get_current_user(request))
         assert exc_info.value.status_code == 401
@@ -193,7 +193,7 @@ class TestAuthDependencies:
         async def _fake_read(req):
             return non_admin_user
 
-        with patch("core.users._AUTH_BYPASS", False), \
+        with patch("core.users.AUTH_BYPASS", False), \
              patch("core.users._read_user_from_request", _fake_read):
             with pytest.raises(HTTPException) as exc_info:
                 asyncio.run(require_admin(request))

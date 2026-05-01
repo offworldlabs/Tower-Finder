@@ -44,7 +44,7 @@ AUTH_ENABLED = bool(os.getenv("GOOGLE_CLIENT_ID") or os.getenv("GITHUB_CLIENT_ID
 
 # Anonymous admin bypass is only available in dev/test when no OAuth is configured.
 # In production, missing OAuth keys must yield 401 — not open admin access.
-_AUTH_BYPASS = not AUTH_ENABLED and _RETINA_ENV in ("dev", "test")
+AUTH_BYPASS = not AUTH_ENABLED and _RETINA_ENV in ("dev", "test")
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -240,7 +240,7 @@ async def _read_user_from_request(request: Request) -> User | None:
 
 async def get_current_user(request: Request) -> dict:
     """Return user dict or raise 401. In dev/test with no OAuth configured, returns anonymous admin."""
-    if _AUTH_BYPASS:
+    if AUTH_BYPASS:
         return dict(ANONYMOUS_USER)
     user = await _read_user_from_request(request)
     if user is None or not user.is_active:
@@ -250,7 +250,7 @@ async def get_current_user(request: Request) -> dict:
 
 async def require_admin(request: Request) -> dict:
     """Like get_current_user but also enforces superuser/admin role."""
-    if _AUTH_BYPASS:
+    if AUTH_BYPASS:
         return dict(ANONYMOUS_USER)
     user = await _read_user_from_request(request)
     if user is None or not user.is_active:
