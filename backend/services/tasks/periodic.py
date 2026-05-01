@@ -64,6 +64,43 @@ async def reputation_evaluator():
             logging.exception("Reputation evaluation failed")
 
 
+async def prune_synthetic_nodes():
+    """Periodically remove old synthetic/test nodes that have been disconnected."""
+    # Test nodes (e2e-, synth-, test- prefixes) disconnected >7 days old get pruned
+    # to avoid accumulating stale state in memory across CI/CD cycles.
+    PRUNE_INTERVAL_S = 6 * 3600  # Every 6 hours
+    MAX_AGE_DISCONNECTED_S = 7 * 86400  # 7 days
+    
+    while True:
+        await asyncio.sleep(PRUNE_INTERVAL_S)
+        try:
+            now = time.time()
+            pruned = []
+            with state.connected_nodes_lock:
+                to_remove = []
+                for node_id, info in state.connected_nodes.items():
+                    # Only prune synthetic/test nodes
+                    if not any(node_id.startswith(p) for p in ("synth-", "e2e-", "test-")):
+                        continue
+                    # Only prune if disconnected
+                    if info.get("status") != "disconnected":
+                        continue
+                    # Only prune if old enough
+                    first_seen = info.get("first_seen_ts", now)
+                    if now - first_seen > MAX_AGE_DISCONNECTED_S:
+                        to_remove.append(node_id)
+                        pruned.append(node_id)
+                for node_id in to_remove:
+                    del state.connected_nodes[node_id]
+            
+            if pruned:
+                logging.info("Pruned %d old synthetic nodes: %s", len(pruned), pruned[:5])
+            state.task_last_success["prune_synthetic_nodes"] = time.time()
+        except Exception:
+            state.task_error_counts["prune_synthetic_nodes"] += 1
+            logging.exception("Node pruning failed")
+
+
 async def adsb_truth_fetcher():
     backoff = 0
     while True:

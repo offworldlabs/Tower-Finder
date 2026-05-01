@@ -11,6 +11,7 @@ from services.tasks.periodic import (
     adsb_truth_fetcher,
     archive_flush_task,
     archive_lifecycle_task,
+    prune_synthetic_nodes,
     reputation_evaluator,
 )
 from services.tasks.solver import start_solver_workers
@@ -25,5 +26,6 @@ __all__ = [
     "archive_flush_task",
     "archive_lifecycle_task",
     "reputation_evaluator",
+    "prune_synthetic_nodes",
     "adsb_truth_fetcher",
 ]

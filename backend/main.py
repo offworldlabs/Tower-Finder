@@ -41,6 +41,7 @@ from services.background import (
     archive_flush_task,
     archive_lifecycle_task,
     frame_processor_loop,
+    prune_synthetic_nodes,
     reputation_evaluator,
     start_solver_workers,
     storage_refresh_task,
@@ -110,6 +111,7 @@ async def lifespan(app: FastAPI):
         tasks = [
             asyncio.create_task(server.serve_forever()),
             asyncio.create_task(reputation_evaluator()),
+            asyncio.create_task(prune_synthetic_nodes()),
             asyncio.create_task(adsb_truth_fetcher()),
             asyncio.create_task(aircraft_flush_task(radar_pipeline)),
             asyncio.create_task(archive_flush_task()),
