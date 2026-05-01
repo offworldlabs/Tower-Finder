@@ -38,7 +38,6 @@ from core.task_registry import TASK_EXPECTED_INTERVAL_S
 from core.users import (
     User,
     _user_to_dict,
-    async_session_maker,
     get_async_session,
     get_current_user,
     require_admin,
@@ -164,8 +163,8 @@ async def set_user_role(
     try:
         import uuid as _uuid
         uid = _uuid.UUID(user_id)
-    except ValueError:
-        raise HTTPException(404, "User not found")
+    except ValueError as e:
+        raise HTTPException(404, "User not found") from e
     user = await session.get(User, uid)
     if not user:
         raise HTTPException(404, "User not found")
@@ -250,8 +249,8 @@ async def admin_set_node_owner(
         try:
             import uuid as _uuid
             uid = _uuid.UUID(body.user_id)
-        except ValueError:
-            raise HTTPException(404, "User not found")
+        except ValueError as e:
+            raise HTTPException(404, "User not found") from e
         user = await session.get(User, uid)
         if not user:
             raise HTTPException(404, "User not found")

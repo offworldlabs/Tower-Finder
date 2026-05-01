@@ -7,7 +7,6 @@ has no equivalent in a general-purpose auth library.
 
 import json
 import logging
-import os
 import secrets
 import threading
 import time

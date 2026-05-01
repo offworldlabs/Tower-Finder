@@ -8,9 +8,8 @@ import os
 import secrets
 import uuid
 from collections.abc import AsyncGenerator
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from fastapi import Depends, HTTPException, Request
 from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin, schemas
@@ -103,9 +102,9 @@ class UserCreate(schemas.BaseUserCreate):
 
 
 class UserUpdate(schemas.BaseUserUpdate):
-    name: Optional[str] = None
-    avatar: Optional[str] = None
-    provider: Optional[str] = None
+    name: str | None = None
+    avatar: str | None = None
+    provider: str | None = None
 
 
 # ── UserManager ──────────────────────────────────────────────────────────────
@@ -177,7 +176,7 @@ def _user_to_dict(user: User) -> dict:
 # them with just a Request — no change to route signatures needed.
 
 
-async def _read_user_from_request(request: Request) -> Optional[User]:
+async def _read_user_from_request(request: Request) -> User | None:
     """Validate the auth_token cookie using fastapi-users' JWTStrategy."""
     token = request.cookies.get("auth_token")
     if not token:
@@ -227,7 +226,6 @@ async def get_or_create_oauth_user(
     Consumes a pending invite for the email to determine the initial role.
     Updates name/avatar on every login so the profile stays current.
     """
-    from sqlalchemy import select
 
     email = email.lower().strip()
 

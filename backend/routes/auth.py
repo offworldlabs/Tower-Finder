@@ -10,7 +10,7 @@ import os
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 
 from core import state
@@ -22,11 +22,9 @@ from core.auth import (
     revoke_claim_code,
 )
 from core.users import (
+    _ANONYMOUS_USER,
     AUTH_ENABLED,
     JWT_LIFETIME_SECONDS,
-    _ANONYMOUS_USER,
-    _user_to_dict,
-    async_session_maker,
     get_current_user,
     get_jwt_strategy,
     get_or_create_oauth_user,
