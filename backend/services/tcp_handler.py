@@ -7,6 +7,7 @@ import asyncio
 import hmac
 import json
 import logging
+import math
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -57,6 +58,98 @@ SERVER_CAPABILITIES = {
 }
 
 
+# ── Water/Land Detection ──────────────────────────────────────────────────────
+# Reject nodes positioned in water — prevents maps from showing nodes
+# impossibly far from shore. Uses simple bounding boxes with coastal land-point
+# allowlists for edge cases (e.g., island cities, large bays).
+
+_WATER_BOXES: list[tuple[float, float, float, float]] = [
+    # (lat_min, lat_max, lon_min, lon_max) — strictly ocean/lake water
+    # Atlantic
+    (24.0, 47.5, -72.0, -50.0),    # Eastern seaboard to mid-Atlantic
+    (30.0, 60.0, -50.0, -10.0),    # Open Atlantic (US→Europe)
+    (35.0, 70.0, -25.0, 5.0),      # European Atlantic + North Sea
+    # Caribbean/Gulf
+    (15.0, 28.0, -85.0, -60.0),
+    # Mediterranean & Adriatic
+    (30.0, 47.0, 0.0, 40.0),
+    # Great Lakes (North America)
+    (41.5, 49.0, -92.5, -76.0),
+    # Gulf of Mexico
+    (18.0, 30.5, -98.0, -80.0),
+    # Pacific (west coast)
+    (30.0, 52.0, -135.0, -115.0),
+    # Bay of Biscay (between France/Spain and UK)
+    (42.5, 50.0, -10.0, -2.0),
+]
+
+_COASTAL_LAND_POINTS: list[tuple[float, float]] = [
+    # US East Coast
+    (42.36, -71.06),   # Boston MA
+    (40.71, -74.01),   # New York NY
+    (39.95, -75.17),   # Philadelphia PA
+    (38.90, -77.04),   # Washington DC
+    (36.85, -76.28),   # Norfolk VA
+    (35.10, -75.60),   # Outer Banks NC
+    (34.05, -118.25),  # Los Angeles CA
+    (37.77, -122.41),  # San Francisco CA
+    (47.61, -122.33),  # Seattle WA
+    # Caribbean / Gulf Coast
+    (25.76, -80.19),   # Miami FL
+    (29.76, -95.36),   # Houston TX
+    (30.27, -97.74),   # Austin TX
+    (29.95, -90.07),   # New Orleans LA
+    (27.77, -82.64),   # St. Petersburg FL
+    (29.42, -98.49),   # San Antonio TX
+    (30.39, -87.69),   # Pensacola FL
+    (30.22, -92.02),   # Lafayette LA
+    (30.69, -88.04),   # Mobile AL
+    (29.70, -95.01),   # Pasadena TX
+    # Europe — Atlantic & North
+    (43.30, -1.98),    # Biarritz FR (Basque coast)
+    (47.26, -2.21),    # Belle-Ile FR (Brittany)
+    (48.38, -4.48),    # Brest FR (Brittany)
+    (43.57, -5.56),    # Gijón ES (Asturias)
+    (42.60, -8.87),    # A Coruña ES (Galicia)
+    (51.50, -3.19),    # Cardiff UK (Wales)
+    (53.41, -2.21),    # Liverpool UK
+    (54.97, -1.62),    # Newcastle UK
+    (52.41, 1.33),     # Great Yarmouth UK (North Sea)
+    (51.51, -0.13),    # London UK (Thames)
+    # Europe — Mediterranean
+    (43.26, 5.37),     # Marseille FR
+    (43.77, 7.41),     # Nice FR
+    (41.90, 12.50),    # Rome IT (Tiber)
+    (37.99, 23.73),    # Athens GR
+    (42.65, 23.32),    # Sofia BG (inland but northern)
+    # Australia (if used)
+    (-33.87, 151.21),  # Sydney AU
+]
+
+
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Distance in km between two lat/lon points."""
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    c = 2 * math.asin(math.sqrt(a))
+    return R * c
+
+
+def _is_on_water(lat: float, lon: float) -> bool:
+    """Heuristic check if a position is likely on water (ocean, lakes, bays)."""
+    for lat_min, lat_max, lon_min, lon_max in _WATER_BOXES:
+        if lat_min <= lat <= lat_max and lon_min <= lon <= lon_max:
+            # Check if near a known coastal land point.
+            # 8km radius: tight enough that remote positions don't get falsely allowed.
+            for land_lat, land_lon in _COASTAL_LAND_POINTS:
+                if _haversine_km(lat, lon, land_lat, land_lon) < 8.0:
+                    return False
+            return True
+    return False
+
+
 def _validate_node_config(config: dict) -> str | None:
     """Return an error message if the node config is invalid, else None."""
     # Accept both flat lat/lon and rx_lat/rx_lon forms
@@ -70,6 +163,11 @@ def _validate_node_config(config: dict) -> str | None:
         return f"non-numeric lat/lon: {lat!r}, {lon!r}"
     if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
         return f"lat/lon out of range: {lat}, {lon}"
+    
+    # Reject nodes positioned on water (prevents map display issues)
+    if _is_on_water(lat, lon):
+        return f"rx position appears to be on water: ({lat:.4f}, {lon:.4f}) — nodes must be on land"
+    
     bw = config.get("beam_width_deg")
     if bw is not None:
         try:
