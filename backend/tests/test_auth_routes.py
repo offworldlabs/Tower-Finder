@@ -11,38 +11,17 @@ Covers:
 """
 
 import asyncio
-import os
 
 import pytest
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from main import app  # noqa: E402
+from main import app
 
 
 @pytest.fixture()
 def client():
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
-
-
-@pytest.fixture(autouse=True)
-def _clean_db():
-    from sqlalchemy import delete
-    from core.users import ClaimCode, Invite, NodeOwner, async_session_maker, create_db_and_tables
-
-    async def _setup():
-        await create_db_and_tables()
-        async with async_session_maker() as session:
-            await session.execute(delete(ClaimCode))
-            await session.execute(delete(NodeOwner))
-            await session.execute(delete(Invite))
-            await session.commit()
-
-    asyncio.run(_setup())
-    yield
 
 
 # ── /api/auth/me + /api/auth/logout ──────────────────────────────────────────

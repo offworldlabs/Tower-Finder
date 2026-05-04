@@ -14,7 +14,7 @@ import time
 import pytest
 
 from services.tcp_handler import handle_tcp_client
-
+from tests.tcp_helpers import _FakeReader, _FakeWriter
 
 _NODE_ID = "claim-test-node"
 
@@ -28,62 +28,6 @@ def _hello(node_id: str = _NODE_ID, claim_code: str | None = None) -> bytes:
     if claim_code is not None:
         m["claim_code"] = claim_code
     return _msg(m)
-
-
-class _FakeReader:
-    def __init__(self, chunks: list[bytes]):
-        self._chunks = list(chunks)
-        self._idx = 0
-
-    async def read(self, n: int) -> bytes:
-        if self._idx >= len(self._chunks):
-            return b""
-        data = self._chunks[self._idx]
-        self._idx += 1
-        return data
-
-
-class _FakeWriter:
-    def __init__(self):
-        self._written: list[bytes] = []
-
-    def get_extra_info(self, key, default=None):
-        return ("127.0.0.1", 29999) if key == "peername" else default
-
-    def write(self, data: bytes):
-        self._written.append(data)
-
-    async def drain(self):
-        pass
-
-    def close(self):
-        pass
-
-    def messages(self) -> list[dict]:
-        result = []
-        for chunk in self._written:
-            for line in chunk.split(b"\n"):
-                line = line.strip()
-                if line:
-                    result.append(json.loads(line))
-        return result
-
-
-@pytest.fixture(autouse=True)
-def _clean_db():
-    from sqlalchemy import delete
-    from core.users import ClaimCode, Invite, NodeOwner, async_session_maker, create_db_and_tables
-
-    async def _setup():
-        await create_db_and_tables()
-        async with async_session_maker() as session:
-            await session.execute(delete(ClaimCode))
-            await session.execute(delete(NodeOwner))
-            await session.execute(delete(Invite))
-            await session.commit()
-
-    asyncio.run(_setup())
-    yield
 
 
 @pytest.fixture(autouse=True)

@@ -5,7 +5,6 @@ in services/tcp_handler.py that are dispatched from handle_tcp_client.
 """
 
 import asyncio
-import json
 
 import pytest
 
@@ -16,6 +15,7 @@ from services.tcp_handler import (
     _handle_iq_commitment,
     _handle_register_key,
 )
+from tests.tcp_helpers import _FakeWriter as MockWriter
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -53,30 +53,6 @@ _IQ_COMMITMENT_MSG = {
 }
 
 
-# ── Mock writer ───────────────────────────────────────────────────────────────
-
-class MockWriter:
-    """Minimal asyncio.StreamWriter stand-in that captures written bytes."""
-
-    def __init__(self):
-        self.written: list[bytes] = []
-
-    def write(self, data: bytes):
-        self.written.append(data)
-
-    async def drain(self):
-        pass
-
-    def get_messages(self) -> list[dict]:
-        msgs = []
-        for chunk in self.written:
-            for line in chunk.split(b"\n"):
-                line = line.strip()
-                if line:
-                    msgs.append(json.loads(line))
-        return msgs
-
-
 # ── Shared state-cleanup fixture ──────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
@@ -109,7 +85,7 @@ class TestRegisterKey:
         writer = MockWriter()
         asyncio.run(_handle_register_key(_REGISTER_KEY_MSG, None, writer))
 
-        msgs = writer.get_messages()
+        msgs = writer.messages()
         acks = [m for m in msgs if m.get("type") == "KEY_ACK"]
         assert len(acks) == 1
         ack = acks[0]
@@ -145,7 +121,7 @@ class TestChainEntry:
         writer = MockWriter()
         asyncio.run(_handle_chain_entry(_CHAIN_ENTRY_MSG, _NODE_ID, writer))
 
-        msgs = writer.get_messages()
+        msgs = writer.messages()
         acks = [m for m in msgs if m.get("type") == "CHAIN_ENTRY_ACK"]
         assert len(acks) == 1
         ack = acks[0]
@@ -166,7 +142,7 @@ class TestChainEntry:
         assert entry["_verified"] is False
 
         # ACK also carries verified=false
-        msgs = writer.get_messages()
+        msgs = writer.messages()
         ack = next(m for m in msgs if m.get("type") == "CHAIN_ENTRY_ACK")
         assert ack["verified"] is False
 
@@ -210,7 +186,7 @@ class TestIQCommitment:
         writer = MockWriter()
         asyncio.run(_handle_iq_commitment(_IQ_COMMITMENT_MSG, _NODE_ID, writer))
 
-        msgs = writer.get_messages()
+        msgs = writer.messages()
         acks = [m for m in msgs if m.get("type") == "IQ_COMMITMENT_ACK"]
         assert len(acks) == 1
         ack = acks[0]

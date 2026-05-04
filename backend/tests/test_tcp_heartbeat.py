@@ -14,7 +14,8 @@ import time
 import pytest
 
 from core import state
-from services.tcp_handler import handle_tcp_client, _handle_heartbeat
+from services.tcp_handler import _handle_heartbeat, handle_tcp_client
+from tests.tcp_helpers import _FakeReader, _FakeWriter
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -36,7 +37,7 @@ _NODE_CONFIG = {
     "max_range_km": 50,
 }
 
-# ── Fake reader / writer ───────────────────────────────────────────────────────
+# ── Message helpers ───────────────────────────────────────────────────────────
 
 def _msg(d: dict) -> bytes:
     return json.dumps(d).encode("utf-8") + b"\n"
@@ -70,52 +71,6 @@ def _heartbeat(
         "status": status,
         "timestamp": timestamp,
     })
-
-
-class _FakeReader:
-    """Simulates asyncio.StreamReader with pre-queued message chunks."""
-
-    def __init__(self, chunks: list[bytes]):
-        self._chunks = list(chunks)
-        self._idx = 0
-
-    async def read(self, n: int) -> bytes:
-        if self._idx >= len(self._chunks):
-            return b""
-        data = self._chunks[self._idx]
-        self._idx += 1
-        return data
-
-
-class _FakeWriter:
-    """Simulates asyncio.StreamWriter, capturing all written bytes."""
-
-    def __init__(self):
-        self.written: list[bytes] = []
-        self._closed = False
-
-    def get_extra_info(self, key, default=None):
-        if key == "peername":
-            return ("127.0.0.1", 19999)
-        return default
-
-    def write(self, data: bytes):
-        self.written.append(data)
-
-    async def drain(self):
-        pass
-
-    def close(self):
-        self._closed = True
-
-    def get_messages(self) -> list[dict]:
-        msgs = []
-        for chunk in self.written:
-            for line in chunk.split(b"\n"):
-                line = line.strip()
-                if line:
-                    msgs.append(json.loads(line))
-        return msgs
 
 
 # ── Test class ────────────────────────────────────────────────────────────────
@@ -195,7 +150,7 @@ class TestTCPHeartbeat:
             node_config_hash=CONFIG_HASH,
             hb_config_hash=CONFIG_HASH,
         )
-        config_requests = [m for m in writer.get_messages() if m.get("type") == "CONFIG_REQUEST"]
+        config_requests = [m for m in writer.messages() if m.get("type") == "CONFIG_REQUEST"]
         assert config_requests == []
 
     def test_heartbeat_config_drift_sends_config_request(self):
@@ -204,7 +159,7 @@ class TestTCPHeartbeat:
             node_config_hash=CONFIG_HASH,
             hb_config_hash=ALT_CONFIG_HASH,
         )
-        config_requests = [m for m in writer.get_messages() if m.get("type") == "CONFIG_REQUEST"]
+        config_requests = [m for m in writer.messages() if m.get("type") == "CONFIG_REQUEST"]
         assert len(config_requests) == 1
         assert config_requests[0]["node_id"] == NODE_ID
 
@@ -229,7 +184,7 @@ class TestTCPHeartbeat:
         # Must not raise
         asyncio.run(handle_tcp_client(reader, writer))
 
-        config_requests = [m for m in writer.get_messages() if m.get("type") == "CONFIG_REQUEST"]
+        config_requests = [m for m in writer.messages() if m.get("type") == "CONFIG_REQUEST"]
         assert config_requests == []
         assert unknown_id not in state.connected_nodes
 

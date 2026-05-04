@@ -1,12 +1,10 @@
 """Tests for tower ranking utilities — source detection, band classification, frequency parsing."""
 
-import os
-
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from routes.towers import _detect_source  # noqa: E402
-from services.tower_ranking import (  # noqa: E402
+from routes.towers import _detect_source
+from services.tower_ranking import (
+    DEFAULT_LIMIT,
+    FREQUENCY_MATCH_TOLERANCE_MHZ,
+    SENSITIVITY_DBM,
     bearing_to_cardinal,
     classify_band,
     classify_distance,
@@ -17,10 +15,6 @@ from services.tower_ranking import (  # noqa: E402
     parse_user_frequencies,
     process_and_rank,
     watts_to_dbm,
-    DEFAULT_LIMIT,
-    FREQUENCY_MATCH_TOLERANCE_MHZ,
-    received_power,
-    SENSITIVITY_DBM,
 )
 
 # ── Auto source detection ────────────────────────────────────────────────────
@@ -307,14 +301,14 @@ class TestProcessAndRank:
 
     def test_zero_radius_uses_default(self):
         # radius_km=0 should fall back to DEFAULT_RADIUS_KM (80 km).
-        # Near tower is ~20 km away (within 80 km); far tower is ~90 km away (beyond 80 km).
-        far_device = _device(freq_mhz=95.5, lat=34.557, lon=-84.388, callsign="KFAR")
+        # Near tower is ~20 km away (within 80 km); far tower is ~140 km away (clearly beyond).
+        far_device = _device(freq_mhz=95.5, lat=35.0, lon=-84.388, callsign="KFAR")
         near_device = _FM_DEVICE  # ~20 km north, callsign WXYZ
         system = _system([near_device, far_device])
         result = process_and_rank([system], _USER_LAT, _USER_LON, radius_km=0)
         callsigns = {t["callsign"] for t in result}
         assert "WXYZ" in callsigns, "Near tower (~20 km) should be included within default 80 km radius"
-        assert "KFAR" not in callsigns, "Far tower (~90 km) should be excluded by default 80 km radius"
+        assert "KFAR" not in callsigns, "Far tower (~140 km) should be excluded by default 80 km radius"
 
     # ── Band filtering ───────────────────────────────────────────────────────
 
@@ -511,6 +505,7 @@ class TestProcessAndRank:
         # Mock received_power to return SENSITIVITY_DBM - 1 so the sensitivity filter
         # is exercised regardless of the actual path-loss calculation.
         from unittest.mock import patch
+
         import services.tower_ranking as _tr
 
         near_device = _device(freq_mhz=95.5, lat=33.85, lon=_USER_LON, callsign="KWEAK")
