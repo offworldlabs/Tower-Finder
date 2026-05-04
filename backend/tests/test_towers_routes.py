@@ -3,8 +3,8 @@
 import os
 import unittest.mock
 
-import pytest
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("RETINA_ENV", "test")
