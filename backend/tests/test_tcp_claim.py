@@ -14,7 +14,7 @@ import time
 import pytest
 
 from services.tcp_handler import handle_tcp_client
-from tests.tcp_helpers import _FakeReader, _FakeWriter
+from tests.tcp_helpers import FakeReader, FakeWriter
 
 _NODE_ID = "claim-test-node"
 
@@ -44,8 +44,8 @@ class TestTCPClaimACK:
         from core.auth import create_claim_code
 
         rec = asyncio.run(create_claim_code("user-X"))
-        reader = _FakeReader([_hello(claim_code=rec["code"]), b""])
-        writer = _FakeWriter()
+        reader = FakeReader([_hello(claim_code=rec["code"]), b""])
+        writer = FakeWriter()
         asyncio.run(handle_tcp_client(reader, writer))
 
         msgs = writer.messages()
@@ -60,8 +60,8 @@ class TestTCPClaimACK:
 
         rec = asyncio.run(create_claim_code("user-Y"))
         asyncio.run(handle_tcp_client(
-            _FakeReader([_hello(claim_code=rec["code"]), b""]),
-            _FakeWriter(),
+            FakeReader([_hello(claim_code=rec["code"]), b""]),
+            FakeWriter(),
         ))
 
         assert asyncio.run(get_node_owner(_NODE_ID)) == "user-Y"
@@ -72,8 +72,8 @@ class TestTCPClaimACK:
 
         rec = asyncio.run(create_claim_code("user-Z"))
         asyncio.run(handle_tcp_client(
-            _FakeReader([_hello(claim_code=rec["code"]), b""]),
-            _FakeWriter(),
+            FakeReader([_hello(claim_code=rec["code"]), b""]),
+            FakeWriter(),
         ))
 
         assert asyncio.run(consume_claim_code(rec["code"], "other-node")) is None
@@ -82,8 +82,8 @@ class TestTCPClaimACK:
 class TestTCPClaimNACK:
     def test_invalid_claim_code_sends_claim_nack(self):
         """HELLO with a bogus claim code → CLAIM_NACK, not CLAIM_ACK."""
-        reader = _FakeReader([_hello(claim_code="BADCODE123X"), b""])
-        writer = _FakeWriter()
+        reader = FakeReader([_hello(claim_code="BADCODE123X"), b""])
+        writer = FakeWriter()
         asyncio.run(handle_tcp_client(reader, writer))
 
         msgs = writer.messages()
@@ -94,9 +94,9 @@ class TestTCPClaimNACK:
 
     def test_invalid_code_does_not_send_claim_ack(self):
         """An invalid code must not result in any CLAIM_ACK."""
-        writer = _FakeWriter()
+        writer = FakeWriter()
         asyncio.run(handle_tcp_client(
-            _FakeReader([_hello(claim_code="BADCODE123X"), b""]),
+            FakeReader([_hello(claim_code="BADCODE123X"), b""]),
             writer,
         ))
         assert not any(m.get("type") == "CLAIM_ACK" for m in writer.messages())
@@ -116,9 +116,9 @@ class TestTCPClaimNACK:
 
         asyncio.run(_expire())
 
-        writer = _FakeWriter()
+        writer = FakeWriter()
         asyncio.run(handle_tcp_client(
-            _FakeReader([_hello(claim_code=rec["code"]), b""]),
+            FakeReader([_hello(claim_code=rec["code"]), b""]),
             writer,
         ))
 
@@ -130,8 +130,8 @@ class TestTCPClaimNACK:
         from core.auth import get_node_owner
 
         asyncio.run(handle_tcp_client(
-            _FakeReader([_hello(claim_code="NOTACODE9999"), b""]),
-            _FakeWriter(),
+            FakeReader([_hello(claim_code="NOTACODE9999"), b""]),
+            FakeWriter(),
         ))
 
         assert asyncio.run(get_node_owner(_NODE_ID)) is None
@@ -145,9 +145,9 @@ class TestTCPClaimAlreadyOwned:
         asyncio.run(set_node_owner(_NODE_ID, "existing-owner"))
         rec = asyncio.run(create_claim_code("interloper"))
 
-        writer = _FakeWriter()
+        writer = FakeWriter()
         asyncio.run(handle_tcp_client(
-            _FakeReader([_hello(claim_code=rec["code"]), b""]),
+            FakeReader([_hello(claim_code=rec["code"]), b""]),
             writer,
         ))
 
@@ -164,9 +164,9 @@ class TestTCPClaimAlreadyOwned:
         asyncio.run(set_node_owner(_NODE_ID, "secret-owner"))
         rec = asyncio.run(create_claim_code("interloper"))
 
-        writer = _FakeWriter()
+        writer = FakeWriter()
         asyncio.run(handle_tcp_client(
-            _FakeReader([_hello(claim_code=rec["code"]), b""]),
+            FakeReader([_hello(claim_code=rec["code"]), b""]),
             writer,
         ))
 
@@ -182,8 +182,8 @@ class TestTCPClaimAlreadyOwned:
         rec = asyncio.run(create_claim_code("interloper"))
 
         asyncio.run(handle_tcp_client(
-            _FakeReader([_hello(claim_code=rec["code"]), b""]),
-            _FakeWriter(),
+            FakeReader([_hello(claim_code=rec["code"]), b""]),
+            FakeWriter(),
         ))
 
         assert asyncio.run(get_node_owner(_NODE_ID)) == "original-owner"
@@ -192,8 +192,8 @@ class TestTCPClaimAlreadyOwned:
 class TestTCPNoClaimCode:
     def test_hello_without_claim_code_sends_no_claim_message(self):
         """HELLO without claim_code → no CLAIM_ACK or CLAIM_NACK."""
-        writer = _FakeWriter()
-        asyncio.run(handle_tcp_client(_FakeReader([_hello(), b""]), writer))
+        writer = FakeWriter()
+        asyncio.run(handle_tcp_client(FakeReader([_hello(), b""]), writer))
 
         claim_msgs = [
             m for m in writer.messages()
@@ -203,4 +203,4 @@ class TestTCPNoClaimCode:
 
     def test_hello_without_claim_code_does_not_crash(self):
         """A HELLO without claim_code completes without raising."""
-        asyncio.run(handle_tcp_client(_FakeReader([_hello(), b""]), _FakeWriter()))
+        asyncio.run(handle_tcp_client(FakeReader([_hello(), b""]), FakeWriter()))

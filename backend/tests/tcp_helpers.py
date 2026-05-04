@@ -7,7 +7,7 @@ across TCP handler test suites.
 import json
 
 
-class _FakeReader:
+class FakeReader:
     """Simulates asyncio.StreamReader by replaying pre-queued byte chunks."""
 
     def __init__(self, chunks: list[bytes]):
@@ -19,10 +19,10 @@ class _FakeReader:
             return b""
         data = self._chunks[self._idx]
         self._idx += 1
-        return data
+        return data[:n]
 
 
-class _FakeWriter:
+class FakeWriter:
     """Simulates asyncio.StreamWriter, capturing all written bytes."""
 
     def __init__(self):
