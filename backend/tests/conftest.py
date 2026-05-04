@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 import pytest
@@ -9,24 +10,29 @@ os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
 
 @pytest.fixture(autouse=True)
-async def _clean_db():
+def _clean_db():
     """Truncate auth tables before each test.
 
-    Async so pytest-asyncio manages the event loop — avoids the asyncio.run()
-    pattern that closes the event loop and breaks subsequent async tests.
-    Runs for the whole suite (cheap SQLite no-op for non-auth tests) so
-    test_tcp_claim and test_auth_routes need no local duplicate.
+    Uses asyncio.run() for the setup, then immediately restores a fresh event
+    loop. asyncio.run() calls set_event_loop(None) on exit (Python 3.12), which
+    would make asyncio.get_event_loop() raise RuntimeError in the subsequent
+    async test — pytest-asyncio 0.23.x calls get_event_loop() directly before
+    handing control to each async test function.
     """
     from sqlalchemy import delete
 
     from core.users import ClaimCode, Invite, NodeOwner, async_session_maker, create_db_and_tables
 
-    await create_db_and_tables()
-    async with async_session_maker() as session:
-        await session.execute(delete(ClaimCode))
-        await session.execute(delete(NodeOwner))
-        await session.execute(delete(Invite))
-        await session.commit()
+    async def _setup():
+        await create_db_and_tables()
+        async with async_session_maker() as session:
+            await session.execute(delete(ClaimCode))
+            await session.execute(delete(NodeOwner))
+            await session.execute(delete(Invite))
+            await session.commit()
+
+    asyncio.run(_setup())
+    asyncio.set_event_loop(asyncio.new_event_loop())
     yield
 
 
