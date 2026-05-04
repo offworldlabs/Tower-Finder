@@ -58,6 +58,7 @@ def _run(pipeline=None):
 
 
 def _base_ext(alt_m=3048.0, velocity=257.222, heading=45.0):
+    # velocity=257.222 m/s ≈ 500 knots (arbitrary plausible cruise speed)
     return {
         "lat": 48.0,
         "lon": 16.0,
@@ -190,8 +191,8 @@ class TestFreshAdsbFallback:
         assert ac is not None
         assert ac["gs"] == 0.0
 
-    def test_missing_lat_returns_no_aircraft(self):
-        """No lat in external cache → _fresh_adsb returns None → solver fallback used."""
+    def test_missing_lat_uses_solver_fallback(self):
+        """No lat in external cache → _fresh_adsb returns None → solver track data used."""
         # track alt_m=3000.0 → alt_ft ≈ 9843
         _seed_active_geo(_make_track(alt_m=3000.0))
         # external cache has no lat → _fresh_adsb returns None
@@ -199,8 +200,18 @@ class TestFreshAdsbFallback:
 
         ac = _run()
         assert ac is not None
-        # External cache alt_m=1000.0 would give ≈3281 ft; solver gives ≈9843 ft.
-        assert ac["alt_baro"] != round(1000.0 / 0.3048)
+        assert ac["alt_baro"] == round(3000.0 / 0.3048)
+
+    def test_none_alt_defaults_to_zero(self):
+        """None alt_m → alt_baro == 0 (TypeError guard)."""
+        _seed_active_geo()
+        ext = _base_ext()
+        ext["alt_m"] = None
+        state.external_adsb_cache[_HEX] = ext
+
+        ac = _run()
+        assert ac is not None
+        assert ac["alt_baro"] == 0
 
     def test_zero_alt_m_produces_zero_alt_baro(self):
         """alt_m=0 → alt_baro == 0."""
