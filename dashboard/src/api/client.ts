@@ -1,6 +1,6 @@
 const BASE = "";
 
-async function request(path, opts: any = {}) {
+async function request(path: string, opts: any = {}) {
   const controller = new AbortController();
   const timeoutMs = path === "/api/auth/me" ? 30000 : 10000;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -33,6 +33,13 @@ export const api = {
   me: () => request("/api/auth/me"),
   logout: () => request("/api/auth/logout", { method: "POST" }),
 
+  // Self-service node ownership
+  myNodes: () => request("/api/auth/me/nodes"),
+  myClaimCodes: () => request("/api/auth/me/claim-codes"),
+  createClaimCode: () => request("/api/auth/me/claim-codes", { method: "POST" }),
+  revokeClaimCode: (code) =>
+    request(`/api/auth/me/claim-codes/${encodeURIComponent(code)}`, { method: "DELETE" }),
+
   // Radar / nodes
   nodes: () => request("/api/radar/nodes"),
   status: () => request("/api/radar/status"),
@@ -40,6 +47,7 @@ export const api = {
   nodeAnalytics: (id) => request(`/api/radar/analytics/${id}`),
   aircraft: () => request("/api/radar/data/aircraft.json"),
   overlaps: () => request("/api/radar/association/overlaps"),
+  anomalies: () => request("/api/radar/anomalies"),
 
   // Archive
   archive: (limit = 50, offset = 0, nodeId = null) => {
@@ -80,4 +88,23 @@ export const api = {
     }),
   adminConfigHistory: () => request("/api/admin/config/history"),
   adminStorage: () => request("/api/admin/storage"),
+  adminMetrics: () => request("/api/admin/metrics"),
+
+  // Admin: invites
+  adminInvites: () => request("/api/admin/invites"),
+  adminCreateInvite: (email, role) =>
+    request("/api/admin/invites", {
+      method: "POST",
+      body: JSON.stringify({ email, role }),
+    }),
+  adminRevokeInvite: (token) =>
+    request(`/api/admin/invites/${encodeURIComponent(token)}`, { method: "DELETE" }),
+
+  // Admin: node ownership
+  adminNodeOwners: () => request("/api/admin/node-owners"),
+  adminSetNodeOwner: (nodeId, userId) =>
+    request(`/api/admin/nodes/${encodeURIComponent(nodeId)}/owner`, {
+      method: "PUT",
+      body: JSON.stringify({ user_id: userId }),
+    }),
 };

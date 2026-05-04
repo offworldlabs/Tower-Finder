@@ -7,7 +7,6 @@ backwards-compatible with existing code that constructs plain dicts.
 
 from __future__ import annotations
 
-import time
 from typing import TypedDict
 
 

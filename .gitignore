@@ -16,9 +16,21 @@ coverage_data/
 metro_tower_cache.json
 tower_assignments.json
 other/
+backend/.coverage
+backend/htmlcov/
 
 # Local-only agent customizations (server credentials, ops, private prompts — never push)
 .github/instructions/
 .github/prompts/
 backend/data/events.json
 backend/data/state_snapshot.json
+backend/data/state_snapshot.json.sha256
+backend/data/*.json.migrated
+backend/data/users.db
+backend/data/users.db-shm
+backend/data/users.db-wal
+.vscode/*
+.claude/*
+skills-lock.json
+frontend/test-results/.last-run.json
+.playwright-mcp/*

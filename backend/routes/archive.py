@@ -1,6 +1,8 @@
 """Public data archive API."""
 
-from fastapi import APIRouter, Query, HTTPException
+import asyncio
+
+from fastapi import APIRouter, HTTPException, Query
 
 from services.storage import list_archived_files, read_archived_file
 
@@ -14,7 +16,10 @@ async def list_archive(
     limit: int = Query(50, ge=1, le=500, description="Page size"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
 ):
-    result = list_archived_files(date_prefix=date, node_id=node_id, limit=limit, offset=offset)
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        None, lambda: list_archived_files(date_prefix=date, node_id=node_id, limit=limit, offset=offset)
+    )
     return result
 
 

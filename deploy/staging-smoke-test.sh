@@ -76,6 +76,7 @@ check_status "GET /api/health"              "${BASE_URL}/api/health"        "200
 check_status "GET /api/radar/nodes"         "${BASE_URL}/api/radar/nodes"   "200"
 check_status "GET /api/radar/analytics"     "${BASE_URL}/api/radar/analytics" "200"
 check_status "GET /api/test/dashboard"      "${BASE_URL}/api/test/dashboard" "200"
+check_status "GET /api/test/mlat-verification" "${BASE_URL}/api/test/mlat-verification" "200"
 check_status "GET /api/config"              "${BASE_URL}/api/config"        "200"
 
 echo ""

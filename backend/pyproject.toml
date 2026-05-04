@@ -1,7 +1,89 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = [
+    "--cov=.",
+    "--cov-report=term-missing:skip-covered",
+    "--cov-report=html:htmlcov",
+    "--cov-fail-under=55",
+    "-q",
+]
+asyncio_mode = "auto"
 markers = [
     "external: requires external API (open-meteo.com)",
     "asyncio: mark test as async (requires pytest-asyncio)",
 ]
+
+[tool.coverage.run]
+source = ["."]
+omit = [
+    "tests/*",
+    "scripts/*",
+    "simulation/*",
+    "*/conftest.py",
+    # OAuth routes — require browser / external OAuth provider; not unit-testable:
+    "routes/auth.py",
+    # Simulation/test-only endpoints — not production code paths:
+    "routes/test.py",
+    # External API clients — require live network; tested via integration only:
+    "clients/fcc.py",
+    # blah2 bridge — requires live blah2 hardware/daemon:
+    "services/blah2_bridge.py",
+    # Pure TypedDict definitions — no runtime code to cover:
+    "core/types.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+skip_covered = true
+show_missing = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "S",   # flake8-bandit (security)
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",  # line too long — handled by formatter
+    "E402",  # module-level import not at top — env setup before imports is intentional
+    "S101",  # assert in tests is fine
+    "S104",  # binding to 0.0.0.0 is intentional (Docker)
+    "S105",  # hardcoded password false positives on dev defaults
+    "S106",  # hardcoded password false positives
+    "S110",  # try-except-pass is used intentionally
+    "S112",  # try-except-continue is intentional in iteration
+    "S310",  # URL open audit — URLs are constructed internally
+    "S311",  # pseudo-random is fine for non-crypto uses
+    "S501",  # requests without verify — internal calls
+    "S603",  # subprocess calls are in controlled scripts
+    "S607",  # partial executable path is fine for scripts
+    "B008",  # function call in default arg — Depends() is FastAPI pattern
+    "B905",  # zip strict — not needed everywhere
+    "SIM105", # contextlib.suppress — try/except is more explicit
+    "SIM102", # nested if — readability preference
+    "SIM108", # ternary operator — readability preference
+    "SIM117", # combine with statements — readability preference
+    "UP017", # datetime.UTC — cosmetic, timezone.utc is fine
+    "UP028", # yield from — explicit loop is clearer
+    "UP038", # isinstance tuple — (int, float) is idiomatic
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "B"]
+"scripts/*" = ["S", "E"]
+"simulation/*" = ["S"]

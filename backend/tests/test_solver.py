@@ -1,19 +1,16 @@
 """Unit tests for the multi-node geolocation solver."""
 
-import math
 import numpy as np
 import pytest
-
+from retina_geolocator.bistatic_models import bistatic_delay, bistatic_doppler
 from retina_geolocator.multinode_solver import (
-    _lla_to_enu_km,
-    _enu_km_to_lla,
-    _residual_function,
     MultiNodeMeasurement,
     NodeSetup,
+    _enu_km_to_lla,
+    _lla_to_enu_km,
+    _residual_function,
     solve_multinode,
 )
-from retina_geolocator.bistatic_models import bistatic_delay, bistatic_doppler
-
 
 # ── Coordinate conversions ────────────────────────────────────────────────────
 
@@ -103,42 +100,63 @@ class TestResidualFunction:
 
     def test_perfect_state_has_small_residuals(self, two_node_setup):
         """If measurements match the state perfectly, residuals are near zero."""
-        state = np.array([10, 5, 5, 100, 50, 0], dtype=float)
-        # Generate synthetic measurements from the state itself
+        import math as _math
+        z_fixed_km = 5.0
+        pos = np.array([10.0, 5.0, z_fixed_km])
+        vel = np.array([100.0, 50.0, 0.0])
+        state = np.array([pos[0], pos[1], vel[0], vel[1], vel[2]])
+        # Generate synthetic measurements using the same constants as _residual_function
+        # (c = 0.299792458 km/µs, not the 0.3 approximation in bistatic_models.py).
         measurements = []
         for nid, ns in two_node_setup.items():
-            d = bistatic_delay(state[:3], ns.tx_enu, ns.rx_enu)
-            f = bistatic_doppler(state[:3], state[3:6], ns.tx_enu, ns.rx_enu, ns.fc_hz)
+            tx = ns.tx_enu if isinstance(ns.tx_enu, tuple) else tuple(ns.tx_enu)
+            rx = ns.rx_enu if isinstance(ns.rx_enu, tuple) else tuple(ns.rx_enu)
+            px2, py2, pz2 = pos[0], pos[1], pos[2]
+            dptx = _math.sqrt((px2-tx[0])**2+(py2-tx[1])**2+(pz2-tx[2])**2)
+            dprx = _math.sqrt((px2-rx[0])**2+(py2-rx[1])**2+(pz2-rx[2])**2)
+            d_bl = _math.sqrt((rx[0]-tx[0])**2+(rx[1]-tx[1])**2+(rx[2]-tx[2])**2)
+            d = (dptx + dprx - d_bl) / 0.299792458
+            K = ns.fc_hz / 299792.458
+            utx = ((tx[0]-px2)/dptx, (tx[1]-py2)/dptx, (tx[2]-pz2)/dptx)
+            urx = ((rx[0]-px2)/dprx, (rx[1]-py2)/dprx, (rx[2]-pz2)/dprx)
+            vx_k, vy_k, vz_k = vel[0]*1e-3, vel[1]*1e-3, vel[2]*1e-3
+            f = K * (vx_k*utx[0]+vy_k*utx[1]+vz_k*utx[2] + vx_k*urx[0]+vy_k*urx[1]+vz_k*urx[2])
             measurements.append(MultiNodeMeasurement(nid, d, f, snr=10.0))
-        res = _residual_function(state, two_node_setup, measurements)
-        # Delay and doppler residuals should be near zero
-        assert np.max(np.abs(res[:-1])) < 1e-6
-        # Altitude constraint: 5 km is in range, should be 0
-        assert abs(res[-1]) < 1e-6
+        res = _residual_function(state, two_node_setup, measurements, z_fixed_km)
+        # All residuals should be near zero
+        assert np.max(np.abs(res)) < 1e-6
 
-    def test_altitude_below_ground_penalty(self, two_node_setup):
-        """Below-ground altitude gets penalized."""
-        state = np.array([10, 5, 0.01, 0, 0, 0], dtype=float)
-        meas = [MultiNodeMeasurement("node_a", 50, 0, snr=10)]
-        res = _residual_function(state, two_node_setup, meas)
-        alt_penalty = res[-1]
-        assert alt_penalty > 1.0  # strong penalty for 0.01 km < 0.05 km
-
-    def test_altitude_above_ceiling_penalty(self, two_node_setup):
-        """Above-ceiling altitude gets penalized."""
-        state = np.array([10, 5, 20.0, 0, 0, 0], dtype=float)
-        meas = [MultiNodeMeasurement("node_a", 50, 0, snr=10)]
-        res = _residual_function(state, two_node_setup, meas)
-        alt_penalty = res[-1]
-        assert alt_penalty > 1.0  # strong penalty for 20 km > 15 km
+    def test_z_fixed_is_used_not_state(self, two_node_setup):
+        """Altitude comes from z_fixed_km, not from the state vector."""
+        import math as _math
+        z_fixed_km = 5.0
+        pos = np.array([10.0, 5.0, z_fixed_km])
+        vel = np.array([0.0, 0.0, 0.0])
+        state = np.array([pos[0], pos[1], vel[0], vel[1], vel[2]])
+        meas = []
+        for nid, ns in two_node_setup.items():
+            tx = ns.tx_enu if isinstance(ns.tx_enu, tuple) else tuple(ns.tx_enu)
+            rx = ns.rx_enu if isinstance(ns.rx_enu, tuple) else tuple(ns.rx_enu)
+            px2, py2, pz2 = pos[0], pos[1], pos[2]
+            dptx = _math.sqrt((px2-tx[0])**2+(py2-tx[1])**2+(pz2-tx[2])**2)
+            dprx = _math.sqrt((px2-rx[0])**2+(py2-rx[1])**2+(pz2-rx[2])**2)
+            d_bl = _math.sqrt((rx[0]-tx[0])**2+(rx[1]-tx[1])**2+(rx[2]-tx[2])**2)
+            d = (dptx + dprx - d_bl) / 0.299792458
+            meas.append(MultiNodeMeasurement(nid, d, 0.0, snr=10.0))
+        # Correct z_fixed → near-zero residuals
+        res_correct = _residual_function(state, two_node_setup, meas, z_fixed_km)
+        # Wrong z_fixed → non-zero residuals
+        res_wrong = _residual_function(state, two_node_setup, meas, z_fixed_km + 3.0)
+        assert np.max(np.abs(res_correct)) < 1e-6
+        assert np.max(np.abs(res_wrong)) > 0.1
 
     def test_snr_weighting(self, two_node_setup):
         """Higher SNR gives larger residuals for same offset."""
-        state = np.array([10, 5, 5, 0, 0, 0], dtype=float)
+        state = np.array([10.0, 5.0, 0.0, 0.0, 0.0], dtype=float)
         m_low = [MultiNodeMeasurement("node_a", 100, 50, snr=5)]
         m_high = [MultiNodeMeasurement("node_a", 100, 50, snr=30)]
-        res_low = _residual_function(state, two_node_setup, m_low)
-        res_high = _residual_function(state, two_node_setup, m_high)
+        res_low = _residual_function(state, two_node_setup, m_low, z_fixed_km=5.0)
+        res_high = _residual_function(state, two_node_setup, m_high, z_fixed_km=5.0)
         # High SNR capped at 3.0 weight, low at 0.5 → high residuals are larger
         assert np.sum(res_high[:2] ** 2) > np.sum(res_low[:2] ** 2)
 

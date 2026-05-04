@@ -12,7 +12,6 @@ os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
 from main import app  # noqa: E402
-from core import state  # noqa: E402
 
 
 @pytest.fixture()
@@ -126,11 +125,12 @@ class TestCORS:
             "/api/health",
             headers={
                 "Origin": "https://retina.fm",
-                "Access-Control-Request-Method": "DELETE",
+                "Access-Control-Request-Method": "TRACE",
             },
         )
         allow_methods = r.headers.get("access-control-allow-methods", "")
-        assert "DELETE" not in allow_methods
+        assert "TRACE" not in allow_methods
+        assert "PATCH" not in allow_methods
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -162,7 +162,7 @@ class TestWebSocketAuth:
     def test_ws_open_when_no_token_configured(self, client):
         """When WS_AUTH_TOKEN is empty, any client can connect."""
         # WS_AUTH_TOKEN defaults to "" — should accept
-        with client.websocket_connect("/ws/aircraft") as ws:
+        with client.websocket_connect("/ws/aircraft"):
             # Connection succeeded — close immediately
             pass
 
@@ -178,7 +178,7 @@ class TestWebSocketAuth:
         """When WS_AUTH_TOKEN is set, valid tokens get accepted."""
         import routes.streaming as streaming_mod
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "secret-token-123")
-        with client.websocket_connect("/ws/aircraft?token=secret-token-123") as ws:
+        with client.websocket_connect("/ws/aircraft?token=secret-token-123"):
             pass
 
 
@@ -277,6 +277,8 @@ class TestTowerStats:
         if os.path.exists(stats_path):
             os.remove(stats_path)
 
+    _HEADERS = {"X-API-Key": "test-key-abc123"}
+
     def test_post_selection(self, client):
         r = client.post("/api/stats/tower-selection", json={
             "node_id": "test-node-1",
@@ -287,12 +289,12 @@ class TestTowerStats:
             "node_lat": -33.9,
             "node_lon": 151.1,
             "source": "au",
-        })
+        }, headers=self._HEADERS)
         assert r.status_code == 200
         assert r.json()["status"] == "recorded"
 
     def test_missing_fields_returns_400(self, client):
-        r = client.post("/api/stats/tower-selection", json={"node_id": "x"})
+        r = client.post("/api/stats/tower-selection", json={"node_id": "x"}, headers=self._HEADERS)
         assert r.status_code == 400
 
     def test_get_summary(self, client):
@@ -307,7 +309,7 @@ class TestTowerStats:
                 "node_lat": -34.0,
                 "node_lon": 151.0,
                 "source": "au",
-            })
+            }, headers=self._HEADERS)
         r = client.get("/api/stats/summary")
         assert r.status_code == 200
         s = r.json()

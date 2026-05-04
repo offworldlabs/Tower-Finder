@@ -6,44 +6,44 @@ to process detection data and output tar1090-compatible aircraft.json.
 Pipeline: detection data → retina-tracker → retina-geolocator → tar1090 JSON
 """
 
+import glob
 import json
 import logging
 import math
 import os
 import time
-import glob
-import io
-from pathlib import Path
-from typing import Optional
 
 import yaml
 
-import numpy as np
-
 logger = logging.getLogger(__name__)
 
-from retina_tracker.tracker import Tracker as RetinaTracker
-from retina_tracker.output import TrackEventWriter
-from retina_tracker.config import set_config as _set_tracker_global_config
-
+from retina_geolocator import (
+    Detection as GeoDetection,
+)
 from retina_geolocator import (
     Geometry,
     calculate_baseline_geometry,
     generate_initial_guess,
+    load_geolocator_config,
     select_initial_guess,
     solve_track,
-    load_config as load_radar_config,
-    load_geolocator_config,
-    Detection as GeoDetection,
+)
+from retina_geolocator import (
     Track as GeoTrack,
 )
+from retina_tracker.config import set_config as _set_tracker_global_config
+from retina_tracker.tracker import Tracker as RetinaTracker
 
 # ─── Constants ───────────────────────────────────────────────────────
 from config.constants import (
-    C_M_S as C, FT_TO_M,
-    DRONE_ALTITUDE_BOUNDS, DRONE_VELOCITY_BOUNDS,
-    DRONE_INITIAL_ALT_M, DRONE_MAX_SPEED_MS, DRONE_MAX_ALT_M,
-    GEO_INTERVAL_S, PRUNE_INTERVAL_S,
+    DRONE_ALTITUDE_BOUNDS,
+    DRONE_INITIAL_ALT_M,
+    DRONE_MAX_ALT_M,
+    DRONE_MAX_SPEED_MS,
+    DRONE_VELOCITY_BOUNDS,
+    FT_TO_M,
+    GEO_INTERVAL_S,
+    PRUNE_INTERVAL_S,
 )
 
 # ─── Node Configuration ─────────────────────────────────────────────
@@ -224,7 +224,7 @@ class PassiveRadarPipeline:
         )
         tracker_config = {}
         if os.path.exists(tracker_config_path):
-            with open(tracker_config_path, "r") as f:
+            with open(tracker_config_path) as f:
                 tracker_config = yaml.safe_load(f)
             # Propagate to the global config so MIN_SNR() / M_THRESHOLD() etc.
             # read the correct values (they use a module-level singleton, not
@@ -473,6 +473,7 @@ class PassiveRadarPipeline:
         refreshed from live state for accurate dead-reckoning on the frontend.
         """
         import time as _time_geo
+
         from core import state as _state
         now = _time_geo.monotonic()
         for track_id, event in self.event_writer.get_new_events().items():
@@ -605,7 +606,7 @@ class PassiveRadarPipeline:
 
     def process_file(self, filepath: str) -> list:
         """Process an entire .detection file. Returns geolocated tracks."""
-        with open(filepath, "r") as f:
+        with open(filepath) as f:
             content = f.read().strip()
             if not content.startswith("["):
                 content = "[" + content + "]"

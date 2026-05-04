@@ -1,15 +1,13 @@
 """Unit tests for Chain of Custody subsystem."""
 
 import copy
-import json
 import os
 
 import pytest
-
-from retina_custody.crypto_backend import SoftwareCryptoBackend, SignatureVerifier
-from retina_custody.packet_signer import PacketSigner, PacketVerifier, canonicalize
+from retina_custody.crypto_backend import SignatureVerifier, SoftwareCryptoBackend
 from retina_custody.hash_chain import HashChainBuilder, HashChainVerifier
-from retina_custody.models import SignedPacket, HashChainEntry, NodeIdentity
+from retina_custody.models import HashChainEntry, NodeIdentity, SignedPacket
+from retina_custody.packet_signer import PacketSigner, PacketVerifier, canonicalize
 
 
 @pytest.fixture()

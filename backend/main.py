@@ -15,40 +15,45 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from dotenv import load_dotenv
 
-from pipeline.passive_radar import PassiveRadarPipeline, DEFAULT_NODE_CONFIG
 from core import state
-from services.tcp_handler import handle_tcp_client
-from services.background import (
-    frame_processor_loop,
-    aircraft_flush_task,
-    archive_flush_task,
-    analytics_refresh_task,
-    reputation_evaluator,
-    adsb_truth_fetcher,
-    start_solver_workers,
-)
-from services.state_snapshot import save_snapshot, restore_snapshot
-from routes.towers import router as towers_router
-from routes.stats import router as stats_router
-from routes.radar import router as radar_router
-from routes.analytics import router as analytics_router
-from routes.streaming import router as streaming_router
-from routes.archive import router as archive_router
-from routes.test import router as test_router
-from routes.custody import router as custody_router
-from routes.auth import router as auth_router
+from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from routes.admin import router as admin_router
+from routes.analytics import router as analytics_router
+from routes.archive import router as archive_router
+from routes.auth import router as auth_router
+from routes.custody import router as custody_router
 from routes.output import router as output_router
+from routes.radar import router as radar_router
+from routes.stats import router as stats_router
+from routes.streaming import router as streaming_router
+from routes.test import router as test_router
+from routes.towers import router as towers_router
+from services.background import (
+    adsb_truth_fetcher,
+    aircraft_flush_task,
+    analytics_refresh_task,
+    archive_flush_task,
+    archive_lifecycle_task,
+    frame_processor_loop,
+    prune_synthetic_nodes,
+    reputation_evaluator,
+    start_solver_workers,
+    storage_refresh_task,
+)
 from services.blah2_bridge import blah2_bridge_task
+from services.runtime_coverage import start as _start_coverage
+from services.runtime_coverage import stop as _stop_coverage
+from services.state_snapshot import SAVE_INTERVAL_S, restore_snapshot, save_snapshot
+from services.tcp_handler import handle_tcp_client
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO))
 
 TCP_PORT = int(os.getenv("RADAR_TCP_PORT", "3012"))
 
@@ -63,7 +68,9 @@ with open(os.path.join(_TAR1090_DATA_DIR, "receiver.json"), "w") as _f:
     json.dump(radar_pipeline.generate_receiver_json(), _f)
 
 # Inject pipeline reference into route modules that need it
-from routes import radar as _radar_mod, test as _test_mod  # noqa: E402
+from routes import radar as _radar_mod  # noqa: E402
+from routes import test as _test_mod
+
 _radar_mod.init(radar_pipeline)
 _test_mod.init(radar_pipeline)
 
@@ -72,8 +79,22 @@ _test_mod.init(radar_pipeline)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Start runtime coverage if COVERAGE_ENABLED=1
+    _start_coverage()
+
+    # Initialise SQLite user database (creates tables on first run)
+    from core.users import create_db_and_tables
+    await create_db_and_tables()
+
+    # Migrate any legacy JSON stores (invites/node_owners/claim_codes) to SQLite
+    from core.auth import migrate_json_to_db
+    await migrate_json_to_db()
+
     # Restore persisted state before accepting connections
-    restore_snapshot()
+    restored = restore_snapshot()
+
+    from services.alerting import send_alert
+    send_alert("server_start", "RETINA server started", {"restored": restored})
 
     server = await asyncio.start_server(handle_tcp_client, "0.0.0.0", TCP_PORT)
     addrs = ", ".join(str(s.getsockname()) for s in server.sockets)
@@ -87,9 +108,9 @@ async def lifespan(app: FastAPI):
         _n_frame_workers = int(os.environ.get("FRAME_WORKERS", "4"))
 
         async def _snapshot_loop():
-            """Save state snapshot every 5 minutes."""
+            """Save state snapshot periodically."""
             while True:
-                await asyncio.sleep(300)
+                await asyncio.sleep(SAVE_INTERVAL_S)
                 try:
                     await asyncio.get_event_loop().run_in_executor(None, save_snapshot)
                 except Exception:
@@ -98,10 +119,13 @@ async def lifespan(app: FastAPI):
         tasks = [
             asyncio.create_task(server.serve_forever()),
             asyncio.create_task(reputation_evaluator()),
+            asyncio.create_task(prune_synthetic_nodes()),
             asyncio.create_task(adsb_truth_fetcher()),
             asyncio.create_task(aircraft_flush_task(radar_pipeline)),
             asyncio.create_task(archive_flush_task()),
+            asyncio.create_task(archive_lifecycle_task()),
             asyncio.create_task(analytics_refresh_task()),
+            asyncio.create_task(storage_refresh_task()),
             asyncio.create_task(blah2_bridge_task()),
             asyncio.create_task(_snapshot_loop()),
             *[asyncio.create_task(frame_processor_loop(radar_pipeline))
@@ -119,6 +143,8 @@ async def lifespan(app: FastAPI):
         from services.frame_processor import flush_all_archive_buffers
         flush_all_archive_buffers()
         state.node_analytics.save_coverage_maps()
+        # Stop runtime coverage and flush report
+        _stop_coverage()
         logging.info("Coverage maps saved to %s", state.COVERAGE_STORAGE_DIR)
 
 
@@ -154,7 +180,7 @@ app.add_middleware(
         "https://towers.retina.fm,https://map.retina.fm",
     ).split(","),
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "HEAD", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-API-Key"],
     max_age=3600,
 )

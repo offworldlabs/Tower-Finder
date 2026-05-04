@@ -4,26 +4,24 @@ Covers: process_one_frame, build_combined_aircraft_json, helper functions,
 archive buffering, get_or_create_node_pipeline.
 """
 
-import math
 import time
 
 import pytest
 
 from core import state
-from pipeline.passive_radar import PassiveRadarPipeline, DEFAULT_NODE_CONFIG
+from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from services.frame_processor import (
-    normalize_hex_key,
-    position_distance_km,
     append_track_history,
-    resolve_ground_truth_hex,
-    get_node_configs,
-    get_or_create_node_pipeline,
-    process_one_frame,
     build_combined_aircraft_json,
     flush_all_archive_buffers,
+    get_node_configs,
+    get_or_create_node_pipeline,
     multinode_to_aircraft,
+    normalize_hex_key,
+    position_distance_km,
+    process_one_frame,
+    resolve_ground_truth_hex,
 )
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

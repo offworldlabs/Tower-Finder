@@ -3,14 +3,21 @@ import { api } from "../../api/client";
 
 export default function UserManagementPage() {
   const [users, setUsers] = useState([]);
+  const [owners, setOwners] = useState<Record<string, { user_id: string }>>({});
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api.adminUsers()
-      .then((data) => setUsers(Array.isArray(data) ? data : []))
+    Promise.all([api.adminUsers(), api.adminNodeOwners()])
+      .then(([u, o]) => {
+        setUsers(Array.isArray(u) ? u : []);
+        setOwners(o && typeof o === "object" ? o : {});
+      })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
+
+  const nodeCount = (uid: string) =>
+    Object.values(owners).filter((v) => v.user_id === uid).length;
 
   const toggleRole = async (user) => {
     const newRole = user.role === "admin" ? "user" : "admin";
@@ -56,7 +63,7 @@ export default function UserManagementPage() {
                 <th>Email</th>
                 <th>Provider</th>
                 <th>Role</th>
-                <th>Kit / Serial</th>
+                <th>Nodes</th>
                 <th>Last Login</th>
                 <th>Actions</th>
               </tr>
@@ -83,7 +90,7 @@ export default function UserManagementPage() {
                     </span>
                   </td>
                   <td style={{ fontFamily: "monospace", fontSize: 11, color: "var(--text-muted)" }}>
-                    {user.kit_serial || user.serial || "—"}
+                    {nodeCount(user.id)}
                   </td>
                   <td>
                     {user.last_login

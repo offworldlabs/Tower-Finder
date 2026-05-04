@@ -1,5 +1,6 @@
 """Test network dashboard, ground-truth validation endpoints."""
 
+import logging
 import math
 import os
 import time
@@ -7,33 +8,36 @@ from collections import deque
 from datetime import datetime, timezone
 
 import orjson
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from fastapi.responses import Response
 
 from core import state
-from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex, position_distance_km
+from core.task_registry import TASK_EXPECTED_INTERVAL_S
+from core.users import require_admin
+from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
-# ── Task staleness detection ──────────────────────────────────────────────────
-# Each task has an expected interval — if it hasn't reported success within
-# 2× that interval, it's considered stale.
-_TASK_EXPECTED_INTERVAL_S = {
-    "frame_processor": 10,
-    "analytics_refresh": 60,
-    "aircraft_flush": 5,
-    "archive_flush": 120,
-    "reputation_evaluator": 120,
-    "adsb_truth_fetcher": 300,
-    "solver": 120,
-}
+_RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
+if not _RADAR_API_KEY:
+    logger.warning(
+        "RADAR_API_KEY is not set — /api/test/ground-truth/push and "
+        "/api/sim/adsb/push accept ANY caller without authentication."
+    )
+
+
+def _verify_sim_key(x_api_key: str = Header(default="", alias="X-API-Key")):
+    """Require X-API-Key for simulation data injection endpoints."""
+    if _RADAR_API_KEY and x_api_key != _RADAR_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
 
 def _get_stale_tasks() -> list[str]:
     """Return names of tasks that haven't reported success within their expected interval."""
     now = time.time()
     stale = []
-    for task_name, expected_s in _TASK_EXPECTED_INTERVAL_S.items():
+    for task_name, expected_s in TASK_EXPECTED_INTERVAL_S.items():
         last = state.task_last_success.get(task_name)
         if last is None:
             continue  # task hasn't started yet — not stale
@@ -58,16 +62,25 @@ async def test_network_dashboard():
 
 
 def _build_dashboard_data() -> bytes:
-    now = time.time()
+    # Snapshot mutable dicts to avoid RuntimeError from concurrent mutation
+    with state.connected_nodes_lock:
+        _cn_snapshot = list(state.connected_nodes.values())
+    _pipelines_snapshot = list(state.node_pipelines.values())
 
-    total_nodes = len(state.connected_nodes)
-    active_nodes = sum(1 for n in state.connected_nodes.values() if n.get("status") not in ("disconnected",))
-    synthetic_nodes = sum(1 for n in state.connected_nodes.values() if n.get("is_synthetic"))
+    total_nodes = len(_cn_snapshot)
+    active_nodes = sum(1 for n in _cn_snapshot if n.get("status") not in ("disconnected",))
+    synthetic_nodes = sum(1 for n in _cn_snapshot if n.get("is_synthetic"))
 
-    total_tracks = sum(len(p.tracker.tracks) for p in state.node_pipelines.values()) if state.node_pipelines else 0
-    total_tracks += len(_default_pipeline.tracker.tracks) if _default_pipeline and hasattr(_default_pipeline, 'tracker') else 0
-    geolocated = sum(len(p.geolocated_tracks) for p in state.node_pipelines.values()) if state.node_pipelines else 0
-    geolocated += len(_default_pipeline.geolocated_tracks) if _default_pipeline and hasattr(_default_pipeline, 'geolocated_tracks') else 0
+    total_tracks = sum(len(p.tracker.tracks) for p in _pipelines_snapshot) if _pipelines_snapshot else 0
+    total_tracks += (
+        len(_default_pipeline.tracker.tracks) if _default_pipeline and hasattr(_default_pipeline, "tracker") else 0
+    )
+    geolocated = sum(len(p.geolocated_tracks) for p in _pipelines_snapshot) if _pipelines_snapshot else 0
+    geolocated += (
+        len(_default_pipeline.geolocated_tracks)
+        if _default_pipeline and hasattr(_default_pipeline, "geolocated_tracks")
+        else 0
+    )
     mn_tracks = len(state.multinode_tracks)
     adsb_tracks = len(state.adsb_aircraft)
     n_aircraft = len(state.latest_aircraft_json.get("aircraft", []))
@@ -75,75 +88,84 @@ def _build_dashboard_data() -> bytes:
     analytics_nodes = len(state.node_analytics.trust_scores)
     avg_trust = 0.0
     if state.node_analytics.trust_scores:
-        scores = [ts.score for ts in state.node_analytics.trust_scores.values() if hasattr(ts, 'score')]
+        scores = [ts.score for ts in list(state.node_analytics.trust_scores.values()) if hasattr(ts, "score")]
         avg_trust = sum(scores) / len(scores) if scores else 0
 
     blocked_nodes = sum(
-        1 for r in state.node_analytics.reputations.values()
-        if hasattr(r, 'reputation') and r.reputation < 0.1
+        1 for r in list(state.node_analytics.reputations.values()) if hasattr(r, "reputation") and r.reputation < 0.1
     )
-    n_overlaps = len(state.node_associator.overlap_zones) if hasattr(state.node_associator, 'overlap_zones') else 0
+    n_overlaps = len(state.node_associator.overlap_zones) if hasattr(state.node_associator, "overlap_zones") else 0
     ws_clients = len(state.ws_clients)
     ext_adsb = len(state.external_adsb_cache)
 
-    return orjson.dumps({
-        "status": "running",
-        "environment": os.getenv("RETINA_ENV", "production"),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "nodes": {
-            "total": total_nodes,
-            "active": active_nodes,
-            "synthetic": synthetic_nodes,
-            "real": total_nodes - synthetic_nodes,
-        },
-        "pipeline": {
-            "active_tracks": total_tracks,
-            "geolocated_tracks": geolocated,
-            "multinode_tracks": mn_tracks,
-            "adsb_aircraft": adsb_tracks,
-            "node_pipelines": len(state.node_pipelines),
-            "aircraft_on_map": n_aircraft,
-        },
-        "analytics": {
-            "nodes_with_analytics": analytics_nodes,
-            "average_trust_score": round(avg_trust, 4),
-            "blocked_nodes": blocked_nodes,
-        },
-        "association": {"overlap_zones": n_overlaps},
-        "streaming": {
-            "websocket_clients": ws_clients,
-            "external_adsb_cached": ext_adsb,
-        },
-        "server_health": {
-            "frame_queue_depth": state.frame_queue.qsize(),
-            "frame_queue_max": state.frame_queue.maxsize,
-            "frames_dropped": state.frames_dropped,
-            "frame_queue_utilization_pct": round(
-                state.frame_queue.qsize() / max(state.frame_queue.maxsize, 1) * 100, 1
-            ),
-        },
-        "chain_of_custody": {
-            "registered_keys": len(state.node_identities),
-            "chain_entries_total": sum(len(e) for e in state.chain_entries.values()),
-            "iq_commitments_total": sum(len(c) for c in state.iq_commitments.values()),
-            "nodes_with_chains": len(state.chain_entries),
-        },
-        "subsystem_health": {
-            "tcp_server": "ok",
-            "radar_pipeline": "ok" if _default_pipeline and hasattr(_default_pipeline, 'tracker') else "error",
-            "node_analytics": "ok" if analytics_nodes > 0 or total_nodes == 0 else "waiting",
-            "inter_node_association": "ok" if n_overlaps > 0 or active_nodes < 2 else "waiting",
-            "data_archival": "ok",
-            "websocket_broadcast": "ok",
-            "aircraft_feed": "ok",
-            "chain_of_custody": "ok" if len(state.node_identities) > 0 or total_nodes == 0 else "waiting",
-        },
-        "task_health": {
-            "last_success": dict(state.task_last_success),
-            "error_counts": dict(state.task_error_counts),
-            "stale_tasks": _get_stale_tasks(),
-        },
-    })
+    return orjson.dumps(
+        {
+            "status": "running",
+            "environment": os.getenv("RETINA_ENV", "production"),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "nodes": {
+                "total": total_nodes,
+                "active": active_nodes,
+                "synthetic": synthetic_nodes,
+                "real": total_nodes - synthetic_nodes,
+            },
+            "pipeline": {
+                "active_tracks": total_tracks,
+                "geolocated_tracks": geolocated,
+                "multinode_tracks": mn_tracks,
+                "adsb_aircraft": adsb_tracks,
+                "node_pipelines": len(state.node_pipelines),
+                "aircraft_on_map": n_aircraft,
+            },
+            "analytics": {
+                "nodes_with_analytics": analytics_nodes,
+                "average_trust_score": round(avg_trust, 4),
+                "blocked_nodes": blocked_nodes,
+            },
+            "association": {"overlap_zones": n_overlaps},
+            "streaming": {
+                "websocket_clients": ws_clients,
+                "external_adsb_cached": ext_adsb,
+            },
+            "server_health": {
+                "frame_queue_depth": state.frame_queue.qsize(),
+                "frame_queue_max": state.frame_queue.maxsize,
+                "frames_dropped": state.frames_dropped,
+                "frame_queue_utilization_pct": round(
+                    state.frame_queue.qsize() / max(state.frame_queue.maxsize, 1) * 100, 1
+                ),
+            },
+            "chain_of_custody": {
+                "registered_keys": len(state.node_identities),
+                "chain_entries_total": sum(len(e) for e in list(state.chain_entries.values())),
+                "iq_commitments_total": sum(len(c) for c in list(state.iq_commitments.values())),
+                "nodes_with_chains": len(state.chain_entries),
+            },
+            "subsystem_health": {
+                "tcp_server": "ok",
+                "radar_pipeline": "ok" if _default_pipeline and hasattr(_default_pipeline, "tracker") else "error",
+                "node_analytics": "ok" if analytics_nodes > 0 or total_nodes == 0 else "waiting",
+                "inter_node_association": "ok" if n_overlaps > 0 or active_nodes < 2 else "waiting",
+                "data_archival": "ok",
+                "websocket_broadcast": "ok",
+                "aircraft_feed": "ok",
+                "chain_of_custody": "ok" if len(state.node_identities) > 0 or total_nodes == 0 else "waiting",
+            },
+            "solver": {
+                "successes": state.solver_successes,
+                "failures": state.solver_failures,
+                "queue_drops": state.solver_queue_drops,
+                "last_latency_s": round(state.solver_last_latency_s, 3),
+                "avg_latency_s": round(state.solver_total_latency_s / max(state.solver_total_solved, 1), 3),
+            },
+            "mlat_verification": _mlat_verification_summary(),
+            "task_health": {
+                "last_success": dict(state.task_last_success),
+                "error_counts": dict(state.task_error_counts),
+                "stale_tasks": _get_stale_tasks(),
+            },
+        }
+    )
 
 
 @router.post("/api/test/validate")
@@ -172,7 +194,7 @@ async def validate_ground_truth(body: dict = Body(...)):
                 continue
             dlat = (gt_lat - sa_lat) * 111.0
             dlon = (gt_lon - sa_lon) * 111.0 * math.cos(math.radians(gt_lat))
-            dist_km = math.sqrt(dlat ** 2 + dlon ** 2)
+            dist_km = math.sqrt(dlat**2 + dlon**2)
             if dist_km < best_dist and dist_km < 50:
                 best_dist = dist_km
                 best_match = (i, sa)
@@ -182,15 +204,17 @@ async def validate_ground_truth(body: dict = Body(...)):
             matched_server_indices.add(idx)
             sa_alt_m = sa.get("alt_baro", 0) * 0.3048 if sa.get("alt_baro") else 0
             alt_err_m = abs(gt_alt - sa_alt_m)
-            matches.append({
-                "truth_id": gt.get("id"),
-                "server_hex": sa.get("hex"),
-                "position_error_km": round(best_dist, 2),
-                "altitude_error_m": round(alt_err_m, 0),
-                "position_source": sa.get("position_source", "unknown"),
-                "has_adsb": gt.get("has_adsb", False),
-                "is_anomalous": gt.get("is_anomalous", False),
-            })
+            matches.append(
+                {
+                    "truth_id": gt.get("id"),
+                    "server_hex": sa.get("hex"),
+                    "position_error_km": round(best_dist, 2),
+                    "altitude_error_m": round(alt_err_m, 0),
+                    "position_source": sa.get("position_source", "unknown"),
+                    "has_adsb": gt.get("has_adsb", False),
+                    "is_anomalous": gt.get("is_anomalous", False),
+                }
+            )
         else:
             unmatched_truth.append(gt.get("id", "unknown"))
 
@@ -255,7 +279,7 @@ async def validate_ground_truth(body: dict = Body(...)):
 
 
 @router.post("/api/test/ground-truth/push")
-async def push_ground_truth_snapshot(body: dict = Body(...)):
+async def push_ground_truth_snapshot(body: dict = Body(...), _key=Depends(_verify_sim_key)):
     ts = body.get("ts_ms", int(time.time() * 1000)) / 1000.0
     aircraft_list = body.get("aircraft", [])
     if not isinstance(aircraft_list, list):
@@ -302,7 +326,7 @@ async def push_ground_truth_snapshot(body: dict = Body(...)):
                     }
                     state.anomaly_log.append(event)
                     if len(state.anomaly_log) > state.ANOMALY_LOG_MAX:
-                        state.anomaly_log = state.anomaly_log[-state.ANOMALY_LOG_MAX:]
+                        state.anomaly_log = state.anomaly_log[-state.ANOMALY_LOG_MAX :]
         else:
             with state.anomaly_lock:
                 state.anomaly_hexes.discard(hex_code)
@@ -311,7 +335,7 @@ async def push_ground_truth_snapshot(body: dict = Body(...)):
 
 
 @router.post("/api/sim/adsb/push")
-async def sim_push_adsb_positions(body: dict = Body(...)):
+async def sim_push_adsb_positions(body: dict = Body(...), _key=Depends(_verify_sim_key)):
     """Simulator pushes live ADS-B positions every second directly into state.adsb_aircraft.
 
     This keeps each aircraft's position current at 1 Hz regardless of how many
@@ -371,7 +395,7 @@ async def get_ground_truth_trail(hex_code: str):
         sol_last = solved_trail[-1]
         dlat = (sol_last[0] - gt_last[0]) * 111.0
         dlon = (sol_last[1] - gt_last[1]) * 111.0 * math.cos(math.radians(gt_last[0]))
-        position_error_km = round(math.sqrt(dlat ** 2 + dlon ** 2), 3)
+        position_error_km = round(math.sqrt(dlat**2 + dlon**2), 3)
 
     return {
         "hex": hex_code,
@@ -388,22 +412,25 @@ async def get_ground_truth_trail(hex_code: str):
 async def get_anomaly_log():
     """Return the anomaly event log and currently flagged hex codes."""
     return Response(
-        content=orjson.dumps({
-            "flagged_count": len(state.anomaly_hexes),
-            "flagged_hexes": sorted(state.anomaly_hexes),
-            "events": state.anomaly_log[-100:],
-        }),
+        content=orjson.dumps(
+            {
+                "flagged_count": len(state.anomaly_hexes),
+                "flagged_hexes": sorted(state.anomaly_hexes),
+                "events": state.anomaly_log[-100:],
+            }
+        ),
         media_type="application/json",
     )
 
 
 # ── Simulation physics config ─────────────────────────────────────────────────
 
+
 @router.get("/api/simulation/config")
 async def get_simulation_config():
     """Return current simulation physics configuration plus live object-type counts."""
     counts: dict[str, int] = {"anomalous": 0, "drone": 0, "aircraft": 0, "total": 0}
-    for meta in state.ground_truth_meta.values():
+    for meta in list(state.ground_truth_meta.values()):
         counts["total"] += 1
         if meta.get("is_anomalous"):
             counts["anomalous"] += 1
@@ -418,15 +445,14 @@ async def get_simulation_config():
 
 
 @router.put("/api/simulation/config")
-async def put_simulation_config(body: dict = Body(...)):
+async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_admin)):
     """Update simulation physics fractions.
 
     Accepted keys: frac_anomalous, frac_drone, frac_dark (0.0–1.0 each).
     Sum of the three must not exceed 1.0 — the remainder is commercial aircraft.
     Optional: max_range_km (10–400), min_aircraft (1–500), max_aircraft (1–500).
     """
-    allowed = {"frac_anomalous", "frac_drone", "frac_dark", "max_range_km",
-               "min_aircraft", "max_aircraft"}
+    allowed = {"frac_anomalous", "frac_drone", "frac_dark", "max_range_km", "min_aircraft", "max_aircraft"}
     updated = {}
     for k in allowed:
         if k in body:
@@ -485,19 +511,21 @@ async def get_simulation_ground_truth():
                 gs_knots = round(dist_m / dt * 1.94384, 1)
                 track_deg = round(math.degrees(math.atan2(dlon_m, dlat_m)) % 360, 1)
         meta = state.ground_truth_meta.get(hx, {})
-        gt_aircraft.append({
-            "hex": hx,
-            "lat": lat,
-            "lon": lon,
-            "alt_m": alt_m,
-            "gs": gs_knots,
-            "track": track_deg,
-            "speed_ms": meta.get("speed_ms", 0),
-            "heading": meta.get("heading", 0),
-            "ts": round(ts, 3),
-            "object_type": meta.get("object_type", "aircraft"),
-            "is_anomalous": meta.get("is_anomalous", False),
-        })
+        gt_aircraft.append(
+            {
+                "hex": hx,
+                "lat": lat,
+                "lon": lon,
+                "alt_m": alt_m,
+                "gs": gs_knots,
+                "track": track_deg,
+                "speed_ms": meta.get("speed_ms", 0),
+                "heading": meta.get("heading", 0),
+                "ts": round(ts, 3),
+                "object_type": meta.get("object_type", "aircraft"),
+                "is_anomalous": meta.get("is_anomalous", False),
+            }
+        )
 
     # ── solver performance ────────────────────────────────────────────────────
     gt_hex_set = {a["hex"] for a in gt_aircraft}
@@ -531,7 +559,7 @@ async def get_simulation_ground_truth():
                 sol = solved_by_hex[hx]
                 dlat = (sol[0] - gt_last[0]) * 111.0
                 dlon = (sol[1] - gt_last[1]) * 111.0 * math.cos(math.radians(gt_last[0]))
-                pos_errors.append(math.sqrt(dlat ** 2 + dlon ** 2))
+                pos_errors.append(math.sqrt(dlat**2 + dlon**2))
             if len(pos_errors) >= 200:
                 break
 
@@ -539,20 +567,38 @@ async def get_simulation_ground_truth():
     avg_err = round(sum(pos_errors) / len(pos_errors), 2) if pos_errors else None
 
     return Response(
-        content=orjson.dumps({
-            "aircraft": gt_aircraft,
-            "total": gt_total,
-            "performance": {
-                "gt_total": gt_total,
-                "detected": detected_count,
-                "detection_rate_pct": round(detected_count / gt_total * 100, 1) if gt_total else 0.0,
-                "avg_position_error_km": avg_err,
-                "multinode_tracks": len(state.multinode_tracks),
-                "tracked_with_error": len(pos_errors),
-            },
-        }),
+        content=orjson.dumps(
+            {
+                "aircraft": gt_aircraft,
+                "total": gt_total,
+                "performance": {
+                    "gt_total": gt_total,
+                    "detected": detected_count,
+                    "detection_rate_pct": round(detected_count / gt_total * 100, 1) if gt_total else 0.0,
+                    "avg_position_error_km": avg_err,
+                    "multinode_tracks": len(state.multinode_tracks),
+                    "tracked_with_error": len(pos_errors),
+                },
+            }
+        ),
         media_type="application/json",
     )
+
+
+def _mlat_verification_summary() -> dict:
+    """Return a lightweight summary of the latest MLAT verification for the dashboard."""
+    try:
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+        return {
+            "n_solves": data.get("n_solves", 0),
+            "n_matched": data.get("n_matched", 0),
+            "match_rate_pct": data.get("match_rate_pct", 0.0),
+            "position_mean_km": data.get("position", {}).get("mean_km", 0),
+            "position_p95_km": data.get("position", {}).get("p95_km", 0),
+            "altitude_mean_m": data.get("altitude", {}).get("mean_m", 0),
+        }
+    except Exception:
+        return {}
 
 
 # ── Radar3 solver verification ────────────────────────────────────────────────
@@ -565,6 +611,29 @@ async def radar3_verification():
     """Return pre-computed radar3 solver-vs-ADS-B verification stats."""
     return Response(
         content=state.latest_radar3_verification_bytes,
+        media_type="application/json",
+    )
+
+
+@router.get("/api/test/mlat-verification")
+async def mlat_verification():
+    """Return pre-computed multinode (MLAT) solver-vs-ground-truth verification stats."""
+    return Response(
+        content=state.latest_mlat_verification_bytes,
+        media_type="application/json",
+    )
+
+
+@router.get("/api/test/mlat-accuracy")
+async def mlat_accuracy():
+    """Rolling MLAT solver accuracy stats aggregated from the last 5 000 matched tracks.
+
+    Mirrors GET /api/radar/accuracy (single-node) but broken down by node count
+    instead of position_source.  Updates every 30 s alongside the main verification
+    refresh and is useful for detecting long-term accuracy degradation.
+    """
+    return Response(
+        content=state.latest_mlat_accuracy_bytes,
         media_type="application/json",
     )
 
@@ -592,9 +661,11 @@ async def radar3_detection_range():
         )
 
     return Response(
-        content=orjson.dumps({
-            **summary,
-            "empirical_coverage_polygon": polygon,
-        }),
+        content=orjson.dumps(
+            {
+                **summary,
+                "empirical_coverage_polygon": polygon,
+            }
+        ),
         media_type="application/json",
     )

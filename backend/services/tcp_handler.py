@@ -4,18 +4,34 @@ Handles: HELLO → CONFIG → HEARTBEAT → DETECTION → chain-of-custody messa
 """
 
 import asyncio
+import hmac
 import json
 import logging
-import hmac
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
+from retina_custody.hash_chain import HashChainEntry, HashChainVerifier
+
+from config.constants import CHAIN_ENTRIES_MAX_PER_NODE, IQ_COMMITMENTS_MAX_PER_NODE
 from core import state
-from retina_custody.hash_chain import HashChainVerifier, HashChainEntry
 
 # Optional shared token for node authentication. If not set, any node can connect.
 _RADAR_NODE_TOKEN: str | None = os.getenv("RADAR_NODE_TOKEN")
+_RETINA_ENV = os.getenv("RETINA_ENV", "").lower()
+if not _RADAR_NODE_TOKEN:
+    if _RETINA_ENV not in ("dev", "test"):
+        logging.warning(
+            "RADAR_NODE_TOKEN is not set — any TCP client can register as a radar node. "
+            "Set it in backend/.env to require node authentication."
+        )
+
+# TCP connection limits
+_MAX_TCP_CONNECTIONS = int(os.getenv("MAX_TCP_CONNECTIONS", "500"))
+_MAX_BUF_SIZE = 1_048_576  # 1 MB max buffer before newline — prevents memory exhaustion
+_active_tcp_connections = 0
+_tcp_connections_lock = asyncio.Lock()
 
 # Dedicated single-thread executor for node registration.
 # Registration is serialized by an internal lock anyway (O(n²) overlap zones),
@@ -74,8 +90,15 @@ def _validate_node_config(config: dict) -> str | None:
 
 
 def is_synthetic_node(node_id: str) -> bool:
-    """Detect synthetic nodes by their 'synth-' ID prefix."""
-    return node_id.startswith("synth-")
+    """Detect synthetic/test nodes by their ID prefix.
+
+    Marks as synthetic any node with a test/simulation prefix:
+    - synth-* — simulated fleet orchestrator nodes
+    - e2e-* — frontend E2E test nodes (including bulk registration)
+    - realnode-* — legacy E2E test nodes from prior CI runs
+    - test-* — backend test suite nodes
+    """
+    return any(node_id.startswith(p) for p in ("synth-", "e2e-", "realnode-", "test-"))
 
 
 async def _send_msg(writer: asyncio.StreamWriter, msg: dict):
@@ -92,8 +115,18 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
       3. Steady state: node sends HEARTBEAT + DETECTION messages
       4. Server sends CONFIG_REQUEST if heartbeat config hash mismatches
     """
+    global _active_tcp_connections
     peer = writer.get_extra_info("peername")
-    logging.info("Radar TCP: new connection from %s", peer)
+
+    # Enforce connection limit
+    async with _tcp_connections_lock:
+        if _active_tcp_connections >= _MAX_TCP_CONNECTIONS:
+            logging.warning("Radar TCP: rejecting connection from %s — limit %d reached", peer, _MAX_TCP_CONNECTIONS)
+            writer.close()
+            return
+        _active_tcp_connections += 1
+
+    logging.info("Radar TCP: new connection from %s (active=%d)", peer, _active_tcp_connections)
     buf = b""
     node_id = None
 
@@ -103,6 +136,10 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
             if not chunk:
                 break
             buf += chunk
+            # Guard against clients that never send a newline
+            if len(buf) > _MAX_BUF_SIZE:
+                logging.warning("Radar TCP: buffer overflow from %s (node=%s) — disconnecting", peer, node_id)
+                break
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
                 line = line.strip()
@@ -132,6 +169,49 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                             writer.close()
                             return
 
+                    # Optional node-to-user claim. If `claim_code` is present we
+                    # try to consume it; an invalid code is non-fatal — the node
+                    # still connects but ownership stays unassigned.
+                    claim_code = msg.get("claim_code")
+                    if claim_code:
+                        try:
+                            from core.auth import consume_claim_code, get_node_owner
+                            existing_owner = await get_node_owner(node_id)
+                            if existing_owner is None:
+                                owner_uid = await consume_claim_code(claim_code, node_id)
+                                if owner_uid:
+                                    logging.info("Radar TCP: node %s claimed by user %s", node_id, owner_uid)
+                                    _log_event(
+                                        "user",
+                                        f"Node {node_id} claimed by user {owner_uid}",
+                                        "info",
+                                        {"node_id": node_id, "user_id": owner_uid},
+                                    )
+                                    await _send_msg(writer, {
+                                        "type": "CLAIM_ACK",
+                                        "node_id": node_id,
+                                        "user_id": owner_uid,
+                                    })
+                                else:
+                                    logging.info("Radar TCP: invalid claim_code from %s", node_id)
+                                    await _send_msg(writer, {
+                                        "type": "CLAIM_NACK",
+                                        "node_id": node_id,
+                                        "error": "invalid or expired claim code",
+                                    })
+                            else:
+                                # Already owned — silently acknowledge so re-running with the
+                                # same code on a re-flashed node is harmless.
+                                # Do NOT echo back user_id to avoid leaking ownership
+                                # to any client that knows the node_id.
+                                await _send_msg(writer, {
+                                    "type": "CLAIM_ACK",
+                                    "node_id": node_id,
+                                    "note": "already_owned",
+                                })
+                        except Exception:
+                            logging.exception("Radar TCP: claim handler error for %s", node_id)
+
                     logging.info("Radar TCP: HELLO from %s (v%s, synthetic=%s, caps=%s)",
                                  node_id, version, is_synth, list(caps.keys()))
                     continue
@@ -149,6 +229,9 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                         await _send_msg(writer, {"type": "CONFIG_NACK", "error": cfg_err})
                         continue
                     is_synth = msg.get("is_synthetic", is_synthetic_node(node_id))
+                    _was_disconnected = (
+                        state.connected_nodes.get(node_id, {}).get("status") == "disconnected"
+                    )
                     with state.connected_nodes_lock:
                         state.connected_nodes[node_id] = {
                             "config_hash": config_hash,
@@ -158,15 +241,29 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                             "peer": str(peer),
                             "is_synthetic": is_synth,
                             "capabilities": msg.get("capabilities", {}),
+                            "first_seen_ts": state.connected_nodes.get(node_id, {}).get("first_seen_ts", time.time()),
                         }
+                        active_count = sum(
+                            1 for n in state.connected_nodes.values()
+                            if n.get("status") != "disconnected"
+                        )
+                        state.peak_connected_nodes = max(state.peak_connected_nodes, active_count)
                     logging.info("Radar TCP: CONFIG from %s (hash=%s, synthetic=%s)",
                                  node_id, config_hash, is_synth)
-                    _log_event(
-                        "node",
-                        f"Node {node_id} connected (hash={config_hash[:8]}, synthetic={is_synth})",
-                        "info",
-                        {"node_id": node_id, "config_hash": config_hash, "is_synthetic": is_synth},
-                    )
+                    if _was_disconnected:
+                        _log_event(
+                            "node",
+                            f"Node {node_id} reconnected (hash={config_hash[:8]}, synthetic={is_synth})",
+                            "info",
+                            {"node_id": node_id, "config_hash": config_hash, "is_synthetic": is_synth, "reconnect": True},
+                        )
+                    else:
+                        _log_event(
+                            "node",
+                            f"Node {node_id} connected (hash={config_hash[:8]}, synthetic={is_synth})",
+                            "info",
+                            {"node_id": node_id, "config_hash": config_hash, "is_synthetic": is_synth},
+                        )
                     await _send_msg(writer, {
                         "type": "CONFIG_ACK",
                         "config_hash": config_hash,
@@ -176,18 +273,19 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                     # Run registration in the dedicated single-thread executor so
                     # it never starves the default executor used by frame workers.
                     loop = asyncio.get_event_loop()
+                    _nid, _cfg = node_id, config_payload
                     await loop.run_in_executor(
                         _registration_executor,
-                        lambda: (
-                            state.node_analytics.register_node(node_id, config_payload),
-                            state.node_associator.register_node(node_id, config_payload),
+                        lambda _nid=_nid, _cfg=_cfg: (
+                            state.node_analytics.register_node(_nid, _cfg),
+                            state.node_associator.register_node(_nid, _cfg),
                         ),
                     )
                     continue
 
                 # ── REGISTER_KEY (chain of custody) ────────────────
                 if msg_type == "REGISTER_KEY":
-                    _handle_register_key(msg, node_id, writer)
+                    await _handle_register_key(msg, node_id, writer)
                     continue
 
                 # ── CHAIN_ENTRY ────────────────────────────────────
@@ -226,6 +324,8 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
     except (asyncio.IncompleteReadError, ConnectionResetError):
         pass
     finally:
+        async with _tcp_connections_lock:
+            _active_tcp_connections -= 1
         if node_id and node_id in state.connected_nodes:
             with state.connected_nodes_lock:
                 state.connected_nodes[node_id]["status"] = "disconnected"
@@ -291,6 +391,8 @@ async def _handle_chain_entry(msg: dict, node_id: str | None, writer):
     entry_data["_verified"] = verified
     entry_data["_received_at"] = datetime.now(timezone.utc).isoformat()
     state.chain_entries[ce_node_id].append(entry_data)
+    if len(state.chain_entries[ce_node_id]) > CHAIN_ENTRIES_MAX_PER_NODE:
+        state.chain_entries[ce_node_id] = state.chain_entries[ce_node_id][-CHAIN_ENTRIES_MAX_PER_NODE:]
     logging.info("Chain entry from %s (hour=%s, verified=%s)",
                  ce_node_id, entry_data.get("hour_utc"), verified)
     await _send_msg(writer, {
@@ -310,6 +412,8 @@ async def _handle_iq_commitment(msg: dict, node_id: str | None, writer):
         state.iq_commitments[iq_node_id] = []
     iq_data["_received_at"] = datetime.now(timezone.utc).isoformat()
     state.iq_commitments[iq_node_id].append(iq_data)
+    if len(state.iq_commitments[iq_node_id]) > IQ_COMMITMENTS_MAX_PER_NODE:
+        state.iq_commitments[iq_node_id] = state.iq_commitments[iq_node_id][-IQ_COMMITMENTS_MAX_PER_NODE:]
     logging.info("IQ commitment from %s (capture=%s, hash=%s...)",
                  iq_node_id, iq_data.get("capture_id"), iq_data.get("iq_hash", "")[:12])
     await _send_msg(writer, {
@@ -352,6 +456,7 @@ _last_drop_log: float = 0.0     # monotonic timestamp of last drop warning
 # enqueued from this node within the last NODE_FRAME_MIN_INTERVAL_S seconds.
 # ADS-B positions are always extracted regardless (fast-path below).
 import os as _os
+
 _NODE_MIN_INTERVAL_S: float = float(_os.getenv("NODE_FRAME_MIN_INTERVAL_S", "1.0"))
 _per_node_last_enqueue: dict[str, float] = {}
 
@@ -393,12 +498,20 @@ def _enqueue_detection(msg: dict, node_id: str | None):
         if now_m - _last_drop_log > 30:
             _last_drop_log = now_m
             logging.warning("Frame queue full – %d total drops", state.frames_dropped)
+            _log_event(
+                "system",
+                f"Frame queue saturated — {state.frames_dropped} total drops",
+                "error",
+                {"frames_dropped": state.frames_dropped,
+                 "queue_depth": state.frame_queue.qsize(),
+                 "queue_max": state.frame_queue.maxsize},
+            )
 
 
 def _apply_synthetic_adsb(msg: dict, node_id: str):
     """Fast-path for synthetic nodes: store ADS-B positions directly in state."""
-    import time as _time
     import math as _math
+    import time as _time
     frame = msg.get("data", msg)
     adsb_list = frame.get("adsb")
     if not adsb_list:

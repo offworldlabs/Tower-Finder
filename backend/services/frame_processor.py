@@ -6,30 +6,37 @@ and the combined aircraft.json builder used by the flush task.
 
 import logging
 import math
+import threading
 import time
 from collections import defaultdict, deque
-from typing import Optional
 
+from retina_tracker.track import TrackState
+
+from config.constants import (
+    ARC_REFRESH_S,
+    ARCHIVE_BATCH_MAX,
+    ARCHIVE_FLUSH_INTERVAL_S,
+    GT_REFRESH_S,
+    STALE_TRACK_S,
+)
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
-from retina_tracker.track import TrackState
+from services.id_utils import multinode_hex_from_key
 from services.storage import archive_detections
-from config.constants import (
-    ARCHIVE_FLUSH_INTERVAL_S, ARCHIVE_BATCH_MAX,
-    ARC_REFRESH_S, GT_REFRESH_S, STALE_TRACK_S,
-)
 
 # ── Archive batching ──────────────────────────────────────────────────────────
 # Instead of writing every frame to disk immediately (slow I/O in the hot path),
 # collect frames in memory and flush them periodically from a background task.
 _archive_buffer: dict[str, list[dict]] = defaultdict(list)
+_archive_buffer_lock = threading.Lock()
 _ARCHIVE_FLUSH_INTERVAL = ARCHIVE_FLUSH_INTERVAL_S
 _ARCHIVE_BATCH_MAX = ARCHIVE_BATCH_MAX
 
 
 def _flush_archive_node(node_id: str):
     """Write buffered frames for one node to disk in a single call."""
-    frames = _archive_buffer.pop(node_id, [])
+    with _archive_buffer_lock:
+        frames = _archive_buffer.pop(node_id, [])
     if not frames:
         return
     try:
@@ -40,7 +47,8 @@ def _flush_archive_node(node_id: str):
 
 def flush_all_archive_buffers():
     """Flush every node's buffered frames. Called from the background task."""
-    node_ids = list(_archive_buffer.keys())
+    with _archive_buffer_lock:
+        node_ids = list(_archive_buffer.keys())
     for nid in node_ids:
         _flush_archive_node(nid)
 
@@ -181,9 +189,20 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             if s_in["n_nodes"] < 2:
                 continue
             try:
-                state.solver_queue.put_nowait((s_in, node_cfgs))
+                state.solver_queue.put_nowait((s_in, node_cfgs, time.time()))
             except Exception:
-                pass
+                state.solver_queue_drops += 1
+                if state.solver_queue_drops % 100 == 1:
+                    logging.warning(
+                        "Solver queue full — dropped %d candidates total",
+                        state.solver_queue_drops,
+                    )
+                    from services.alerting import send_alert
+                    send_alert(
+                        "solver_queue_drops",
+                        f"Solver queue full — {state.solver_queue_drops} candidates dropped",
+                        {"total_drops": state.solver_queue_drops},
+                    )
     _prof_assoc += time.thread_time() - _t2
 
     # ADS-B extraction: TCP handler runs _apply_synthetic_adsb for synth nodes
@@ -225,8 +244,10 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # frame workers during 915-file coverage-map save.
     _prof_save += time.thread_time() - _t4
 
-    _archive_buffer[node_id].append(frame)
-    if len(_archive_buffer[node_id]) >= _ARCHIVE_BATCH_MAX:
+    with _archive_buffer_lock:
+        _archive_buffer[node_id].append(frame)
+        _should_flush = len(_archive_buffer[node_id]) >= _ARCHIVE_BATCH_MAX
+    if _should_flush:
         _flush_archive_node(node_id)
 
     _dt_cpu = time.thread_time() - _t0_cpu
@@ -258,7 +279,7 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
     if speed_ms > _MACH_1:
         _mn_anomaly_types.append("supersonic")
     _mn_is_anom = bool(_mn_anomaly_types)
-    _mn_hex = f"mn{abs(hash(key)) % 0xFFFF:04x}"
+    _mn_hex = multinode_hex_from_key(key)
     with state.anomaly_lock:
         if _mn_is_anom:
             state.anomaly_hexes.add(_mn_hex)
@@ -305,7 +326,7 @@ def _enu_to_lla(rx_lat: float, rx_lon: float, east_km: float, north_km: float) -
     return [float(lat), float(lon)]
 
 
-def _build_single_node_arc(track_or_delay, node_cfg: dict) -> Optional[list[list[float]]]:
+def _build_single_node_arc(track_or_delay, node_cfg: dict) -> list[list[float]] | None:
     if isinstance(track_or_delay, (int, float)):
         delay_us = track_or_delay
     else:
@@ -396,27 +417,6 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     now = time.time()
     seen_hex: set[str] = set()
     aircraft: list[dict] = []
-
-    def _dead_reckon(entry: dict, ts: float):
-        """Return dead-reckoned (lat, lon) from the last ADS-B fix.
-
-        Uses stored gs (knots) and track (degrees from north) to extrapolate
-        the aircraft's current position since the last fix.  Capped at 60s to
-        avoid large extrapolation errors.
-        """
-        lat_fix = entry.get("lat", 0.0)
-        lon_fix = entry.get("lon", 0.0)
-        elapsed = min(ts - entry.get("last_seen_ms", 0) / 1000.0, 60.0)
-        gs_knots = entry.get("gs", 0.0)
-        track_deg = entry.get("track", 0.0)
-        if elapsed <= 0.0 or gs_knots <= 0.0:
-            return lat_fix, lon_fix
-        gs_m_s = gs_knots * 0.514444
-        track_rad = math.radians(track_deg)
-        cos_lat = math.cos(math.radians(lat_fix)) or 1e-9
-        lat_dr = lat_fix + (gs_m_s * math.cos(track_rad) / 111_320.0) * elapsed
-        lon_dr = lon_fix + (gs_m_s * math.sin(track_rad) / (111_320.0 * cos_lat)) * elapsed
-        return lat_dr, lon_dr
 
     def _fresh_adsb(ac_hex: str):
         """Return ADS-B entry for ac_hex, or None if unavailable/stale.

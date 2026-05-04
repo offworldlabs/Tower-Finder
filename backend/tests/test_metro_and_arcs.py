@@ -2,7 +2,6 @@
 Unit tests for metro filtering and orchestrator helpers.
 """
 
-import pytest
 
 from retina_simulation.orchestrator import _KNOWN_METROS, _parse_metro_areas
 

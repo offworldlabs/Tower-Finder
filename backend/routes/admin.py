@@ -6,47 +6,52 @@ import json
 import logging
 import os
 import time
+import uuid
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Dedicated executor for blocking admin operations so they never compete with
 # the default thread pool used by frame processors.
 _admin_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="admin-io")
 
-from fastapi import APIRouter, Depends, HTTPException
+import orjson
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-import orjson
-
-from core.auth import require_admin, get_all_users, update_user_role, get_current_user
-from core import state
 from config.constants import (
-    EVENT_LOG_MAX,
-    NODE_OFFLINE_THRESHOLD_S,
-    NODE_HEALTH_CHECK_INTERVAL_S,
-    STORAGE_CACHE_TTL_S,
     CONFIG_LIVE_CACHE_TTL_S,
+    EVENT_LOG_MAX,
+    NODE_HEALTH_CHECK_INTERVAL_S,
+    NODE_OFFLINE_THRESHOLD_S,
+)
+from core import state
+from core.auth import (
+    create_invite,
+    list_invites,
+    list_node_owners,
+    revoke_invite,
+    set_node_owner,
+)
+from core.task_registry import TASK_EXPECTED_INTERVAL_S
+from core.users import (
+    User,
+    get_async_session,
+    get_current_user,
+    require_admin,
+    user_to_dict,
 )
 
 logger = logging.getLogger(__name__)
-
-# ── Task staleness detection ──────────────────────────────────────────────────
-_TASK_EXPECTED_INTERVAL_S = {
-    "frame_processor": 10,
-    "analytics_refresh": 60,
-    "aircraft_flush": 5,
-    "archive_flush": 120,
-    "reputation_evaluator": 120,
-    "adsb_truth_fetcher": 300,
-    "solver": 120,
-}
 
 
 def _get_stale_tasks() -> list[str]:
     now = time.time()
     stale = []
-    for task_name, expected_s in _TASK_EXPECTED_INTERVAL_S.items():
+    for task_name, expected_s in TASK_EXPECTED_INTERVAL_S.items():
         last = state.task_last_success.get(task_name)
         if last is None:
             continue
@@ -115,7 +120,6 @@ def check_node_health():
         if not hb:
             continue
         try:
-            from datetime import datetime, timezone
             hb_time = datetime.fromisoformat(hb.replace("Z", "+00:00"))
             age_s = (datetime.now(timezone.utc) - hb_time).total_seconds()
         except Exception:
@@ -134,8 +138,13 @@ def check_node_health():
 # ── Users ─────────────────────────────────────────────────────────────────────
 
 @router.get("/users")
-async def list_users(_admin=Depends(require_admin)):
-    return get_all_users()
+async def list_users(
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+    _admin=Depends(require_admin),
+):
+    result = await session.execute(select(User))
+    return [user_to_dict(u) for u in result.scalars().all()]
 
 
 class RoleUpdate(BaseModel):
@@ -143,12 +152,115 @@ class RoleUpdate(BaseModel):
 
 
 @router.put("/users/{user_id}/role")
-async def set_user_role(user_id: str, body: RoleUpdate, _admin=Depends(require_admin)):
-    user = update_user_role(user_id, body.role)
+async def set_user_role(
+    user_id: str,
+    body: RoleUpdate,
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+    _admin=Depends(require_admin),
+):
+    if body.role not in ("user", "admin"):
+        raise HTTPException(400, "Invalid role — must be 'user' or 'admin'")
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError as e:
+        raise HTTPException(404, "User not found") from e
+    user = await session.get(User, uid)
     if not user:
-        raise HTTPException(404, "User not found or invalid role")
-    log_event("user", f"Role changed to {body.role} for {user['email']}", "warning")
-    return user
+        raise HTTPException(404, "User not found")
+    user.is_superuser = body.role == "admin"
+    await session.commit()
+    await session.refresh(user)
+    log_event("user", f"Role changed to {body.role} for {user.email}", "warning")
+    return user_to_dict(user)
+
+
+# ── Invites (admin pre-approves users by email) ──────────────────────────────
+
+class InviteCreate(BaseModel):
+    email: str
+    role: str = "user"
+
+
+@router.get("/invites")
+async def admin_list_invites(_admin=Depends(require_admin)):
+    invites = await list_invites()
+    invites.sort(key=lambda i: i.get("created_at", 0), reverse=True)
+    return invites
+
+
+@router.post("/invites")
+async def admin_create_invite(body: InviteCreate, admin=Depends(require_admin)):
+    try:
+        invite = await create_invite(body.email, body.role, admin["id"])
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    log_event("user", f"Invited {body.email} as {body.role}", "info",
+              {"email": body.email, "role": body.role, "by": admin["email"]})
+    return invite
+
+
+@router.delete("/invites/{token}")
+async def admin_revoke_invite(token: str, admin=Depends(require_admin)):
+    if not await revoke_invite(token):
+        raise HTTPException(404, "Invite not found")
+    log_event("user", "Invite revoked", "info", {"token": token, "by": admin["email"]})
+    return {"ok": True}
+
+
+# ── Node ownership (admin override) ──────────────────────────────────────────
+
+class NodeOwnerUpdate(BaseModel):
+    user_id: str | None = None
+
+
+@router.get("/node-owners")
+async def admin_list_node_owners(
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+    _admin=Depends(require_admin),
+):
+    """Return {node_id: {user_id, email, name}} for every owned node."""
+    owners = await list_node_owners()
+    # Build users map in one DB query rather than N per-user lookups.
+    all_users_result = await session.execute(select(User))
+    users_map = {str(u.id): u for u in all_users_result.scalars().all()}
+    result = {}
+    for nid, uid in owners.items():
+        u = users_map.get(uid)
+        result[nid] = {
+            "user_id": uid,
+            "email": u.email if u else None,
+            "name": u.name if u else None,
+        }
+    return result
+
+
+@router.put("/nodes/{node_id}/owner")
+async def admin_set_node_owner(
+    node_id: str,
+    body: NodeOwnerUpdate,
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+    admin=Depends(require_admin),
+):
+    """Assign or clear node ownership. Pass user_id=null to unassign."""
+    if body.user_id is not None:
+        try:
+            uid = uuid.UUID(body.user_id)
+        except ValueError as e:
+            raise HTTPException(404, "User not found") from e
+        user = await session.get(User, uid)
+        if not user:
+            raise HTTPException(404, "User not found")
+    await set_node_owner(node_id, body.user_id)
+    log_event(
+        "user",
+        f"Node {node_id} owner set to {body.user_id or '(unassigned)'}",
+        "info",
+        {"node_id": node_id, "user_id": body.user_id, "by": admin["email"]},
+    )
+    return {"ok": True, "node_id": node_id, "user_id": body.user_id}
 
 
 # ── Events ────────────────────────────────────────────────────────────────────
@@ -275,10 +387,8 @@ async def config_history(_admin=Depends(require_admin)):
 
 
 # ── Storage stats ─────────────────────────────────────────────────────────────
-
-_storage_cache: dict | None = None
-_storage_cache_ts: float = 0.0
-_STORAGE_CACHE_TTL = STORAGE_CACHE_TTL_S
+# Results are pre-computed by storage_refresh_task (services/tasks/storage_refresh.py)
+# and stored in state.latest_storage_bytes. The endpoint just returns those bytes.
 
 # TTL cache for live-generated node/tower config (active when JSON files absent)
 _nodes_config_cache: tuple | None = None
@@ -286,118 +396,14 @@ _towers_config_cache: tuple | None = None
 _CONFIG_LIVE_CACHE_TTL = CONFIG_LIVE_CACHE_TTL_S
 
 
-def _scan_archive_dir(archive_dir) -> tuple[int, int, dict]:
-    """Blocking archive scan using subprocess du/find — avoids O(N) stat() calls.
-
-    With 78 k+ files, Python rglob+stat takes 120 s on Docker overlay FS.
-    A single 'du --max-depth=4' call lets the kernel do the tree walk in C
-    and returns per-node-day byte totals in ~1 s regardless of file count.
-    """
-    import subprocess
-
-    if not archive_dir.exists():
-        return 0, 0, {}
-
-    total_bytes = 0
-    total_files = 0
-    per_node: dict[str, dict] = {}
-
-    # ── Total + per-node bytes via du ────────────────────────────────────────
-    # archive structure: archive / YYYY / MM / DD / NODE_ID / *.parquet
-    # --max-depth=4 prints one line per node-day dir; last line is archive total.
-    try:
-        r = subprocess.run(
-            ["du", "-b", "--max-depth=4", str(archive_dir)],
-            capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode == 0:
-            from pathlib import Path as _P
-            for line in r.stdout.splitlines():
-                if "\t" not in line:
-                    continue
-                sz_str, path = line.split("\t", 1)
-                sz = int(sz_str)
-                try:
-                    rel = _P(path).relative_to(archive_dir)
-                except ValueError:
-                    total_bytes = sz  # archive root line
-                    continue
-                parts = rel.parts
-                if len(parts) == 0:
-                    total_bytes = sz
-                elif len(parts) == 4:  # YYYY/MM/DD/NODE_ID
-                    node_id = parts[3]
-                    e = per_node.setdefault(node_id, {"files": 0, "bytes": 0})
-                    e["bytes"] += sz
-                elif len(parts) == 0 or path == str(archive_dir):
-                    total_bytes = sz
-    except Exception:
-        # Fallback: du -sb for total only
-        try:
-            r = subprocess.run(
-                ["du", "-sb", str(archive_dir)],
-                capture_output=True, text=True, timeout=30,
-            )
-            if r.returncode == 0 and r.stdout:
-                total_bytes = int(r.stdout.split()[0])
-        except Exception:
-            pass
-
-    # If du didn't give us the root total (it should be the last line with depth>4
-    # reporting archive dir itself), use the sum of depth-1 dirs.
-    if total_bytes == 0:
-        total_bytes = sum(e["bytes"] for e in per_node.values())
-
-    # ── File count via find (no stat — just directory entries) ───────────────
-    try:
-        r = subprocess.run(
-            ["find", str(archive_dir), "-type", "f", "-printf", "x"],
-            capture_output=True, timeout=30,
-        )
-        if r.returncode == 0:
-            total_files = len(r.stdout)  # one 'x' per file, no newlines needed
-            # Also populate per-node file counts from a second find pass
-            r2 = subprocess.run(
-                ["find", str(archive_dir), "-mindepth", "5", "-maxdepth", "5",
-                 "-type", "f", "-printf", "%P\n"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if r2.returncode == 0:
-                from pathlib import Path as _P2
-                for rel_path in r2.stdout.splitlines():
-                    if not rel_path:
-                        continue
-                    parts = _P2(rel_path).parts
-                    node_id = parts[3] if len(parts) > 3 else "unknown"
-                    per_node.setdefault(node_id, {"files": 0, "bytes": 0})["files"] += 1
-    except Exception:
-        pass
-
-    return total_files, total_bytes, per_node
-
-
 @router.get("/storage")
 async def storage_stats(_admin=Depends(require_admin)):
-    global _storage_cache, _storage_cache_ts
-    now = time.time()
-    if _storage_cache is not None and now - _storage_cache_ts < _STORAGE_CACHE_TTL:
-        return _storage_cache
-
-    archive_dir = _BACKEND_DIR / "coverage_data" / "archive"
-    loop = asyncio.get_event_loop()
-    total_files, total_bytes, per_node = await loop.run_in_executor(
-        _admin_executor, _scan_archive_dir, archive_dir
-    )
-
-    result = {
-        "archive_files": total_files,
-        "archive_bytes": total_bytes,
-        "archive_mb": round(total_bytes / (1024 * 1024), 2),
-        "per_node": per_node,
-    }
-    _storage_cache = result
-    _storage_cache_ts = now
-    return result
+    if state.latest_storage_bytes == b'{}':
+        # Background task hasn't completed its first scan yet (startup in progress).
+        # Return 202 so the frontend knows to retry rather than treating it as an error.
+        return Response(content=b'{"status":"initializing"}', status_code=202,
+                        media_type="application/json")
+    return Response(content=state.latest_storage_bytes, media_type="application/json")
 
 
 # ── Leaderboard ──────────────────────────────────────────────────────────────
@@ -417,7 +423,7 @@ async def leaderboard(_user=Depends(get_current_user)):
             pass
     # Fall back to live computation only if the snapshot is empty
     if not summaries:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         summaries = await loop.run_in_executor(_admin_executor, state.node_analytics.get_all_summaries)
 
     entries = []
@@ -425,6 +431,7 @@ async def leaderboard(_user=Depends(get_current_user)):
         m = s.get("metrics", {})
         t = s.get("trust", {})
         r = s.get("reputation", {})
+        miss = state.latest_missed_detections.get(node_id, {})
         entries.append({
             "node_id": node_id,
             "name": state.connected_nodes.get(node_id, {}).get("config", {}).get("name", node_id),
@@ -436,6 +443,10 @@ async def leaderboard(_user=Depends(get_current_user)):
             "trust_score": t.get("trust_score", 0),
             "reputation": r.get("reputation", 0),
             "online": state.connected_nodes.get(node_id, {}).get("status") not in ("disconnected", None),
+            "in_range": miss.get("in_range", 0),
+            "detected_in_range": miss.get("detected", 0),
+            "missed": miss.get("missed", 0),
+            "miss_rate": miss.get("miss_rate", 0.0),
         })
     # Sort by detections descending
     entries.sort(key=lambda e: e["detections"], reverse=True)
@@ -461,6 +472,16 @@ async def user_alerts(_user=Depends(get_current_user)):
 @router.get("/metrics")
 async def system_metrics(_user=Depends(require_admin)):
     """Operational metrics: task health, error counts, queue depths."""
+    import resource
+    import shutil
+
+    rusage = resource.getrusage(resource.RUSAGE_SELF)
+    # ru_maxrss is in KB on Linux, bytes on macOS — normalise to MB
+    import sys
+    rss_mb = rusage.ru_maxrss / 1024 if sys.platform == "linux" else rusage.ru_maxrss / (1024 * 1024)
+
+    disk = shutil.disk_usage(state.COVERAGE_STORAGE_DIR)
+
     return {
         "task_last_success": dict(state.task_last_success),
         "task_error_counts": dict(state.task_error_counts),
@@ -471,11 +492,41 @@ async def system_metrics(_user=Depends(require_admin)):
         "solver_successes": state.solver_successes,
         "solver_failures": state.solver_failures,
         "solver_queue_depth": state.solver_queue.qsize(),
+        "solver_queue_drops": state.solver_queue_drops,
+        "solver_last_latency_s": round(state.solver_last_latency_s, 3),
+        "solver_avg_latency_s": round(
+            state.solver_total_latency_s / max(state.solver_total_solved, 1), 2
+        ),
+        "solver_queue_pct": round(
+            state.solver_queue.qsize() / max(state.solver_queue.maxsize, 1) * 100, 1
+        ),
         "connected_nodes": len([n for n in list(state.connected_nodes.values()) if n.get("status") == "active"]),
+        "peak_connected_nodes": state.peak_connected_nodes,
         "active_geo_aircraft": len(state.active_geo_aircraft),
         "multinode_tracks": len(state.multinode_tracks),
         "adsb_aircraft": len(state.adsb_aircraft),
         "ws_clients": len(state.ws_clients),
         "ws_live_clients": len(state.ws_live_clients),
         "stale_tasks": _get_stale_tasks(),
+        "process_rss_mb": round(rss_mb, 1),
+        "load_avg": list(os.getloadavg()),
+        "disk_total_gb": round(disk.total / (1024**3), 1),
+        "disk_used_gb": round(disk.used / (1024**3), 1),
+        "disk_free_gb": round(disk.free / (1024**3), 1),
     }
+
+
+@router.post("/coverage/dump")
+async def coverage_dump(_user=Depends(require_admin)):
+    """Flush runtime coverage data to disk and generate an HTML report.
+
+    Only meaningful when the server was started with ``COVERAGE_ENABLED=1``.
+    Collection continues after the dump — no restart required.
+    """
+    import services.runtime_coverage as _rc
+    html_dir = await asyncio.get_running_loop().run_in_executor(
+        _admin_executor, _rc.save
+    )
+    if html_dir is None:
+        return {"status": "disabled", "detail": "COVERAGE_ENABLED is not set"}
+    return {"status": "ok", "html_report": html_dir}

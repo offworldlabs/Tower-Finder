@@ -8,11 +8,14 @@ continue to work without changes::
 """
 
 from services.tasks import (  # noqa: F401
-    analytics_refresh_task,
-    start_solver_workers,
-    frame_processor_loop,
-    aircraft_flush_task,
-    archive_flush_task,
-    reputation_evaluator,
     adsb_truth_fetcher,
+    aircraft_flush_task,
+    analytics_refresh_task,
+    archive_flush_task,
+    archive_lifecycle_task,
+    frame_processor_loop,
+    prune_synthetic_nodes,
+    reputation_evaluator,
+    start_solver_workers,
+    storage_refresh_task,
 )

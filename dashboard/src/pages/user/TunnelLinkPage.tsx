@@ -10,14 +10,9 @@ export default function TunnelLinkPage() {
   const [search, setSearch] = useState("");
 
   useEffect(() => {
-    api.nodes()
+    api.myNodes()
       .then((n) => {
-        const nodeMap = n.nodes || {};
-        const nodeList = Object.entries(nodeMap).map(([id, info]: [string, any]) => ({
-          node_id: id,
-          ...info,
-        }));
-        setNodes(nodeList);
+        setNodes(Array.isArray(n) ? n : []);
       })
       .catch(console.error)
       .finally(() => setLoading(false));

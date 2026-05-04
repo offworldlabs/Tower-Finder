@@ -12,12 +12,11 @@ import pytest
 
 from core import state
 from services.tcp_handler import (
+    _apply_synthetic_adsb,
+    _enqueue_detection,
     handle_tcp_client,
     is_synthetic_node,
-    _enqueue_detection,
-    _apply_synthetic_adsb,
 )
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -110,8 +109,20 @@ class TestIsSyntheticNode:
     def test_synthetic_prefix(self):
         assert is_synthetic_node("synth-atl-001") is True
 
+    def test_e2e_prefix(self):
+        assert is_synthetic_node("e2e-bulk-a-abc123") is True
+
+    def test_test_prefix(self):
+        assert is_synthetic_node("test-node-001") is True
+
+    def test_realnode_prefix(self):
+        assert is_synthetic_node("realnode-mommpy5s") is True
+
     def test_non_synthetic(self):
         assert is_synthetic_node("net13") is False
+
+    def test_real_retnode(self):
+        assert is_synthetic_node("radar3-retnode") is False
 
     def test_empty(self):
         assert is_synthetic_node("") is False

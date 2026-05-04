@@ -12,7 +12,6 @@ FM Query: https://transition.fcc.gov/cgi-bin/fmq
 import logging
 import math
 import re
-from typing import Optional
 
 import httpx
 
@@ -35,22 +34,7 @@ for _ch in range(14, 37):
     _TV_CHANNEL_FREQ[_ch] = 470 + (_ch - 14) * 6 + 3
 
 
-def _dd_to_dms(dd: float) -> tuple[int, int, int]:
-    """Convert decimal degrees to (degrees, minutes, seconds)."""
-    d = int(abs(dd))
-    remainder = (abs(dd) - d) * 60
-    m = int(remainder)
-    s = round((remainder - m) * 60)
-    if s == 60:
-        s = 0
-        m += 1
-    if m == 60:
-        m = 0
-        d += 1
-    return d, m, s
-
-
-def _parse_erp_kw(erp_str: str) -> Optional[float]:
+def _parse_erp_kw(erp_str: str) -> float | None:
     """Parse ERP string like '180.   kW' or '0.01   kW' to float kW."""
     if not erp_str:
         return None
@@ -74,7 +58,7 @@ def _erp_kw_to_eirp_dbm(erp_kw: float) -> float:
     return erp_dbm + 2.15
 
 
-def _parse_tv_line(line: str) -> Optional[dict]:
+def _parse_tv_line(line: str) -> dict | None:
     """Parse a pipe-delimited TV Query result line into a device dict.
 
     Returns a dict compatible with Maprad device format for process_and_rank().
@@ -159,7 +143,7 @@ def _parse_tv_line(line: str) -> Optional[dict]:
         return None
 
 
-def _parse_fm_line(line: str) -> Optional[dict]:
+def _parse_fm_line(line: str) -> dict | None:
     """Parse a pipe-delimited FM Query result line into a device dict."""
     parts = [p.strip() for p in line.split("|")]
     if len(parts) < 35:

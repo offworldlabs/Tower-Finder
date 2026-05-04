@@ -20,9 +20,18 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: backend/requirements.txt
-      - run: pip install -r requirements.txt
+          cache-dependency-path: backend/requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
       - run: pip install ../libs/retina-geolocator ../libs/retina-tracker ../libs/retina-custody ../libs/retina-simulation ../libs/retina-analytics
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Dead code (vulture)
+        run: |
+          vulture . vulture_whitelist.py \
+            --min-confidence 60 \
+            --exclude ".venv,tests,scripts,htmlcov,__pycache__" \
+            --ignore-decorators "@router.*,@app.*" \
+            --ignore-names "model_config,dispatch"
       - run: pytest tests/ -v --tb=short -m "not external"
 
   frontend-build:
@@ -71,6 +80,64 @@ jobs:
         run: git clone --depth 1 https://github.com/wiedehopf/tar1090.git tar1090
       - run: docker build -t tower-finder:ci .
 
+  e2e:
+    name: Playwright E2E (staging)
+    runs-on: ubuntu-latest
+    needs: [staging-smoke-tests]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --legacy-peer-deps
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+      - name: Run E2E tests (staging)
+        run: E2E_ENV=staging npx playwright test
+        env:
+          CI: "true"
+          RADAR_API_KEY: ${{ secrets.STAGING_RADAR_API_KEY }}
+
+  e2e-prod:
+    name: Playwright E2E (production)
+    runs-on: ubuntu-latest
+    needs: [production-smoke-tests]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --legacy-peer-deps
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+      - name: Run E2E tests (production)
+        run: E2E_ENV=prod npx playwright test
+        env:
+          CI: "true"
+          RADAR_API_KEY: ${{ secrets.RADAR_API_KEY }}
+      - name: Rollback production on E2E failure
+        if: failure()
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: root
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            echo "E2E tests failed — rolling back production..."
+            cd /opt/tower-finder && bash deploy/rollback.sh
+
   deploy-staging:
     name: Deploy to staging
     runs-on: ubuntu-latest
@@ -86,6 +153,7 @@ jobs:
           host: ${{ secrets.STAGING_HOST }}
           username: root
           key: ${{ secrets.STAGING_SSH_KEY }}
+          command_timeout: 20m
           script: |
             cd /opt/tower-finder
             git pull origin main
@@ -93,6 +161,7 @@ jobs:
             # Ensure tar1090 static assets are present
             [ -d tar1090/html ] || git clone --depth 1 https://github.com/wiedehopf/tar1090.git tar1090
             docker compose -f docker-compose.staging.yml down --timeout 30
+            docker builder prune -f
             docker compose -f docker-compose.staging.yml up -d --build
             # Wait for server to become healthy (up to 90s)
             for i in $(seq 1 18); do
@@ -145,20 +214,107 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: root
           key: ${{ secrets.SERVER_SSH_KEY }}
+          command_timeout: 20m
           script: |
             cd /opt/tower-finder
+
+            # Pre-deploy: save rollback image + git tag
+            bash deploy/pre-deploy.sh || true
+
             git pull origin main
             git submodule update --init --recursive
+            pip3 install -e libs/retina-custody/ --break-system-packages --ignore-installed -q
+            pip3 install -e libs/retina-simulation/ --break-system-packages -q
             docker compose up -d --build
+
             # Wait for backend to become healthy (up to 60s)
             for i in $(seq 1 12); do
               if docker compose exec -T tower-finder python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
                 echo "Deploy successful (healthy after ~$((i*5))s)"
-                exit 0
+                break
               fi
               echo "Waiting for health check... attempt $i/12"
               sleep 5
+              if [ "$i" = "12" ]; then
+                echo "Health check failed after 60s"
+                docker compose logs --tail=50
+                exit 1
+              fi
             done
-            echo "Health check failed after 60s"
-            docker compose logs --tail=50
-            exit 1
+
+            # Restart fleet simulator (stop old units, start new one with API key)
+            RADAR_API_KEY=${{ secrets.RADAR_API_KEY }} \
+              bash /opt/tower-finder/deploy/restart-fleet-prod.sh
+
+  production-smoke-tests:
+    name: Production smoke tests
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for fleet to connect
+        run: |
+          echo "Waiting 60s for fleet nodes to reconnect..."
+          sleep 60
+          for i in $(seq 1 12); do
+            COUNT=$(curl -sk https://${{ secrets.SERVER_HOST }}/api/test/dashboard \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['active'])" 2>/dev/null) || COUNT=0
+            if [ "${COUNT:-0}" -ge 10 ]; then
+              echo "Fleet ready: ${COUNT} nodes connected"
+              break
+            fi
+            echo "Attempt $i/12: ${COUNT} nodes — waiting 10s..."
+            sleep 10
+          done
+      - name: Run production smoke tests
+        env:
+          BASE_URL: https://api.retina.fm
+        run: |
+          CURL="curl -s --connect-timeout 10 --max-time 60"
+          PASS=0; FAIL=0
+
+          check_status() {
+            local name="$1" url="$2" expected="$3"
+            printf "  %-40s " "$name"
+            # Retry once on connection error (transient load spikes during fleet reconnect)
+            CODE=$($CURL -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) \
+              || CODE=$($CURL -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) \
+              || { echo "FAIL (connection)"; FAIL=$((FAIL+1)); return; }
+            if [ "$CODE" = "$expected" ]; then echo "OK ($CODE)"; PASS=$((PASS+1)); else echo "FAIL ($CODE != $expected)"; FAIL=$((FAIL+1)); fi
+          }
+
+          echo "── Production Smoke Tests ──"
+          check_status "GET /api/health"          "${BASE_URL}/api/health"            "200"
+          check_status "GET /api/radar/nodes"     "${BASE_URL}/api/radar/nodes"       "200"
+          check_status "GET /api/radar/analytics" "${BASE_URL}/api/radar/analytics"   "200"
+          check_status "GET /api/test/dashboard"  "${BASE_URL}/api/test/dashboard"    "200"
+          check_status "GET /api/test/mlat-verification" "${BASE_URL}/api/test/mlat-verification" "200"
+          check_status "GET /api/config"          "${BASE_URL}/api/config"            "200"
+          check_status "GET / (frontend)"         "https://towers.retina.fm/"         "200"
+          check_status "GET /api/health (api.retina.fm)" "${BASE_URL}/api/health"     "200"
+
+          # Wait for storage scan (background du task, 202 = still scanning)
+          printf "  %-40s " "GET /api/admin/storage"
+          for i in $(seq 1 24); do
+            SCODE=$(curl -sk -o /dev/null -w "%{http_code}" "${BASE_URL}/api/admin/storage")
+            if [ "$SCODE" = "200" ]; then echo "OK (200)"; PASS=$((PASS+1)); break; fi
+            if [ "$SCODE" = "202" ] && [ "$i" = "24" ]; then echo "WARN (202 still scanning after 120s)"; PASS=$((PASS+1)); break; fi
+            if [ "$i" = "24" ]; then echo "FAIL ($SCODE != 200 after 120s)"; FAIL=$((FAIL+1)); break; fi
+            sleep 5
+          done
+
+          # Check aircraft data is flowing
+          AIRCRAFT=$(curl -sk "${BASE_URL}/api/test/dashboard" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['pipeline']['aircraft_on_map'])" 2>/dev/null) || AIRCRAFT=0
+          printf "  %-40s " "Aircraft on map > 0"
+          if [ "${AIRCRAFT:-0}" -gt 0 ]; then echo "OK ($AIRCRAFT)"; PASS=$((PASS+1)); else echo "WARN ($AIRCRAFT — fleet may still be connecting)"; fi
+
+          # Guard: active node count must not exceed 220 (multiple simultaneous fleets = 400+)
+          NODES=$(curl -sk "${BASE_URL}/api/test/dashboard" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['active'])" 2>/dev/null) || NODES=0
+          printf "  %-40s " "Active nodes ≤ 220 (single fleet)"
+          if [ "${NODES:-0}" -le 220 ]; then echo "OK ($NODES)"; PASS=$((PASS+1)); else echo "FAIL ($NODES > 220 — multiple fleet simulators may be running)"; FAIL=$((FAIL+1)); fi
+
+          echo ""
+          echo "Results: $PASS passed, $FAIL failed"
+          [ "$FAIL" -eq 0 ] || exit 1

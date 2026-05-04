@@ -16,6 +16,8 @@ const AlertsPage = lazy(() => import("./pages/user/AlertsPage"));
 const LeaderboardPage = lazy(() => import("./pages/user/LeaderboardPage"));
 const KnowledgeBasePage = lazy(() => import("./pages/user/KnowledgeBasePage"));
 const TunnelLinkPage = lazy(() => import("./pages/user/TunnelLinkPage"));
+const AnomalyPage = lazy(() => import("./pages/user/AnomalyPage"));
+const OnboardingPage = lazy(() => import("./pages/user/OnboardingPage"));
 
 // Admin pages — lazy-loaded
 const NetworkHealthPage = lazy(() => import("./pages/admin/NetworkHealthPage"));
@@ -25,7 +27,9 @@ const EventsPage = lazy(() => import("./pages/admin/EventsPage"));
 const StoragePage = lazy(() => import("./pages/admin/StoragePage"));
 const CustodyPage = lazy(() => import("./pages/admin/CustodyPage"));
 const UserManagementPage = lazy(() => import("./pages/admin/UserManagementPage"));
+const InvitesPage = lazy(() => import("./pages/admin/InvitesPage"));
 const ConfigPage = lazy(() => import("./pages/admin/ConfigPage"));
+const SystemMetricsPage = lazy(() => import("./pages/admin/SystemMetricsPage"));
 
 const isAdminSite =
   window.location.hostname.startsWith("admin.") ||
@@ -63,11 +67,14 @@ export default function App() {
                       <Route path="nodes" element={<NodeManagementPage />} />
                       <Route path="nodes/:nodeId" element={<NodeDetailPage />} />
                       <Route path="analytics" element={<AnalyticsPage />} />
+                      <Route path="anomalies" element={<AnomalyPage />} />
                       <Route path="events" element={<EventsPage />} />
                       <Route path="storage" element={<StoragePage />} />
                       <Route path="custody" element={<CustodyPage />} />
                       <Route path="users" element={<UserManagementPage />} />
+                      <Route path="invites" element={<InvitesPage />} />
                       <Route path="config" element={<ConfigPage />} />
+                      <Route path="system" element={<SystemMetricsPage />} />
                     </>
                   ) : (
                     <>
@@ -78,9 +85,11 @@ export default function App() {
                       <Route path="contribution" element={<ContributionPage />} />
                       <Route path="data" element={<DataExplorerPage />} />
                       <Route path="alerts" element={<AlertsPage />} />
+                      <Route path="anomalies" element={<AnomalyPage />} />
                       <Route path="leaderboard" element={<LeaderboardPage />} />
                       <Route path="knowledge" element={<KnowledgeBasePage />} />
                       <Route path="tunnel" element={<TunnelLinkPage />} />
+                      <Route path="onboarding" element={<OnboardingPage />} />
                       <Route path="settings" element={<SettingsPage />} />
                     </>
                   )}

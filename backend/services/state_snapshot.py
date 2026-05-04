@@ -5,6 +5,7 @@ Persists: trust_scores, reputations, accuracy_samples, chain_entries,
 node_identities, iq_commitments, anomaly_log.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -13,16 +14,15 @@ from collections import deque
 from dataclasses import asdict
 
 from core import state
+from services.alerting import send_alert
 
 _SNAPSHOT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 _SNAPSHOT_PATH = os.path.join(_SNAPSHOT_DIR, "state_snapshot.json")
-_SAVE_INTERVAL_S = 300  # 5 minutes
+SAVE_INTERVAL_S = 60  # 1 minute
 
 
 def save_snapshot() -> None:
     """Serialise high-value state to disk as JSON."""
-    from retina_analytics.trust import AdsReportEntry, TrustScoreState
-    from retina_custody.models import NodeIdentity
 
     trust = {}
     for nid, ts in state.node_analytics.trust_scores.items():
@@ -55,27 +55,79 @@ def save_snapshot() -> None:
 
     os.makedirs(_SNAPSHOT_DIR, exist_ok=True)
     tmp = _SNAPSHOT_PATH + ".tmp"
+    payload = json.dumps(snapshot)
+    checksum = hashlib.sha256(payload.encode()).hexdigest()
     with open(tmp, "w") as f:
-        json.dump(snapshot, f)
+        f.write(payload)
+    # Write checksum file atomically alongside
+    with open(_SNAPSHOT_PATH + ".sha256", "w") as f:
+        f.write(checksum)
     os.replace(tmp, _SNAPSHOT_PATH)
-    logging.info("State snapshot saved (%d bytes)", os.path.getsize(_SNAPSHOT_PATH))
+    size = os.path.getsize(_SNAPSHOT_PATH)
+    logging.info("State snapshot saved (%d bytes, sha256=%s)", size, checksum[:12])
+
+    # Replicate to R2 for durability across container recreates
+    from services.r2_client import is_enabled as r2_enabled
+    from services.r2_client import upload_file
+    if r2_enabled():
+        if upload_file("snapshots/state_snapshot.json", _SNAPSHOT_PATH):
+            logging.info("State snapshot replicated to R2")
+        else:
+            logging.warning("State snapshot R2 replication failed")
+            send_alert(
+                "r2_replication_failed",
+                "State snapshot R2 replication failed — backup is stale",
+                {},
+            )
 
 
 def restore_snapshot() -> bool:
     """Load state from disk snapshot. Returns True if restored, False if no snapshot found."""
-    from retina_analytics.trust import AdsReportEntry, TrustScoreState
     from retina_analytics.reputation import NodeReputation
+    from retina_analytics.trust import AdsReportEntry, TrustScoreState
     from retina_custody.models import NodeIdentity
 
-    if not os.path.exists(_SNAPSHOT_PATH):
-        logging.info("No state snapshot found at %s", _SNAPSHOT_PATH)
-        return False
+    snap = None
 
-    try:
-        with open(_SNAPSHOT_PATH) as f:
-            snap = json.load(f)
-    except Exception:
-        logging.exception("Failed to read state snapshot")
+    # Try local snapshot first
+    if os.path.exists(_SNAPSHOT_PATH):
+        try:
+            with open(_SNAPSHOT_PATH) as f:
+                raw = f.read()
+            # Verify integrity if checksum file exists
+            sha_path = _SNAPSHOT_PATH + ".sha256"
+            if os.path.exists(sha_path):
+                with open(sha_path) as _sha_f:
+                    expected = _sha_f.read().strip()
+                actual = hashlib.sha256(raw.encode()).hexdigest()
+                if actual != expected:
+                    logging.error(
+                        "State snapshot checksum mismatch (expected=%s, got=%s) — skipping corrupt file",
+                        expected[:12], actual[:12],
+                    )
+                    send_alert("snapshot_corrupt", "State snapshot checksum mismatch — starting with empty state")
+                    raw = None
+            if raw is not None:
+                snap = json.loads(raw)
+        except Exception:
+            logging.exception("Failed to read local state snapshot")
+
+    # Fall back to R2 if local snapshot is missing or corrupt
+    if snap is None:
+        from services.r2_client import download_bytes
+        from services.r2_client import is_enabled as r2_enabled
+        if r2_enabled():
+            logging.info("Trying R2 for state snapshot...")
+            data = download_bytes("snapshots/state_snapshot.json")
+            if data:
+                try:
+                    snap = json.loads(data)
+                    logging.info("State snapshot loaded from R2")
+                except Exception:
+                    logging.exception("Failed to parse R2 state snapshot")
+
+    if snap is None:
+        logging.info("No state snapshot found (checked local + R2)")
         return False
 
     saved_at = snap.get("saved_at", 0)

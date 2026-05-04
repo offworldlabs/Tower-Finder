@@ -6,9 +6,6 @@ Focuses on:
 - Thread-safe snapshot of connected_nodes
 """
 
-import json
-from collections import deque
-from unittest.mock import MagicMock, patch
 
 import orjson
 import pytest
@@ -154,7 +151,6 @@ class TestConnectedNodesSnapshot:
         """Simulated: reading connected_nodes while another thread mutates it."""
         from core import state
 
-        orig_nodes = dict(state.connected_nodes)
         state.connected_nodes["test-snap-1"] = {
             "status": "connected",
             "config": {"name": "snap-test", "rx_lat": 33.45, "rx_lon": -112.07},
@@ -192,8 +188,9 @@ class TestReputationEvaluations:
         assert rep.reputation > 0.5  # increased
 
     def test_stale_heartbeat_penalty(self):
-        from retina_analytics.reputation import NodeReputation
         import time
+
+        from retina_analytics.reputation import NodeReputation
         rep = NodeReputation(node_id="stale-1")
         # Last heartbeat 600s ago (> 300s threshold)
         rep.evaluate_heartbeat(time.time() - 600)

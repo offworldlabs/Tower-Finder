@@ -36,6 +36,11 @@ ANALYTICS_REFRESH_INTERVAL_S = 30     # Background analytics recompute
 ARCHIVE_FLUSH_INTERVAL_S = 30         # Detection archive batch write
 ARCHIVE_BATCH_MAX = 200               # Max frames per archive flush
 
+# ── Archive lifecycle (R2 offload + local disk cleanup) ──────────────────────
+ARCHIVE_OFFLOAD_AGE_DAYS = 1          # Upload to R2 after this many days
+ARCHIVE_RETENTION_DAYS = 14           # Delete local files after this many days
+ARCHIVE_LIFECYCLE_INTERVAL_S = 3600   # Run lifecycle check every hour
+
 # ── Reputation thresholds ────────────────────────────────────────────────────
 TRUST_WARN_THRESHOLD = 0.3            # Trust score warning level
 TRUST_BLOCK_THRESHOLD = 0.1           # Trust score block level
@@ -69,6 +74,11 @@ NODE_OFFLINE_THRESHOLD_S = 120        # Heartbeat timeout → offline (s)
 NODE_HEALTH_CHECK_INTERVAL_S = 30     # How often to check node liveness (s)
 STORAGE_CACHE_TTL_S = 300.0           # Archive storage stats cache TTL (s)
 CONFIG_LIVE_CACHE_TTL_S = 60.0        # Live node/tower config cache TTL (s)
+
+# ── Chain of custody limits ──────────────────────────────────────────────────
+CHAIN_ENTRIES_MAX_PER_NODE = 500      # Max chain entries per node (rolling)
+IQ_COMMITMENTS_MAX_PER_NODE = 200     # Max IQ commitments per node (rolling)
+RATE_BUCKETS_MAX_IPS = 10_000         # Max unique IPs in rate limiter
 
 # ── blah2 bridge ─────────────────────────────────────────────────────────────
 BLAH2_POLL_INTERVAL_S = 1.0           # blah2 API poll cadence (s)

@@ -1,17 +1,19 @@
 """Radar pipeline endpoints: receiver/aircraft JSON, detections, nodes, status."""
 
+import asyncio
 import json
 import logging
 import os
 import time
-from collections import defaultdict
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Body, HTTPException, Request, Header
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+from config.constants import RATE_BUCKETS_MAX_IPS
 from core import state
+from core.users import require_admin
 from pipeline.passive_radar import PassiveRadarPipeline
 from services.tcp_handler import is_synthetic_node
 
@@ -41,9 +43,19 @@ class LoadFileRequest(BaseModel):
     path: str = Field(..., min_length=1)
 
 RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
+_RETINA_ENV = os.getenv("RETINA_ENV", "").lower()
+if not RADAR_API_KEY:
+    _msg = "RADAR_API_KEY is not set — detection/custody endpoints have no API key protection"
+    if _RETINA_ENV not in ("dev", "test"):
+        logging.error(_msg)  # loud in production/staging, doesn't crash the server
+    else:
+        logging.warning(_msg)
 _RATE_LIMIT = int(os.getenv("RADAR_RATE_LIMIT", "60"))
 _RATE_WINDOW = int(os.getenv("RADAR_RATE_WINDOW", "60"))
 _TAR1090_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tar1090_data")
+_ALLOWED_DETECTION_DIR = os.path.realpath(
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "coverage_data", "archive")
+)
 
 # Module-level reference to default pipeline; set from main.py at startup
 _default_pipeline: PassiveRadarPipeline | None = None
@@ -65,6 +77,11 @@ def _check_rate_limit(ip: str) -> None:
         del state.rate_buckets[ip]
     if len(recent) >= _RATE_LIMIT:
         raise HTTPException(status_code=429, detail="Rate limit exceeded — slow down")
+    # Prevent unbounded memory growth from unique IPs — evict oldest half
+    if len(state.rate_buckets) > RATE_BUCKETS_MAX_IPS:
+        evict_count = len(state.rate_buckets) // 2
+        for old_ip in list(state.rate_buckets)[:evict_count]:
+            del state.rate_buckets[old_ip]
     state.rate_buckets[ip].append(now)
 
 
@@ -170,6 +187,7 @@ async def ingest_detections_bulk(
                     "capabilities": {},
                 }
             state.node_analytics.register_node(node_id, entry_config)
+            state.node_associator.register_node(node_id, entry_config)
             registered += 1
         else:
             with state.connected_nodes_lock:
@@ -190,8 +208,10 @@ async def ingest_detections_bulk(
 
 
 @router.post("/api/radar/load-file")
-async def load_detection_file(body: LoadFileRequest):
-    filepath = body.path
+async def load_detection_file(body: LoadFileRequest, _admin=Depends(require_admin)):
+    filepath = os.path.realpath(body.path)
+    if not filepath.startswith(_ALLOWED_DETECTION_DIR + os.sep):
+        raise HTTPException(status_code=400, detail="Path must be inside the coverage archive directory")
     if not os.path.isfile(filepath):
         raise HTTPException(status_code=400, detail="File not found")
     if not filepath.endswith(".detection"):
