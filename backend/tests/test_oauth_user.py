@@ -10,7 +10,6 @@ import pytest
 
 from core.users import User, async_session_maker, create_db_and_tables, get_or_create_oauth_user
 
-
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
