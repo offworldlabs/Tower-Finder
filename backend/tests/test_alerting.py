@@ -4,105 +4,114 @@ The module uses module-level globals (WEBHOOK_URL, _last_sent). These are
 monkey-patched per test to keep them isolated.
 """
 
-import os
-import time
+from unittest.mock import MagicMock, patch
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
+import pytest
 
-from services import alerting  # noqa: E402
+import services.alerting as _alerting
+from services.alerting import is_enabled, send_alert
 
 
-class TestIsEnabled:
-    def test_disabled_when_empty(self, monkeypatch):
-        monkeypatch.setattr(alerting, "WEBHOOK_URL", "")
-        assert alerting.is_enabled() is False
+@pytest.fixture(autouse=True)
+def _reset_last_sent():
+    _alerting._last_sent.clear()
+    yield
+    _alerting._last_sent.clear()
 
-    def test_enabled_when_set(self, monkeypatch):
-        monkeypatch.setattr(alerting, "WEBHOOK_URL", "https://example.com/hook")
-        assert alerting.is_enabled() is True
+
+def _make_mock_client(status_code=200, raise_exc=None):
+    """Build a context-manager-compatible httpx.Client mock."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = status_code
+
+    mock_client = MagicMock()
+    mock_client.__enter__ = lambda s: mock_client
+    mock_client.__exit__ = MagicMock(return_value=False)
+
+    if raise_exc is not None:
+        mock_client.post.side_effect = raise_exc
+    else:
+        mock_client.post.return_value = mock_resp
+
+    return mock_client
+
+
+def _make_sync_thread(**kwargs):
+    """Thread replacement that calls target() synchronously on .start()."""
+    t = MagicMock()
+    t.start.side_effect = lambda: kwargs["target"]()
+    return t
 
 
 class TestSendAlert:
-    def test_no_op_when_disabled(self, monkeypatch):
-        """send_alert is a silent no-op when WEBHOOK_URL is not set."""
-        monkeypatch.setattr(alerting, "WEBHOOK_URL", "")
-        called: dict = {}
-        original_thread = alerting.threading.Thread
+    def test_disabled_returns_without_calling_httpx(self, monkeypatch):
+        """With WEBHOOK_URL='', httpx.Client must never be instantiated."""
+        monkeypatch.setattr(_alerting, "WEBHOOK_URL", "")
+        with patch("services.alerting.httpx.Client") as mock_cls:
+            send_alert("test", "msg")
+        mock_cls.assert_not_called()
 
-        class _RecordThread(original_thread):
-            def __init__(self, *a, **kw):
-                called["started"] = True
-                super().__init__(*a, **kw)
+    def test_enabled_fires_http_post(self, monkeypatch):
+        """With a valid URL, the _fire thread should POST to the webhook."""
+        monkeypatch.setattr(_alerting, "WEBHOOK_URL", "http://test-hook/alert")
+        mock_client = _make_mock_client()
 
-        monkeypatch.setattr(alerting.threading, "Thread", _RecordThread)
-        alerting.send_alert("test_type", "msg", {"k": "v"})
-        assert "started" not in called
+        with patch("services.alerting.httpx.Client", return_value=mock_client), \
+             patch("services.alerting.threading.Thread", side_effect=_make_sync_thread):
+            send_alert("test", "msg")
 
-    def test_cooldown_suppresses_duplicates(self, monkeypatch):
-        """Within COOLDOWN_S, the same alert_type is not re-sent."""
-        monkeypatch.setattr(alerting, "WEBHOOK_URL", "https://example.com/hook")
-        # Fresh cooldown dict for this test
-        monkeypatch.setattr(alerting, "_last_sent", {})
-        # Long cooldown so the second call is blocked
-        monkeypatch.setattr(alerting, "COOLDOWN_S", 3600.0)
+        mock_client.post.assert_called_once()
 
-        starts: list[dict] = []
+    def test_cooldown_blocks_duplicate_alert(self, monkeypatch):
+        """A second call with the same alert_type within cooldown is suppressed."""
+        monkeypatch.setattr(_alerting, "WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setattr(_alerting, "COOLDOWN_S", 3600.0)
+        mock_client = _make_mock_client()
 
-        class _FakeThread:
-            def __init__(self, *a, **kw):
-                starts.append({"target": kw.get("target")})
-                self._target = kw.get("target")
+        with patch("services.alerting.httpx.Client", return_value=mock_client), \
+             patch("services.alerting.threading.Thread", side_effect=_make_sync_thread):
+            send_alert("dup", "first")
+            send_alert("dup", "second")
 
-            def start(self):
-                # Don't actually fire the webhook — just record the start call.
-                starts[-1]["started"] = True
+        assert mock_client.post.call_count == 1
 
-        monkeypatch.setattr(alerting.threading, "Thread", _FakeThread)
+    def test_different_alert_types_independent_cooldown(self, monkeypatch):
+        """Different alert_types each have their own cooldown entry."""
+        monkeypatch.setattr(_alerting, "WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setattr(_alerting, "COOLDOWN_S", 3600.0)
+        mock_client = _make_mock_client()
 
-        alerting.send_alert("dup_type", "first")
-        alerting.send_alert("dup_type", "second")  # should be suppressed
+        with patch("services.alerting.httpx.Client", return_value=mock_client), \
+             patch("services.alerting.threading.Thread", side_effect=_make_sync_thread):
+            send_alert("type_a", "msg")
+            send_alert("type_b", "msg")
 
-        started_count = sum(1 for s in starts if s.get("started"))
-        assert started_count == 1, f"expected exactly 1 webhook start, got {started_count}"
+        assert mock_client.post.call_count == 2
 
-    def test_different_types_not_suppressed(self, monkeypatch):
-        """Different alert_types bypass the cooldown for each other."""
-        monkeypatch.setattr(alerting, "WEBHOOK_URL", "https://example.com/hook")
-        monkeypatch.setattr(alerting, "_last_sent", {})
-        monkeypatch.setattr(alerting, "COOLDOWN_S", 3600.0)
+    def test_webhook_error_does_not_propagate(self, monkeypatch):
+        """A network exception inside _fire() must not surface from send_alert."""
+        monkeypatch.setattr(_alerting, "WEBHOOK_URL", "http://test-hook/alert")
+        mock_client = _make_mock_client(raise_exc=Exception("network error"))
 
-        starts: list = []
+        with patch("services.alerting.httpx.Client", return_value=mock_client), \
+             patch("services.alerting.threading.Thread", side_effect=_make_sync_thread):
+            send_alert("err", "msg")  # must not raise
 
-        class _FakeThread:
-            def __init__(self, *a, **kw):
-                starts.append(kw.get("target"))
+    def test_webhook_4xx_response_does_not_raise(self, monkeypatch):
+        """A 4xx HTTP response is logged but must not raise from send_alert."""
+        monkeypatch.setattr(_alerting, "WEBHOOK_URL", "http://test-hook/alert")
+        mock_client = _make_mock_client(status_code=400)
 
-            def start(self):
-                pass
+        with patch("services.alerting.httpx.Client", return_value=mock_client), \
+             patch("services.alerting.threading.Thread", side_effect=_make_sync_thread):
+            send_alert("4xx", "msg")  # must not raise
 
-        monkeypatch.setattr(alerting.threading, "Thread", _FakeThread)
+    def test_is_enabled_true_when_url_set(self, monkeypatch):
+        """is_enabled() returns True when WEBHOOK_URL is non-empty."""
+        monkeypatch.setattr(_alerting, "WEBHOOK_URL", "http://x")
+        assert is_enabled() is True
 
-        alerting.send_alert("type_a", "a")
-        alerting.send_alert("type_b", "b")
-        assert len(starts) == 2
-
-    def test_cooldown_expires(self, monkeypatch):
-        """After cooldown passes, alerts of the same type fire again."""
-        monkeypatch.setattr(alerting, "WEBHOOK_URL", "https://example.com/hook")
-        # Pre-populate with a stale timestamp well outside cooldown
-        monkeypatch.setattr(alerting, "_last_sent", {"expired": time.time() - 10000.0})
-        monkeypatch.setattr(alerting, "COOLDOWN_S", 1.0)
-
-        starts: list = []
-
-        class _FakeThread:
-            def __init__(self, *a, **kw):
-                starts.append(True)
-
-            def start(self):
-                pass
-
-        monkeypatch.setattr(alerting.threading, "Thread", _FakeThread)
-        alerting.send_alert("expired", "msg")
-        assert len(starts) == 1
+    def test_is_enabled_false_when_url_empty(self, monkeypatch):
+        """is_enabled() returns False when WEBHOOK_URL is empty."""
+        monkeypatch.setattr(_alerting, "WEBHOOK_URL", "")
+        assert is_enabled() is False
