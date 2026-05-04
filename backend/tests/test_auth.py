@@ -1,6 +1,7 @@
 """Tests for auth system: fastapi-users JWT, invite/claim/ownership logic, and FastAPI deps."""
 
 import asyncio
+import json
 import time
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -200,25 +201,33 @@ class TestAuthDependencies:
         assert exc_info.value.status_code == 403
 
 
+# ── Shared DB fixture ─────────────────────────────────────────────────────────
+
+@pytest.fixture()
+def clean_auth_tables():
+    """Wipe all auth-related tables before a test that requests this fixture."""
+    from sqlalchemy import delete
+
+    from core.users import ClaimCode, Invite, NodeOwner, async_session_maker, create_db_and_tables
+
+    async def _setup():
+        await create_db_and_tables()
+        async with async_session_maker() as session:
+            await session.execute(delete(Invite))
+            await session.execute(delete(NodeOwner))
+            await session.execute(delete(ClaimCode))
+            await session.commit()
+
+    asyncio.run(_setup())
+    yield
+
+
 # ── Invites ───────────────────────────────────────────────────────────────────
 
 class TestInvites:
     @pytest.fixture(autouse=True)
-    def _clean_tables(self):
-        from sqlalchemy import delete
-
-        from core.users import ClaimCode, Invite, NodeOwner, async_session_maker, create_db_and_tables
-
-        async def _setup():
-            await create_db_and_tables()
-            async with async_session_maker() as session:
-                await session.execute(delete(Invite))
-                await session.execute(delete(NodeOwner))
-                await session.execute(delete(ClaimCode))
-                await session.commit()
-
-        asyncio.run(_setup())
-        yield
+    def _clean_tables(self, clean_auth_tables):
+        pass
 
     async def test_create_and_list_invite(self):
         from core.auth import create_invite, list_invites
@@ -285,21 +294,8 @@ class TestInvites:
 
 class TestClaimCodesAndOwnership:
     @pytest.fixture(autouse=True)
-    def _clean_tables(self):
-        from sqlalchemy import delete
-
-        from core.users import ClaimCode, Invite, NodeOwner, async_session_maker, create_db_and_tables
-
-        async def _setup():
-            await create_db_and_tables()
-            async with async_session_maker() as session:
-                await session.execute(delete(Invite))
-                await session.execute(delete(NodeOwner))
-                await session.execute(delete(ClaimCode))
-                await session.commit()
-
-        asyncio.run(_setup())
-        yield
+    def _clean_tables(self, clean_auth_tables):
+        pass
 
     async def test_create_claim_code(self):
         from core.auth import create_claim_code, list_claim_codes
@@ -397,3 +393,160 @@ class TestClaimCodesAndOwnership:
         }
         assert "user_id" not in response_msg
         assert response_msg["note"] == "already_owned"
+
+
+# ── Migration tests ───────────────────────────────────────────────────────────
+
+class TestMigration:
+    @pytest.fixture(autouse=True)
+    def _clean_tables(self, clean_auth_tables):
+        pass
+
+    async def test_migrate_invites_from_json(self, tmp_path):
+        from core.auth import list_invites, migrate_json_to_db
+
+        invite_file = tmp_path / "invites.json"
+        invite_file.write_text(json.dumps({
+            "test-token-abc": {
+                "email": "User@Example.COM",
+                "role": "admin",
+                "created_by": "migrator",
+                "created_at": 1000.0,
+                "expires_at": 9999999999.0,
+                "used_at": None,
+            }
+        }))
+
+        with patch("core.auth.INVITES_FILE", invite_file), \
+             patch("core.auth.NODE_OWNERS_FILE", tmp_path / "node_owners.json"), \
+             patch("core.auth.CLAIM_CODES_FILE", tmp_path / "claim_codes.json"):
+            await migrate_json_to_db()
+
+        invites = await list_invites()
+        assert len(invites) == 1
+        assert invites[0]["token"] == "test-token-abc"
+        assert invites[0]["email"] == "user@example.com"  # lowercased
+        assert invites[0]["role"] == "admin"
+        migrated = invite_file.with_suffix(".json.migrated")
+        assert migrated.exists()
+        assert not invite_file.exists()
+
+    async def test_migrate_invites_corrupted_json_logs_and_skips(self, tmp_path):
+        from core.auth import list_invites, migrate_json_to_db
+
+        invite_file = tmp_path / "invites.json"
+        invite_file.write_text("not valid json")
+
+        with patch("core.auth.INVITES_FILE", invite_file), \
+             patch("core.auth.NODE_OWNERS_FILE", tmp_path / "node_owners.json"), \
+             patch("core.auth.CLAIM_CODES_FILE", tmp_path / "claim_codes.json"):
+            await migrate_json_to_db()
+
+        assert invite_file.exists()
+        assert not invite_file.with_suffix(".json.migrated").exists()
+        assert await list_invites() == []
+
+    async def test_migrate_node_owners_from_json(self, tmp_path):
+        from core.auth import get_node_owner, migrate_json_to_db
+
+        node_owners_file = tmp_path / "node_owners.json"
+        node_owners_file.write_text(json.dumps({"node-A": "user-X"}))
+
+        with patch("core.auth.INVITES_FILE", tmp_path / "invites.json"), \
+             patch("core.auth.NODE_OWNERS_FILE", node_owners_file), \
+             patch("core.auth.CLAIM_CODES_FILE", tmp_path / "claim_codes.json"):
+            await migrate_json_to_db()
+
+        assert await get_node_owner("node-A") == "user-X"
+        migrated = node_owners_file.with_suffix(".json.migrated")
+        assert migrated.exists()
+        assert not node_owners_file.exists()
+
+    async def test_migrate_claim_codes_from_json(self, tmp_path):
+        from core.auth import list_claim_codes, migrate_json_to_db
+
+        claim_codes_file = tmp_path / "claim_codes.json"
+        claim_codes_file.write_text(json.dumps({
+            "ABCDEF123456": {
+                "user_id": "user-migrate",
+                "created_at": 1000.0,
+                "expires_at": 9999999999.0,
+                "used_at": None,
+                "used_by_node_id": None,
+            }
+        }))
+
+        with patch("core.auth.INVITES_FILE", tmp_path / "invites.json"), \
+             patch("core.auth.NODE_OWNERS_FILE", tmp_path / "node_owners.json"), \
+             patch("core.auth.CLAIM_CODES_FILE", claim_codes_file):
+            await migrate_json_to_db()
+
+        codes = await list_claim_codes("user-migrate")
+        assert len(codes) == 1
+        assert codes[0]["code"] == "ABCDEF123456"
+        migrated = claim_codes_file.with_suffix(".json.migrated")
+        assert migrated.exists()
+        assert not claim_codes_file.exists()
+
+
+# ── set_node_owner UPDATE branch ──────────────────────────────────────────────
+
+class TestSetNodeOwnerUpdate:
+    @pytest.fixture(autouse=True)
+    def _clean_tables(self, clean_auth_tables):
+        pass
+
+    async def test_set_node_owner_updates_existing_owner(self):
+        from core.auth import get_node_owner, set_node_owner
+
+        await set_node_owner("migrate-node", "user-1")
+        await set_node_owner("migrate-node", "user-2")
+        assert await get_node_owner("migrate-node") == "user-2"
+
+
+# ── revoke_claim_code edge cases ──────────────────────────────────────────────
+
+class TestRevokeClaimCodeEdgeCases:
+    @pytest.fixture(autouse=True)
+    def _clean_tables(self, clean_auth_tables):
+        pass
+
+    async def test_revoke_nonexistent_code_returns_false(self):
+        from core.auth import revoke_claim_code
+
+        result = await revoke_claim_code("DOESNOTEXIST")
+        assert result is False
+
+
+# ── consume_claim_code edge cases ─────────────────────────────────────────────
+
+class TestConsumeClaimCodeEdgeCases:
+    @pytest.fixture(autouse=True)
+    def _clean_tables(self, clean_auth_tables):
+        pass
+
+    async def test_consume_empty_code_returns_none(self):
+        from core.auth import consume_claim_code
+
+        result = await consume_claim_code("", "node-X")
+        assert result is None
+
+    async def test_consume_empty_node_returns_none(self):
+        from core.auth import consume_claim_code
+
+        result = await consume_claim_code("SOMECODE", "")
+        assert result is None
+
+    async def test_consume_updates_existing_node_owner(self):
+        from core.auth import (
+            consume_claim_code,
+            create_claim_code,
+            get_node_owner,
+            set_node_owner,
+        )
+
+        await set_node_owner("node-X", "old-user")
+        rec = await create_claim_code("new-user")
+        result = await consume_claim_code(rec["code"], "node-X")
+        assert result == "new-user"
+        assert await get_node_owner("node-X") == "new-user"
