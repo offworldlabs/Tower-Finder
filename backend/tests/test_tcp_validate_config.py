@@ -1,6 +1,5 @@
 """Tests for _validate_node_config() in services/tcp_handler.py"""
 
-import pytest
 
 from services.tcp_handler import _validate_node_config
 
@@ -158,7 +157,6 @@ class TestOutOfRangeLatLon:
         assert "lat/lon out of range" in result
 
 
-
 class TestBeamWidthValidation:
     """Tests for beam_width_deg validation."""
 
@@ -186,6 +184,11 @@ class TestBeamWidthValidation:
         assert result is not None
         assert "beam_width_deg out of range" in result
 
+    def test_beam_width_list_type(self):
+        config = {"lat": 40.0, "lon": -74.0, "beam_width_deg": [45]}
+        result = _validate_node_config(config)
+        assert result is not None
+        assert "non-numeric beam_width_deg" in result
 
 
 class TestMaxRangeKmValidation:
@@ -208,7 +211,6 @@ class TestMaxRangeKmValidation:
         result = _validate_node_config(config)
         assert result is not None
         assert "max_range_km must be positive" in result
-
 
 
 class TestOptionalFieldsAbsent:
@@ -291,6 +293,12 @@ class TestEdgeCases:
         config = {"lat": 91, "lon": 200, "rx_lat": 40.7128, "rx_lon": -74.0060}
         result = _validate_node_config(config)
         assert result is None
+
+    def test_rx_lat_out_of_range_ignores_valid_flat(self):
+        config = {"lat": 0, "lon": 0, "rx_lat": 91, "rx_lon": -74.0060}
+        result = _validate_node_config(config)
+        assert result is not None
+        assert "lat/lon out of range" in result
 
     def test_very_small_positive_max_range(self):
         config = {"lat": 40.7128, "lon": -74.0060, "max_range_km": 0.001}

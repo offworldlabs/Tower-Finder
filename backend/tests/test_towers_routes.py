@@ -181,7 +181,7 @@ class TestBatchLookupElevations:
     async def test_generic_connection_error_returns_empty_dict(self):
         from routes.towers import _batch_lookup_elevations
 
-        with _make_httpx_mock(get_side_effect=Exception("connection refused")):
+        with _make_httpx_mock(get_side_effect=httpx.ConnectError("connection refused")):
             result = await _batch_lookup_elevations([(33.9, -84.6)])
 
         assert result == {}
@@ -240,13 +240,7 @@ class TestFindTowersServiceErrors:
         assert r.status_code == 502
 
     def test_non_us_no_api_key_returns_500(self):
-        with (
-            unittest.mock.patch("routes.towers.API_KEY", ""),
-            unittest.mock.patch(
-                "routes.towers._batch_lookup_elevations",
-                new=unittest.mock.AsyncMock(return_value={}),
-            ),
-        ):
+        with unittest.mock.patch("routes.towers.API_KEY", ""):
             with TestClient(app, raise_server_exceptions=False) as c:
                 r = c.get("/api/towers?lat=33.9&lon=-84.6&source=au")
 
