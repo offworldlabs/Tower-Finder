@@ -67,6 +67,9 @@ class TestGetOrCreateOauthUser:
                 await session.execute(delete(User))
                 await session.commit()
 
+        # asyncio.run() calls set_event_loop(None) on exit (Python 3.12).
+        # Restore a fresh loop so pytest-asyncio 0.23.x can call
+        # get_event_loop() before handing control to each async test.
         asyncio.run(_setup())
         asyncio.set_event_loop(asyncio.new_event_loop())
         yield

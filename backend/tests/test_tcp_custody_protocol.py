@@ -15,7 +15,7 @@ from services.tcp_handler import (
     _handle_iq_commitment,
     _handle_register_key,
 )
-from tests.tcp_helpers import _FakeWriter as MockWriter
+from tests.tcp_helpers import FakeWriter as MockWriter
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 

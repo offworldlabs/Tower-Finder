@@ -15,7 +15,7 @@ import pytest
 
 from core import state
 from services.tcp_handler import _handle_heartbeat, handle_tcp_client
-from tests.tcp_helpers import _FakeReader, _FakeWriter
+from tests.tcp_helpers import FakeReader, FakeWriter
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -97,13 +97,13 @@ class TestTCPHeartbeat:
         hb_timestamp: str = HEARTBEAT_TS,
         node_config_hash: str = CONFIG_HASH,
     ):
-        reader = _FakeReader([
+        reader = FakeReader([
             _hello(),
             _config(config_hash=node_config_hash),
             _heartbeat(config_hash=hb_config_hash, status=hb_status, timestamp=hb_timestamp),
             b"",
         ])
-        writer = _FakeWriter()
+        writer = FakeWriter()
         asyncio.run(handle_tcp_client(reader, writer))
         return writer
 
@@ -134,7 +134,7 @@ class TestTCPHeartbeat:
         }
 
         # Create a fake writer (not needed for heartbeat logic but required by signature)
-        writer = _FakeWriter()
+        writer = FakeWriter()
 
         # Call _handle_heartbeat directly
         asyncio.run(_handle_heartbeat(msg, NODE_ID, writer))
@@ -176,11 +176,11 @@ class TestTCPHeartbeat:
         unknown_id = "never-registered-node"
         state.connected_nodes.pop(unknown_id, None)
 
-        reader = _FakeReader([
+        reader = FakeReader([
             _heartbeat(node_id=unknown_id),
             b"",
         ])
-        writer = _FakeWriter()
+        writer = FakeWriter()
         # Must not raise
         asyncio.run(handle_tcp_client(reader, writer))
 
