@@ -1,29 +1,17 @@
-# Subsystem 6 — Open-Meteo weather ingestion
+# Subsystem 6 — Weather: on-demand helper (originally: ingestion task)
 
-**Goal:** Sample current-conditions weather hourly at each connected node's receiver location and persist as a parallel Parquet stream so analysts can join it against detections by `node_id` + hour.
+**Status:** Original ingestion-task design was reverted in response to PR feedback. Open-Meteo offers a free historical archive API (`https://archive-api.open-meteo.com/v1/archive`) that returns the same hourly observations on demand given a (lat, lon, date range), so writing our own background task and storing a parallel Parquet stream would just be duplicating data already on tap.
 
-**Architecture:**
-- `services/weather_client.py` — Open-Meteo HTTP client (free, no API key).
-- `services/weather_writer.py` — Parquet writer for weather samples.
-- `services/tasks/weather_archive.py` — hourly background task: snapshots `state.connected_nodes`, fetches Open-Meteo for each `rx_lat/rx_lon`, accumulates samples, flushes once per hour to Parquet.
-- Path: `weather/year=YYYY/month=MM/day=DD/node_id=XXX/hourly.parquet`.
+**Final design:**
+- `backend/analysis/weather.py` exposes `fetch_historical(lat, lon, start_dt, end_dt)` that hits the archive API and returns a list of per-hour dicts in the same flat shape used elsewhere in the project (`temperature_c`, `humidity_pct`, `pressure_hpa`, `precipitation_mm`, `wind_speed_ms`, `wind_dir_deg`, `cloud_cover_pct`, `visibility_m`, `weather_code`).
+- No background task, no extra Parquet stream, no scheduled fetches.
+- Analysts join weather at query time from notebooks / pipelines.
 
-**Tech Stack:** `httpx` (already a dep).
+**What was deleted:**
+- `services/weather_client.py` (was: forecast/current endpoint)
+- `services/weather_writer.py` (was: per-node hourly Parquet writer)
+- `services/tasks/weather_archive.py` (was: hourly background task)
+- `tests/test_weather_archive.py`
+- `weather_archive_task` wiring from `main.py`, `services/tasks/__init__.py`, `services/background.py`, `core/task_registry.py`.
 
-**Schema:**
-```
-sample_ts_ms   int64       open-meteo's "time" for the current observation
-fetch_ts_ms    int64       wallclock when we fetched
-node_id        string
-lat            float64
-lon            float64
-temperature_c  float64 nullable
-humidity_pct   float64 nullable
-pressure_hpa   float64 nullable
-precipitation_mm float64 nullable
-wind_speed_ms  float64 nullable
-wind_dir_deg   float64 nullable
-cloud_cover_pct float64 nullable
-visibility_m   float64 nullable
-weather_code   int32 nullable
-```
+**What stays:** `analysis/weather.py` + `tests/test_analysis_weather.py`.

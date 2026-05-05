@@ -17,7 +17,6 @@ from services.tasks.periodic import (
 from services.tasks.solver import start_solver_workers
 from services.tasks.storage_refresh import storage_refresh_task
 from services.tasks.track_archive import track_flush_task
-from services.tasks.weather_archive import weather_archive_task
 
 __all__ = [
     "analytics_refresh_task",
@@ -31,5 +30,4 @@ __all__ = [
     "prune_synthetic_nodes",
     "adsb_truth_fetcher",
     "track_flush_task",
-    "weather_archive_task",
 ]
