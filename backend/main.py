@@ -46,6 +46,7 @@ from services.background import (
     start_solver_workers,
     storage_refresh_task,
     track_flush_task,
+    weather_archive_task,
 )
 from services.blah2_bridge import blah2_bridge_task
 from services.runtime_coverage import start as _start_coverage
@@ -125,6 +126,7 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(aircraft_flush_task(radar_pipeline)),
             asyncio.create_task(archive_flush_task()),
             asyncio.create_task(track_flush_task()),
+            asyncio.create_task(weather_archive_task()),
             asyncio.create_task(archive_lifecycle_task()),
             asyncio.create_task(analytics_refresh_task()),
             asyncio.create_task(storage_refresh_task()),
