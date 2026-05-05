@@ -72,7 +72,10 @@ RUN useradd -r -s /usr/sbin/nologin appuser && \
     chown appuser:appuser /etc/nginx/sites-available /etc/nginx/sites-available/default && \
     # app dirs that need write access
     mkdir -p /app/backend/coverage_data /app/backend/tar1090_data /app/backend/data && \
-    chown -R appuser:appuser /app/backend/coverage_data /app/backend/tar1090_data /app/backend/data
+    chown -R appuser:appuser /app/backend/coverage_data /app/backend/tar1090_data /app/backend/data && \
+    # /app/backend/config is mounted as a named volume; set appuser ownership
+    # on the image layer so that freshly-created volumes inherit the right owner.
+    chown appuser:appuser /app/backend/config
 
 USER appuser
 
