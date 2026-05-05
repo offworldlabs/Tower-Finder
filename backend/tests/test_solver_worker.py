@@ -470,3 +470,111 @@ class TestBeamCoverageFilter:
         assert state.solver_successes == 1
         assert state.solver_failures == 0
 
+
+# ── _in_node_beam ─────────────────────────────────────────────────────────────
+
+
+class TestInNodeBeam:
+    """Test uncovered branches of _in_node_beam: TX-derived azimuth and no-beam fallback."""
+
+    def test_tx_lat_lon_derives_beam_azimuth_aircraft_outside(self):
+        """TX-lat/lon branch: beam_az = bearing(RX→TX)+90; aircraft clearly outside."""
+        # RX=(0,0), TX=(1,1) NE → bearing≈45° → beam_az≈135° (SE)
+        # Aircraft at (0.1,-0.1) NW (~15 km, in range) → bearing≈315° → 180° off boresight
+        cfg = {"rx_lat": 0.0, "rx_lon": 0.0, "tx_lat": 1.0, "tx_lon": 1.0}
+        assert solver_mod._in_node_beam(0.1, -0.1, cfg) is False
+
+    def test_tx_lat_lon_derives_beam_azimuth_aircraft_inside(self):
+        """TX-lat/lon branch: aircraft in the derived beam direction."""
+        # RX=(0,0), TX=(1,1) NE → beam_az≈135° (SE)
+        # Aircraft at (-0.1,0.1) SE (~15 km, in range) → bearing≈135° → 0° off boresight
+        cfg = {"rx_lat": 0.0, "rx_lon": 0.0, "tx_lat": 1.0, "tx_lon": 1.0}
+        assert solver_mod._in_node_beam(-0.1, 0.1, cfg) is True
+
+    def test_no_beam_direction_returns_true_within_range(self):
+        """No beam_azimuth_deg and no tx_lat/tx_lon → beam_az=None → always True."""
+        cfg = {"rx_lat": 0.0, "rx_lon": 0.0}
+        assert solver_mod._in_node_beam(0.1, 0.0, cfg) is True
+
+    def test_out_of_range_returns_false_regardless_of_beam(self):
+        """Haversine check fires before beam check; beyond max_range → False."""
+        cfg = {"rx_lat": 0.0, "rx_lon": 0.0, "max_range_km": 10.0}
+        # ~111 km away, well outside 10 km range
+        assert solver_mod._in_node_beam(1.0, 0.0, cfg) is False
+
+
+# ── _sweep_altitudes ──────────────────────────────────────────────────────────
+
+
+class TestSweepAltitudes:
+    """Test the altitude-sweep exception handling paths."""
+
+    def test_all_altitudes_raise_reraises_last_exception(self):
+        """If every altitude layer raises, the last exception propagates."""
+        calls = []
+
+        def bad_solve(s, cfgs):
+            calls.append(s["initial_guess"]["alt_km"])
+            raise ValueError(f"fail at {s['initial_guess']['alt_km']}")
+
+        s_in = {"initial_guess": {"lat": 0.0, "lon": 0.0}}
+        with pytest.raises(ValueError, match="fail at"):
+            solver_mod._sweep_altitudes(s_in, {}, bad_solve, [1.0, 2.0], "rms_delay")
+        assert len(calls) == 2
+
+    def test_one_fails_one_succeeds_returns_good_result(self):
+        """An exception on one layer is swallowed; a successful layer wins."""
+        def mixed_solve(s, cfgs):
+            if s["initial_guess"]["alt_km"] == 1.0:
+                raise ValueError("bad layer")
+            return {"success": True, "rms_delay": 0.005}
+
+        s_in = {"initial_guess": {"lat": 0.0, "lon": 0.0}}
+        result = solver_mod._sweep_altitudes(s_in, {}, mixed_solve, [1.0, 2.0], "rms_delay")
+        assert result is not None
+        assert result["success"] is True
+
+    def test_no_successful_result_and_no_exception_returns_none(self):
+        """solve_fn returns None every time → returns None without raising."""
+        def null_solve(s, cfgs):
+            return None
+
+        s_in = {"initial_guess": {"lat": 0.0, "lon": 0.0}}
+        result = solver_mod._sweep_altitudes(s_in, {}, null_solve, [1.0, 2.0], "rms_delay")
+        assert result is None
+
+
+# ── _solve_best_altitude ──────────────────────────────────────────────────────
+
+
+class TestSolveBestAltitude:
+    """Test that ADS-B altitude injection adds a novel layer to the sweep."""
+
+    def test_adsb_altitude_outside_layers_is_included_in_sweep(self):
+        """When ig_alt is not in _SOLVER_ALT_LAYERS_KM, it must be tried."""
+        novel_alt = 7.777
+        assert novel_alt not in solver_mod._SOLVER_ALT_LAYERS_KM
+
+        tried = []
+
+        def track_solve(s, cfgs):
+            tried.append(s["initial_guess"]["alt_km"])
+            return None
+
+        s_in = {"initial_guess": {"lat": 0.0, "lon": 0.0, "alt_km": novel_alt}}
+        solver_mod._solve_best_altitude(s_in, {}, track_solve)
+        assert novel_alt in tried
+
+    def test_adsb_altitude_already_in_layers_not_duplicated(self):
+        """When ig_alt is already in _SOLVER_ALT_LAYERS_KM, layers list is unchanged."""
+        existing_alt = solver_mod._SOLVER_ALT_LAYERS_KM[0]
+        tried = []
+
+        def track_solve(s, cfgs):
+            tried.append(s["initial_guess"]["alt_km"])
+            return None
+
+        s_in = {"initial_guess": {"lat": 0.0, "lon": 0.0, "alt_km": existing_alt}}
+        solver_mod._solve_best_altitude(s_in, {}, track_solve)
+        assert tried.count(existing_alt) == 1  # not duplicated
+
