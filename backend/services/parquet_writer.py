@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 # missing cols), but never rename or reorder.
 SCHEMA = pa.schema([
     ("frame_ts_ms", pa.int64()),
+    ("ingest_ts_ms", pa.int64()),
     ("node_id", pa.string()),
     ("detection_index", pa.int32()),
     ("delay_us", pa.float64()),
@@ -41,6 +42,8 @@ SCHEMA = pa.schema([
     ("adsb_flight", pa.string()),
     ("signing_mode", pa.string()),
     ("signature_valid", pa.bool_()),
+    ("payload_hash", pa.string()),
+    ("signature", pa.string()),
 ])
 
 
@@ -74,7 +77,7 @@ def _get_int(d: dict | None, key: str) -> int | None:
         return None
 
 
-def _flatten(node_id: str, frames: list[dict]) -> dict[str, list]:
+def _flatten(node_id: str, frames: list[dict], ingest_ts_ms: int) -> dict[str, list]:
     """Flatten a list of per-frame dicts into per-detection columnar dict."""
     cols: dict[str, list] = {f.name: [] for f in SCHEMA}
     for frame in frames:
@@ -90,9 +93,12 @@ def _flatten(node_id: str, frames: list[dict]) -> dict[str, list]:
         sig_valid = frame.get("_signature_valid")
         if sig_valid is None:
             sig_valid = frame.get("signature_valid")
+        payload_hash = frame.get("payload_hash") or None
+        signature = frame.get("signature") or None
         for i in range(n):
             ae = adsb[i] if i < len(adsb) and isinstance(adsb[i], dict) else None
             cols["frame_ts_ms"].append(frame_ts)
+            cols["ingest_ts_ms"].append(ingest_ts_ms)
             cols["node_id"].append(node_id)
             cols["detection_index"].append(i)
             cols["delay_us"].append(_safe_float(delay, i))
@@ -107,6 +113,8 @@ def _flatten(node_id: str, frames: list[dict]) -> dict[str, list]:
             cols["adsb_flight"].append(ae.get("flight") if ae else None)
             cols["signing_mode"].append(sig_mode)
             cols["signature_valid"].append(bool(sig_valid) if sig_valid is not None else None)
+            cols["payload_hash"].append(payload_hash)
+            cols["signature"].append(signature)
     return cols
 
 
@@ -125,7 +133,8 @@ def write_detections_parquet(
         return None
 
     write_ts = write_ts or datetime.now(timezone.utc)
-    cols = _flatten(node_id, frames)
+    ingest_ts_ms = int(write_ts.timestamp() * 1000)
+    cols = _flatten(node_id, frames, ingest_ts_ms)
     if not cols["frame_ts_ms"]:
         return None
 

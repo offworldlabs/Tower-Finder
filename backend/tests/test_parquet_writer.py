@@ -117,6 +117,49 @@ def test_uses_zstd_compression(tmp_path: Path):
     assert "ZSTD" in codecs or "zstd" in {c.lower() for c in codecs}
 
 
+def test_schema_includes_custody_and_ingest_columns(tmp_path: Path):
+    """Schema must include payload_hash, signature, ingest_ts_ms and round-trip values."""
+    frames = [{
+        "timestamp": 1700000000000,
+        "delay": [10.0, 11.0],
+        "doppler": [-50.0, -49.0],
+        "snr": [12.0, 13.0],
+        "adsb": [None, None],
+        "payload_hash": "deadbeef",
+        "signature": "abcd1234",
+        "_signing_mode": "ed25519",
+        "_signature_valid": True,
+    }]
+    ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
+
+    key = pw.write_detections_parquet(
+        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
+    )
+    table = pq.read_table(tmp_path / key)
+    cols = set(table.column_names)
+    assert {"payload_hash", "signature", "ingest_ts_ms"} <= cols
+
+    rows = table.to_pylist()
+    assert rows[0]["payload_hash"] == "deadbeef"
+    assert rows[0]["signature"] == "abcd1234"
+    expected_ms = int(ts.timestamp() * 1000)
+    assert rows[0]["ingest_ts_ms"] == expected_ms
+
+
+def test_custody_columns_default_null_when_absent(tmp_path: Path):
+    """Frames without payload_hash/signature get nulls; ingest_ts_ms is always set."""
+    frames = [_frame(timestamp_ms=1700000000000, n_dets=2)]
+    ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
+
+    key = pw.write_detections_parquet(
+        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
+    )
+    rows = pq.read_table(tmp_path / key).to_pylist()
+    assert all(r["payload_hash"] is None for r in rows)
+    assert all(r["signature"] is None for r in rows)
+    assert all(isinstance(r["ingest_ts_ms"], int) for r in rows)
+
+
 def test_round_trip_via_storage_module(tmp_path: Path, monkeypatch):
     """archive_detections + read_archived_file round-trips back to legacy JSON shape."""
     monkeypatch.setattr("services.storage._LOCAL_ARCHIVE_DIR", str(tmp_path))
