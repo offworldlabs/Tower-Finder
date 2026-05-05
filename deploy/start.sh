@@ -11,6 +11,15 @@ FRAME_QUEUE_SIZE="${FRAME_QUEUE_SIZE:-10000}"
 export FRAME_WORKERS
 export FRAME_QUEUE_SIZE
 
+# Refresh source-controlled config files from the image. The
+# /app/backend/config directory is a Docker named volume so it can persist
+# tower_config.json / nodes_config.json edits across container recreates,
+# but that same persistence keeps constants.py stale after image upgrades.
+# Copy the pristine constants.py from the image layer on every boot.
+if [ -f /app/deploy/config-image/constants.py ]; then
+    cp /app/deploy/config-image/constants.py /app/backend/config/constants.py
+fi
+
 # Swap nginx config based on environment
 if [ "${RETINA_ENV}" = "staging" ] && [ -f /app/deploy/nginx-staging.conf ]; then
     echo "[start.sh] Using staging nginx config for staging.retina.fm domains"

@@ -131,3 +131,21 @@ _.node_id
 _.user_id
 _.code
 _.used_by_node_id
+
+
+# ── analysis/weather.py ───────────────────────────────────────────────────────
+# Public helper used by backfill scripts and future pipeline tasks.
+fetch_historical
+
+
+# ── backfill/json_to_parquet.py ───────────────────────────────────────────────
+# Public API for one-off and streaming backfill runners; called from CLI
+# scripts not visible to vulture's static scan.
+convert_payload_to_parquet
+convert_legacy_bytes
+
+
+# ── services/storage.py ───────────────────────────────────────────────────────
+# `tag` is a keyword-only parameter on archive_detections(); kept for
+# callsite compatibility with callers that pass tag= explicitly.
+tag

@@ -35,10 +35,13 @@ AIRCRAFT_FLUSH_INTERVAL_S = 1.0       # aircraft.json write cadence
 ANALYTICS_REFRESH_INTERVAL_S = 30     # Background analytics recompute
 ARCHIVE_FLUSH_INTERVAL_S = 30         # Detection archive batch write
 ARCHIVE_BATCH_MAX = 200               # Max frames per archive flush
+TRACK_ARCHIVE_FLUSH_INTERVAL_S = 60   # Multi-node solver track archive flush cadence
 
 # ── Archive lifecycle (R2 offload + local disk cleanup) ──────────────────────
 ARCHIVE_OFFLOAD_AGE_DAYS = 1          # Upload to R2 after this many days
-ARCHIVE_RETENTION_DAYS = 14           # Delete local files after this many days
+# Set to 0 (or any value <= 0) to disable local-disk deletion entirely.
+# R2 retains everything indefinitely, so this controls only the local cache.
+ARCHIVE_RETENTION_DAYS = 0            # 0 = never delete locally
 ARCHIVE_LIFECYCLE_INTERVAL_S = 3600   # Run lifecycle check every hour
 
 # ── Reputation thresholds ────────────────────────────────────────────────────

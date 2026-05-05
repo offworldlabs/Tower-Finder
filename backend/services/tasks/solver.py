@@ -421,6 +421,12 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             )
         key = f"mn-{result['timestamp_ms']}-{result['lat']:.3f}"
         state.multinode_tracks[key] = result
+        # Append a snapshot to the track-archive buffer for Parquet persistence.
+        # solve_ts_ms records when the solve completed (server wallclock) so
+        # analysts can measure end-to-end latency vs. result["timestamp_ms"].
+        archive_record = dict(result)
+        archive_record["solve_ts_ms"] = int(time.time() * 1000)
+        state.track_archive_buffer.append(archive_record)
     return result
 
 

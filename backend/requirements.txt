@@ -10,3 +10,4 @@ cryptography==46.0.6
 boto3==1.42.89
 fastapi-users[sqlalchemy]==13.0.0
 aiosqlite==0.20.0
+pyarrow==16.1.0

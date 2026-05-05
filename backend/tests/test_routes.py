@@ -332,3 +332,19 @@ class TestArchiveAPI:
     def test_missing_archive_file_returns_404(self, client):
         r = client.get("/api/data/archive/nonexistent/path.json")
         assert r.status_code == 404
+
+    def test_existing_archive_file_returns_content(self, client, tmp_path, monkeypatch):
+        import json
+
+        import services.storage as _storage
+
+        archive_dir = tmp_path / "archive"
+        node_dir = archive_dir / "2025" / "06" / "21" / "node-A"
+        node_dir.mkdir(parents=True)
+        payload = {"aircraft": [], "now": 1234567890}
+        (node_dir / "detections_120000.json").write_text(json.dumps(payload))
+        monkeypatch.setattr(_storage, "_LOCAL_ARCHIVE_DIR", str(archive_dir))
+
+        r = client.get("/api/data/archive/2025/06/21/node-A/detections_120000.json")
+        assert r.status_code == 200
+        assert r.json()["now"] == 1234567890

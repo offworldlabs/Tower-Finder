@@ -55,6 +55,13 @@ COPY deploy/nginx-security.conf /etc/nginx/conf.d/security.conf
 COPY deploy/ /app/deploy/
 RUN chmod +x /app/deploy/start.sh /app/deploy/start-test.sh
 
+# Save a pristine copy of source-controlled config files outside the
+# /app/backend/config volume so start.sh can refresh them on each boot.
+# tower_config.json / nodes_config.json are runtime-editable and stay in
+# the volume; constants.py is source code and must follow the image.
+RUN mkdir -p /app/deploy/config-image && \
+    cp /app/backend/config/constants.py /app/deploy/config-image/constants.py
+
 # ── Non-root user ────────────────────────────────────────────────────────────
 RUN useradd -r -s /usr/sbin/nologin appuser && \
     # Allow nginx to bind to privileged ports as non-root

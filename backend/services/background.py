@@ -18,4 +18,5 @@ from services.tasks import (  # noqa: F401
     reputation_evaluator,
     start_solver_workers,
     storage_refresh_task,
+    track_flush_task,
 )

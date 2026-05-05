@@ -1,13 +1,17 @@
 """Tests for tower ranking utilities — source detection, band classification, frequency parsing."""
 
+import pytest
+
 from routes.towers import _detect_source
 from services.tower_ranking import (
     DEFAULT_LIMIT,
     FREQUENCY_MATCH_TOLERANCE_MHZ,
     SENSITIVITY_DBM,
+    _as_float,
     bearing_to_cardinal,
     classify_band,
     classify_distance,
+    eirp_dbm_from_device,
     fspl,
     haversine,
     initial_bearing,
@@ -542,3 +546,73 @@ class TestProcessAndRank:
         callsigns = {t["callsign"] for t in result}
         assert "K001" in callsigns
         assert "K002" in callsigns
+
+
+# ── _as_float ────────────────────────────────────────────────────────────────
+
+
+class TestAsFloat:
+    def test_string_numeric(self):
+        assert _as_float("3.14") == pytest.approx(3.14)
+
+    def test_string_invalid_returns_none(self):
+        assert _as_float("not_a_number") is None
+
+    def test_dict_value_key(self):
+        assert _as_float({"value": 5.5}) == pytest.approx(5.5)
+
+    def test_dict_low_high_keys_averages(self):
+        assert _as_float({"low": 1.0, "high": 3.0}) == pytest.approx(2.0)
+
+    def test_dict_unknown_keys_returns_none(self):
+        assert _as_float({"other": 5.0}) is None
+
+
+# ── eirp_dbm_from_device ─────────────────────────────────────────────────────
+
+
+class TestEirpDbmFromDevice:
+    def test_eirp_watts_converted_to_dbm(self):
+        result = eirp_dbm_from_device({"eirp": 100})
+        assert result == pytest.approx(watts_to_dbm(100))
+
+    def test_transmit_power_with_antenna_gain(self):
+        result = eirp_dbm_from_device({"transmitPower": 100, "antenna": {"gain": 6}})
+        assert result == pytest.approx(watts_to_dbm(100) + 6)
+
+    def test_transmit_power_no_antenna_uses_default_10dbi(self):
+        result = eirp_dbm_from_device({"transmitPower": 100})
+        assert result == pytest.approx(watts_to_dbm(100) + 10.0)
+
+    def test_no_power_fields_returns_none(self):
+        assert eirp_dbm_from_device({}) is None
+
+
+# ── classify_distance fallthrough ────────────────────────────────────────────
+
+
+class TestClassifyDistanceFallthrough:
+    def test_negative_distance_not_in_any_class_returns_far(self):
+        assert classify_distance(-1) == "Far"
+
+
+# ── parse_geom edge cases ─────────────────────────────────────────────────────
+
+
+class TestParseGeomEdgeCases:
+    def test_point_single_coord_returns_none(self):
+        """POINT with only one token inside → len(parts) < 2 → None."""
+        assert parse_geom("POINT(123)") is None
+
+    def test_polygon_no_parens_returns_none(self):
+        """POLYGON WKT with no parentheses → regex doesn't match → None."""
+        assert parse_geom("POLYGON xyz") is None
+
+    def test_polygon_bare_minus_coord_skipped(self):
+        """POLYGON where one pair has bare '-' → ValueError → continue; valid pairs still used."""
+        result = parse_geom("POLYGON((0 0, - 1, 2 2))")
+        assert result is not None
+
+    def test_polygon_all_invalid_coords_returns_none(self):
+        """POLYGON where all coord pairs have bare '-' → empty lats list → None."""
+        assert parse_geom("POLYGON((- -, - -))") is None
