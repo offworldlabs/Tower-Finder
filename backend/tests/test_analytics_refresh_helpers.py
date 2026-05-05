@@ -277,11 +277,13 @@ class TestAircraftInBeam:
 class TestBistaticAngleDeg:
     """Test bistatic angle at the aircraft vertex for a TX-RX pair."""
 
-    def test_result_in_valid_range(self):
-        """Result is always in [0, 180]."""
-        # TX=(0,0), RX=(0,2), aircraft=(1,1) — symmetric geometry
-        angle = _bistatic_angle_deg(1, 1, 0, 0, 0, 2)
+    def test_acute_angle_geometry(self):
+        """Aircraft far from the baseline yields an acute bistatic angle (< 90°)."""
+        # TX=(0,0), RX=(0,2), aircraft=(5,1): aircraft far north of both nodes →
+        # rays from aircraft to TX and RX converge at a narrow angle.
+        angle = _bistatic_angle_deg(5, 1, 0, 0, 0, 2)
         assert 0 <= angle <= 180
+        assert angle < 90
 
     def test_symmetric_geometry_approximates_90(self):
         """Aircraft equidistant from TX and RX perpendicularly yields ~90°."""

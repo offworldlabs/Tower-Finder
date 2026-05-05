@@ -481,14 +481,14 @@ class TestInNodeBeam:
         """TX-lat/lon branch: beam_az = bearing(RX→TX)+90; aircraft clearly outside."""
         # RX=(0,0), TX=(1,1) NE → bearing≈45° → beam_az≈135° (SE)
         # Aircraft at (0.1,-0.1) NW (~15 km, in range) → bearing≈315° → 180° off boresight
-        cfg = {"rx_lat": 0.0, "rx_lon": 0.0, "tx_lat": 1.0, "tx_lon": 1.0}
+        cfg = {"rx_lat": 0.0, "rx_lon": 0.0, "tx_lat": 1.0, "tx_lon": 1.0, "max_range_km": 100}
         assert solver_mod._in_node_beam(0.1, -0.1, cfg) is False
 
     def test_tx_lat_lon_derives_beam_azimuth_aircraft_inside(self):
         """TX-lat/lon branch: aircraft in the derived beam direction."""
         # RX=(0,0), TX=(1,1) NE → beam_az≈135° (SE)
         # Aircraft at (-0.1,0.1) SE (~15 km, in range) → bearing≈135° → 0° off boresight
-        cfg = {"rx_lat": 0.0, "rx_lon": 0.0, "tx_lat": 1.0, "tx_lon": 1.0}
+        cfg = {"rx_lat": 0.0, "rx_lon": 0.0, "tx_lat": 1.0, "tx_lon": 1.0, "max_range_km": 100}
         assert solver_mod._in_node_beam(-0.1, 0.1, cfg) is True
 
     def test_no_beam_direction_returns_true_within_range(self):
@@ -518,13 +518,16 @@ class TestSweepAltitudes:
             raise ValueError(f"fail at {s['initial_guess']['alt_km']}")
 
         s_in = {"initial_guess": {"lat": 0.0, "lon": 0.0}}
-        with pytest.raises(ValueError, match="fail at"):
+        with pytest.raises(ValueError, match=r"fail at 2\.0"):
             solver_mod._sweep_altitudes(s_in, {}, bad_solve, [1.0, 2.0], "rms_delay")
         assert len(calls) == 2
 
     def test_one_fails_one_succeeds_returns_good_result(self):
         """An exception on one layer is swallowed; a successful layer wins."""
+        calls: list[float] = []
+
         def mixed_solve(s, cfgs):
+            calls.append(s["initial_guess"]["alt_km"])
             if s["initial_guess"]["alt_km"] == 1.0:
                 raise ValueError("bad layer")
             return {"success": True, "rms_delay": 0.005}
@@ -533,6 +536,7 @@ class TestSweepAltitudes:
         result = solver_mod._sweep_altitudes(s_in, {}, mixed_solve, [1.0, 2.0], "rms_delay")
         assert result is not None
         assert result["success"] is True
+        assert 2.0 in calls
 
     def test_no_successful_result_and_no_exception_returns_none(self):
         """solve_fn returns None every time → returns None without raising."""
@@ -577,4 +581,5 @@ class TestSolveBestAltitudeDirect:
         s_in = {"initial_guess": {"lat": 0.0, "lon": 0.0, "alt_km": existing_alt}}
         solver_mod._solve_best_altitude(s_in, {}, track_solve)
         assert tried.count(existing_alt) == 1  # not duplicated
+        assert len(tried) == len(solver_mod._SOLVER_ALT_LAYERS_KM)
 
