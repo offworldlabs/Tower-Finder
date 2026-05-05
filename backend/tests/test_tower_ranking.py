@@ -1,6 +1,7 @@
 """Tests for tower ranking utilities — source detection, band classification, frequency parsing."""
 
 import pytest
+
 from routes.towers import _detect_source
 from services.tower_ranking import (
     DEFAULT_LIMIT,
