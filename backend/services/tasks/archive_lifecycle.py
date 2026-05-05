@@ -2,11 +2,13 @@
 
 Runs every hour as a background task. The lifecycle is:
   1. Files older than OFFLOAD_AGE_DAYS → upload to R2 under "archive/" prefix
-  2. Files older than RETENTION_DAYS  → delete from local disk
+  2. Files older than RETENTION_DAYS   → delete from local disk
+                                         (skipped when RETENTION_DAYS <= 0)
   3. Empty date directories are cleaned up
 
-If R2 is not configured, step 1 is skipped — local files still get deleted
-after RETENTION_DAYS to prevent unbounded disk growth.
+R2 retains uploaded files indefinitely. The default config keeps local files
+forever (RETENTION_DAYS = 0); set a positive value if disk pressure becomes
+an issue on a given deployment.
 """
 
 import logging
@@ -39,7 +41,9 @@ def run_archive_lifecycle() -> dict:
     stats = {"uploaded": 0, "deleted": 0, "errors": 0, "skipped": 0}
     now = time.time()
     offload_cutoff = now - (ARCHIVE_OFFLOAD_AGE_DAYS * 86400)
-    delete_cutoff = now - (ARCHIVE_RETENTION_DAYS * 86400)
+    # ARCHIVE_RETENTION_DAYS <= 0 disables local deletion (R2 keeps forever).
+    deletion_enabled = ARCHIVE_RETENTION_DAYS > 0
+    delete_cutoff = now - (ARCHIVE_RETENTION_DAYS * 86400) if deletion_enabled else 0.0
 
     if not _ARCHIVE_DIR.exists():
         return stats
@@ -66,8 +70,8 @@ def run_archive_lifecycle() -> dict:
             else:
                 stats["errors"] += 1
 
-        # Phase 2: Delete from local disk if past retention
-        if mtime < delete_cutoff:
+        # Phase 2: Delete from local disk if past retention (only when enabled)
+        if deletion_enabled and mtime < delete_cutoff:
             try:
                 json_file.unlink()
                 stats["deleted"] += 1

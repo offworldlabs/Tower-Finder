@@ -38,7 +38,9 @@ ARCHIVE_BATCH_MAX = 200               # Max frames per archive flush
 
 # ── Archive lifecycle (R2 offload + local disk cleanup) ──────────────────────
 ARCHIVE_OFFLOAD_AGE_DAYS = 1          # Upload to R2 after this many days
-ARCHIVE_RETENTION_DAYS = 14           # Delete local files after this many days
+# Set to 0 (or any value <= 0) to disable local-disk deletion entirely.
+# R2 retains everything indefinitely, so this controls only the local cache.
+ARCHIVE_RETENTION_DAYS = 0            # 0 = never delete locally
 ARCHIVE_LIFECYCLE_INTERVAL_S = 3600   # Run lifecycle check every hour
 
 # ── Reputation thresholds ────────────────────────────────────────────────────

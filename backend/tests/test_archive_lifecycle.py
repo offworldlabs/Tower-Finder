@@ -16,7 +16,19 @@ from pathlib import Path
 import boto3
 from moto import mock_aws
 
-from config.constants import ARCHIVE_OFFLOAD_AGE_DAYS, ARCHIVE_RETENTION_DAYS
+from config.constants import ARCHIVE_OFFLOAD_AGE_DAYS
+
+# Tests that exercise the deletion phase patch this value into the lifecycle
+# module — the production default is 0 (disabled), so we use a fixed positive
+# value here whenever we need to verify that deletion happens.
+_TEST_RETENTION_DAYS = 14
+
+
+def _patch_retention(value: int = _TEST_RETENTION_DAYS):
+    """Patch ARCHIVE_RETENTION_DAYS inside the lifecycle module for one test."""
+    return unittest.mock.patch(
+        "services.tasks.archive_lifecycle.ARCHIVE_RETENTION_DAYS", value
+    )
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -149,11 +161,12 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
     def test_very_old_file_deleted_locally(self):
         _make_bucket()
         f = _create_archive_file(
-            self._archive_dir, age_days=ARCHIVE_RETENTION_DAYS + 1
+            self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1
         )
         from services.tasks.archive_lifecycle import run_archive_lifecycle
 
-        stats = run_archive_lifecycle()
+        with _patch_retention():
+            stats = run_archive_lifecycle()
         self.assertFalse(f.exists())
         self.assertGreater(stats["deleted"], 0)
 
@@ -165,19 +178,21 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         )
         from services.tasks.archive_lifecycle import run_archive_lifecycle
 
-        run_archive_lifecycle()
+        with _patch_retention():
+            run_archive_lifecycle()
         self.assertTrue(f.exists())
 
     @mock_aws
     def test_old_file_uploaded_then_deleted(self):
         _make_bucket()
         f = _create_archive_file(
-            self._archive_dir, age_days=ARCHIVE_RETENTION_DAYS + 1
+            self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1
         )
         from services.r2_client import list_keys
         from services.tasks.archive_lifecycle import run_archive_lifecycle
 
-        stats = run_archive_lifecycle()
+        with _patch_retention():
+            stats = run_archive_lifecycle()
         self.assertGreater(stats["uploaded"], 0)
         self.assertGreater(stats["deleted"], 0)
         self.assertFalse(f.exists())
@@ -187,22 +202,24 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
     def test_empty_dirs_pruned_after_delete(self):
         _make_bucket()
         f = _create_archive_file(
-            self._archive_dir, age_days=ARCHIVE_RETENTION_DAYS + 1
+            self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1
         )
         from services.tasks.archive_lifecycle import run_archive_lifecycle
 
-        run_archive_lifecycle()
+        with _patch_retention():
+            run_archive_lifecycle()
         self.assertFalse(f.parent.exists())
 
     def test_no_upload_when_r2_disabled(self):
         self._r2._ENABLED = False
         self._r2._clear_cache()
         f_old = _create_archive_file(
-            self._archive_dir, age_days=ARCHIVE_RETENTION_DAYS + 1
+            self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1
         )
         from services.tasks.archive_lifecycle import run_archive_lifecycle
 
-        stats = run_archive_lifecycle()
+        with _patch_retention():
+            stats = run_archive_lifecycle()
         self.assertEqual(stats["uploaded"], 0)
         self.assertGreater(stats["deleted"], 0)
         self.assertFalse(f_old.exists())
@@ -323,7 +340,7 @@ class TestRunArchiveLifecycleOSError(_ArchiveUnitTestBase):
 
     def test_unlink_oserror_increments_errors(self):
         """When unlink() raises OSError on a file past retention, errors is incremented."""
-        age = ARCHIVE_RETENTION_DAYS + 1
+        age = _TEST_RETENTION_DAYS + 1
         _make_archive_file(self._archive_dir, age_days=age)
 
         original_unlink = Path.unlink
@@ -333,7 +350,7 @@ class TestRunArchiveLifecycleOSError(_ArchiveUnitTestBase):
                 raise OSError("fake unlink error")
             return original_unlink(path, missing_ok=missing_ok)
 
-        with unittest.mock.patch.object(Path, "unlink", _bad_unlink):
+        with unittest.mock.patch.object(Path, "unlink", _bad_unlink), _patch_retention():
             stats = self._run()
 
         self.assertGreater(stats["errors"], 0)
@@ -360,7 +377,7 @@ class TestRunArchiveLifecycleCap(_ArchiveUnitTestBase):
 
         cap = alc._MAX_DELETE_PER_CYCLE
 
-        age = ARCHIVE_RETENTION_DAYS + 1
+        age = _TEST_RETENTION_DAYS + 1
         for i in range(cap + 3):
             node_dir = self._archive_dir / "2024" / "01" / "15" / f"node-{i}"
             node_dir.mkdir(parents=True, exist_ok=True)
@@ -369,7 +386,8 @@ class TestRunArchiveLifecycleCap(_ArchiveUnitTestBase):
             mtime = time.time() - age * 86400
             os.utime(f, (mtime, mtime))
 
-        stats = self._run()
+        with _patch_retention():
+            stats = self._run()
 
         self.assertGreater(stats["skipped"], 0)
         self.assertLessEqual(stats["uploaded"] + stats["deleted"], cap)
@@ -467,6 +485,44 @@ class TestIterArchiveFiles(_ArchiveUnitTestBase):
             results = self._collect()
 
         self.assertEqual(results, [])
+
+
+# ── TestRetentionDisabled ─────────────────────────────────────────────────────
+
+
+class TestRetentionDisabled(_ArchiveUnitTestBase):
+    """When ARCHIVE_RETENTION_DAYS <= 0 the deletion phase is skipped entirely."""
+
+    def test_old_file_kept_when_retention_zero(self):
+        f = _make_archive_file(self._archive_dir, age_days=400.0)
+
+        with unittest.mock.patch(
+            "services.tasks.archive_lifecycle.ARCHIVE_RETENTION_DAYS", 0
+        ):
+            stats = self._run()
+
+        self.assertTrue(f.exists(), "file must NOT be deleted when retention is 0")
+        self.assertEqual(stats["deleted"], 0)
+
+    def test_old_file_kept_when_retention_negative(self):
+        f = _make_archive_file(self._archive_dir, age_days=400.0)
+
+        with unittest.mock.patch(
+            "services.tasks.archive_lifecycle.ARCHIVE_RETENTION_DAYS", -1
+        ):
+            stats = self._run()
+
+        self.assertTrue(f.exists(), "negative retention must also disable deletion")
+        self.assertEqual(stats["deleted"], 0)
+
+    def test_old_file_deleted_when_retention_positive(self):
+        f = _make_archive_file(self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1)
+
+        with _patch_retention():
+            stats = self._run()
+
+        self.assertFalse(f.exists(), "file must be deleted when retention is positive")
+        self.assertEqual(stats["deleted"], 1)
 
 
 if __name__ == "__main__":
