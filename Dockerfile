@@ -56,11 +56,18 @@ COPY deploy/ /app/deploy/
 RUN chmod +x /app/deploy/start.sh /app/deploy/start-test.sh
 
 # Save a pristine copy of source-controlled config files outside the
-# /app/backend/config volume so start.sh can refresh them on each boot.
+# /app/backend/config volume so they always reflect the current image.
 # tower_config.json / nodes_config.json are runtime-editable and stay in
 # the volume; constants.py is source code and must follow the image.
-RUN mkdir -p /app/deploy/config-image && \
-    cp /app/backend/config/constants.py /app/deploy/config-image/constants.py
+#
+# Layout: /app/deploy/config-image/config/constants.py (no __init__.py so
+# Python treats 'config' as a namespace package and merges all 'config/'
+# dirs on sys.path).  start.sh prepends /app/deploy/config-image to
+# PYTHONPATH so this copy takes priority over the potentially-stale volume
+# copy at /app/backend/config/constants.py — even when the volume is
+# root-owned and the cp refresh fails.
+RUN mkdir -p /app/deploy/config-image/config && \
+    cp /app/backend/config/constants.py /app/deploy/config-image/config/constants.py
 
 # ── Non-root user ────────────────────────────────────────────────────────────
 RUN useradd -r -s /usr/sbin/nologin appuser && \

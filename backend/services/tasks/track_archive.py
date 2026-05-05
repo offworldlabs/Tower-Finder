@@ -18,7 +18,10 @@ import os
 import time
 from pathlib import Path
 
-from config.constants import TRACK_ARCHIVE_FLUSH_INTERVAL_S
+try:
+    from config.constants import TRACK_ARCHIVE_FLUSH_INTERVAL_S
+except ImportError:  # pragma: no cover — stale volume without this constant
+    TRACK_ARCHIVE_FLUSH_INTERVAL_S = 60
 from core import state
 from services.track_writer import write_tracks_parquet
 
