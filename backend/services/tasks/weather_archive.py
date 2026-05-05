@@ -84,9 +84,18 @@ def fetch_and_write_once(*, write_ts: datetime | None = None) -> dict:
 
 
 async def weather_archive_task():
-    """Periodic loop. Runs forever as a background asyncio task."""
+    """Periodic loop. Runs forever as a background asyncio task.
+
+    Performs an initial fetch shortly after startup (rather than waiting the
+    full WEATHER_FETCH_INTERVAL_S) so the first weather sample lands in the
+    dataset within minutes of boot — useful for verifying the pipeline is
+    healthy without waiting an hour.
+    """
+    # Small initial delay so the TCP server has time to register the first
+    # batch of nodes before we ask Open-Meteo about each location.
+    initial_delay_s = min(60, WEATHER_FETCH_INTERVAL_S)
+    await asyncio.sleep(initial_delay_s)
     while True:
-        await asyncio.sleep(WEATHER_FETCH_INTERVAL_S)
         try:
             stats = await asyncio.get_running_loop().run_in_executor(
                 None, fetch_and_write_once
@@ -96,3 +105,4 @@ async def weather_archive_task():
         except Exception:
             state.task_error_counts["weather_archive"] += 1
             logger.exception("weather_archive_task iteration failed")
+        await asyncio.sleep(WEATHER_FETCH_INTERVAL_S)
