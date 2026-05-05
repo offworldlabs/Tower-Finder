@@ -108,7 +108,11 @@ def _iter_archive_files():
                     for node_dir in sorted(day_dir.iterdir()):
                         if not node_dir.is_dir():
                             continue
-                        for f in sorted(node_dir.glob("*.json")):
+                        files = [
+                            *node_dir.glob("*.parquet"),
+                            *node_dir.glob("*.json"),
+                        ]
+                        for f in sorted(files):
                             yield f
     except OSError:
         logger.debug("Error iterating archive directory", exc_info=True)

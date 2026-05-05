@@ -461,17 +461,17 @@ class TestIterArchiveFiles(_ArchiveUnitTestBase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].name, "valid.json")
 
-    def test_only_json_files_are_yielded(self):
-        """Non-.json files in the node dir are not yielded."""
+    def test_parquet_and_json_files_are_yielded(self):
+        """Both .parquet and .json files in the node dir are yielded; .txt is ignored."""
         node_dir = self._archive_dir / "2024" / "01" / "15" / "node-A"
         node_dir.mkdir(parents=True)
         (node_dir / "data.json").write_bytes(b"{}")
+        (node_dir / "part-120000.parquet").write_bytes(b"")
         (node_dir / "data.txt").write_bytes(b"ignore me")
 
         results = self._collect()
-
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0].name, "data.json")
+        names = sorted(p.name for p in results)
+        self.assertEqual(names, ["data.json", "part-120000.parquet"])
 
     def test_oserror_during_iteration_does_not_crash(self):
         """If iterdir() raises OSError, _iter_archive_files returns empty gracefully."""
