@@ -42,6 +42,11 @@ active_geo_aircraft: dict = {}
 # ── Multi-node solver results ─────────────────────────────────────────────────
 multinode_tracks: dict[str, dict] = {}
 
+# Append-only buffer of solve results for the track Parquet stream.
+# Drained periodically by services.tasks.track_archive.track_flush_task.
+# maxlen guards against runaway growth if the flush task ever stalls.
+track_archive_buffer: deque[dict] = deque(maxlen=10000)
+
 # ── ADS-B positions reported inside detection frames ──────────────────────────
 adsb_aircraft: dict[str, dict] = {}
 
