@@ -179,3 +179,54 @@ def test_round_trip_via_storage_module(tmp_path: Path, monkeypatch):
     assert fr0["delay"] == [10.0, 11.0]
     assert fr0["adsb"][0]["hex"] == "abcdef"
     assert fr0["adsb"][1] is None
+
+
+def test_schema_includes_geometry_and_rf_columns(tmp_path: Path):
+    """rx/tx geometry and RF config are fanned out into every row from node_cfg."""
+    frames = [_frame(timestamp_ms=1700000000000, n_dets=3)]
+    ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
+    cfg = {
+        "rx_lat": 33.939, "rx_lon": -84.652, "rx_alt_ft": 920,
+        "tx_lat": 33.939, "tx_lon": -84.331, "tx_alt_ft": 1200,
+        "fc_hz": 195_000_000, "fs_hz": 2_000_000,
+    }
+
+    key = pw.write_detections_parquet(
+        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts, node_cfg=cfg,
+    )
+    table = pq.read_table(tmp_path / key)
+    cols = set(table.column_names)
+    assert {"rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft",
+            "fc_hz", "fs_hz", "adsb_squawk", "adsb_category"} <= cols
+
+    rows = table.to_pylist()
+    assert all(r["rx_lat"] == 33.939 for r in rows)
+    assert all(r["tx_lon"] == -84.331 for r in rows)
+    assert all(r["fc_hz"] == 195_000_000 for r in rows)
+    assert all(r["fs_hz"] == 2_000_000 for r in rows)
+
+
+def test_geometry_columns_default_null_when_no_cfg(tmp_path: Path):
+    frames = [_frame(timestamp_ms=1700000000000, n_dets=2)]
+    ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
+
+    key = pw.write_detections_parquet(
+        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
+    )
+    rows = pq.read_table(tmp_path / key).to_pylist()
+    for col in ("rx_lat", "rx_lon", "tx_lat", "tx_lon", "fc_hz", "fs_hz"):
+        assert all(r[col] is None for r in rows), f"{col} should default to null"
+
+
+def test_legacy_FC_Fs_keys_in_node_cfg(tmp_path: Path):
+    """Old-style FC/Fs keys in node_cfg are accepted as fallbacks for fc_hz/fs_hz."""
+    frames = [_frame(timestamp_ms=1700000000000, n_dets=1)]
+    ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
+    cfg = {"FC": 100_000_000, "Fs": 5_000_000}
+
+    key = pw.write_detections_parquet(
+        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts, node_cfg=cfg,
+    )
+    rows = pq.read_table(tmp_path / key).to_pylist()
+    assert rows[0]["fc_hz"] == 100_000_000
+    assert rows[0]["fs_hz"] == 5_000_000

@@ -40,10 +40,25 @@ SCHEMA = pa.schema([
     ("adsb_gs", pa.float64()),
     ("adsb_track", pa.float64()),
     ("adsb_flight", pa.string()),
+    ("adsb_squawk", pa.string()),
+    ("adsb_category", pa.string()),
     ("signing_mode", pa.string()),
     ("signature_valid", pa.bool_()),
     ("payload_hash", pa.string()),
     ("signature", pa.string()),
+    # Per-frame TX/RX geometry & RF config snapshot.  These never appear on
+    # the wire frame itself — they live in the node's CONFIG handshake — but
+    # they're cheap to fan out into every row (Parquet's per-column dictionary
+    # encoding makes constants effectively free) and impossible to reconstruct
+    # later if the node config drifts or the node is taken offline.
+    ("rx_lat", pa.float64()),
+    ("rx_lon", pa.float64()),
+    ("rx_alt_ft", pa.float64()),
+    ("tx_lat", pa.float64()),
+    ("tx_lon", pa.float64()),
+    ("tx_alt_ft", pa.float64()),
+    ("fc_hz", pa.float64()),
+    ("fs_hz", pa.float64()),
 ])
 
 
@@ -77,9 +92,27 @@ def _get_int(d: dict | None, key: str) -> int | None:
         return None
 
 
-def _flatten(node_id: str, frames: list[dict], ingest_ts_ms: int) -> dict[str, list]:
+def _flatten(
+    node_id: str,
+    frames: list[dict],
+    ingest_ts_ms: int,
+    node_cfg: dict | None = None,
+) -> dict[str, list]:
     """Flatten a list of per-frame dicts into per-detection columnar dict."""
     cols: dict[str, list] = {f.name: [] for f in SCHEMA}
+    cfg_rx_lat = _get_float(node_cfg, "rx_lat")
+    cfg_rx_lon = _get_float(node_cfg, "rx_lon")
+    cfg_rx_alt = _get_float(node_cfg, "rx_alt_ft")
+    cfg_tx_lat = _get_float(node_cfg, "tx_lat")
+    cfg_tx_lon = _get_float(node_cfg, "tx_lon")
+    cfg_tx_alt = _get_float(node_cfg, "tx_alt_ft")
+    # Node config uses fc_hz/fs_hz on the wire but some legacy paths use FC/Fs.
+    cfg_fc = _get_float(node_cfg, "fc_hz")
+    if cfg_fc is None:
+        cfg_fc = _get_float(node_cfg, "FC")
+    cfg_fs = _get_float(node_cfg, "fs_hz")
+    if cfg_fs is None:
+        cfg_fs = _get_float(node_cfg, "Fs")
     for frame in frames:
         delay = frame.get("delay") or []
         doppler = frame.get("doppler") or []
@@ -95,6 +128,25 @@ def _flatten(node_id: str, frames: list[dict], ingest_ts_ms: int) -> dict[str, l
             sig_valid = frame.get("signature_valid")
         payload_hash = frame.get("payload_hash") or None
         signature = frame.get("signature") or None
+        # Per-frame geometry override: if the node ever sends rx/tx in the
+        # frame itself (e.g. mobile receivers in the future), use that value
+        # in preference to the static node config snapshot.
+        f_rx_lat = _get_float(frame, "rx_lat")
+        f_rx_lon = _get_float(frame, "rx_lon")
+        f_rx_alt = _get_float(frame, "rx_alt_ft")
+        f_tx_lat = _get_float(frame, "tx_lat")
+        f_tx_lon = _get_float(frame, "tx_lon")
+        f_tx_alt = _get_float(frame, "tx_alt_ft")
+        f_fc = _get_float(frame, "fc_hz")
+        f_fs = _get_float(frame, "fs_hz")
+        rx_lat = f_rx_lat if f_rx_lat is not None else cfg_rx_lat
+        rx_lon = f_rx_lon if f_rx_lon is not None else cfg_rx_lon
+        rx_alt = f_rx_alt if f_rx_alt is not None else cfg_rx_alt
+        tx_lat = f_tx_lat if f_tx_lat is not None else cfg_tx_lat
+        tx_lon = f_tx_lon if f_tx_lon is not None else cfg_tx_lon
+        tx_alt = f_tx_alt if f_tx_alt is not None else cfg_tx_alt
+        fc_hz = f_fc if f_fc is not None else cfg_fc
+        fs_hz = f_fs if f_fs is not None else cfg_fs
         for i in range(n):
             ae = adsb[i] if i < len(adsb) and isinstance(adsb[i], dict) else None
             cols["frame_ts_ms"].append(frame_ts)
@@ -111,10 +163,20 @@ def _flatten(node_id: str, frames: list[dict], ingest_ts_ms: int) -> dict[str, l
             cols["adsb_gs"].append(_get_float(ae, "gs"))
             cols["adsb_track"].append(_get_float(ae, "track"))
             cols["adsb_flight"].append(ae.get("flight") if ae else None)
+            cols["adsb_squawk"].append(ae.get("squawk") if ae else None)
+            cols["adsb_category"].append(ae.get("category") if ae else None)
             cols["signing_mode"].append(sig_mode)
             cols["signature_valid"].append(bool(sig_valid) if sig_valid is not None else None)
             cols["payload_hash"].append(payload_hash)
             cols["signature"].append(signature)
+            cols["rx_lat"].append(rx_lat)
+            cols["rx_lon"].append(rx_lon)
+            cols["rx_alt_ft"].append(rx_alt)
+            cols["tx_lat"].append(tx_lat)
+            cols["tx_lon"].append(tx_lon)
+            cols["tx_alt_ft"].append(tx_alt)
+            cols["fc_hz"].append(fc_hz)
+            cols["fs_hz"].append(fs_hz)
     return cols
 
 
@@ -124,17 +186,22 @@ def write_detections_parquet(
     frames: list[dict],
     base_dir: str | Path,
     write_ts: datetime | None = None,
+    node_cfg: dict | None = None,
 ) -> str | None:
     """Write a list of detection frames as a single Parquet file.
 
-    Returns the relative key (Hive-partitioned path) or None if frames is empty.
+    ``node_cfg`` is the live node CONFIG dict (rx_lat/rx_lon/tx_lat/tx_lon,
+    fc_hz, fs_hz, …) snapshotted at flush time; its values are fanned out to
+    every row so the dataset captures the geometry that produced the
+    detections, not just the detections themselves.  Returns the relative
+    Hive-partitioned key, or None if ``frames`` is empty.
     """
     if not frames:
         return None
 
     write_ts = write_ts or datetime.now(timezone.utc)
     ingest_ts_ms = int(write_ts.timestamp() * 1000)
-    cols = _flatten(node_id, frames, ingest_ts_ms)
+    cols = _flatten(node_id, frames, ingest_ts_ms, node_cfg)
     if not cols["frame_ts_ms"]:
         return None
 
