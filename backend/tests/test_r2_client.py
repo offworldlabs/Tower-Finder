@@ -12,6 +12,7 @@ lru_cache is cleared before/after each test so state doesn't leak.
 import os
 import tempfile
 import unittest
+import unittest.mock
 
 import boto3
 from moto import mock_aws
@@ -251,6 +252,56 @@ class TestR2Client(unittest.TestCase):
         r2._ENABLED = False
         r2._clear_cache()
         self.assertEqual(r2.delete_keys(["a", "b"]), 0)
+
+    # ── Exception paths (boto3 call raises) ──────────────────────────────────
+
+    def _make_failing_client(self, method: str, r2):
+        """Return a patched _get_client whose named method raises."""
+        mock_client = unittest.mock.MagicMock()
+        getattr(mock_client, method).side_effect = Exception("boto3 error")
+        # download_bytes catches client.exceptions.NoSuchKey before Exception;
+        # give it a real exception subclass so Python can evaluate the except clause.
+        mock_client.exceptions.NoSuchKey = type("NoSuchKey", (Exception,), {})
+        return unittest.mock.patch.object(r2, "_get_client", return_value=mock_client)
+
+    def test_upload_bytes_exception_returns_false(self):
+        import services.r2_client as r2
+        with self._make_failing_client("put_object", r2):
+            self.assertFalse(r2.upload_bytes("k", b"data"))
+
+    def test_upload_file_exception_returns_false(self):
+        import services.r2_client as r2
+        with self._make_failing_client("upload_file", r2):
+            self.assertFalse(r2.upload_file("k", "/some/path"))
+
+    def test_download_bytes_exception_returns_none(self):
+        import services.r2_client as r2
+        with self._make_failing_client("get_object", r2):
+            self.assertIsNone(r2.download_bytes("k"))
+
+    def test_list_keys_exception_returns_empty(self):
+        import services.r2_client as r2
+        with self._make_failing_client("get_paginator", r2):
+            self.assertEqual(r2.list_keys(), [])
+
+    def test_delete_key_exception_returns_false(self):
+        import services.r2_client as r2
+        with self._make_failing_client("delete_object", r2):
+            self.assertFalse(r2.delete_key("k"))
+
+    def test_delete_keys_exception_returns_zero(self):
+        import services.r2_client as r2
+        with self._make_failing_client("delete_objects", r2):
+            self.assertEqual(r2.delete_keys(["a", "b"]), 0)
+
+    def test_get_client_exception_returns_none(self):
+        """boto3.client() itself raises → _get_client returns None."""
+        import services.r2_client as r2
+        with unittest.mock.patch("boto3.client", side_effect=Exception("no boto3")):
+            r2._clear_cache()
+            result = r2._get_client()
+        self.assertIsNone(result)
+        r2._clear_cache()
 
 
 # ── Allow running directly ────────────────────────────────────────────────────
