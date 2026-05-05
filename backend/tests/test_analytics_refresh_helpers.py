@@ -3,12 +3,13 @@
 Tests the pure helper functions:
 - _bearing_deg(lat1, lon1, lat2, lon2) -> bearing in [0, 360)
 - _aircraft_in_beam(ac_lat, ac_lon, rx_lat, rx_lon, beam_azimuth_deg, beam_width_deg, max_range_km) -> bool
+- _bistatic_angle_deg(ac_lat, ac_lon, tx_lat, tx_lon, rx_lat, rx_lon) -> angle in [0, 180]
 """
 
 import pytest
 
 from services.tasks._helpers import haversine_km
-from services.tasks.analytics_refresh import _aircraft_in_beam, _bearing_deg
+from services.tasks.analytics_refresh import _aircraft_in_beam, _bearing_deg, _bistatic_angle_deg
 
 
 class TestBearingDeg:
@@ -268,3 +269,42 @@ class TestAircraftInBeam:
         diff = (bearing - beam_azimuth + 180) % 360 - 180
         if abs(diff) <= 5.5:  # Account for rounding
             assert _aircraft_in_beam(ac_lat, ac_lon, rx_lat, rx_lon, beam_azimuth, beam_width, max_range_km) is True
+
+
+# ── _bistatic_angle_deg ───────────────────────────────────────────────────────
+
+
+class TestBistaticAngleDeg:
+    """Test bistatic angle at the aircraft vertex for a TX-RX pair."""
+
+    def test_acute_angle_geometry(self):
+        """Aircraft far from the baseline yields an acute bistatic angle (< 90°)."""
+        # TX=(0,0), RX=(0,2), aircraft=(5,1): aircraft far north of both nodes →
+        # rays from aircraft to TX and RX converge at a narrow angle.
+        angle = _bistatic_angle_deg(5, 1, 0, 0, 0, 2)
+        assert 0 <= angle <= 180
+        assert angle < 90
+
+    def test_symmetric_geometry_approximates_90(self):
+        """Aircraft equidistant from TX and RX perpendicularly yields ~90°."""
+        # TX=(0,0), RX=(0,2), aircraft=(1,1): isoceles → bistatic angle ≈ 90°
+        angle = _bistatic_angle_deg(1, 1, 0, 0, 0, 2)
+        assert angle == pytest.approx(90, abs=5)
+
+    def test_degenerate_aircraft_at_tx_returns_180(self):
+        """Aircraft at TX position (a < 0.01 km) → 180.0."""
+        # aircraft and TX both at (0, 0), RX at (0, 1)
+        angle = _bistatic_angle_deg(0, 0, 0, 0, 0, 1)
+        assert angle == 180.0
+
+    def test_degenerate_aircraft_at_rx_returns_180(self):
+        """Aircraft at RX position (b < 0.01 km) → 180.0."""
+        # aircraft and RX both at (0, 1), TX at (0, 0)
+        angle = _bistatic_angle_deg(0, 1, 0, 0, 0, 1)
+        assert angle == 180.0
+
+    def test_collinear_near_baseline_gives_large_angle(self):
+        """Aircraft between TX and RX on the baseline → angle approaches 180°."""
+        # TX=(0,0), RX=(0,2), aircraft=(0,1): collinear midpoint
+        angle = _bistatic_angle_deg(0, 1, 0, 0, 0, 2)
+        assert angle > 150
