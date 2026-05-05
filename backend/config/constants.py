@@ -33,8 +33,12 @@ ANOMALY_LOG_MAX = 500                 # Max anomaly log entries
 # ── Flush & refresh intervals (seconds) ──────────────────────────────────────
 AIRCRAFT_FLUSH_INTERVAL_S = 1.0       # aircraft.json write cadence
 ANALYTICS_REFRESH_INTERVAL_S = 30     # Background analytics recompute
-ARCHIVE_FLUSH_INTERVAL_S = 30         # Detection archive batch write
-ARCHIVE_BATCH_MAX = 200               # Max frames per archive flush
+# Detection archive batch write — one Parquet file per node per hour.
+# At ~1 fps that's ~3600 frames/hour ≈ 300 KB zstd Parquet, which is the
+# minimum size we want for analytics queries; smaller files (the previous
+# 30 s cadence) create the small-files problem at scale.
+ARCHIVE_FLUSH_INTERVAL_S = 3600
+ARCHIVE_BATCH_MAX = 10000             # Safety cap; should not normally trigger
 TRACK_ARCHIVE_FLUSH_INTERVAL_S = 60   # Multi-node solver track archive flush cadence
 
 # ── Archive lifecycle (R2 offload + local disk cleanup) ──────────────────────

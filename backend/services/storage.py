@@ -47,10 +47,23 @@ def archive_detections(node_id: str, detections: list[dict], *, tag: str = "dete
     _ensure_local_dir()
     from services.parquet_writer import write_detections_parquet
 
+    # Snapshot the node's live CONFIG (rx/tx geometry + RF settings) so it
+    # gets fanned into every Parquet row.  Failing to find it just means the
+    # geometry columns end up null — never a fatal error for archival.
+    node_cfg: dict | None = None
+    try:
+        from core import state  # local import to avoid cycle in tests
+        info = state.connected_nodes.get(node_id) if hasattr(state, "connected_nodes") else None
+        if info:
+            node_cfg = info.get("config")
+    except Exception:
+        node_cfg = None
+
     return write_detections_parquet(
         node_id=node_id,
         frames=detections,
         base_dir=_LOCAL_ARCHIVE_DIR,
+        node_cfg=node_cfg,
     )
 
 
@@ -225,6 +238,15 @@ def _read_parquet_as_legacy_json(path: str) -> dict:
             "delay": [], "doppler": [], "snr": [], "adsb": [],
             "_signing_mode": r.get("signing_mode"),
             "_signature_valid": r.get("signature_valid"),
+            # Geometry/RF snapshot is per-frame (constant within a frame).
+            "rx_lat": r.get("rx_lat"),
+            "rx_lon": r.get("rx_lon"),
+            "rx_alt_ft": r.get("rx_alt_ft"),
+            "tx_lat": r.get("tx_lat"),
+            "tx_lon": r.get("tx_lon"),
+            "tx_alt_ft": r.get("tx_alt_ft"),
+            "fc_hz": r.get("fc_hz"),
+            "fs_hz": r.get("fs_hz"),
         })
         fr["delay"].append(r["delay_us"])
         fr["doppler"].append(r["doppler_hz"])
@@ -238,6 +260,8 @@ def _read_parquet_as_legacy_json(path: str) -> dict:
                 "gs": r["adsb_gs"],
                 "track": r["adsb_track"],
                 "flight": r["adsb_flight"],
+                "squawk": r.get("adsb_squawk"),
+                "category": r.get("adsb_category"),
             })
         else:
             fr["adsb"].append(None)
