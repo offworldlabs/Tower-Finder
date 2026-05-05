@@ -544,10 +544,10 @@ class TestSweepAltitudes:
         assert result is None
 
 
-# ── _solve_best_altitude ──────────────────────────────────────────────────────
+# ── _solve_best_altitude (direct) ─────────────────────────────────────────────
 
 
-class TestSolveBestAltitude:
+class TestSolveBestAltitudeDirect:
     """Test that ADS-B altitude injection adds a novel layer to the sweep."""
 
     def test_adsb_altitude_outside_layers_is_included_in_sweep(self):
