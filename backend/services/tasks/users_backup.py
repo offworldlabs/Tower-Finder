@@ -28,7 +28,18 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config.constants import USERS_DB_BACKUP_INTERVAL_S, USERS_DB_BACKUP_RETENTION_DAYS
+try:
+    from config.constants import (
+        USERS_DB_BACKUP_INTERVAL_S,
+        USERS_DB_BACKUP_RETENTION_DAYS,
+    )
+except ImportError:  # pragma: no cover — stale-volume constants.py without these names
+    # Same defensive pattern as services/tasks/track_archive.py — a stale
+    # /app/backend/config/constants.py from before this PR is missing the
+    # backup constants and would otherwise crash startup before the runtime
+    # config migration even gets a chance to run.
+    USERS_DB_BACKUP_INTERVAL_S = 86400
+    USERS_DB_BACKUP_RETENTION_DAYS = 30
 
 logger = logging.getLogger(__name__)
 
