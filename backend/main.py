@@ -46,6 +46,7 @@ from services.background import (
     start_solver_workers,
     storage_refresh_task,
     track_flush_task,
+    users_backup_task,
 )
 from services.blah2_bridge import blah2_bridge_task
 from services.runtime_coverage import start as _start_coverage
@@ -82,6 +83,11 @@ _test_mod.init(radar_pipeline)
 async def lifespan(app: FastAPI):
     # Start runtime coverage if COVERAGE_ENABLED=1
     _start_coverage()
+
+    # Seed runtime-config overlay from source defaults / legacy volume copy.
+    # Idempotent: only fills in files that don't already exist in data/runtime/.
+    from core.runtime_config import migrate_defaults_into_runtime
+    migrate_defaults_into_runtime()
 
     # Initialise SQLite user database (creates tables on first run)
     from core.users import create_db_and_tables
@@ -126,6 +132,7 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(archive_flush_task()),
             asyncio.create_task(track_flush_task()),
             asyncio.create_task(archive_lifecycle_task()),
+            asyncio.create_task(users_backup_task()),
             asyncio.create_task(analytics_refresh_task()),
             asyncio.create_task(storage_refresh_task()),
             asyncio.create_task(blah2_bridge_task()),

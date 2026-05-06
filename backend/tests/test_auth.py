@@ -8,6 +8,35 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# ── SQLite durability pragmas ─────────────────────────────────────────────────
+
+class TestSqlitePragmas:
+    """The users.db engine MUST run in WAL mode with safety pragmas.
+
+    Without WAL, a crash mid-commit can leave the database file in a state
+    that the next process can't read — and we'd lose every user, invite,
+    claim code, and node-ownership record. This test exists so that
+    accidentally removing the `_set_sqlite_pragmas` event listener fails
+    loudly in CI rather than silently shipping to prod.
+    """
+
+    @pytest.mark.asyncio
+    async def test_engine_uses_wal_and_safety_pragmas(self):
+        from core.users import engine
+
+        async with engine.connect() as conn:
+            jm = (await conn.exec_driver_sql("PRAGMA journal_mode")).scalar()
+            sync = (await conn.exec_driver_sql("PRAGMA synchronous")).scalar()
+            fk = (await conn.exec_driver_sql("PRAGMA foreign_keys")).scalar()
+            busy = (await conn.exec_driver_sql("PRAGMA busy_timeout")).scalar()
+
+        assert str(jm).lower() == "wal", f"journal_mode must be WAL, got {jm!r}"
+        # synchronous=NORMAL is integer 1 in SQLite's PRAGMA reply
+        assert int(sync) == 1, f"synchronous must be NORMAL (1), got {sync!r}"
+        assert int(fk) == 1, f"foreign_keys must be ON (1), got {fk!r}"
+        assert int(busy) >= 1000, f"busy_timeout must be ≥1000ms, got {busy!r}"
+
+
 # ── JWT via fastapi-users JWTStrategy ─────────────────────────────────────────
 
 class TestJWT:

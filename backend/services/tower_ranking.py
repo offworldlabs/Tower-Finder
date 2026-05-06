@@ -1,17 +1,23 @@
 import json
 import math
-import os
 import re
+
+from core.runtime_config import migrate_defaults_into_runtime, runtime_path
 
 EARTH_RADIUS_KM = 6371.0
 FREQUENCY_MATCH_TOLERANCE_MHZ = 5.0  # ±5 MHz for user-measured frequency matching
 
 # ── Load configurable settings from tower_config.json ────────────────────
-_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "tower_config.json")
+_CONFIG_PATH = runtime_path("tower_config.json")
 
 
 def _load_config() -> dict:
-    with open(_CONFIG_PATH) as f:
+    # Self-heal: this module is imported at app startup BEFORE the lifespan
+    # hook runs, and also imported standalone by tests. If the runtime overlay
+    # hasn't been seeded yet, seed it now so the open() below finds a file.
+    if not _CONFIG_PATH.exists():
+        migrate_defaults_into_runtime()
+    with _CONFIG_PATH.open() as f:
         return json.load(f)
 
 

@@ -17,7 +17,7 @@ from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin, schemas
 from fastapi_users.authentication import AuthenticationBackend, CookieTransport, JWTStrategy
 from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
 from fastapi_users.exceptions import UserAlreadyExists, UserNotExists
-from sqlalchemy import DateTime, Float, String, func
+from sqlalchemy import DateTime, Float, String, event, func
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -100,7 +100,35 @@ class ClaimCode(Base):
     used_by_node_id: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
 
 
-engine = create_async_engine(DATABASE_URL)
+engine = create_async_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    connect_args={"timeout": 30},
+)
+
+
+@event.listens_for(engine.sync_engine, "connect")
+def _set_sqlite_pragmas(dbapi_conn, _conn_rec):
+    """Apply WAL mode + safety pragmas on every new SQLite connection.
+
+    WAL mode is the single biggest correctness improvement we can make: it
+    survives `kill -9` mid-write without corrupting the database (rollback
+    journal mode can leave the file in a half-written state). Combined with
+    `synchronous=NORMAL` it also lets readers proceed concurrently with a
+    single writer instead of serialising everything behind a global lock.
+
+    `busy_timeout` lets writers wait briefly for a contending lock instead
+    of returning SQLITE_BUSY immediately — a much better default for a
+    web app where the alternative is a 500 to the user.
+    """
+    cur = dbapi_conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA synchronous=NORMAL")
+    cur.execute("PRAGMA foreign_keys=ON")
+    cur.execute("PRAGMA busy_timeout=5000")
+    cur.close()
+
+
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
 
 

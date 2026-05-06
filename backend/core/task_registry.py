@@ -19,4 +19,5 @@ TASK_EXPECTED_INTERVAL_S: dict[str, int] = {
     "storage_refresh": 720,   # expected every 300 s; alert if >2× late
     "blah2_bridge": 10,       # polls every 1 s; stale if >10 s
     "track_archive_flush": 180,  # flush every 60 s; alert if >3× late
+    "users_db_backup": 86400 * 2,  # daily; alert if it hasn't run in 2 days
 }

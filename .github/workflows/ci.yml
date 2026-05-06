@@ -252,20 +252,38 @@ jobs:
     needs: [deploy-production]
     steps:
       - uses: actions/checkout@v4
-      - name: Wait for fleet to connect
+      - name: Wait for fleet to stabilize
         run: |
+          # Require the active-node count to be ≥ MIN_NODES AND non-decreasing
+          # for STABLE_TARGET consecutive checks before declaring the deploy
+          # healthy. The previous version broke out on the first hit, which
+          # let "flapping" deploys (nodes reconnect, then drop again) pass
+          # smoke tests with a half-broken fleet.
+          MIN_NODES=10
+          STABLE_TARGET=3
           echo "Waiting 60s for fleet nodes to reconnect..."
           sleep 60
-          for i in $(seq 1 12); do
+          stable=0
+          last=0
+          for i in $(seq 1 18); do
             COUNT=$(curl -sk https://${{ secrets.SERVER_HOST }}/api/test/dashboard \
               | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['active'])" 2>/dev/null) || COUNT=0
-            if [ "${COUNT:-0}" -ge 10 ]; then
-              echo "Fleet ready: ${COUNT} nodes connected"
-              break
+            if [ "${COUNT:-0}" -ge "$MIN_NODES" ] && [ "${COUNT:-0}" -ge "$last" ]; then
+              stable=$((stable + 1))
+              echo "Attempt $i/18: ${COUNT} nodes — stable ${stable}/${STABLE_TARGET}"
+              if [ "$stable" -ge "$STABLE_TARGET" ]; then
+                echo "Fleet stable at ${COUNT} nodes (≥${STABLE_TARGET} consecutive checks)"
+                exit 0
+              fi
+            else
+              echo "Attempt $i/18: ${COUNT} nodes (was ${last}) — resetting stability counter"
+              stable=0
             fi
-            echo "Attempt $i/12: ${COUNT} nodes — waiting 10s..."
+            last="${COUNT:-0}"
             sleep 10
           done
+          echo "::error::Fleet did not stabilize at ≥${MIN_NODES} nodes after 60s + 18×10s"
+          exit 1
       - name: Run production smoke tests
         env:
           BASE_URL: https://api.retina.fm

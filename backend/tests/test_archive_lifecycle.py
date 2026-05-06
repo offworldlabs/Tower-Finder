@@ -211,6 +211,13 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         self.assertFalse(f.parent.exists())
 
     def test_no_upload_when_r2_disabled(self):
+        """When R2 is disabled, no upload happens AND no local deletion either.
+
+        Local files are only deleted once they have an .uploaded sentinel,
+        which is only written after a confirmed R2 upload. Without R2, the
+        sentinel never appears, so the file must stay on disk indefinitely —
+        otherwise we'd silently drop data with no backup at all.
+        """
         self._r2._ENABLED = False
         self._r2._clear_cache()
         f_old = _create_archive_file(
@@ -221,8 +228,11 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         with _patch_retention():
             stats = run_archive_lifecycle()
         self.assertEqual(stats["uploaded"], 0)
-        self.assertGreater(stats["deleted"], 0)
-        self.assertFalse(f_old.exists())
+        self.assertEqual(stats["deleted"], 0)
+        self.assertTrue(
+            f_old.exists(),
+            "file must NOT be deleted when R2 never confirmed the upload",
+        )
 
     @mock_aws
     def test_empty_archive_dir_returns_zero_stats(self):
@@ -269,8 +279,13 @@ class _ArchiveUnitTestBase(unittest.TestCase):
     def tearDown(self):
         self._tmpdir.cleanup()
 
-    def _run(self, r2_enabled: bool = False, upload_return: bool = False):
-        """Run archive lifecycle with r2_client fully mocked."""
+    def _run(self, r2_enabled: bool = True, upload_return: bool = True):
+        """Run archive lifecycle with r2_client fully mocked.
+
+        Defaults reflect the happy path (R2 reachable, uploads succeed) so a
+        test exercising the deletion phase doesn't have to repeat that setup.
+        Tests of the R2-disabled or upload-failure paths pass explicit args.
+        """
         with unittest.mock.patch(
             "services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir
         ):
@@ -385,6 +400,10 @@ class TestRunArchiveLifecycleCap(_ArchiveUnitTestBase):
             f.write_bytes(b"{}")
             mtime = time.time() - age * 86400
             os.utime(f, (mtime, mtime))
+            # Pre-mark as uploaded so the deletion phase has work to do all
+            # the way to the cap (otherwise we'd hit the upload sub-cap of
+            # _MAX_UPLOAD_PER_CYCLE first and stop short).
+            f.with_name(f.name + ".uploaded").touch()
 
         with _patch_retention():
             stats = self._run()
@@ -523,6 +542,76 @@ class TestRetentionDisabled(_ArchiveUnitTestBase):
 
         self.assertFalse(f.exists(), "file must be deleted when retention is positive")
         self.assertEqual(stats["deleted"], 1)
+
+
+# ── TestUploadSentinel ────────────────────────────────────────────────────────
+
+
+class TestUploadSentinel(_ArchiveUnitTestBase):
+    """Sentinel file (.uploaded) gates local deletion on confirmed R2 upload."""
+
+    def test_sentinel_created_on_successful_upload(self):
+        f = _make_archive_file(self._archive_dir, age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1)
+
+        stats = self._run(r2_enabled=True, upload_return=True)
+
+        self.assertEqual(stats["uploaded"], 1)
+        sentinel = f.with_name(f.name + ".uploaded")
+        self.assertTrue(sentinel.exists(), "sentinel must be written after R2 upload")
+
+    def test_sentinel_not_created_on_failed_upload(self):
+        f = _make_archive_file(self._archive_dir, age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1)
+
+        stats = self._run(r2_enabled=True, upload_return=False)
+
+        self.assertEqual(stats["uploaded"], 0)
+        self.assertGreater(stats["errors"], 0)
+        sentinel = f.with_name(f.name + ".uploaded")
+        self.assertFalse(sentinel.exists(), "sentinel must NOT exist on upload failure")
+
+    def test_existing_sentinel_skips_re_upload(self):
+        """A second cycle must not waste an R2 PUT on a file already uploaded."""
+        f = _make_archive_file(self._archive_dir, age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1)
+        f.with_name(f.name + ".uploaded").touch()
+
+        with unittest.mock.patch(
+            "services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir
+        ), unittest.mock.patch(
+            "services.r2_client.is_enabled", return_value=True
+        ), unittest.mock.patch(
+            "services.r2_client.upload_file", return_value=True
+        ) as mock_upload:
+            from services.tasks.archive_lifecycle import run_archive_lifecycle
+            stats = run_archive_lifecycle()
+
+        mock_upload.assert_not_called()
+        self.assertEqual(stats["uploaded"], 0)
+
+    def test_file_without_sentinel_not_deleted(self):
+        """A file past retention but lacking a sentinel must NOT be deleted."""
+        f = _make_archive_file(self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1)
+
+        # R2 disabled — sentinel will never be created, simulating a deployment
+        # where R2 is misconfigured but RETENTION_DAYS was set positive.
+        with _patch_retention():
+            stats = self._run(r2_enabled=False, upload_return=False)
+
+        self.assertEqual(stats["deleted"], 0)
+        self.assertTrue(f.exists(), "file without sentinel must survive lifecycle")
+
+    def test_sentinel_removed_with_file(self):
+        """When the file is deleted, its sentinel must go too (no orphan)."""
+        f = _make_archive_file(self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1)
+
+        with _patch_retention():
+            stats = self._run(r2_enabled=True, upload_return=True)
+
+        self.assertEqual(stats["deleted"], 1)
+        self.assertFalse(f.exists())
+        self.assertFalse(
+            f.with_name(f.name + ".uploaded").exists(),
+            "sentinel must be removed alongside its file",
+        )
 
 
 if __name__ == "__main__":

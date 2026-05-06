@@ -72,11 +72,14 @@ class TestConfig:
         body = r.json()
         assert "nodes" in body or "_source" in body
 
-    def test_get_tower_config_live_fallback(self, client):
+    def test_get_tower_config_returns_ok(self, client):
+        # Either the runtime file is present (returned verbatim — has "ranking"
+        # / "broadcast_bands" keys) or the live fallback fires (has "_source"
+        # and "towers"). Either response shape is a valid 200.
         r = client.get("/api/admin/config/towers")
         assert r.status_code == 200
         body = r.json()
-        assert "towers" in body or "_source" in body
+        assert "_source" in body or "ranking" in body or "towers" in body
 
     def test_config_history_returns_list(self, client):
         r = client.get("/api/admin/config/history")

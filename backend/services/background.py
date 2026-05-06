@@ -19,4 +19,5 @@ from services.tasks import (  # noqa: F401
     start_solver_workers,
     storage_refresh_task,
     track_flush_task,
+    users_backup_task,
 )

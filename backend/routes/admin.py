@@ -36,6 +36,7 @@ from core.auth import (
     revoke_invite,
     set_node_owner,
 )
+from core.runtime_config import runtime_path
 from core.task_registry import TASK_EXPECTED_INTERVAL_S
 from core.users import (
     User,
@@ -273,13 +274,12 @@ async def list_events(limit: int = 200, _admin=Depends(require_admin)):
 # ── Config ────────────────────────────────────────────────────────────────────
 
 _CONFIG_DIR = Path(__file__).resolve().parent.parent / "data" / "config_history"
-_BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 
 @router.get("/config/nodes")
 async def get_node_config(_admin=Depends(require_admin)):
     global _nodes_config_cache
-    fp = _BACKEND_DIR / "nodes_config.json"
+    fp = runtime_path("nodes_config.json")
     if fp.exists():
         return Response(content=fp.read_bytes(), media_type="application/json")
     # Live fallback with TTL cache — iterating 1000 nodes is O(n)
@@ -308,7 +308,7 @@ async def get_node_config(_admin=Depends(require_admin)):
 @router.get("/config/towers")
 async def get_tower_config(_admin=Depends(require_admin)):
     global _towers_config_cache
-    fp = _BACKEND_DIR / "tower_config.json"
+    fp = runtime_path("tower_config.json")
     if fp.exists():
         return Response(content=fp.read_bytes(), media_type="application/json")
     # Live fallback with TTL cache
@@ -345,7 +345,8 @@ class ConfigUpdate(BaseModel):
 async def update_node_config(body: ConfigUpdate, _admin=Depends(require_admin)):
     global _nodes_config_cache
     _nodes_config_cache = None  # invalidate live cache
-    fp = _BACKEND_DIR / "nodes_config.json"
+    fp = runtime_path("nodes_config.json")
+    fp.parent.mkdir(parents=True, exist_ok=True)
     # Save version history
     _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
@@ -361,7 +362,7 @@ async def update_node_config(body: ConfigUpdate, _admin=Depends(require_admin)):
 async def update_tower_config(body: ConfigUpdate, _admin=Depends(require_admin)):
     global _towers_config_cache
     _towers_config_cache = None  # invalidate live cache
-    fp = _BACKEND_DIR / "tower_config.json"
+    fp = runtime_path("tower_config.json")
     _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
     if fp.exists():
