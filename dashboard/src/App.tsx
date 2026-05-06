@@ -30,6 +30,7 @@ const UserManagementPage = lazy(() => import("./pages/admin/UserManagementPage")
 const InvitesPage = lazy(() => import("./pages/admin/InvitesPage"));
 const ConfigPage = lazy(() => import("./pages/admin/ConfigPage"));
 const SystemMetricsPage = lazy(() => import("./pages/admin/SystemMetricsPage"));
+const MlatVerificationPage = lazy(() => import("./pages/admin/MlatVerificationPage"));
 
 const isAdminSite =
   window.location.hostname.startsWith("admin.") ||
@@ -67,6 +68,7 @@ export default function App() {
                       <Route path="nodes" element={<NodeManagementPage />} />
                       <Route path="nodes/:nodeId" element={<NodeDetailPage />} />
                       <Route path="analytics" element={<AnalyticsPage />} />
+                      <Route path="mlat" element={<MlatVerificationPage />} />
                       <Route path="anomalies" element={<AnomalyPage />} />
                       <Route path="events" element={<EventsPage />} />
                       <Route path="storage" element={<StoragePage />} />
