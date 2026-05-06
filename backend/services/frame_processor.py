@@ -31,18 +31,54 @@ _archive_buffer: dict[str, list[dict]] = defaultdict(list)
 _archive_buffer_lock = threading.Lock()
 _ARCHIVE_FLUSH_INTERVAL = ARCHIVE_FLUSH_INTERVAL_S
 _ARCHIVE_BATCH_MAX = ARCHIVE_BATCH_MAX
+# Hard cap on buffer growth when writes fail repeatedly. Beyond this we drop
+# the oldest frames to bound memory; data loss is preferable to OOM.
+_ARCHIVE_BUFFER_HARD_CAP = ARCHIVE_BATCH_MAX * 2
 
 
 def _flush_archive_node(node_id: str):
-    """Write buffered frames for one node to disk in a single call."""
+    """Write buffered frames for one node to disk in a single call.
+
+    Frames are retained in the buffer until the disk write succeeds — this
+    way a transient write failure (disk full, permissions) doesn't silently
+    drop data on the floor. The buffer is capped at _ARCHIVE_BUFFER_HARD_CAP
+    to prevent unbounded growth if the disk stays unhealthy.
+    """
     with _archive_buffer_lock:
-        frames = _archive_buffer.pop(node_id, [])
+        frames = list(_archive_buffer.get(node_id, []))
     if not frames:
         return
     try:
         archive_detections(node_id, frames)
     except Exception:
-        logging.debug("Archive flush failed for %s (%d frames)", node_id, len(frames))
+        # Write failed — keep frames buffered for the next cycle, but enforce
+        # a memory cap so a sustained outage can't OOM the process.
+        with _archive_buffer_lock:
+            buf = _archive_buffer.get(node_id, [])
+            if len(buf) > _ARCHIVE_BUFFER_HARD_CAP:
+                dropped = len(buf) - _ARCHIVE_BUFFER_HARD_CAP
+                _archive_buffer[node_id] = buf[-_ARCHIVE_BUFFER_HARD_CAP:]
+                logging.warning(
+                    "Archive flush failing for %s; dropped %d oldest frames "
+                    "(buffer capped at %d)",
+                    node_id, dropped, _ARCHIVE_BUFFER_HARD_CAP,
+                )
+            else:
+                logging.warning(
+                    "Archive flush failed for %s (%d frames retained)",
+                    node_id, len(buf),
+                )
+        return
+    # Write succeeded — drop the prefix we just persisted, keeping any frames
+    # that arrived during the write (which were appended after our snapshot).
+    n_written = len(frames)
+    with _archive_buffer_lock:
+        buf = _archive_buffer.get(node_id, [])
+        remaining = buf[n_written:]
+        if remaining:
+            _archive_buffer[node_id] = remaining
+        else:
+            _archive_buffer.pop(node_id, None)
 
 
 def flush_all_archive_buffers():

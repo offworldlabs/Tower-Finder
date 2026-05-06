@@ -289,3 +289,58 @@ class TestArchiveBuffering:
     def test_flush_empty_is_noop(self):
         # Should not raise
         flush_all_archive_buffers()
+
+    def test_failed_flush_retains_frames_in_buffer(self, monkeypatch):
+        """If archive_detections raises, frames must stay in the buffer.
+
+        Older code popped the buffer before writing, so any disk error
+        silently dropped the data on the floor. The fix copies first and
+        only drops the prefix it persisted on success.
+        """
+        from services import frame_processor as fp
+
+        node_id = "test-buffer-retain"
+        with fp._archive_buffer_lock:
+            fp._archive_buffer[node_id] = [{"ts": 1}, {"ts": 2}, {"ts": 3}]
+
+        def _boom(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(fp, "archive_detections", _boom)
+        try:
+            fp._flush_archive_node(node_id)
+            with fp._archive_buffer_lock:
+                assert len(fp._archive_buffer[node_id]) == 3, \
+                    "frames must be retained when the disk write fails"
+        finally:
+            with fp._archive_buffer_lock:
+                fp._archive_buffer.pop(node_id, None)
+
+    def test_successful_flush_drops_persisted_prefix(self, monkeypatch):
+        """On success, only the frames we wrote are removed from the buffer.
+
+        Frames that arrived during the write (appended after our snapshot)
+        must survive — that's why the new logic slices off a prefix instead
+        of re-popping the whole list.
+        """
+        from services import frame_processor as fp
+
+        node_id = "test-buffer-drop"
+        with fp._archive_buffer_lock:
+            fp._archive_buffer[node_id] = [{"ts": 1}, {"ts": 2}]
+
+        def _ok(nid, frames, *args, **kwargs):
+            # Simulate a frame arriving while the (slow) write is in flight.
+            with fp._archive_buffer_lock:
+                fp._archive_buffer[nid].append({"ts": 3})
+
+        monkeypatch.setattr(fp, "archive_detections", _ok)
+        try:
+            fp._flush_archive_node(node_id)
+            with fp._archive_buffer_lock:
+                remaining = list(fp._archive_buffer.get(node_id, []))
+            assert remaining == [{"ts": 3}], \
+                f"only the late-arriving frame should remain, got {remaining}"
+        finally:
+            with fp._archive_buffer_lock:
+                fp._archive_buffer.pop(node_id, None)

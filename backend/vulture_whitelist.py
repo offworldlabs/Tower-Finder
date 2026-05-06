@@ -149,3 +149,9 @@ convert_legacy_bytes
 # `tag` is a keyword-only parameter on archive_detections(); kept for
 # callsite compatibility with callers that pass tag= explicitly.
 tag
+
+
+# ── core/users.py ─────────────────────────────────────────────────────────────
+# Registered with SQLAlchemy via @event.listens_for(engine.sync_engine, "connect").
+# Vulture doesn't follow the decorator's dynamic dispatch.
+_set_sqlite_pragmas

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { API_BASE, MAX_HISTORY } from "./constants";
 import { mergeTrailPositions } from "./trails";
+import { usesRealOnlyFeed } from "../../utils/domains";
 
 /**
  * Manages the WebSocket connection to /ws/aircraft with auto-reconnect,
@@ -145,8 +146,7 @@ export function useAircraftFeed() {
     if (wsRef.current) return;
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     // map.retina.fm (not testmap) streams only the real radar node
-    const isLiveDomain = /^map\./.test(window.location.hostname);
-    const wsPath = isLiveDomain ? "/ws/aircraft/live" : "/ws/aircraft";
+    const wsPath = usesRealOnlyFeed ? "/ws/aircraft/live" : "/ws/aircraft";
     const ws = new WebSocket(`${proto}//${window.location.host}${wsPath}`);
 
     ws.onopen = () => {
@@ -210,10 +210,9 @@ export function useAircraftFeed() {
   // --- HTTP polling fallback ---
   useEffect(() => {
     if (connected) return;
-    const isLiveDomain = /^map\./.test(window.location.hostname);
     // On map.retina.fm use the real-node-only endpoint so unfiltered synthetic
     // aircraft never appear even when the WS is temporarily disconnected.
-    const pollPath = isLiveDomain
+    const pollPath = usesRealOnlyFeed
       ? `${API_BASE}/radar/data/aircraft-live.json`
       : `${API_BASE}/radar/data/aircraft.json`;
     const controller = new AbortController();
@@ -286,15 +285,13 @@ function nodeDisplayFuzz(nodeId) {
  */
 export function useNodes() {
   const [nodes, setNodes] = useState([]);
-  // On map.retina.fm show only real (non-synthetic) nodes
-  const isLiveDomain = /^map\./.test(window.location.hostname);
 
   useEffect(() => {
     async function loadNodes() {
       try {
         // On map.retina.fm request only real nodes from the backend — avoids
         // relying on client-side hostname detection to filter 900+ synthetic markers.
-        const url = isLiveDomain
+        const url = usesRealOnlyFeed
           ? `${API_BASE}/radar/analytics?real_only=true`
           : `${API_BASE}/radar/analytics`;
         const res = await fetch(url);
@@ -303,7 +300,7 @@ export function useNodes() {
         const nodeList = [];
         for (const [id, info] of Object.entries(data.nodes || {})) {
           // Skip synthetic nodes on map.retina.fm
-          if (isLiveDomain && id.startsWith("synth-")) continue;
+          if (usesRealOnlyFeed && id.startsWith("synth-")) continue;
           const da = (info as any).detection_area;
           const ec = (info as any).empirical_coverage;
           if (da) {

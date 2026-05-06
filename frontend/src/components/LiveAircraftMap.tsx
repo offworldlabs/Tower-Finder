@@ -35,6 +35,7 @@ import {
 } from "./map";
 
 import { fetchRadar3Verification, fetchRadar3DetectionRange, fetchMlatVerification } from "../api";
+import { defaultsGroundTruthOff } from "../utils/domains";
 
 // Fix default icon paths
 delete L.Icon.Default.prototype._getIconUrl;
@@ -679,9 +680,7 @@ export default function LiveAircraftMap() {
   const [showCoverage, setShowCoverage] = useState(false);
   const [showTrails, setShowTrails] = useState(true);
   // Default GT on for testmap/staging-testmap (simulation demo); off on map.* and staging-map.* (real only)
-  const [showGroundTruth, setShowGroundTruth] = useState(
-    () => !/^(staging-)?map\./i.test(window.location.hostname),
-  );
+  const [showGroundTruth, setShowGroundTruth] = useState(() => !defaultsGroundTruthOff);
   const [showLabels, setShowLabels] = useState(true);
   const [selectedHex, setSelectedHex] = useState(null);
   const [selectedNodeId, setSelectedNodeId] = useState(null);

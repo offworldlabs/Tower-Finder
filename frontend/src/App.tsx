@@ -3,6 +3,7 @@ import SearchForm from "./components/SearchForm";
 import ResultsTable from "./components/ResultsTable";
 import TowerMap from "./components/TowerMap";
 import PhysicsSettings from "./components/PhysicsSettings";
+import { isMapDomain, usesRealOnlyFeed } from "./utils/domains";
 
 // Leaflet is ~300 KB — only load it when the Live Radar tab is first opened
 const LiveAircraftMap = lazy(() => import("./components/LiveAircraftMap"));
@@ -46,10 +47,6 @@ export default function App() {
   const [error, setError] = useState(null);
   const [highlighted, setHighlighted] = useState(null);
 
-  // On map.retina.fm / testmap.retina.fm / staging-map.retina.fm / staging-testmap.retina.fm, default to "live" and hide tower search
-  const isMapDomain = /^((staging-)?(test)?map)\./i.test(window.location.hostname);
-  // On map.retina.fm only (not testmap/staging-map): real radar only — no fleet simulator, hide Physics tab
-  const isLiveDomain = /^map\./i.test(window.location.hostname);
   const [activeTab, setActiveTab] = useState(isMapDomain ? "live" : "towers");
 
   async function handleSearch({ lat, lon, altitude, source, frequencies }) {
@@ -87,7 +84,7 @@ export default function App() {
               Tower Search
             </button>
           )}
-          {isMapDomain && !isLiveDomain && (
+          {isMapDomain && !usesRealOnlyFeed && (
             <button
               className={`tab-btn ${activeTab === "physics" ? "active" : ""}`}
               onClick={() => setActiveTab("physics")}

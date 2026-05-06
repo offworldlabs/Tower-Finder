@@ -38,7 +38,7 @@ class TestReloadConfig:
 
         fake_path = tmp_path / "tower_config.json"
         fake_path.write_text(json.dumps(cfg))
-        monkeypatch.setattr(tower_ranking, "_CONFIG_PATH", str(fake_path))
+        monkeypatch.setattr(tower_ranking, "_CONFIG_PATH", fake_path)
 
         original_gain = tower_ranking.RX_ANTENNA_GAIN_DBI
         try:
@@ -52,9 +52,8 @@ class TestReloadConfig:
             assert far[2] == float("inf")
         finally:
             # Restore real config so downstream tests aren't broken
-            from pathlib import Path
-            real_path = Path(tower_ranking.__file__).parent.parent / "config" / "tower_config.json"
-            monkeypatch.setattr(tower_ranking, "_CONFIG_PATH", str(real_path))
+            from core.runtime_config import runtime_path
+            monkeypatch.setattr(tower_ranking, "_CONFIG_PATH", runtime_path("tower_config.json"))
             tower_ranking.reload_config()
             assert original_gain == tower_ranking.RX_ANTENNA_GAIN_DBI
 
