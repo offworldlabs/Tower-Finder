@@ -9,10 +9,25 @@ All business logic lives in dedicated packages:
   routes/     – FastAPI APIRouter modules
 """
 
+import os
+import sys
+
+# Force the image-fresh constants.py to win over any stale copy that may live
+# in the /app/backend/config named volume on existing servers. start.sh sets
+# PYTHONPATH=/app/deploy/config-image, but uvicorn injects the working dir
+# (/app/backend) at sys.path[0] AFTER PYTHONPATH is read, so the volume copy
+# was being resolved first. Inserting from inside the running process is the
+# only place we can guarantee priority — and the deploy keeps booting even
+# when the cp-refresh in start.sh fails on a root-owned volume. Safe no-op
+# outside the container, since the override directory only exists in the
+# Docker image. See commit 19a305b for the original (insufficient) attempt.
+_image_config_root = "/app/deploy/config-image"
+if os.path.isdir(_image_config_root) and _image_config_root not in sys.path:
+    sys.path.insert(0, _image_config_root)
+
 import asyncio
 import json
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
