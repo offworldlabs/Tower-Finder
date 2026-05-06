@@ -363,6 +363,7 @@ async def update_tower_config(body: ConfigUpdate, _admin=Depends(require_admin))
     global _towers_config_cache
     _towers_config_cache = None  # invalidate live cache
     fp = runtime_path("tower_config.json")
+    fp.parent.mkdir(parents=True, exist_ok=True)
     _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
     if fp.exists():

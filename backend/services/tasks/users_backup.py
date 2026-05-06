@@ -71,9 +71,11 @@ def run_users_db_backup() -> dict:
         stats["skipped"] = "db-missing"
         return stats
 
-    # Atomic snapshot via VACUUM INTO — safer than cp, never observes a
-    # half-committed write even with WAL active. The temp file is created
-    # alongside users.db so the rename stays on the same filesystem.
+    # Atomic snapshot via the SQLite Online Backup API — safer than cp, never
+    # observes a half-committed write even with WAL active, and avoids the
+    # f-string SQL of `VACUUM INTO '<path>'` (the SQLite parser doesn't accept
+    # bound params for that form). The temp file is created alongside users.db
+    # so any later rename stays on the same filesystem.
     with tempfile.NamedTemporaryFile(
         prefix="users-backup-", suffix=".db",
         dir=db_path.parent, delete=False,
@@ -81,11 +83,15 @@ def run_users_db_backup() -> dict:
         tmp_path = Path(tmp.name)
 
     try:
-        conn = sqlite3.connect(str(db_path))
+        src = sqlite3.connect(str(db_path))
         try:
-            conn.execute(f"VACUUM INTO '{tmp_path}'")
+            dst = sqlite3.connect(str(tmp_path))
+            try:
+                src.backup(dst)
+            finally:
+                dst.close()
         finally:
-            conn.close()
+            src.close()
 
         key = _today_key()
         if not upload_file(key, str(tmp_path), content_type="application/x-sqlite3"):
@@ -102,8 +108,10 @@ def run_users_db_backup() -> dict:
     # Retention: drop any backup older than RETENTION_DAYS based on the date
     # encoded in the key (not R2's LastModified, which would surprise anyone
     # who manually re-uploads an old snapshot).
-    cutoff = datetime.now(timezone.utc).date()
-    cutoff_ts = time.mktime(cutoff.timetuple()) - USERS_DB_BACKUP_RETENTION_DAYS * 86400
+    cutoff_ts = (
+        datetime.now(timezone.utc).timestamp()
+        - USERS_DB_BACKUP_RETENTION_DAYS * 86400
+    )
     expired: list[str] = []
     for k in list_keys(_BACKUP_PREFIX):
         m = _KEY_DATE_RE.match(k)
