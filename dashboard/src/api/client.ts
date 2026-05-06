@@ -90,6 +90,10 @@ export const api = {
   adminStorage: () => request("/api/admin/storage"),
   adminMetrics: () => request("/api/admin/metrics"),
 
+  // MLAT verification — aggregated solver-vs-truth stats
+  mlatVerification: () => request("/api/test/mlat-verification"),
+  mlatAccuracy: () => request("/api/test/mlat-accuracy"),
+
   // Admin: invites
   adminInvites: () => request("/api/admin/invites"),
   adminCreateInvite: (email, role) =>
