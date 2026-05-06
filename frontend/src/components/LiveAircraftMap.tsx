@@ -678,9 +678,9 @@ export default function LiveAircraftMap() {
   const [displayAircraft, setDisplayAircraft] = useState([]);
   const [showCoverage, setShowCoverage] = useState(false);
   const [showTrails, setShowTrails] = useState(true);
-  // Default GT on for testmap (simulation demo); off on map.retina.fm (real only)
+  // Default GT on for testmap/staging-testmap (simulation demo); off on map.* and staging-map.* (real only)
   const [showGroundTruth, setShowGroundTruth] = useState(
-    () => !/^map\./i.test(window.location.hostname) && !/^staging-testmap\./.test(window.location.hostname),
+    () => !/^(staging-)?map\./i.test(window.location.hostname),
   );
   const [showLabels, setShowLabels] = useState(true);
   const [selectedHex, setSelectedHex] = useState(null);
