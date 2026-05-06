@@ -43,9 +43,9 @@ TRACK_ARCHIVE_FLUSH_INTERVAL_S = 60   # Multi-node solver track archive flush ca
 
 # ── Archive lifecycle (R2 offload + local disk cleanup) ──────────────────────
 ARCHIVE_OFFLOAD_AGE_DAYS = 1          # Upload to R2 after this many days
-# Set to 0 (or any value <= 0) to disable local-disk deletion entirely.
-# R2 retains everything indefinitely, so this controls only the local cache.
-ARCHIVE_RETENTION_DAYS = 0            # 0 = never delete locally
+# Must be > ARCHIVE_OFFLOAD_AGE_DAYS. Files land in R2 after 1 day, then local
+# copies are deleted after 3 days (2-day retry window if R2 upload fails).
+ARCHIVE_RETENTION_DAYS = 3            # Delete local copy 3 days after creation
 ARCHIVE_LIFECYCLE_INTERVAL_S = 3600   # Run lifecycle check every hour
 
 # ── Reputation thresholds ────────────────────────────────────────────────────
