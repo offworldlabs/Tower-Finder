@@ -198,18 +198,26 @@ def _solve_best_altitude_n2(s_in: dict, node_cfgs: dict, solve_fn) -> dict | Non
     return solve_fn(s_in, node_cfgs)
 
 
-# ── Multi-epoch EWMA position smoother (n=2) ─────────────────────────────────
-# For n=2 TDOA, each solve has position error σ_pos = GDOP × σ_delay.  By
+# ── Multi-epoch EWMA position smoother (all N) ───────────────────────────────
+# Each multinode solve has position error σ_pos = GDOP × σ_delay.  By
 # accumulating K successive solver positions for the same aircraft (identified
 # by ICAO hex) and dead-reckoning earlier positions forward to the current
 # solve time using ADS-B velocity, we average K independent noise realisations
 # and reduce the effective σ_pos by 1/√K.
 #
 # K=3 frames (every ~40 s) reduces mean error by ~√3 = 1.73×.
+#
+# Originally gated on n_nodes == 2 only, but the math is N-agnostic — a single
+# bad measurement at any N drags that frame's solve off by O(σ × GDOP), and
+# multi-frame averaging on the same aircraft pulls the result back to the
+# track-mean for the same √K reason.  Production stats showed the apparent
+# "N=2 better than N=3" inversion was an artefact of the smoother only being
+# applied to N=2; lifting the gate puts every solve on the same footing.
+#
 # Dead-reckoning uses ADS-B ground-speed + track (always available in
 # simulation; state.adsb_aircraft is populated by the frame processor for every
-# ADS-B-tagged detection).  If ADS-B velocity is missing the smoother returns
-# the raw solver result unchanged.
+# ADS-B-tagged detection).  If ADS-B velocity or hex is missing the smoother
+# returns the raw solver result unchanged.
 
 # Per-hex rolling buffer: hex → deque of (lat, lon, timestamp_s)
 _MN_POS_HISTORY: dict[str, deque] = {}
@@ -218,15 +226,16 @@ _MN_HISTORY_K = 3   # number of past frames to average (including current)
 _MN_DR_MAX_AGE_S = 160.0  # discard history entries older than 4 frame intervals
 
 
-def _ewma_smooth_n2(result: dict, adsb_hex: str | None) -> dict:
-    """Apply dead-reckoned multi-epoch averaging to an n=2 solver result.
+def _ewma_smooth_track(result: dict, adsb_hex: str | None) -> dict:
+    """Apply dead-reckoned multi-epoch averaging to a multinode solver result.
 
     Dead-reckon previous solve positions to the current solve timestamp using
     ADS-B ground-speed and track, then return the simple mean of the
     dead-reckoned history and the current solve.  Thread-safe via lock.
 
-    Returns the original result dict if hex is unknown, ADS-B velocity is
-    unavailable, or there is no prior history yet.
+    N-agnostic — applied to every solve with a known ADS-B hex regardless of
+    n_nodes.  Returns the original result dict if hex is unknown, ADS-B
+    velocity is unavailable, or there is no prior history yet.
     """
     if not adsb_hex:
         return result
@@ -282,7 +291,7 @@ def _ewma_smooth_n2(result: dict, adsb_hex: str | None) -> dict:
     smoothed["lat"] = round(avg_lat, 6)
     smoothed["lon"] = round(avg_lon, 6)
     logging.debug(
-        "n=2 EWMA: hex=%s K=%d raw=(%.4f,%.4f) → smooth=(%.4f,%.4f)",
+        "EWMA: hex=%s K=%d raw=(%.4f,%.4f) → smooth=(%.4f,%.4f)",
         adsb_hex, len(positions), r_lat, r_lon, avg_lat, avg_lon,
     )
     return smoothed
@@ -409,12 +418,14 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                     {"latency_s": round(latency, 1), "n_nodes": s_in.get("n_nodes", 0)},
                 )
         state.task_last_success["solver"] = time.time()
-        # For n=2 solves with a known ADS-B hex, apply dead-reckoned multi-epoch
+        # For every solve with a known ADS-B hex, apply dead-reckoned multi-epoch
         # EWMA smoothing to reduce single-frame measurement noise (reduces mean
         # position error by ~√K where K is the number of history frames used).
-        if n_nodes == 2:
-            _adsb_hex = s_in.get("adsb_hex") if isinstance(s_in, dict) else None
-            result = _ewma_smooth_n2(result, _adsb_hex)
+        # Originally n_nodes == 2 only — production data showed the gate caused
+        # an apparent N=2 < N=3 inversion in /api/test/mlat-accuracy because
+        # only N=2 benefited from the noise reduction.
+        _adsb_hex = s_in.get("adsb_hex") if isinstance(s_in, dict) else None
+        result = _ewma_smooth_track(result, _adsb_hex)
         for nid in result.get("contributing_node_ids", []):
             state.node_analytics.record_calibration_point(
                 nid, result["lat"], result["lon"]
