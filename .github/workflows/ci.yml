@@ -225,6 +225,10 @@ jobs:
             git submodule update --init --recursive
             pip3 install -e libs/retina-custody/ --break-system-packages --ignore-installed -q
             pip3 install -e libs/retina-simulation/ --break-system-packages -q
+            # Mirror the staging recipe: prune the builder cache before rebuild
+            # so a stale dashboard-build layer can't keep the old bundle alive
+            # (see commit 01ca7f6 — the staging fix that was never ported here).
+            docker builder prune -f
             docker compose up -d --build
 
             # Wait for backend to become healthy (up to 60s)
