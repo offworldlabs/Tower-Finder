@@ -547,11 +547,60 @@ _MLAT_ALT_GATE_M = 3000.0
 _MLAT_CLUSTER_KM = 12.0
 
 
+def _stats_block(errors: list[float]) -> dict:
+    """Build a {n_samples, mean_km, median_km, p95_km, max_km} block."""
+    n = len(errors)
+    if not n:
+        return {"n_samples": 0}
+    sorted_errs = sorted(errors)
+    return {
+        "n_samples": n,
+        "mean_km": round(sum(sorted_errs) / n, 4),
+        "median_km": round(_percentile(sorted_errs, 50), 4),
+        "p95_km": round(_percentile(sorted_errs, 95), 4),
+        "max_km": round(sorted_errs[-1], 4),
+    }
+
+
+def _per_aircraft_aggregate(samples: list[dict]) -> dict:
+    """Per-aircraft view: collapse each (hex, n_nodes) into a single mean error.
+
+    The raw stats over `mlat_samples` are biased toward whichever aircraft
+    happens to be in the air at the time — a single difficult target solved
+    every 30 s for an hour contributes ~120 samples, drowning out the rest.
+    Deduplicating by `hex` (mean error per aircraft, per node-count) gives
+    one data point per aircraft track, so an N=5 bucket dominated by one bad
+    plane no longer looks like five independent bad solves.
+    """
+    by_hex: dict[tuple[str, int], list[float]] = {}
+    for s in samples:
+        hex_id = s.get("hex") or ""
+        if not hex_id:
+            continue
+        key = (hex_id, int(s["n_nodes"]))
+        by_hex.setdefault(key, []).append(s["error_km"])
+
+    per_aircraft_errors: list[float] = []
+    by_nodes: dict[int, list[float]] = {}
+    for (_hex, nc), errs in by_hex.items():
+        ac_mean = sum(errs) / len(errs)
+        per_aircraft_errors.append(ac_mean)
+        by_nodes.setdefault(nc, []).append(ac_mean)
+
+    out = _stats_block(per_aircraft_errors)
+    out["n_aircraft"] = len({h for h, _ in by_hex})
+    out["by_node_count"] = {
+        str(nc): _stats_block(errs) for nc, errs in sorted(by_nodes.items())
+    }
+    return out
+
+
 def _refresh_mlat_accuracy_stats() -> None:
     """Compute rolling MLAT solver accuracy from the mlat_samples deque.
 
     Mirrors _refresh_accuracy_stats() for single-node solves, but broken
     down by node count (2-node vs 3-node etc.) instead of position_source.
+    Emits both the raw per-solve view and a per-aircraft (deduplicated) view.
     Written to state.latest_mlat_accuracy_bytes, served by /api/test/mlat-accuracy.
     """
     samples = list(state.mlat_samples)
@@ -641,6 +690,17 @@ def _refresh_mlat_accuracy_stats() -> None:
         else {"n_samples": 0}
     )
 
+    # Per-aircraft view (dedup by hex). The raw section above counts each
+    # solve independently — if the same plane is tracked over 60 verification
+    # cycles it contributes 60 samples to the bucket. The per-aircraft block
+    # collapses those into one mean per (hex, n_nodes) so per-N statistics
+    # reflect "how the solver performs across the fleet" rather than "how
+    # many cycles a single difficult target hung around for".
+    per_aircraft = _per_aircraft_aggregate(samples)
+    per_aircraft_normal = _per_aircraft_aggregate(
+        [s for s in samples if not s.get("is_anomalous")]
+    )
+
     state.latest_mlat_accuracy_bytes = orjson.dumps(
         {
             "n_samples": n,
@@ -651,6 +711,8 @@ def _refresh_mlat_accuracy_stats() -> None:
             "by_node_count": node_stats,
             "good_geometry": good_geom_stats,
             "normal_only": normal_stats,
+            "per_aircraft": per_aircraft,
+            "per_aircraft_normal": per_aircraft_normal,
         }
     )
 

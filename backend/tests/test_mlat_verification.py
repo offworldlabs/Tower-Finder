@@ -787,6 +787,62 @@ class TestMlatAccuracyStats:
         assert data["by_node_count"]["3"]["n_samples"] == 1
         assert data["by_node_count"]["3"]["max_km"] == pytest.approx(1.4, abs=0.0001)
 
+    def test_per_aircraft_collapses_repeats_to_one_point_per_hex_per_n(self):
+        """One difficult plane solved 5× shouldn't make a bucket look terrible.
+
+        Reproduces the production bias: hex 'bad' is tracked over five
+        verification cycles at consistent ~5 km error (one persistently
+        difficult target), while two well-solved planes each contribute one
+        sample at ~0.3 km. Raw stats over the bucket get pulled to ~3.5 km
+        because 5 of 7 samples are the same plane. Per-aircraft view should
+        report the bucket mean as (5.0+0.3+0.3)/3 ≈ 1.87 km — still bad
+        because there *is* a bad plane, but no longer drowning out the
+        good ones.
+        """
+        ts = int(time.time() * 1000)
+        state.mlat_samples.extend(
+            [{"hex": "bad", "error_km": 5.0, "n_nodes": 5, "ts": ts}] * 5
+            + [
+                {"hex": "good1", "error_km": 0.3, "n_nodes": 5, "ts": ts},
+                {"hex": "good2", "error_km": 0.3, "n_nodes": 5, "ts": ts},
+            ]
+        )
+
+        _refresh_mlat_accuracy_stats()
+        data = orjson.loads(state.latest_mlat_accuracy_bytes)
+
+        # Raw view: 7 samples, mean dominated by the 5 'bad' repeats.
+        assert data["n_samples"] == 7
+        assert data["by_node_count"]["5"]["n_samples"] == 7
+        assert data["by_node_count"]["5"]["mean_km"] == pytest.approx(
+            (5 * 5.0 + 2 * 0.3) / 7, abs=0.0001
+        )
+
+        # Per-aircraft view: 3 unique aircraft, each contributes one number.
+        pa = data["per_aircraft"]
+        assert pa["n_aircraft"] == 3
+        assert pa["n_samples"] == 3
+        assert pa["mean_km"] == pytest.approx((5.0 + 0.3 + 0.3) / 3, abs=0.01)
+        # And per-N inside the per_aircraft block sees one entry per (hex, n).
+        assert pa["by_node_count"]["5"]["n_samples"] == 3
+
+    def test_per_aircraft_normal_excludes_anomalous(self):
+        ts = int(time.time() * 1000)
+        state.mlat_samples.extend(
+            [
+                {"hex": "a", "error_km": 0.4, "n_nodes": 3, "ts": ts, "is_anomalous": False},
+                {"hex": "b", "error_km": 8.0, "n_nodes": 3, "ts": ts, "is_anomalous": True},
+            ]
+        )
+
+        _refresh_mlat_accuracy_stats()
+        data = orjson.loads(state.latest_mlat_accuracy_bytes)
+
+        # `per_aircraft` includes both; `per_aircraft_normal` excludes the spoofed one.
+        assert data["per_aircraft"]["n_aircraft"] == 2
+        assert data["per_aircraft_normal"]["n_aircraft"] == 1
+        assert data["per_aircraft_normal"]["mean_km"] == pytest.approx(0.4, abs=0.0001)
+
 
 class TestMlatSummaryHelper:
     """Tests for _mlat_verification_summary() in routes/test.py.
