@@ -156,7 +156,11 @@ jobs:
           command_timeout: 20m
           script: |
             cd /opt/tower-finder
-            git pull origin main
+            # Hard-reset rather than `git pull` — see the production deploy
+            # block for the full incident description; same failure mode would
+            # surface here if the staging server ever picked up a local commit.
+            git fetch origin main
+            git reset --hard origin/main
             git submodule update --init --recursive
             # Ensure tar1090 static assets are present
             [ -d tar1090/html ] || git clone --depth 1 https://github.com/wiedehopf/tar1090.git tar1090
@@ -221,13 +225,20 @@ jobs:
             # Pre-deploy: save rollback image + git tag
             bash deploy/pre-deploy.sh || true
 
-            git pull origin main
+            # Hard-reset rather than `git pull`: the latter aborts silently on
+            # divergent branches (deploy run 25481699738 — the server had a
+            # local commit, pull printed a hint and exited 0, the build then
+            # cached every layer because the source hadn't actually changed,
+            # and the new bundle never made it to /app/dashboard/dist).
+            # The deploy server should always mirror origin/main exactly.
+            git fetch origin main
+            git reset --hard origin/main
             git submodule update --init --recursive
             pip3 install -e libs/retina-custody/ --break-system-packages --ignore-installed -q
             pip3 install -e libs/retina-simulation/ --break-system-packages -q
-            # Mirror the staging recipe: prune the builder cache before rebuild
-            # so a stale dashboard-build layer can't keep the old bundle alive
-            # (see commit 01ca7f6 — the staging fix that was never ported here).
+            # Prune the builder cache so a stale dashboard-build layer can't
+            # keep the old bundle alive (see commit 01ca7f6 — the staging fix
+            # that was never ported to production).
             docker builder prune -f
             docker compose up -d --build
 
