@@ -439,6 +439,15 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
         # only N=2 benefited from the noise reduction.
         _adsb_hex = s_in.get("adsb_hex") if isinstance(s_in, dict) else None
         result = _ewma_smooth_track(result, _adsb_hex)
+        # Propagate the input ADS-B hex into the result so verification can match
+        # the solve back to the *aircraft that produced the measurements* rather
+        # than guessing by proximity. Critical for spoofed targets: their solver
+        # converges near the frozen ADS-B init position, far from real position;
+        # the proximity matcher would otherwise bind them to whatever innocent
+        # aircraft happens to be near the spoof point and tag the result with
+        # the wrong hex's is_anomalous=False — pollutting the normal_only stats.
+        if _adsb_hex:
+            result["adsb_hex"] = _adsb_hex
         for nid in result.get("contributing_node_ids", []):
             state.node_analytics.record_calibration_point(
                 nid, result["lat"], result["lon"]
