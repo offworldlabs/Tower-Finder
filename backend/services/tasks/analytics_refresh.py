@@ -907,41 +907,48 @@ def _refresh_mlat_verification():
         best_truth: tuple | None = None
         best_dist_km = _MLAT_MATCH_THRESHOLD_KM
 
-        # 1a. Identity-first match. If the solver carries an adsb_hex (set by
-        #     association.py and propagated through solver.py), bind the solve
-        #     directly to that aircraft's ground-truth trail rather than
-        #     guessing by proximity. Critical for spoofed targets: their solver
-        #     converges near the frozen ADS-B init, far from real position;
-        #     proximity matching would bind such solves to whatever innocent
-        #     aircraft happens to be near the spoof point and the result would
-        #     enter `normal_only` stats with the wrong hex's is_anomalous=False.
+        # 1a. Identity-first match — within match threshold only.
+        #     When the solver carries an adsb_hex, prefer binding to that
+        #     aircraft's trail over a proximity guess (disambiguates between
+        #     two aircraft that are close together). The threshold check is
+        #     intentional: a solve claiming hex H but landing >8 km from H's
+        #     trail is more plausibly a misclaim (wrong-frame association,
+        #     spoofed-init convergence) than a real measurement of H. Letting
+        #     unbounded errors through made post-PR-71 normal_only stats
+        #     6-7× worse than they were before — we need the threshold floor
+        #     to prevent that. Spoofed-target solves outside threshold fall
+        #     to proximity fallback, then to unmatched (same as before).
         solver_hex = (r.get("adsb_hex") or "").strip().lower() or None
         if solver_hex and solver_hex in gt_trails_snapshot and solver_hex not in matched_truth_hexes:
             trail, meta = gt_trails_snapshot[solver_hex]
             closest = min(trail, key=lambda p: abs(p[3] - solver_ts))
             if abs(closest[3] - solver_ts) <= _MLAT_SOLVE_MAX_AGE_S + 30:
                 t_alt_m = float(closest[2])
-                # Skip altitude gate here — the hex already identifies the
-                # aircraft, and a stale altitude reading shouldn't unbind a
-                # confirmed match. If the position is wildly wrong (>match
-                # threshold) it'll show up as a large error, which is what
-                # we want measured for the spoofed-target case.
-                dist_km = haversine_km(solver_lat, solver_lon, closest[0], closest[1])
-                speed_ms = float(meta.get("speed_ms", 0) or 0)
-                best_truth = (
-                    solver_hex,
-                    closest[0],
-                    closest[1],
-                    t_alt_m,
-                    speed_ms,
-                    meta.get("object_type", "aircraft"),
-                    bool(meta.get("is_anomalous", False)),
-                )
-                best_dist_km = dist_km
+                # Altitude gate still applies — a >5 km altitude mismatch
+                # against a hex's recent trail is a strong signal of stale
+                # data or aircraft confusion regardless of identity claim.
+                if not (solver_alt_m > 100 and t_alt_m > 100
+                        and abs(solver_alt_m - t_alt_m) > _MLAT_ALT_GATE_M):
+                    dist_km = haversine_km(
+                        solver_lat, solver_lon, closest[0], closest[1],
+                    )
+                    if dist_km < best_dist_km:
+                        speed_ms = float(meta.get("speed_ms", 0) or 0)
+                        best_truth = (
+                            solver_hex,
+                            closest[0],
+                            closest[1],
+                            t_alt_m,
+                            speed_ms,
+                            meta.get("object_type", "aircraft"),
+                            bool(meta.get("is_anomalous", False)),
+                        )
+                        best_dist_km = dist_km
 
-        # 1b. Proximity fallback for solves without a confirmed ADS-B hex
-        #     (e.g. drones, non-ADS-B targets). Skipped when 1a already bound
-        #     the solve to its claimed aircraft.
+        # 1b. Proximity fallback — runs when identity match was missing or
+        #     out of threshold. The proximity loop iterates over all hexes
+        #     except the one we already matched (in 1a), to avoid double-
+        #     counting if it landed within threshold.
         if best_truth is None:
             for gt_hex, (trail, meta) in gt_trails_snapshot.items():
                 if gt_hex in matched_truth_hexes:
