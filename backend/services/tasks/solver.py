@@ -122,7 +122,16 @@ _SOLVER_RMS_DOPPLER_MAX_HZ = 200.0
 # With σ_delay = 0.1 µs the displacement = GDOP × 0.1 × 0.3 km.
 # 2.0 km → GDOP ≤ 67 (reasonable bistatic geometry).
 # Mirror-point ghosts land 15–50 km away and are safely rejected.
-_N2_MAX_DISPLACEMENT_KM = 2.0
+#
+# Originally N=2-only because that's where mirror-points dominate. Production
+# /api/test/mlat-accuracy stats showed N=2 medians 4-6× tighter than N≥4
+# medians even after dedup-by-aircraft (964 unique N=2 vs 68 unique N=4 — N=2
+# median 0.47 km, N=4 median 2.48 km). Root cause: the gate was the only
+# stage rejecting solver-vs-ADS-B disagreements, so N≥3 stats kept every bad
+# convergence (wrong-frame association, local-minimum trap), while N=2 was
+# pre-filtered. Generalising the gate to every N puts the comparison on the
+# same footing — bad N≥3 solves are now rejected on the same criterion.
+_MAX_DISPLACEMENT_KM = 2.0
 
 
 def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn,
@@ -379,11 +388,14 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                     )
                     state.solver_failures += 1
                     return None
-        # For n=2: reject if the solution drifted more than _N2_MAX_DISPLACEMENT_KM
-        # from the initial_guess.  Mirror-point convergences (the false bistatic
-        # ellipse intersection not caught by the beam filter) move the solution
-        # 15–50 km from the initial_guess, while good solves stay within ~5 km.
-        if n_nodes == 2 and "initial_guess" in s_in:
+        # Reject if the solution drifted more than _MAX_DISPLACEMENT_KM from
+        # the ADS-B initial_guess. For N=2 this catches mirror-point ghosts
+        # (false bistatic ellipse intersection 15-50 km away). For N≥3 it
+        # catches solves where the inter-node associator bound a wrong frame
+        # and the LM converged on a non-target position — production stats
+        # showed those were the dominant source of the per-N inversion in
+        # /api/test/mlat-accuracy.
+        if "initial_guess" in s_in:
             _ig = s_in["initial_guess"]
             _ig_lat = _ig.get("lat")
             _ig_lon = _ig.get("lon")
@@ -392,11 +404,12 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                     float(_ig_lat), float(_ig_lon),
                     result["lat"], result["lon"],
                 )
-                if _disp_km > _N2_MAX_DISPLACEMENT_KM:
+                if _disp_km > _MAX_DISPLACEMENT_KM:
                     logging.debug(
-                        "n=2 result rejected: %.1f km from initial_guess "
-                        "(lat=%.3f lon=%.3f) — likely mirror-point convergence",
-                        _disp_km, result["lat"], result["lon"],
+                        "n=%d result rejected: %.1f km from initial_guess "
+                        "(lat=%.3f lon=%.3f) — likely mirror or wrong-frame "
+                        "convergence",
+                        n_nodes, _disp_km, result["lat"], result["lon"],
                     )
                     state.solver_failures += 1
                     return None
