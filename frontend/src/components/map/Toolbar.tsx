@@ -70,7 +70,7 @@ export default function Toolbar({
           </span>
         )}
         <span className="legend-item">
-          <span className="legend-dot" style={{ background: "#ef4444" }} /> Node
+          <span className="legend-dot" style={{ background: "#facc15" }} /> Node
         </span>
       </span>
     </div>

@@ -579,7 +579,7 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
       key={`node-${n.node_id}`}
       center={[n.rx_lat, n.rx_lon]}
       radius={5}
-      pathOptions={{ color: "#ef4444", fillColor: "#ef4444", fillOpacity: 0.55, weight: 1.5 }}
+      pathOptions={{ color: "#facc15", fillColor: "#facc15", fillOpacity: 0.55, weight: 1.5 }}
       eventHandlers={{ click: () => onSelectNode(n.node_id) }}
     >
       <Popup>
@@ -614,7 +614,7 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
           n.beam_width_deg ?? 42,
           n.max_range_km ?? 50,
         )}
-        pathOptions={{ color: "#ef4444", fillColor: "#ef4444", fillOpacity: 0.1, weight: 1.5, dashArray: "4 4" }}
+        pathOptions={{ color: "#facc15", fillColor: "#facc15", fillOpacity: 0.1, weight: 1.5, dashArray: "4 4" }}
       />
     );
   });
