@@ -77,13 +77,16 @@ export function makeDroneIcon(ac, showLabel, isSelected) {
   });
 }
 
+// Nodes use amber instead of red so they don't share a palette with the
+// anomalous-aircraft marker (#f43f5e — rose-red + dashed halo). The two reds
+// were close enough that users mistook anomalous aircraft for static nodes.
 export const nodeIcon = L.divIcon({
   className: "node-marker",
   html: `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24"
-    style="display:block;filter:drop-shadow(0 0 5px rgba(239,68,68,0.75));">
-    <circle cx="12" cy="12" r="3.2" fill="#ef4444"/>
-    <circle cx="12" cy="12" r="6.5" fill="none" stroke="#ef4444" stroke-width="1.5" opacity="0.6"/>
-    <circle cx="12" cy="12" r="10.5" fill="none" stroke="#ef4444" stroke-width="1" opacity="0.25"/>
+    style="display:block;filter:drop-shadow(0 0 5px rgba(250,204,21,0.75));">
+    <circle cx="12" cy="12" r="3.2" fill="#facc15"/>
+    <circle cx="12" cy="12" r="6.5" fill="none" stroke="#facc15" stroke-width="1.5" opacity="0.6"/>
+    <circle cx="12" cy="12" r="10.5" fill="none" stroke="#facc15" stroke-width="1" opacity="0.25"/>
   </svg>`,
   iconSize: [22, 22],
   iconAnchor: [11, 11],
