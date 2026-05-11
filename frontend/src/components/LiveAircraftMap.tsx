@@ -368,16 +368,31 @@ const Radar3RangeLayer = memo(function Radar3RangeLayer({ visible }) {
 });
 
 /* ── MlatVerificationLayer: shows multinode (MLAT) solver positions vs ground-truth.
-      Fetches verification data every 15 s and renders magenta truth dots,
-      pink error lines, and distance labels — always active (renders nothing
-      when n_matched is zero). Complements Radar3VerificationLayer which covers
-      the single-node radar3-retnode case. ── */
+
+      The verification payload reports (truth, solver) coordinates frozen at
+      the solver's capture timestamp — anywhere from 5 to 60 s old by the
+      time we render. Drawing those raw lat/lons would leave the magenta
+      dot trailing behind the live cyan ADS-B circle by minutes-of-arc
+      worth of aircraft motion (≈ 2-10 km for typical jets), even though
+      the underlying error magnitude is tiny.
+
+      Fix: translate the (truth, solver) pair forward to "now" by anchoring
+      the truth point to the live ADS-B position from `smoothRef` and
+      shifting the solver point by the same vector. The error vector itself
+      is preserved — only its frame of reference moves — so the magenta dot
+      sits on top of the cyan circle and the dashed line shows the actual
+      solver-vs-truth offset at the current aircraft location. ── */
 const _mlatCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
 
-const MlatVerificationLayer = memo(function MlatVerificationLayer() {
+const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthRef, smoothRef }) {
   const map = useMap();
   const markersRef = useRef(new Map());
+  // Tracks fetched from the verification API. Mutable so the render tick
+  // can read it without re-running the polling effect.
+  const tracksRef = useRef([]);
 
+  // Poll the verification API on its own cadence (the data itself only
+  // refreshes server-side every ~30 s).
   useEffect(() => {
     const ACTIVE_POLL_MS = 15000;
     const IDLE_POLL_MS = 60000;
@@ -400,52 +415,9 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer() {
           nextDelayMs = IDLE_POLL_MS;
           return;
         }
-
-        const markers = markersRef.current;
-        const seen = new Set();
-
-        for (const t of data.tracks || []) {
-          if (!t.truth_lat || !t.truth_lon || !t.solver_lat || !t.solver_lon) continue;
-          const id = t.solve_key;
-          seen.add(id);
-
-          let entry = markers.get(id);
-          if (!entry) {
-            const dot = L.circleMarker([t.truth_lat, t.truth_lon], {
-              renderer: _mlatCanvas,
-              radius: 4,
-              color: "#e879f9",
-              weight: 2,
-              fillColor: "#e879f9",
-              fillOpacity: 0.85,
-            });
-            const line = L.polyline(
-              [[t.truth_lat, t.truth_lon], [t.solver_lat, t.solver_lon]],
-              { color: "#f0abfc", weight: 1.5, opacity: 0.7, dashArray: "3 4" },
-            );
-            line.bindTooltip(`${t.position_error_km.toFixed(1)} km`, { direction: "center", className: "radar3-error-label" });
-            dot.addTo(map);
-            line.addTo(map);
-            entry = { dot, line };
-            markers.set(id, entry);
-          } else {
-            entry.dot.setLatLng([t.truth_lat, t.truth_lon]);
-            entry.line.setLatLngs([[t.truth_lat, t.truth_lon], [t.solver_lat, t.solver_lon]]);
-            entry.line.setTooltipContent(`${t.position_error_km.toFixed(1)} km`);
-          }
-        }
-
-        for (const [id, entry] of markers) {
-          if (!seen.has(id)) {
-            entry.dot.remove();
-            entry.line.remove();
-            markers.delete(id);
-          }
-        }
-
+        tracksRef.current = data.tracks || [];
         nextDelayMs = (data.n_matched || 0) > 0 ? ACTIVE_POLL_MS : IDLE_POLL_MS;
       } catch {
-        // Silently ignore fetch errors
         nextDelayMs = IDLE_POLL_MS;
       } finally {
         scheduleNext(nextDelayMs);
@@ -458,13 +430,105 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer() {
       if (timerId !== null) {
         window.clearTimeout(timerId);
       }
-      for (const entry of markersRef.current.values()) {
+    };
+  }, []);
+
+  // Re-anchor marker positions to live truth on a fast tick so the magenta
+  // dot stays glued to the cyan circle as the aircraft moves between API
+  // refreshes.
+  useEffect(() => {
+    const markers = markersRef.current;
+
+    const tick = () => {
+      const seen = new Set();
+      const tracks = tracksRef.current;
+
+      for (const t of tracks) {
+        if (!t.truth_lat || !t.truth_lon || !t.solver_lat || !t.solver_lon) continue;
+        const hex = t.truth_hex;
+        if (!hex) continue;
+
+        // Live truth position: prefer the smoothed value, fall back to the
+        // most recent raw trail point. Skip if we have neither — the
+        // verification payload alone isn't enough to render aligned.
+        let liveLat;
+        let liveLon;
+        const smooth = smoothRef?.current?.[hex];
+        if (smooth) {
+          liveLat = smooth.lat;
+          liveLon = smooth.lon;
+        } else {
+          const trail = groundTruthRef?.current?.[hex];
+          if (Array.isArray(trail) && trail.length) {
+            const last = trail[trail.length - 1];
+            liveLat = last[0];
+            liveLon = last[1];
+          }
+        }
+        if (liveLat == null || liveLon == null) continue;
+
+        // Translate the (truth, solver) pair forward by (now - solve_ts).
+        // The dr_truth coincides with where ADS-B says the aircraft is now;
+        // dr_solver is offset by the original solve-time error vector, so
+        // the dashed line still represents the real position error.
+        const drTruthLat = liveLat;
+        const drTruthLon = liveLon;
+        const drSolverLat = liveLat + (t.solver_lat - t.truth_lat);
+        const drSolverLon = liveLon + (t.solver_lon - t.truth_lon);
+
+        const id = t.solve_key;
+        seen.add(id);
+
+        let entry = markers.get(id);
+        if (!entry) {
+          const dot = L.circleMarker([drTruthLat, drTruthLon], {
+            renderer: _mlatCanvas,
+            radius: 4,
+            color: "#e879f9",
+            weight: 2,
+            fillColor: "#e879f9",
+            fillOpacity: 0.85,
+          });
+          const line = L.polyline(
+            [[drTruthLat, drTruthLon], [drSolverLat, drSolverLon]],
+            { color: "#f0abfc", weight: 1.5, opacity: 0.7, dashArray: "3 4" },
+          );
+          line.bindTooltip(
+            `${t.position_error_km.toFixed(1)} km`,
+            { direction: "center", className: "radar3-error-label" },
+          );
+          dot.addTo(map);
+          line.addTo(map);
+          entry = { dot, line };
+          markers.set(id, entry);
+        } else {
+          entry.dot.setLatLng([drTruthLat, drTruthLon]);
+          entry.line.setLatLngs([[drTruthLat, drTruthLon], [drSolverLat, drSolverLon]]);
+          entry.line.setTooltipContent(`${t.position_error_km.toFixed(1)} km`);
+        }
+      }
+
+      // Remove markers whose solve_key is no longer in the payload.
+      for (const [id, entry] of markers) {
+        if (!seen.has(id)) {
+          entry.dot.remove();
+          entry.line.remove();
+          markers.delete(id);
+        }
+      }
+    };
+
+    tick();
+    const intervalId = setInterval(tick, 250);
+    return () => {
+      clearInterval(intervalId);
+      for (const entry of markers.values()) {
         entry.dot.remove();
         entry.line.remove();
       }
-      markersRef.current.clear();
+      markers.clear();
     };
-  }, [map]);
+  }, [map, groundTruthRef, smoothRef]);
 
   return null;
 });
@@ -1267,7 +1331,10 @@ export default function LiveAircraftMap() {
             <Radar3RangeLayer visible={selectedNodeId === "radar3-retnode"} />
 
             {/* MLAT (multinode) solver verification — magenta truth dots + pink error lines */}
-            <MlatVerificationLayer />
+            <MlatVerificationLayer
+              groundTruthRef={groundTruthRef}
+              smoothRef={smoothRef}
+            />
           </MapContainer>
 
           {selectedAc && (
