@@ -47,7 +47,7 @@ def test_schema_is_per_detection_with_required_columns(tmp_path: Path):
         node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
     )
 
-    table = pq.read_table(tmp_path / key)
+    table = pq.read_table(tmp_path / key, partitioning=None)
     assert table.num_rows == 4
     cols = set(table.column_names)
     expected = {
@@ -69,7 +69,7 @@ def test_adsb_match_populated_when_present(tmp_path: Path):
         node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
     )
 
-    table = pq.read_table(tmp_path / key)
+    table = pq.read_table(tmp_path / key, partitioning=None)
     rows = table.to_pylist()
     assert rows[0]["adsb_hex"] == "abcdef"
     assert rows[0]["adsb_lat"] == 40.0
@@ -87,7 +87,7 @@ def test_multiple_frames_concatenate(tmp_path: Path):
     key = pw.write_detections_parquet(
         node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
     )
-    table = pq.read_table(tmp_path / key)
+    table = pq.read_table(tmp_path / key, partitioning=None)
     assert table.num_rows == 5
     rows = table.to_pylist()
     assert rows[0]["frame_ts_ms"] == 1700000000000
@@ -135,7 +135,7 @@ def test_schema_includes_custody_and_ingest_columns(tmp_path: Path):
     key = pw.write_detections_parquet(
         node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
     )
-    table = pq.read_table(tmp_path / key)
+    table = pq.read_table(tmp_path / key, partitioning=None)
     cols = set(table.column_names)
     assert {"payload_hash", "signature", "ingest_ts_ms"} <= cols
 
@@ -154,7 +154,7 @@ def test_custody_columns_default_null_when_absent(tmp_path: Path):
     key = pw.write_detections_parquet(
         node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
     )
-    rows = pq.read_table(tmp_path / key).to_pylist()
+    rows = pq.read_table(tmp_path / key, partitioning=None).to_pylist()
     assert all(r["payload_hash"] is None for r in rows)
     assert all(r["signature"] is None for r in rows)
     assert all(isinstance(r["ingest_ts_ms"], int) for r in rows)
@@ -194,7 +194,7 @@ def test_schema_includes_geometry_and_rf_columns(tmp_path: Path):
     key = pw.write_detections_parquet(
         node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts, node_cfg=cfg,
     )
-    table = pq.read_table(tmp_path / key)
+    table = pq.read_table(tmp_path / key, partitioning=None)
     cols = set(table.column_names)
     assert {"rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft",
             "fc_hz", "fs_hz", "adsb_squawk", "adsb_category"} <= cols
@@ -213,7 +213,7 @@ def test_geometry_columns_default_null_when_no_cfg(tmp_path: Path):
     key = pw.write_detections_parquet(
         node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
     )
-    rows = pq.read_table(tmp_path / key).to_pylist()
+    rows = pq.read_table(tmp_path / key, partitioning=None).to_pylist()
     for col in ("rx_lat", "rx_lon", "tx_lat", "tx_lon", "fc_hz", "fs_hz"):
         assert all(r[col] is None for r in rows), f"{col} should default to null"
 
@@ -227,6 +227,6 @@ def test_legacy_FC_Fs_keys_in_node_cfg(tmp_path: Path):
     key = pw.write_detections_parquet(
         node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts, node_cfg=cfg,
     )
-    rows = pq.read_table(tmp_path / key).to_pylist()
+    rows = pq.read_table(tmp_path / key, partitioning=None).to_pylist()
     assert rows[0]["fc_hz"] == 100_000_000
     assert rows[0]["fs_hz"] == 5_000_000

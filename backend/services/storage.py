@@ -224,7 +224,13 @@ def _read_parquet_as_legacy_json(path: str) -> dict:
     """Read a per-detection Parquet archive and reconstruct the per-frame JSON."""
     import pyarrow.parquet as pq
 
-    table = pq.read_table(path)
+    # partitioning=None disables Hive partition auto-detection.  Without it
+    # pyarrow 24+ infers `node_id=…` from the path and creates a
+    # dictionary-encoded column that clashes with the plain-string `node_id`
+    # stored inside the file, producing
+    #   ArrowTypeError: Field node_id has incompatible types
+    #   string vs dictionary<values=string, indices=int32, ordered=0>
+    table = pq.read_table(path, partitioning=None)
     rows = table.to_pylist()
     if not rows:
         return {"node_id": "", "timestamp": "", "count": 0, "detections": []}
