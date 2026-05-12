@@ -519,13 +519,13 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         gs = round(_num(adsb.get("gs", track.speed_knots) if adsb else track.speed_knots), 1)
         heading = round(_num(adsb.get("track", track.track_angle) if adsb else track.track_angle), 1)
 
-        # Build ambiguity arc only when we have no ADS-B seed — ADS-B-seeded
-        # solver positions are tight enough that arcs add visual noise.
-        ambiguity_arc = (
-            _build_single_node_arc(track, node_cfg)
-            if not has_adsb
-            else None
-        )
+        # Build ambiguity arc for every detection — including ADS-B-anchored
+        # ones. The frontend uses these as a radar-style afterglow trail: each
+        # WS update produces a new arc tagged with the current timestamp, old
+        # arcs fade independently. Without arcs for ADS-B aircraft, the
+        # synthetic fleet (where almost every target has ADS-B) gives the
+        # impression that nodes are idle, which they're not.
+        ambiguity_arc = _build_single_node_arc(track, node_cfg)
         if ambiguity_arc and position_source == "solver_single_node":
             midpoint = ambiguity_arc[len(ambiguity_arc) // 2]
             lat = round(midpoint[0], 6)
