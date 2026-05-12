@@ -102,15 +102,20 @@ export function useAircraftFeed() {
       // separate arcs that each fade independently — instead of one arc that
       // rigidly tracks the aircraft and resets its age timer every frame.
       const now = Date.now();
-      // Buffer TTL matches the render-side ARC_TOTAL_LIFE_MS — short fade
-      // so the trail reads as a sequence of distinct blips rather than
-      // a smudge of equally-bright stacked arcs.
-      const ARC_MAX_AGE_MS = 3_000;
+      // 12 s gradual fade per Jehan: each ellipse persists for 12 s and
+      // monotonically dims. Buckets are NEVER overwritten after first
+      // creation — so multiple WS updates within a second can't reset a
+      // fading ellipse's age or move its geometry.
+      const ARC_MAX_AGE_MS = 12_000;
       const tsBucket = Math.floor(now / 1000);
       const buf = arcsBufferRef.current;
       for (const ac of newAircraft) {
         if (Array.isArray(ac.ambiguity_arc) && ac.ambiguity_arc.length >= 2 && ac.node_id) {
           const key = `${ac.hex}-${ac.node_id}-${tsBucket}`;
+          // Skip if already created this second — keep the original
+          // detection's geometry and timestamp so the ellipse fades
+          // monotonically from its birth moment.
+          if (key in buf) continue;
           buf[key] = {
             hex: ac.hex,
             node_id: ac.node_id,
@@ -130,6 +135,7 @@ export function useAircraftFeed() {
             // separate arcs for moving targets, and one arc per second for
             // stationary ones (rather than a never-fading single arc).
             const key = `det-${arc.node_id}-${tsBucket}-${Math.round(mid[0] * 100)}-${Math.round(mid[1] * 100)}`;
+            if (key in buf) continue;
             buf[key] = {
               // No aircraft hex — pending detections aren't geolocated to
               // a track yet, so clicking should select the node, not try
