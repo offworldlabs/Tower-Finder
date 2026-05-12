@@ -683,7 +683,9 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
             lineJoin: "round",
           });
           line.on("click", () => {
-            onSelectRef.current(entry.hex);
+            // Pass shouldFocus=false — clicking a trail arc shouldn't yank
+            // the camera back to the aircraft.
+            onSelectRef.current(entry.hex, false);
             if (entry.node_id) onSelectNodeRef.current(entry.node_id);
           });
           line.addTo(map);
@@ -1045,11 +1047,13 @@ export default function LiveAircraftMap() {
     }
   }
 
-  const handleSelectAircraft = useCallback((hex) => {
+  const handleSelectAircraft = useCallback((hex, shouldFocus = true) => {
     setSelectedHex((prev) => {
       const next = prev === hex ? null : hex;
-      // Only zoom when selecting a new aircraft, not when deselecting
-      if (next !== null) setFocusNonce((n) => n + 1);
+      // Only zoom when selecting a new aircraft, not when deselecting.
+      // Arc clicks pass shouldFocus=false so the camera stays put — yanking
+      // the viewport on every trail click is disorienting.
+      if (next !== null && shouldFocus) setFocusNonce((n) => n + 1);
       return next;
     });
   }, []);
