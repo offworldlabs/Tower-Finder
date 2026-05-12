@@ -362,7 +362,26 @@ def _enu_to_lla(rx_lat: float, rx_lon: float, east_km: float, north_km: float) -
     return [float(lat), float(lon)]
 
 
-def _build_single_node_arc(track_or_delay, node_cfg: dict) -> list[list[float]] | None:
+def _build_single_node_arc(
+    track_or_delay,
+    node_cfg: dict,
+    *,
+    target_lat: float | None = None,
+    target_lon: float | None = None,
+) -> list[list[float]] | None:
+    """Build the bistatic-ambiguity arc for one detection.
+
+    When `target_lat`/`target_lon` are provided (i.e. we know roughly where
+    the aircraft actually is, via ADS-B or a prior solve), the arc is
+    trimmed to a short segment around the known position. This makes the
+    frontend trail of successive arcs readable as a chain of distinct
+    blips tracing the target's path through the beam, instead of one fat
+    smudge of overlapping full-beam loci.
+
+    Without a known position (true unknowns like raw radar-only detections)
+    the full beam-spanning locus is returned so the operator can see the
+    full ambiguity.
+    """
     if isinstance(track_or_delay, (int, float)):
         delay_us = track_or_delay
     else:
@@ -396,11 +415,27 @@ def _build_single_node_arc(track_or_delay, node_cfg: dict) -> list[list[float]] 
         tx_dist_km = math.hypot(east_km - tx_east_km, north_km - tx_north_km)
         return tx_dist_km + range_km - baseline_km
 
+    # When we have a known target position, centre the sweep on the bearing
+    # from RX to that position and narrow the angular window so the rendered
+    # arc reads as a short segment near the aircraft rather than the full
+    # beam-spanning locus.
+    if target_lat is not None and target_lon is not None:
+        centre_bearing = _bearing_deg(rx_lat, rx_lon, target_lat, target_lon)
+        sweep_width_deg = min(beam_width_deg, 6.0)
+        steps = 12
+    else:
+        centre_bearing = beam_azimuth_deg
+        sweep_width_deg = beam_width_deg
+        steps = 36
+
+    half_sweep = sweep_width_deg / 2.0
     points: list[list[float]] = []
-    steps = 36
-    half_beam_deg = beam_width_deg / 2.0
     for step in range(steps + 1):
-        bearing_deg = beam_azimuth_deg - half_beam_deg + beam_width_deg * (step / steps)
+        bearing_deg = centre_bearing - half_sweep + sweep_width_deg * (step / steps)
+        # Stay within the antenna beam — drop bearings that fall outside.
+        delta_from_axis = abs(((bearing_deg - beam_azimuth_deg + 180.0) % 360.0) - 180.0)
+        if delta_from_axis > beam_width_deg / 2.0:
+            continue
         lo = 0.0
         hi = max_range_km
         if _differential_at(hi, bearing_deg) < differential_range_km:
@@ -525,7 +560,14 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         # arcs fade independently. Without arcs for ADS-B aircraft, the
         # synthetic fleet (where almost every target has ADS-B) gives the
         # impression that nodes are idle, which they're not.
-        ambiguity_arc = _build_single_node_arc(track, node_cfg)
+        # Centre the arc on the known target position so consecutive 1-Hz
+        # arcs trace a readable chain through the beam instead of stacking
+        # into one fat smudge of beam-spanning loci.
+        _tgt_lat = adsb.get("lat") if has_adsb else track.lat
+        _tgt_lon = adsb.get("lon") if has_adsb else track.lon
+        ambiguity_arc = _build_single_node_arc(
+            track, node_cfg, target_lat=_tgt_lat, target_lon=_tgt_lon,
+        )
         if ambiguity_arc and position_source == "solver_single_node":
             midpoint = ambiguity_arc[len(ambiguity_arc) // 2]
             lat = round(midpoint[0], 6)
