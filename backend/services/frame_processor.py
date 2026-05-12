@@ -416,13 +416,21 @@ def _build_single_node_arc(
         return tx_dist_km + range_km - baseline_km
 
     # When we have a known target position, centre the sweep on the bearing
-    # from RX to that position and narrow the angular window so the rendered
-    # arc reads as a short segment near the aircraft rather than the full
-    # beam-spanning locus.
+    # from RX to that position and aim for an arc whose ground length is
+    # roughly the same regardless of range — short enough to look like a
+    # radar blip near the aircraft, long enough to remain visible at
+    # continental zoom. Pure angular trimming (e.g. fixed 6°) collapses
+    # below 1 pixel at low zooms; targeting an arc length in km solves it.
     if target_lat is not None and target_lon is not None:
         centre_bearing = _bearing_deg(rx_lat, rx_lon, target_lat, target_lon)
-        sweep_width_deg = min(beam_width_deg, 6.0)
-        steps = 12
+        target_east_km = (target_lon - rx_lon) * 111.32 * cos_lat
+        target_north_km = (target_lat - rx_lat) * 111.32
+        target_range_km = max(math.hypot(target_east_km, target_north_km), 5.0)
+        # ~25 km arc length keeps the blip visible at zoom ≥4 and short
+        # enough to read as a chain at zoom ≥7 — verified on staging.
+        BLIP_ARC_LENGTH_KM = 25.0
+        sweep_width_deg = min(beam_width_deg, math.degrees(BLIP_ARC_LENGTH_KM / target_range_km))
+        steps = 18
     else:
         centre_bearing = beam_azimuth_deg
         sweep_width_deg = beam_width_deg
