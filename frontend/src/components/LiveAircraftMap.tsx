@@ -621,8 +621,12 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
 });
 
 /* ── DetectionArcs: imperative Leaflet polylines with timer-driven opacity fade.
-      Avoids React re-render bottleneck — opacity updates every 250ms via setStyle(),
-      arcs persist for 20s total (2s full brightness + 18s linear fade to zero). ── */
+
+      Each arc in the buffer is rendered as its own polyline that fades on
+      its own clock — producing a radar-style afterglow trail behind a moving
+      target. Newer buckets sit at full brightness briefly, then linear-fade
+      to zero over ~8 s. Tick interval is 250 ms which is enough resolution
+      for visibly smooth decay without React re-render cost. ── */
 const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, viewport, onSelect, onSelectNode }) {
   const map = useMap();
   const polyMapRef = useRef(new Map()); // key → { line: L.polyline, ts, hex, node_id, ... }
@@ -639,9 +643,11 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
     const tick = () => {
       const buf = arcsBufferRef.current;
       const now = Date.now();
-      const ARC_TOTAL_LIFE_MS = 12_000; // total arc lifetime
-      const ARC_FULL_MS = 2_000;         // full brightness period
-      const ARC_FADE_MS = 10_000;        // fade period after full
+      // Total lifetime matches the buffer-eviction TTL in useAircraftFeed so
+      // arcs always disappear at the same moment they're pruned upstream.
+      const ARC_TOTAL_LIFE_MS = 8_000;
+      const ARC_FULL_MS = 300;          // brief blip at full brightness
+      const ARC_FADE_MS = 7_700;        // long tail
       const curSelected = selectedHexRef.current;
 
       const seen = new Set();

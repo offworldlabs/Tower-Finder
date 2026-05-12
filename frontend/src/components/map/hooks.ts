@@ -96,13 +96,18 @@ export function useAircraftFeed() {
         anomalyHexesRef.current = new Set(anomalyHexes);
       }
 
-      // Accumulate detection arcs — each detection refreshes its entry; stale arcs fade out
+      // Accumulate detection arcs as a radar-style afterglow trail. Each WS
+      // update creates a NEW arc bucketed by the current second, so the same
+      // aircraft+node pair seen over many frames lays down a sequence of
+      // separate arcs that each fade independently — instead of one arc that
+      // rigidly tracks the aircraft and resets its age timer every frame.
       const now = Date.now();
-      const ARC_MAX_AGE_MS = 12_000;
+      const ARC_MAX_AGE_MS = 8_000;
+      const tsBucket = Math.floor(now / 1000);
       const buf = arcsBufferRef.current;
       for (const ac of newAircraft) {
         if (Array.isArray(ac.ambiguity_arc) && ac.ambiguity_arc.length >= 2 && ac.node_id) {
-          const key = `${ac.hex}-${ac.node_id}`;
+          const key = `${ac.hex}-${ac.node_id}-${tsBucket}`;
           buf[key] = {
             hex: ac.hex,
             node_id: ac.node_id,
@@ -113,13 +118,15 @@ export function useAircraftFeed() {
           };
         }
       }
-      // Also ingest pending detection arcs from tracker tracks (not yet geolocated)
+      // Also ingest pending detection arcs from tracker tracks (not yet geolocated).
       if (Array.isArray(detectionArcs)) {
         for (const arc of detectionArcs) {
           if (Array.isArray(arc.ambiguity_arc) && arc.ambiguity_arc.length >= 2 && arc.node_id) {
-            // Use arc midpoint as key disambiguator (each track produces a differently-positioned arc)
             const mid = arc.ambiguity_arc[Math.floor(arc.ambiguity_arc.length / 2)];
-            const key = `det-${arc.node_id}-${Math.round(mid[0] * 100)}-${Math.round(mid[1] * 100)}`;
+            // Same per-second bucketing as above — produces a trail of
+            // separate arcs for moving targets, and one arc per second for
+            // stationary ones (rather than a never-fading single arc).
+            const key = `det-${arc.node_id}-${tsBucket}-${Math.round(mid[0] * 100)}-${Math.round(mid[1] * 100)}`;
             buf[key] = {
               hex: arc.node_id,
               node_id: arc.node_id,
@@ -131,7 +138,9 @@ export function useAircraftFeed() {
           }
         }
       }
-      // Prune arcs older than ARC_MAX_AGE_MS
+      // Prune arcs older than ARC_MAX_AGE_MS — old buckets stay in the
+      // buffer for their full fade lifetime regardless of whether a new
+      // detection has arrived.
       for (const key of Object.keys(buf)) {
         if (now - buf[key].ts > ARC_MAX_AGE_MS) delete buf[key];
       }
