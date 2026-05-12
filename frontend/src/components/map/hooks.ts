@@ -128,7 +128,10 @@ export function useAircraftFeed() {
             // stationary ones (rather than a never-fading single arc).
             const key = `det-${arc.node_id}-${tsBucket}-${Math.round(mid[0] * 100)}-${Math.round(mid[1] * 100)}`;
             buf[key] = {
-              hex: arc.node_id,
+              // No aircraft hex — pending detections aren't geolocated to
+              // a track yet, so clicking should select the node, not try
+              // to open a nonexistent aircraft detail panel.
+              hex: null,
               node_id: arc.node_id,
               ambiguity_arc: arc.ambiguity_arc,
               doppler_hz: arc.doppler_hz ?? 0,

@@ -684,8 +684,10 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
           });
           line.on("click", () => {
             // Pass shouldFocus=false — clicking a trail arc shouldn't yank
-            // the camera back to the aircraft.
-            onSelectRef.current(entry.hex, false);
+            // the camera back to the aircraft. Pending arcs have hex=null
+            // (no associated aircraft track yet); for those, only select
+            // the node so we don't try to open an empty detail panel.
+            if (entry.hex) onSelectRef.current(entry.hex, false);
             if (entry.node_id) onSelectNodeRef.current(entry.node_id);
           });
           line.addTo(map);
