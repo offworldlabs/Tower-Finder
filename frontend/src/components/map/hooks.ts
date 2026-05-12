@@ -102,7 +102,10 @@ export function useAircraftFeed() {
       // separate arcs that each fade independently — instead of one arc that
       // rigidly tracks the aircraft and resets its age timer every frame.
       const now = Date.now();
-      const ARC_MAX_AGE_MS = 8_000;
+      // Buffer TTL matches the render-side ARC_TOTAL_LIFE_MS — short fade
+      // so the trail reads as a sequence of distinct blips rather than
+      // a smudge of equally-bright stacked arcs.
+      const ARC_MAX_AGE_MS = 3_000;
       const tsBucket = Math.floor(now / 1000);
       const buf = arcsBufferRef.current;
       for (const ac of newAircraft) {

@@ -643,11 +643,16 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
     const tick = () => {
       const buf = arcsBufferRef.current;
       const now = Date.now();
-      // Total lifetime matches the buffer-eviction TTL in useAircraftFeed so
-      // arcs always disappear at the same moment they're pruned upstream.
-      const ARC_TOTAL_LIFE_MS = 8_000;
-      const ARC_FULL_MS = 300;          // brief blip at full brightness
-      const ARC_FADE_MS = 7_700;        // long tail
+      // Short, aggressive fade so the *latest* arc visually dominates and
+      // older ones drop off quickly — Jehan asked for a radar-display look
+      // where new blips appear ahead of fading old ones, not a smudge of
+      // equally-bright stacked arcs. 3 s total life keeps about 2-3
+      // distinguishable arcs visible at any moment.
+      const ARC_TOTAL_LIFE_MS = 3_000;
+      const ARC_FULL_MS = 120;
+      // Exponential decay (τ ≈ 800 ms) — opacity at 1 s ≈ 0.29,
+      // at 2 s ≈ 0.08, at 3 s ≈ 0.02. Latest arc is clearly brightest.
+      const ARC_TAU_MS = 800;
       const curSelected = selectedHexRef.current;
 
       const seen = new Set();
@@ -661,7 +666,9 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
 
         seen.add(key);
         const isSelected = entry.hex === curSelected;
-        const opacity = isSelected ? 1.0 : Math.max(0.0, Math.min(0.95, 1 - Math.max(0, age - ARC_FULL_MS) / ARC_FADE_MS));
+        const opacity = isSelected
+          ? 1.0
+          : Math.max(0.0, Math.min(0.95, Math.exp(-Math.max(0, age - ARC_FULL_MS) / ARC_TAU_MS)));
         const color = entry.target_class === "drone" ? "#fb923c" : dopplerColor(entry.doppler_hz ?? 0);
         const weight = isSelected ? 5 : 3;
 
@@ -704,7 +711,7 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
             polyMap.delete(key);
           } else {
             // Still fading out — update opacity
-            const opacity = Math.max(0.0, Math.min(0.95, 1 - Math.max(0, age - ARC_FULL_MS) / ARC_FADE_MS));
+            const opacity = Math.max(0.0, Math.min(0.95, Math.exp(-Math.max(0, age - ARC_FULL_MS) / ARC_TAU_MS)));
             if (opacity <= 0) {
               info.line.remove();
               polyMap.delete(key);
