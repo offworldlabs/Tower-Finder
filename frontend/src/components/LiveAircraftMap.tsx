@@ -643,16 +643,11 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
     const tick = () => {
       const buf = arcsBufferRef.current;
       const now = Date.now();
-      // Short, aggressive fade so the *latest* arc visually dominates and
-      // older ones drop off quickly — Jehan asked for a radar-display look
-      // where new blips appear ahead of fading old ones, not a smudge of
-      // equally-bright stacked arcs. 3 s total life keeps about 2-3
-      // distinguishable arcs visible at any moment.
-      const ARC_TOTAL_LIFE_MS = 3_000;
-      const ARC_FULL_MS = 120;
-      // Exponential decay (τ ≈ 800 ms) — opacity at 1 s ≈ 0.29,
-      // at 2 s ≈ 0.08, at 3 s ≈ 0.02. Latest arc is clearly brightest.
-      const ARC_TAU_MS = 800;
+      // Per Jehan's spec: each ellipse lasts 12 s and fades gradually
+      // (linear) — once an ellipse has started fading it never returns
+      // to full opacity. Combined with immutable buckets in
+      // useAircraftFeed, this guarantees monotonic decay.
+      const ARC_TOTAL_LIFE_MS = 12_000;
       const curSelected = selectedHexRef.current;
 
       const seen = new Set();
@@ -668,19 +663,16 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
         const isSelected = entry.hex === curSelected;
         const opacity = isSelected
           ? 1.0
-          : Math.max(0.0, Math.min(0.95, Math.exp(-Math.max(0, age - ARC_FULL_MS) / ARC_TAU_MS)));
+          : Math.max(0.0, Math.min(0.95, 1 - age / ARC_TOTAL_LIFE_MS));
         const color = entry.target_class === "drone" ? "#fb923c" : dopplerColor(entry.doppler_hz ?? 0);
         const weight = isSelected ? 5 : 3;
 
         const existing = polyMap.get(key);
         if (existing) {
-          // Update opacity and style
-          existing.line.setStyle({ color, weight, opacity });
-          existing.ts = entry.ts;
-          existing.hex = entry.hex;
-          existing.node_id = entry.node_id;
-          // Update positions if arc geometry changed
-          existing.line.setLatLngs(entry.ambiguity_arc);
+          // Only update opacity — ts and geometry are immutable per
+          // Jehan's spec (an ellipse must not return to full opacity
+          // or shift position after it's been created).
+          existing.line.setStyle({ opacity });
         } else {
           const line = L.polyline(entry.ambiguity_arc, {
             color,
@@ -711,7 +703,7 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
             polyMap.delete(key);
           } else {
             // Still fading out — update opacity
-            const opacity = Math.max(0.0, Math.min(0.95, Math.exp(-Math.max(0, age - ARC_FULL_MS) / ARC_TAU_MS)));
+            const opacity = Math.max(0.0, Math.min(0.95, 1 - age / ARC_TOTAL_LIFE_MS));
             if (opacity <= 0) {
               info.line.remove();
               polyMap.delete(key);
