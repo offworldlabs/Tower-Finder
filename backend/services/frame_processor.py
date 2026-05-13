@@ -583,6 +583,36 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             lat = round(midpoint[0], 6)
             lon = round(midpoint[1], 6)
             position_source = "single_node_ellipse_arc"
+
+            # Speed gate: if the new arc midpoint moved faster than 800 m/s
+            # (~1560 kt) from the last known position, the tracker has likely
+            # mis-associated this frame's measurement to a different target
+            # (delay jumped by tens of µs, which is physically impossible for
+            # a single aircraft).  Revert to the last good position and suppress
+            # the arc for this frame so no wrong-position arc enters the buffer.
+            _hist = state.track_histories.get(ac_hex)
+            if _hist:
+                _prev = _hist[-1]  # [lat, lon, alt, ts]
+                _dt = now - _prev[3]
+                if 0 < _dt < 30:
+                    _dlat = (lat - _prev[0]) * 111_320
+                    _dlon = (lon - _prev[1]) * 111_320 * math.cos(math.radians(lat))
+                    _speed_ms = math.hypot(_dlat, _dlon) / _dt
+                    if _speed_ms > 800:
+                        lat = round(_prev[0], 6)
+                        lon = round(_prev[1], 6)
+                        ambiguity_arc = None  # suppress arc; entry still emitted
+
+            # RMS gate: persistently high rms_delay means the Kalman filter
+            # cannot fit the current measurement — the track is in a
+            # mis-association state and the arc position is unreliable.
+            # Suppress the arc (no new buffer bucket) but keep the entry so
+            # the aircraft dot stays visible at the last stable lat/lon.
+            # Threshold 7 µs: median rms is ~2 µs for clean tracks; bad
+            # actors observed at 8–11 µs over dozens of consecutive frames.
+            _rms = getattr(track, "rms_delay", 0.0) or 0.0
+            if ambiguity_arc and _rms > 7.0:
+                ambiguity_arc = None  # suppress arc; entry still emitted
         elif not ambiguity_arc:
             # Arc is None.  Only suppress the track if there was a valid delay
             # measurement (delay > 0) but the arc still failed — which means
