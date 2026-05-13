@@ -665,7 +665,7 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
           ? 1.0
           : Math.max(0.0, Math.min(0.95, 1 - age / ARC_TOTAL_LIFE_MS));
         const color = entry.target_class === "drone" ? "#fb923c" : dopplerColor(entry.doppler_hz ?? 0);
-        const weight = isSelected ? 5 : 3;
+        const weight = isSelected ? 6 : 4;
 
         const existing = polyMap.get(key);
         if (existing) {
@@ -681,7 +681,11 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
             lineCap: "round",
             lineJoin: "round",
           });
-          line.on("click", () => {
+          line.on("click", (e) => {
+            // Stop bubbling so MapClickClear doesn't immediately clear the
+            // selection we're about to set — both setState calls would
+            // batch into one render and cancel each other out.
+            L.DomEvent.stopPropagation(e);
             // Pass shouldFocus=false — clicking a trail arc shouldn't yank
             // the camera back to the aircraft. Pending arcs have hex=null
             // (no associated aircraft track yet); for those, only select
