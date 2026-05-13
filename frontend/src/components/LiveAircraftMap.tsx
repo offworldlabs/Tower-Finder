@@ -661,18 +661,21 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
 
         seen.add(key);
         const isSelected = entry.hex === curSelected;
+        const isPending = key.startsWith("det-");
         const opacity = isSelected
           ? 1.0
           : Math.max(0.0, Math.min(0.95, 1 - age / ARC_TOTAL_LIFE_MS));
         const color = entry.target_class === "drone" ? "#fb923c" : dopplerColor(entry.doppler_hz ?? 0);
-        const weight = isSelected ? 6 : 4;
+        // Pending (unidentified) detections render thinner so they're visually
+        // distinct from confirmed aircraft arcs.
+        const weight = isSelected ? 6 : (isPending ? 2 : 4);
 
         const existing = polyMap.get(key);
         if (existing) {
-          // Only update opacity — ts and geometry are immutable per
-          // Jehan's spec (an ellipse must not return to full opacity
-          // or shift position after it's been created).
           existing.line.setStyle({ opacity });
+          // Pending arcs refresh their timestamp each WS tick — sync
+          // the polyMap ts so the removal logic sees the correct age.
+          if (isPending) existing.ts = entry.ts;
         } else {
           const line = L.polyline(entry.ambiguity_arc, {
             color,

@@ -131,15 +131,15 @@ export function useAircraftFeed() {
         for (const arc of detectionArcs) {
           if (Array.isArray(arc.ambiguity_arc) && arc.ambiguity_arc.length >= 2 && arc.node_id) {
             const mid = arc.ambiguity_arc[Math.floor(arc.ambiguity_arc.length / 2)];
-            // Same per-second bucketing as above — produces a trail of
-            // separate arcs for moving targets, and one arc per second for
-            // stationary ones (rather than a never-fading single arc).
-            const key = `det-${arc.node_id}-${tsBucket}-${Math.round(mid[0] * 100)}-${Math.round(mid[1] * 100)}`;
-            if (key in buf) continue;
+            // Pending detections span the full beam — trailing successive
+            // copies at different timestamps creates N overlapping identical
+            // arcs (up to 12 over the 12-second fade window) without any
+            // useful positional trail. Use a fixed key per detection position
+            // and always overwrite with the latest data so the arc stays at
+            // full opacity while the detection persists and fades only when
+            // the detection disappears.
+            const key = `det-${arc.node_id}-${Math.round(mid[0] * 100)}-${Math.round(mid[1] * 100)}`;
             buf[key] = {
-              // No aircraft hex — pending detections aren't geolocated to
-              // a track yet, so clicking should select the node, not try
-              // to open a nonexistent aircraft detail panel.
               hex: null,
               node_id: arc.node_id,
               ambiguity_arc: arc.ambiguity_arc,

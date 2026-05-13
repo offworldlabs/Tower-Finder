@@ -568,19 +568,30 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         # arcs fade independently. Without arcs for ADS-B aircraft, the
         # synthetic fleet (where almost every target has ADS-B) gives the
         # impression that nodes are idle, which they're not.
-        # Centre the arc on the known target position so consecutive 1-Hz
-        # arcs trace a readable chain through the beam instead of stacking
-        # into one fat smudge of beam-spanning loci.
-        _tgt_lat = adsb.get("lat") if has_adsb else track.lat
-        _tgt_lon = adsb.get("lon") if has_adsb else track.lon
+        # Always centre on the bistatic-solved position (track.lat/lon), not
+        # on the raw ADS-B GPS fix.  When the ADS-B fix is stale or sits
+        # outside the beam (e.g. an aircraft near the TX tower), centering on
+        # adsb.lat/lon sweeps the wrong beam sector, yields few or no valid
+        # arc points, and the position falls back to an unstable raw solver
+        # output that jumps tens of km between frames.  track.lat/lon is
+        # always the bistatic-constrained estimate — correct sector, stable arc.
         ambiguity_arc = _build_single_node_arc(
-            track, node_cfg, target_lat=_tgt_lat, target_lon=_tgt_lon,
+            track, node_cfg, target_lat=track.lat, target_lon=track.lon,
         )
-        if ambiguity_arc and position_source == "solver_single_node":
+        if ambiguity_arc and position_source in ("solver_single_node", "solver_adsb_seed"):
             midpoint = ambiguity_arc[len(ambiguity_arc) // 2]
             lat = round(midpoint[0], 6)
             lon = round(midpoint[1], 6)
             position_source = "single_node_ellipse_arc"
+        elif not ambiguity_arc:
+            # Arc is None.  Only suppress the track if there was a valid delay
+            # measurement (delay > 0) but the arc still failed — which means
+            # the solver position is outside the antenna beam and is unreliable.
+            # If delay is 0/None the track has no bistatic measurement data and
+            # should pass through rather than disappearing due to a missing arc.
+            _arc_delay = getattr(track, "latest_delay_us", None)
+            if _arc_delay and _arc_delay > 0:
+                return None
 
         # Dead-reckon from last fix using stored velocity so positions
         # update smoothly between frame arrivals (~10 s real-time gaps).
@@ -677,7 +688,9 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             if ac_hex in seen_hex:
                 continue
             seen_hex.add(ac_hex)
-            aircraft.append(_track_entry(ac_hex, track, cfg))
+            entry = _track_entry(ac_hex, track, cfg)
+            if entry is not None:
+                aircraft.append(entry)
         for k in stale_geo:
             state.active_geo_aircraft.pop(k, None)
         with state.anomaly_lock:
@@ -692,7 +705,9 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         if ac_hex in seen_hex:
             continue
         seen_hex.add(ac_hex)
-        aircraft.append(_track_entry(ac_hex, track, default_pipeline.config))
+        entry = _track_entry(ac_hex, track, default_pipeline.config)
+        if entry is not None:
+            aircraft.append(entry)
 
     # 3. Multi-node solver
     stale_mn = []
