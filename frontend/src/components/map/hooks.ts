@@ -237,11 +237,9 @@ export function useAircraftFeed() {
       ? `${API_BASE}/radar/data/aircraft-live.json`
       : `${API_BASE}/radar/data/aircraft.json`;
     const controller = new AbortController();
-    const interval = setInterval(async () => {
+    const doFetch = async () => {
       try {
-        const res = await fetch(pollPath, {
-          signal: controller.signal,
-        });
+        const res = await fetch(pollPath, { signal: controller.signal });
         if (res.ok) {
           const data = await res.json();
           ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes, data.detection_arcs);
@@ -251,7 +249,11 @@ export function useAircraftFeed() {
           /* ignore transient network errors */
         }
       }
-    }, 1000);
+    };
+    // Fire immediately so data appears before the first interval tick.
+    // This cuts the blank-map startup window from ~1s to the HTTP round-trip.
+    doFetch();
+    const interval = setInterval(doFetch, 1000);
     return () => {
       clearInterval(interval);
       controller.abort();
