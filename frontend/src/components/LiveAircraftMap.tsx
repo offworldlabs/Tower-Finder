@@ -665,7 +665,7 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
           ? 1.0
           : Math.max(0.0, Math.min(0.95, 1 - age / ARC_TOTAL_LIFE_MS));
         const color = entry.target_class === "drone" ? "#fb923c" : dopplerColor(entry.doppler_hz ?? 0);
-        const weight = isSelected ? 5 : 3;
+        const weight = isSelected ? 6 : 4;
 
         const existing = polyMap.get(key);
         if (existing) {

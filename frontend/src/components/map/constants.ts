@@ -5,12 +5,13 @@ export const MAX_HISTORY = 150;
 export const VIEWPORT_PAD_DEG = 1.5;
 export const FOCUS_CLUSTER_LIMIT = 24;
 
-// Doppler colour gradient — dark blue (approaching) → light blue → grey → light red → dark red (receding)
+// Doppler colour gradient — dark blue (approaching) → light blue → cyan → light red → dark red (receding)
+// Centre stop is bright cyan so near-zero-doppler arcs are always visible on light basemaps.
 // t ∈ [-1, +1] maps linearly across the 5 stops.
 const _DOPPLER_STOPS = [
   [0x1e, 0x3a, 0x8a], // -1.0  dark blue
   [0x60, 0xa5, 0xfa], // -0.5  light blue
-  [0x94, 0xa3, 0xb8], //  0.0  grey
+  [0x22, 0xd3, 0xee], //  0.0  cyan-400 (replaces grey — visible on any basemap)
   [0xf8, 0x71, 0x71], // +0.5  light red
   [0x99, 0x1b, 0x1b], // +1.0  dark red
 ];
