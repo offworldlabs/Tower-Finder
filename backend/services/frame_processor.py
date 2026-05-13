@@ -585,36 +585,37 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             position_source = "single_node_ellipse_arc"
 
             # Speed gate: if the new arc midpoint moved faster than 800 m/s
-            # (~1560 kt) from the last known position, the tracker has likely
-            # mis-associated this frame's measurement to a different target
-            # (delay jumped by tens of µs, which is physically impossible for
-            # a single aircraft).  Revert to the last good position and suppress
-            # the arc for this frame so no wrong-position arc enters the buffer.
-            _hist = state.track_histories.get(ac_hex)
-            if _hist:
-                _prev = _hist[-1]  # [lat, lon, alt, ts]
-                _dt = now - _prev[3]
+            # (~1560 kt) from the last EMITTED position, the tracker has likely
+            # mis-associated this frame's measurement to a different target.
+            # We compare against ``track_last_emit`` (refreshed every emit)
+            # rather than ``track_histories`` (deduped at ~5 m), because dedup
+            # can age the history timestamp 20-60 s for slow tracks and let a
+            # 20 km mis-association come out under 800 m/s.
+            _last_emit = state.track_last_emit.get(ac_hex)
+            if _last_emit:
+                _prev_lat, _prev_lon, _prev_ts = _last_emit
+                _dt = now - _prev_ts
                 if 0 < _dt < 60:
-                    _dlat = (lat - _prev[0]) * 111_320
-                    _dlon = (lon - _prev[1]) * 111_320 * math.cos(math.radians(lat))
+                    _dlat = (lat - _prev_lat) * 111_320
+                    _dlon = (lon - _prev_lon) * 111_320 * math.cos(math.radians(lat))
                     _speed_ms = math.hypot(_dlat, _dlon) / _dt
                     if _speed_ms > 800:
-                        lat = round(_prev[0], 6)
-                        lon = round(_prev[1], 6)
+                        lat = _prev_lat
+                        lon = _prev_lon
                         ambiguity_arc = None  # suppress arc; entry still emitted
 
             # RMS gate: persistently high rms_delay means the Kalman filter
             # cannot fit the current measurement — the track is in a
             # mis-association state and the arc position is unreliable.
-            # Revert to the last stable position (like speed gate) and suppress
-            # the arc so neither the dot nor the arc reflects bad data.
+            # Revert to the last emitted position (same source as speed gate)
+            # and suppress the arc so neither dot nor arc reflects bad data.
             # Threshold 7 µs: median rms is ~2 µs for clean tracks; bad
             # actors observed at 8–11 µs over dozens of consecutive frames.
             _rms = getattr(track, "rms_delay", 0.0) or 0.0
             if ambiguity_arc and _rms > 7.0:
-                if _hist:
-                    lat = round(_hist[-1][0], 6)
-                    lon = round(_hist[-1][1], 6)
+                if _last_emit:
+                    lat = _last_emit[0]
+                    lon = _last_emit[1]
                 ambiguity_arc = None  # suppress arc; entry still emitted
         elif not ambiguity_arc:
             # Arc is None.  Only suppress the track if there was a valid delay
@@ -640,6 +641,9 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
                 lon = round(lon + (_vel_e / (111_320.0 * _cos_lat)) * _dr_elapsed, 6)
 
         append_track_history(ac_hex, lat, lon, alt_ft, now)
+        # Refresh the speed-gate reference on every emit (dedup-free) so the
+        # next frame's gate sees the true emit-to-emit interval.
+        state.track_last_emit[ac_hex] = [lat, lon, now]
 
         # Record ADS-B-verified positions as calibration points for empirical coverage.
         if has_adsb:
@@ -803,6 +807,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     ]
     for h in stale_th:
         state.track_histories.pop(h, None)
+        state.track_last_emit.pop(h, None)
 
     # 5. Pending detection arcs from tracker tracks not yet geolocated.
     # These arcs appear immediately on each detection without waiting for
