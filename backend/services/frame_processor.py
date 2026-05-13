@@ -602,6 +602,17 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
                         lat = round(_prev[0], 6)
                         lon = round(_prev[1], 6)
                         ambiguity_arc = None  # suppress arc; entry still emitted
+
+            # RMS gate: persistently high rms_delay means the Kalman filter
+            # cannot fit the current measurement — the track is in a
+            # mis-association state and the arc position is unreliable.
+            # Suppress the arc (no new buffer bucket) but keep the entry so
+            # the aircraft dot stays visible at the last stable lat/lon.
+            # Threshold 7 µs: median rms is ~2 µs for clean tracks; bad
+            # actors observed at 8–11 µs over dozens of consecutive frames.
+            _rms = getattr(track, "rms_delay", 0.0) or 0.0
+            if ambiguity_arc and _rms > 7.0:
+                ambiguity_arc = None  # suppress arc; entry still emitted
         elif not ambiguity_arc:
             # Arc is None.  Only suppress the track if there was a valid delay
             # measurement (delay > 0) but the arc still failed — which means
