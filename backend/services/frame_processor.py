@@ -568,15 +568,17 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         # arcs fade independently. Without arcs for ADS-B aircraft, the
         # synthetic fleet (where almost every target has ADS-B) gives the
         # impression that nodes are idle, which they're not.
-        # Centre the arc on the known target position so consecutive 1-Hz
-        # arcs trace a readable chain through the beam instead of stacking
-        # into one fat smudge of beam-spanning loci.
-        _tgt_lat = adsb.get("lat") if has_adsb else track.lat
-        _tgt_lon = adsb.get("lon") if has_adsb else track.lon
+        # Always centre on the bistatic-solved position (track.lat/lon), not
+        # on the raw ADS-B GPS fix.  When the ADS-B fix is stale or sits
+        # outside the beam (e.g. an aircraft near the TX tower), centering on
+        # adsb.lat/lon sweeps the wrong beam sector, yields few or no valid
+        # arc points, and the position falls back to an unstable raw solver
+        # output that jumps tens of km between frames.  track.lat/lon is
+        # always the bistatic-constrained estimate — correct sector, stable arc.
         ambiguity_arc = _build_single_node_arc(
-            track, node_cfg, target_lat=_tgt_lat, target_lon=_tgt_lon,
+            track, node_cfg, target_lat=track.lat, target_lon=track.lon,
         )
-        if ambiguity_arc and position_source == "solver_single_node":
+        if ambiguity_arc and position_source in ("solver_single_node", "solver_adsb_seed"):
             midpoint = ambiguity_arc[len(ambiguity_arc) // 2]
             lat = round(midpoint[0], 6)
             lon = round(midpoint[1], 6)
