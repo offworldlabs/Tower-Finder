@@ -730,6 +730,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
                 aircraft.append(entry)
         for k in stale_geo:
             state.active_geo_aircraft.pop(k, None)
+            state.track_last_emit.pop(k, None)
         with state.anomaly_lock:
             for k in stale_geo:
                 state.anomaly_hexes.discard(k)
@@ -807,7 +808,12 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     ]
     for h in stale_th:
         state.track_histories.pop(h, None)
-        state.track_last_emit.pop(h, None)
+        # NOTE: do NOT prune track_last_emit here.  track_histories ages out
+        # via the ~5 m dedup even when the track is still actively emitting
+        # the same arc midpoint.  Clearing the speed-gate reference would
+        # then let the next bad measurement leak through unchecked.
+        # track_last_emit is pruned when the track itself goes stale
+        # (see stale_geo cleanup above).
 
     # 5. Pending detection arcs from tracker tracks not yet geolocated.
     # These arcs appear immediately on each detection without waiting for
