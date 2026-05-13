@@ -53,6 +53,14 @@ adsb_aircraft: dict[str, dict] = {}
 # ── Track history: rolling position buffer per aircraft hex ───────────────────
 track_histories: dict[str, deque] = {}
 
+# ── Last emitted position per hex, for the speed gate ─────────────────────────
+# Updated EVERY emit (not deduped) so the gate's dt reflects actual emit cadence
+# rather than the dedup'd history.  Without this, a track that sits at the same
+# arc midpoint between sparse tracker updates ages the gate's dt to 20–60 s and
+# a 20 km mis-association comes out under the 800 m/s threshold.
+# Value: [lat, lon, ts]
+track_last_emit: dict[str, list] = {}
+
 # ── Ground truth trails from fleet_orchestrator ──────────────────────────
 ground_truth_trails: dict[str, deque] = {}
 ground_truth_meta: dict[str, dict] = {}  # hex → {object_type, is_anomalous}
