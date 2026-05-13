@@ -583,6 +583,15 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             lat = round(midpoint[0], 6)
             lon = round(midpoint[1], 6)
             position_source = "single_node_ellipse_arc"
+        elif not ambiguity_arc:
+            # Arc is None.  Only suppress the track if there was a valid delay
+            # measurement (delay > 0) but the arc still failed — which means
+            # the solver position is outside the antenna beam and is unreliable.
+            # If delay is 0/None the track has no bistatic measurement data and
+            # should pass through rather than disappearing due to a missing arc.
+            _arc_delay = getattr(track, "latest_delay_us", None)
+            if _arc_delay and _arc_delay > 0:
+                return None
 
         # Dead-reckon from last fix using stored velocity so positions
         # update smoothly between frame arrivals (~10 s real-time gaps).
@@ -679,7 +688,9 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             if ac_hex in seen_hex:
                 continue
             seen_hex.add(ac_hex)
-            aircraft.append(_track_entry(ac_hex, track, cfg))
+            entry = _track_entry(ac_hex, track, cfg)
+            if entry is not None:
+                aircraft.append(entry)
         for k in stale_geo:
             state.active_geo_aircraft.pop(k, None)
         with state.anomaly_lock:
@@ -694,7 +705,9 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         if ac_hex in seen_hex:
             continue
         seen_hex.add(ac_hex)
-        aircraft.append(_track_entry(ac_hex, track, default_pipeline.config))
+        entry = _track_entry(ac_hex, track, default_pipeline.config)
+        if entry is not None:
+            aircraft.append(entry)
 
     # 3. Multi-node solver
     stale_mn = []
