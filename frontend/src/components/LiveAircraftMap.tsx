@@ -671,7 +671,11 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
         }
 
         seen.add(key);
-        const isSelected = entry.hex === curSelected;
+        // Pending arcs have hex=null.  Without the explicit null check this
+        // would compare null === null when no aircraft is selected and treat
+        // every pending arc as "selected" — making them render at weight 6
+        // with full opacity instead of the intended weight 2 with fade.
+        const isSelected = curSelected != null && entry.hex === curSelected;
         let opacity;
         if (isSelected) {
           opacity = 1.0;
