@@ -49,20 +49,23 @@ export function makeAircraftIcon(ac, showLabel, isSelected) {
   const iconOpacity = isApproximate ? 0.65 : 1.0;
   const strokeDash = isApproximate ? 'stroke-dasharray="2 1.5"' : "";
 
+  // pointer-events: only the visible SVG + label are clickable.  The outer
+  // 90×44 container would otherwise grab clicks in its empty 90% area —
+  // particularly bad when icons are smaller (approximate / low-altitude).
   const svgHtml = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 32 32"
-    style="display:block;transform:rotate(${track}deg);${glow}opacity:${iconOpacity};">
+    style="display:block;pointer-events:auto;transform:rotate(${track}deg);${glow}opacity:${iconOpacity};">
     <path fill="${color}" stroke="rgba(255,255,255,0.7)" stroke-width="1.2" stroke-linejoin="round" ${strokeDash}
       d="${PLANE_PATH}"/>
   </svg>`;
 
   const labelHtml =
     showLabel && label
-      ? `<div class="aircraft-label">${label}${alt ? `<span class="aircraft-alt"> ${alt}</span>` : ""}</div>`
+      ? `<div class="aircraft-label" style="pointer-events:auto;">${label}${alt ? `<span class="aircraft-alt"> ${alt}</span>` : ""}</div>`
       : "";
 
   return L.divIcon({
     className: `aircraft-marker ac-hex-${ac.hex}`,
-    html: `<div style="display:flex;flex-direction:column;align-items:center;">${svgHtml}${labelHtml}</div>`,
+    html: `<div style="display:flex;flex-direction:column;align-items:center;pointer-events:none;">${svgHtml}${labelHtml}</div>`,
     iconSize: [90, 44],
     iconAnchor: [45, Math.round(size / 2)],
   });
