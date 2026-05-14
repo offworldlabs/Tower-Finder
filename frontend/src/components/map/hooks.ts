@@ -150,11 +150,16 @@ export function useAircraftFeed() {
           }
         }
       }
-      // Prune arcs older than ARC_MAX_AGE_MS — old buckets stay in the
-      // buffer for their full fade lifetime regardless of whether a new
-      // detection has arrived.
+      // Prune arcs older than their fade lifetime.  Bucketed aircraft arcs
+      // (immutable, per-second key) fade over 12 s.  Pending arcs (det- key)
+      // fade over a shorter window — keep them in sync with the renderer's
+      // PENDING_TOTAL_MS so we don't waste memory on entries that won't
+      // render anyway.
+      const PENDING_BUF_MAX_AGE = 5_000;
       for (const key of Object.keys(buf)) {
-        if (now - buf[key].ts > ARC_MAX_AGE_MS) delete buf[key];
+        const isPending = key.startsWith("det-");
+        const maxAge = isPending ? PENDING_BUF_MAX_AGE : ARC_MAX_AGE_MS;
+        if (now - buf[key].ts > maxAge) delete buf[key];
       }
 
       updateTrails(newAircraft);
