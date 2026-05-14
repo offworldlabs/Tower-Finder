@@ -828,7 +828,14 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         for pipeline in list(state.node_pipelines.values()):
             node_cfg = pipeline.config
             for track in list(pipeline.tracker.tracks):
-                if track.state_status == TrackState.TENTATIVE:
+                # Only emit pending arcs for tracks with a current detection.
+                # TENTATIVE = still in M-of-N promotion.  COASTING = track
+                # has stopped receiving detections and the KF is predicting
+                # forward — this is what produces "ghost" arcs lingering after
+                # an aircraft has left the beam.  The 12 s frontend afterglow
+                # handles the fade-out naturally; the backend should stop
+                # producing fresh arcs the moment detections cease.
+                if track.state_status != TrackState.ACTIVE:
                     continue
                 if track.adsb_hex:
                     _ae = state.adsb_aircraft.get(track.adsb_hex)

@@ -652,19 +652,31 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
 
       const seen = new Set();
 
+      // Pending arcs use a fixed-position key and constantly-refreshed ts
+      // while the detection persists — to make them fade smoothly after the
+      // detection ends, we don't use the buffer ts directly.  Instead each
+      // polyMap entry tracks fadeStart, set to the moment the arc first
+      // leaves the buffer.  Until then, opacity holds at full.
+      const FADE_OUT_MS = 4_000;
+
       // Add / update arcs from buffer
       for (const key of Object.keys(buf)) {
         const entry = buf[key];
-        const age = now - entry.ts;
-        if (age > ARC_TOTAL_LIFE_MS) continue;
         if (!Array.isArray(entry.ambiguity_arc) || entry.ambiguity_arc.length < 2) continue;
+        const isPending = key.startsWith("det-");
+        const age = now - entry.ts;
+        // For per-second bucketed aircraft arcs, drop when their bucket
+        // ages past the lifetime.  Pending arcs are kept alive by WS
+        // refresh; they expire via fadeStart below.
+        if (!isPending && age > ARC_TOTAL_LIFE_MS) continue;
 
         seen.add(key);
         const isSelected = entry.hex === curSelected;
-        const isPending = key.startsWith("det-");
         const opacity = isSelected
           ? 1.0
-          : Math.max(0.0, Math.min(0.95, 1 - age / ARC_TOTAL_LIFE_MS));
+          : isPending
+            ? 0.95  // hold full while WS keeps refreshing
+            : Math.max(0.0, Math.min(0.95, 1 - age / ARC_TOTAL_LIFE_MS));
         const color = entry.target_class === "drone" ? "#fb923c" : dopplerColor(entry.doppler_hz ?? 0);
         // Pending (unidentified) detections render thinner so they're visually
         // distinct from confirmed aircraft arcs.
@@ -673,9 +685,8 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
         const existing = polyMap.get(key);
         if (existing) {
           existing.line.setStyle({ opacity });
-          // Pending arcs refresh their timestamp each WS tick — sync
-          // the polyMap ts so the removal logic sees the correct age.
-          if (isPending) existing.ts = entry.ts;
+          // Clear fadeStart if the arc came back into the buffer.
+          existing.fadeStart = null;
         } else {
           const line = L.polyline(entry.ambiguity_arc, {
             color,
@@ -697,26 +708,34 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
             if (entry.node_id) onSelectNodeRef.current(entry.node_id);
           });
           line.addTo(map);
-          polyMap.set(key, { line, ts: entry.ts, hex: entry.hex, node_id: entry.node_id });
+          polyMap.set(key, {
+            line, ts: entry.ts, hex: entry.hex, node_id: entry.node_id,
+            isPending, fadeStart: null,
+          });
         }
       }
 
-      // Remove expired arcs
+      // Fade-out arcs that left the buffer
       for (const [key, info] of polyMap) {
-        if (!seen.has(key)) {
-          const age = now - info.ts;
-          if (age > ARC_TOTAL_LIFE_MS) {
+        if (seen.has(key)) continue;
+        if (info.fadeStart == null) info.fadeStart = now;
+        if (info.isPending) {
+          // Pending: linear fade over FADE_OUT_MS from when buffer dropped it
+          const fadeAge = now - info.fadeStart;
+          if (fadeAge >= FADE_OUT_MS) {
             info.line.remove();
             polyMap.delete(key);
           } else {
-            // Still fading out — update opacity
-            const opacity = Math.max(0.0, Math.min(0.95, 1 - age / ARC_TOTAL_LIFE_MS));
-            if (opacity <= 0) {
-              info.line.remove();
-              polyMap.delete(key);
-            } else {
-              info.line.setStyle({ opacity });
-            }
+            info.line.setStyle({ opacity: 0.95 * (1 - fadeAge / FADE_OUT_MS) });
+          }
+        } else {
+          // Bucketed aircraft arc: opacity already encoded in ts age
+          const age = now - info.ts;
+          if (age >= ARC_TOTAL_LIFE_MS) {
+            info.line.remove();
+            polyMap.delete(key);
+          } else {
+            info.line.setStyle({ opacity: Math.max(0.0, 0.95 * (1 - age / ARC_TOTAL_LIFE_MS)) });
           }
         }
       }
