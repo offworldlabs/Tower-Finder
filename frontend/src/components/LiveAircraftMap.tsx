@@ -630,6 +630,10 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
 const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, viewport, onSelect, onSelectNode }) {
   const map = useMap();
   const polyMapRef = useRef(new Map()); // key → { line: L.polyline, ts, hex, node_id, ... }
+  // Pending arcs have hex=null and no aircraft entry, so no plane icon is rendered for them.
+  // Without a marker the user reads "arcs without aircraft" as "false detection".
+  // Each pending arc gets a small hollow circle at its midpoint, matching the arc's fade.
+  const placeholderMapRef = useRef(new Map()); // key → L.circleMarker
   const onSelectRef = useRef(onSelect);
   const onSelectNodeRef = useRef(onSelectNode);
   const selectedHexRef = useRef(selectedHex);
@@ -639,6 +643,7 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
 
   useEffect(() => {
     const polyMap = polyMapRef.current;
+    const placeholderMap = placeholderMapRef.current;
 
     const tick = () => {
       const buf = arcsBufferRef.current;
@@ -701,16 +706,47 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
           line.addTo(map);
           polyMap.set(key, { line, ts: entry.ts, hex: entry.hex, node_id: entry.node_id });
         }
+
+        // Pending-arc placeholder marker (hollow ring at midpoint).
+        // Communicates "detection here, no aircraft identity yet" so the user
+        // doesn't read pending arcs as "false positive arcs without aircraft".
+        if (isPending) {
+          const arc = entry.ambiguity_arc;
+          const mid = arc[Math.floor(arc.length / 2)];
+          const existingMarker = placeholderMap.get(key);
+          if (existingMarker) {
+            existingMarker.setLatLng(mid);
+            existingMarker.setStyle({ opacity, color });
+          } else {
+            const marker = L.circleMarker(mid, {
+              radius: 5,
+              color,
+              weight: 1.5,
+              fillOpacity: 0,
+              opacity,
+              interactive: true,
+            });
+            marker.on("click", (e) => {
+              L.DomEvent.stopPropagation(e);
+              if (entry.node_id) onSelectNodeRef.current(entry.node_id);
+            });
+            marker.addTo(map);
+            placeholderMap.set(key, marker);
+          }
+        }
       }
 
       // Remove arcs no longer in seen — either past their fade window or
       // their buffer entry was pruned.
       for (const [key, info] of polyMap) {
         if (seen.has(key)) continue;
-        // For both arc types: if we got here the for-loop skipped it
-        // (age past lifetime).  Just remove.
         info.line.remove();
         polyMap.delete(key);
+      }
+      for (const [key, marker] of placeholderMap) {
+        if (seen.has(key)) continue;
+        marker.remove();
+        placeholderMap.delete(key);
       }
     };
 
@@ -721,6 +757,8 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
       clearInterval(intervalId);
       for (const info of polyMap.values()) info.line.remove();
       polyMap.clear();
+      for (const marker of placeholderMap.values()) marker.remove();
+      placeholderMap.clear();
     };
   }, [map, arcsBufferRef]);
 
