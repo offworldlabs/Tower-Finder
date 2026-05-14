@@ -15,6 +15,10 @@ import "./LiveAircraftMap.css";
 
 import {
   STALE_AIRCRAFT_MS,
+  ARC_HOLD_MS,
+  ARC_FADE_MS,
+  ARC_TOTAL_LIFE_MS,
+  POSITION_SOURCE_ARC_ONLY,
   dopplerColor,
   isPointInViewport,
   isAircraftInViewport,
@@ -649,14 +653,9 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
       const buf = arcsBufferRef.current;
       const now = Date.now();
       // Unified lifecycle for both bucketed (per-second hex-node-ts) and
-      // pending (det-node-lat-lon) arcs:
-      //   - 2 s hold at full opacity (absorbs WS jitter for pending; emphasises
-      //     the freshest position in the trail for bucketed aircraft arcs)
-      //   - 10 s linear fade to zero
-      // Total visible life = 12 s.
-      const ARC_HOLD_MS = 2_000;
-      const ARC_FADE_MS = 10_000;
-      const ARC_TOTAL_LIFE_MS = ARC_HOLD_MS + ARC_FADE_MS;
+      // pending (det-node-lat-lon) arcs: ARC_HOLD_MS at full opacity, then
+      // linear fade over ARC_FADE_MS.  Constants live in map/constants.ts
+      // so the buffer pruner in hooks.ts can share the same TTL.
       const curSelected = selectedHexRef.current;
 
       const seen = new Set();
@@ -665,6 +664,8 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
       for (const key of Object.keys(buf)) {
         const entry = buf[key];
         if (!Array.isArray(entry.ambiguity_arc) || entry.ambiguity_arc.length < 2) continue;
+        // isPending controls weight (thinner stroke than bucketed arcs) and
+        // whether a hollow-ring placeholder is drawn at the midpoint.
         const isPending = key.startsWith("det-");
         const age = now - entry.ts;
         if (age > ARC_TOTAL_LIFE_MS) continue;
@@ -1294,7 +1295,7 @@ export default function LiveAircraftMap() {
 
             {/* Selected trail — gradient fade; dashed for arc-type tracks */}
             {showTrails && selectedTrailPositions.length >= 2 && (() => {
-              const isArcTrack = selectedAc?.position_source === "single_node_ellipse_arc";
+              const isArcTrack = selectedAc?.position_source === POSITION_SOURCE_ARC_ONLY;
               return buildTrailSegments(selectedTrailPositions).map((seg, i) => (
                 <Polyline
                   key={`trail-${selectedHex}-seg${i}`}

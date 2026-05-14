@@ -5,6 +5,19 @@ export const MAX_HISTORY = 150;
 export const VIEWPORT_PAD_DEG = 1.5;
 export const FOCUS_CLUSTER_LIMIT = 24;
 
+// Arc fade lifecycle.  Single source of truth for the renderer (LiveAircraftMap
+// DetectionArcs) and the buffer pruner (hooks.useAircraftFeed).  They must
+// agree: a renderer life > pruner TTL would leave the renderer hunting for
+// already-deleted buffer entries; the reverse keeps stale entries in memory.
+export const ARC_HOLD_MS = 2_000;
+export const ARC_FADE_MS = 10_000;
+export const ARC_TOTAL_LIFE_MS = ARC_HOLD_MS + ARC_FADE_MS;
+
+// position_source string for single-node arc-only aircraft (lat/lon is the
+// arc midpoint, not a real fix).  Backend emits this verbatim — keep in sync
+// with the backend constant if it ever moves.
+export const POSITION_SOURCE_ARC_ONLY = "single_node_ellipse_arc";
+
 // Doppler colour gradient — dark blue (approaching) → light blue → cyan → light red → dark red (receding)
 // Centre stop is bright cyan so near-zero-doppler arcs are always visible on light basemaps.
 // t ∈ [-1, +1] maps linearly across the 5 stops.

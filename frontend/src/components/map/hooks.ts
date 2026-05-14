@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { API_BASE, MAX_HISTORY } from "./constants";
+import { API_BASE, ARC_TOTAL_LIFE_MS, MAX_HISTORY } from "./constants";
 import { mergeTrailPositions } from "./trails";
 import { usesRealOnlyFeed } from "../../utils/domains";
 
@@ -102,11 +102,11 @@ export function useAircraftFeed() {
       // separate arcs that each fade independently — instead of one arc that
       // rigidly tracks the aircraft and resets its age timer every frame.
       const now = Date.now();
-      // 12 s gradual fade per Jehan: each ellipse persists for 12 s and
-      // monotonically dims. Buckets are NEVER overwritten after first
-      // creation — so multiple WS updates within a second can't reset a
-      // fading ellipse's age or move its geometry.
-      const ARC_MAX_AGE_MS = 12_000;
+      // Each ellipse persists for ARC_TOTAL_LIFE_MS and monotonically dims.
+      // Buckets are NEVER overwritten after first creation — so multiple WS
+      // updates within a second can't reset a fading ellipse's age or move
+      // its geometry.
+      const ARC_MAX_AGE_MS = ARC_TOTAL_LIFE_MS;
       const tsBucket = Math.floor(now / 1000);
       const buf = arcsBufferRef.current;
       for (const ac of newAircraft) {

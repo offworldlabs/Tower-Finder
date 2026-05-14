@@ -1,4 +1,5 @@
 import L from "leaflet";
+import { POSITION_SOURCE_ARC_ONLY } from "./constants";
 
 // Top-down airplane SVG path (nose pointing up/north at 0°)
 export const PLANE_PATH =
@@ -35,7 +36,7 @@ export function makeAircraftIcon(ac, showLabel, isSelected) {
   // actually somewhere along the arc, not exactly at this point.  Render the
   // icon smaller, semi-transparent, with a dashed outline to signal the
   // approximate position.
-  const isApproximate = ac.position_source === "single_node_ellipse_arc";
+  const isApproximate = ac.position_source === POSITION_SOURCE_ARC_ONLY;
 
   const altFt = ac.alt_baro ?? 0;
   let size = altFt > 35000 ? 30 : altFt > 20000 ? 26 : altFt > 5000 ? 22 : 18;
