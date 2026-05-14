@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { API_BASE, MAX_HISTORY } from "./constants";
+import { API_BASE, ARC_TOTAL_LIFE_MS, MAX_HISTORY } from "./constants";
 import { mergeTrailPositions } from "./trails";
 import { usesRealOnlyFeed } from "../../utils/domains";
 
@@ -102,11 +102,11 @@ export function useAircraftFeed() {
       // separate arcs that each fade independently — instead of one arc that
       // rigidly tracks the aircraft and resets its age timer every frame.
       const now = Date.now();
-      // 12 s gradual fade per Jehan: each ellipse persists for 12 s and
-      // monotonically dims. Buckets are NEVER overwritten after first
-      // creation — so multiple WS updates within a second can't reset a
-      // fading ellipse's age or move its geometry.
-      const ARC_MAX_AGE_MS = 12_000;
+      // Each ellipse persists for ARC_TOTAL_LIFE_MS and monotonically dims.
+      // Buckets are NEVER overwritten after first creation — so multiple WS
+      // updates within a second can't reset a fading ellipse's age or move
+      // its geometry.
+      const ARC_MAX_AGE_MS = ARC_TOTAL_LIFE_MS;
       const tsBucket = Math.floor(now / 1000);
       const buf = arcsBufferRef.current;
       for (const ac of newAircraft) {
@@ -150,16 +150,11 @@ export function useAircraftFeed() {
           }
         }
       }
-      // Prune arcs older than their fade lifetime.  Bucketed aircraft arcs
-      // (immutable, per-second key) fade over 12 s.  Pending arcs (det- key)
-      // fade over a shorter window — keep them in sync with the renderer's
-      // PENDING_TOTAL_MS so we don't waste memory on entries that won't
-      // render anyway.
-      const PENDING_BUF_MAX_AGE = 5_000;
+      // Prune arcs older than ARC_MAX_AGE_MS.  Both arc types share the same
+      // 12 s lifetime in the renderer — bucketed arcs have immutable ts (form
+      // an afterglow trail), pending arcs refresh their ts each WS message.
       for (const key of Object.keys(buf)) {
-        const isPending = key.startsWith("det-");
-        const maxAge = isPending ? PENDING_BUF_MAX_AGE : ARC_MAX_AGE_MS;
-        if (now - buf[key].ts > maxAge) delete buf[key];
+        if (now - buf[key].ts > ARC_MAX_AGE_MS) delete buf[key];
       }
 
       updateTrails(newAircraft);

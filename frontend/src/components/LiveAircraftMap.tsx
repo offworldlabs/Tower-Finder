@@ -15,6 +15,10 @@ import "./LiveAircraftMap.css";
 
 import {
   STALE_AIRCRAFT_MS,
+  ARC_HOLD_MS,
+  ARC_FADE_MS,
+  ARC_TOTAL_LIFE_MS,
+  POSITION_SOURCE_ARC_ONLY,
   dopplerColor,
   isPointInViewport,
   isAircraftInViewport,
@@ -630,6 +634,10 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
 const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, viewport, onSelect, onSelectNode }) {
   const map = useMap();
   const polyMapRef = useRef(new Map()); // key → { line: L.polyline, ts, hex, node_id, ... }
+  // Pending arcs have hex=null and no aircraft entry, so no plane icon is rendered for them.
+  // Without a marker the user reads "arcs without aircraft" as "false detection".
+  // Each pending arc gets a small hollow circle at its midpoint, matching the arc's fade.
+  const placeholderMapRef = useRef(new Map()); // key → L.circleMarker
   const onSelectRef = useRef(onSelect);
   const onSelectNodeRef = useRef(onSelectNode);
   const selectedHexRef = useRef(selectedHex);
@@ -639,21 +647,15 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
 
   useEffect(() => {
     const polyMap = polyMapRef.current;
+    const placeholderMap = placeholderMapRef.current;
 
     const tick = () => {
       const buf = arcsBufferRef.current;
       const now = Date.now();
-      // Bucketed aircraft arcs (key = hex-node-tsBucket) live 12 s — one bucket
-      // per second forming a fading afterglow trail behind a moving aircraft.
-      const ARC_TOTAL_LIFE_MS = 12_000;
-      // Pending arcs (key = det-node-lat-lon) get a refreshed ts every WS
-      // broadcast while the underlying tracker track is alive.  When the
-      // track is deleted the backend stops sending the arc; its buffer entry
-      // ts then ages.  Grace absorbs WS jitter (~1 Hz broadcast), then a
-      // short visible fade.
-      const PENDING_GRACE_MS = 1_500;
-      const PENDING_FADE_MS = 3_000;
-      const PENDING_TOTAL_MS = PENDING_GRACE_MS + PENDING_FADE_MS;
+      // Unified lifecycle for both bucketed (per-second hex-node-ts) and
+      // pending (det-node-lat-lon) arcs: ARC_HOLD_MS at full opacity, then
+      // linear fade over ARC_FADE_MS.  Constants live in map/constants.ts
+      // so the buffer pruner in hooks.ts can share the same TTL.
       const curSelected = selectedHexRef.current;
 
       const seen = new Set();
@@ -662,29 +664,24 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
       for (const key of Object.keys(buf)) {
         const entry = buf[key];
         if (!Array.isArray(entry.ambiguity_arc) || entry.ambiguity_arc.length < 2) continue;
+        // isPending controls weight (thinner stroke than bucketed arcs) and
+        // whether a hollow-ring placeholder is drawn at the midpoint.
         const isPending = key.startsWith("det-");
         const age = now - entry.ts;
-        if (isPending) {
-          if (age > PENDING_TOTAL_MS) continue;
-        } else {
-          if (age > ARC_TOTAL_LIFE_MS) continue;
-        }
+        if (age > ARC_TOTAL_LIFE_MS) continue;
 
         seen.add(key);
         // Pending arcs have hex=null.  Without the explicit null check this
         // would compare null === null when no aircraft is selected and treat
-        // every pending arc as "selected" — making them render at weight 6
-        // with full opacity instead of the intended weight 2 with fade.
+        // every pending arc as "selected".
         const isSelected = curSelected != null && entry.hex === curSelected;
         let opacity;
         if (isSelected) {
           opacity = 1.0;
-        } else if (isPending) {
-          opacity = age <= PENDING_GRACE_MS
-            ? 0.95
-            : Math.max(0.0, 0.95 * (1 - (age - PENDING_GRACE_MS) / PENDING_FADE_MS));
+        } else if (age <= ARC_HOLD_MS) {
+          opacity = 0.95;
         } else {
-          opacity = Math.max(0.0, Math.min(0.95, 1 - age / ARC_TOTAL_LIFE_MS));
+          opacity = Math.max(0.0, 0.95 * (1 - (age - ARC_HOLD_MS) / ARC_FADE_MS));
         }
         const color = entry.target_class === "drone" ? "#fb923c" : dopplerColor(entry.doppler_hz ?? 0);
         // Pending (unidentified) detections render thinner so they're visually
@@ -710,16 +707,47 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
           line.addTo(map);
           polyMap.set(key, { line, ts: entry.ts, hex: entry.hex, node_id: entry.node_id });
         }
+
+        // Pending-arc placeholder marker (hollow ring at midpoint).
+        // Communicates "detection here, no aircraft identity yet" so the user
+        // doesn't read pending arcs as "false positive arcs without aircraft".
+        if (isPending) {
+          const arc = entry.ambiguity_arc;
+          const mid = arc[Math.floor(arc.length / 2)];
+          const existingMarker = placeholderMap.get(key);
+          if (existingMarker) {
+            existingMarker.setLatLng(mid);
+            existingMarker.setStyle({ opacity, color });
+          } else {
+            const marker = L.circleMarker(mid, {
+              radius: 5,
+              color,
+              weight: 1.5,
+              fillOpacity: 0,
+              opacity,
+              interactive: true,
+            });
+            marker.on("click", (e) => {
+              L.DomEvent.stopPropagation(e);
+              if (entry.node_id) onSelectNodeRef.current(entry.node_id);
+            });
+            marker.addTo(map);
+            placeholderMap.set(key, marker);
+          }
+        }
       }
 
       // Remove arcs no longer in seen — either past their fade window or
       // their buffer entry was pruned.
       for (const [key, info] of polyMap) {
         if (seen.has(key)) continue;
-        // For both arc types: if we got here the for-loop skipped it
-        // (age past lifetime).  Just remove.
         info.line.remove();
         polyMap.delete(key);
+      }
+      for (const [key, marker] of placeholderMap) {
+        if (seen.has(key)) continue;
+        marker.remove();
+        placeholderMap.delete(key);
       }
     };
 
@@ -730,6 +758,8 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
       clearInterval(intervalId);
       for (const info of polyMap.values()) info.line.remove();
       polyMap.clear();
+      for (const marker of placeholderMap.values()) marker.remove();
+      placeholderMap.clear();
     };
   }, [map, arcsBufferRef]);
 
@@ -1265,7 +1295,7 @@ export default function LiveAircraftMap() {
 
             {/* Selected trail — gradient fade; dashed for arc-type tracks */}
             {showTrails && selectedTrailPositions.length >= 2 && (() => {
-              const isArcTrack = selectedAc?.position_source === "single_node_ellipse_arc";
+              const isArcTrack = selectedAc?.position_source === POSITION_SOURCE_ARC_ONLY;
               return buildTrailSegments(selectedTrailPositions).map((seg, i) => (
                 <Polyline
                   key={`trail-${selectedHex}-seg${i}`}
@@ -1285,11 +1315,11 @@ export default function LiveAircraftMap() {
             {/* Detection arcs — imperative Leaflet layer, 4Hz opacity fade, sourced from raw WS buffer */}
             <DetectionArcs arcsBufferRef={arcsBufferRef} selectedHex={selectedHex} viewport={viewport} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} />
             {/* Aircraft position markers — all radar-detected aircraft rendered as airplane icons.
-                 Color encodes confidence: purple=multinode, teal=ADS-B aided, cyan=single-node. */}
+                 Color encodes confidence: purple=multinode, teal=ADS-B aided, cyan=single-node.
+                 Single-node arc-only tracks are rendered smaller / dashed / semi-transparent to
+                 communicate that their position is approximate (the aircraft is somewhere along
+                 the visible arc, not exactly at the midpoint). */}
             {visibleAircraft.map((ac) => {
-              // Arc-only tracks have no real position — the lat/lon is the arc midpoint
-              // which doesn't move. Skip the icon; the arc polyline is the display element.
-              if (ac.position_source === "single_node_ellipse_arc") return null;
               if (!ac.lat || !ac.lon) return null;
               const isSelected = ac.hex === selectedHex;
               return (
@@ -1307,7 +1337,6 @@ export default function LiveAircraftMap() {
             {/* Anomaly flag rings — pulsing red circle around flagged aircraft */}
             {visibleAircraft
               .filter((ac) =>
-                ac.position_source !== "single_node_ellipse_arc" &&
                 anomalyHexesRef.current.has(ac.ground_truth_hex || ac.hex) &&
                 ac.lat && ac.lon
               )

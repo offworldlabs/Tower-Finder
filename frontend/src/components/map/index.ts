@@ -1,5 +1,5 @@
 // Barrel file — re-exports every module for clean imports
-export { API_BASE, ANIMATION_MS, STALE_AIRCRAFT_MS, MAX_HISTORY, VIEWPORT_PAD_DEG, FOCUS_CLUSTER_LIMIT, dopplerColor } from "./constants";
+export { API_BASE, ANIMATION_MS, STALE_AIRCRAFT_MS, MAX_HISTORY, VIEWPORT_PAD_DEG, FOCUS_CLUSTER_LIMIT, ARC_HOLD_MS, ARC_FADE_MS, ARC_TOTAL_LIFE_MS, POSITION_SOURCE_ARC_ONLY, dopplerColor } from "./constants";
 export { interpolateBearing, easeInOutCubic } from "./animation";
 export {
   buildViewportSnapshot,

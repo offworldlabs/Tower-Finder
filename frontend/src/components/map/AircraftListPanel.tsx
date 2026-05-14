@@ -1,5 +1,6 @@
 import { useEffect, useRef, useMemo, useState, useCallback } from "react";
 import { PLANE_PATH, getAircraftColor } from "./icons";
+import { POSITION_SOURCE_ARC_ONLY } from "./constants";
 
 // Fixed row height must match .al-row CSS (height: 40px, box-sizing: border-box).
 // Changing this constant without updating the CSS will break the virtual list.
@@ -143,7 +144,7 @@ export default function AircraftListPanel({
                     ? "Truth"
                     : ac.multinode
                       ? `Multi·${ac.n_nodes}N`
-                      : ac.position_source === "single_node_ellipse_arc"
+                      : ac.position_source === POSITION_SOURCE_ARC_ONLY
                         ? "Arc·1N"
                         : ac.position_source === "solver_single_node"
                           ? "Solver·1N"

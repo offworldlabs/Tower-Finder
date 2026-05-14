@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { fetchMlatAccuracy, fetchMlatVerification, fetchRadar3Verification } from "../../api";
+import { POSITION_SOURCE_ARC_ONLY } from "./constants";
 
 export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError }) {
   if (!ac) return null;
@@ -14,7 +15,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
 
   const isMultinode = ac.multinode;
   const hasAdsb = ac.type !== "tisb_other" && ac.type !== "multinode_solve";
-  const isAmbiguityArc = ac.position_source === "single_node_ellipse_arc";
+  const isAmbiguityArc = ac.position_source === POSITION_SOURCE_ARC_ONLY;
   const isSolverOnly = ac.position_source === "solver_single_node";
   const isSolverAdsbSeed = ac.position_source === "solver_adsb_seed";
   const isDrone = ac.target_class === "drone";
