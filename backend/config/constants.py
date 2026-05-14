@@ -75,7 +75,12 @@ DRONE_MAX_SPEED_MS = 60.0             # Drone classification speed threshold (m/
 DRONE_MAX_ALT_M = 600.0               # Drone classification altitude threshold (m)
 
 # ── Frame processor cadences ─────────────────────────────────────────────────
-ARC_REFRESH_S = 5.0                   # Detection arc recompute cadence (s)
+ARC_REFRESH_S = 1.0                   # Detection arc recompute cadence (s) — keep
+                                      # short so a deleted track's arc stops
+                                      # being broadcast quickly; otherwise the
+                                      # cached entry lingers up to this many
+                                      # seconds after the underlying detection
+                                      # ends, producing visible ghost arcs.
 GT_REFRESH_S = 5.0                    # Ground-truth snapshot refresh cadence (s)
 
 # ── Periodic task intervals ──────────────────────────────────────────────────

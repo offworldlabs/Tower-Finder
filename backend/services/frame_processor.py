@@ -828,15 +828,16 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         for pipeline in list(state.node_pipelines.values()):
             node_cfg = pipeline.config
             for track in list(pipeline.tracker.tracks):
-                # Only emit pending arcs while a track is actively receiving
-                # detections.  TENTATIVE = still in M-of-N promotion.
-                # COASTING = track stopped receiving detections and the KF is
-                # predicting forward — this is what produces "ghost" arcs that
-                # linger on the map after an aircraft has left the beam.  The
-                # 12 s frontend afterglow handles the fade-out naturally; the
-                # backend should stop producing fresh arcs the moment
-                # detections cease.
-                if track.state_status != TrackState.ACTIVE:
+                # TENTATIVE tracks haven't been promoted via M-of-N yet — they
+                # may still be flagged for deletion.  Skip them so spurious
+                # short-lived tracks don't produce arcs.  ACTIVE and COASTING
+                # tracks both produce arcs: at 22 fps a single missed frame
+                # flips ACTIVE → COASTING and the next frame flips it back, so
+                # filtering COASTING here would cause the arc to flicker at
+                # ~11 Hz for any aircraft with intermittent detection.  The
+                # natural lifecycle (track deleted after N_DELETE missed frames)
+                # is what stops the arc when the aircraft truly leaves the beam.
+                if track.state_status == TrackState.TENTATIVE:
                     continue
                 if track.adsb_hex:
                     _ae = state.adsb_aircraft.get(track.adsb_hex)

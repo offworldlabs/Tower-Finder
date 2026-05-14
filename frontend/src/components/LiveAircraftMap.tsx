@@ -643,11 +643,17 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
     const tick = () => {
       const buf = arcsBufferRef.current;
       const now = Date.now();
-      // Per Jehan's spec: each ellipse lasts 12 s and fades gradually
-      // (linear) — once an ellipse has started fading it never returns
-      // to full opacity. Combined with immutable buckets in
-      // useAircraftFeed, this guarantees monotonic decay.
+      // Bucketed aircraft arcs (key = hex-node-tsBucket) live 12 s — one bucket
+      // per second forming a fading afterglow trail behind a moving aircraft.
       const ARC_TOTAL_LIFE_MS = 12_000;
+      // Pending arcs (key = det-node-lat-lon) get a refreshed ts every WS
+      // broadcast while the underlying tracker track is alive.  When the
+      // track is deleted the backend stops sending the arc; its buffer entry
+      // ts then ages.  Grace absorbs WS jitter (~1 Hz broadcast), then a
+      // short visible fade.
+      const PENDING_GRACE_MS = 1_500;
+      const PENDING_FADE_MS = 3_000;
+      const PENDING_TOTAL_MS = PENDING_GRACE_MS + PENDING_FADE_MS;
       const curSelected = selectedHexRef.current;
 
       const seen = new Set();
@@ -655,16 +661,27 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
       // Add / update arcs from buffer
       for (const key of Object.keys(buf)) {
         const entry = buf[key];
-        const age = now - entry.ts;
-        if (age > ARC_TOTAL_LIFE_MS) continue;
         if (!Array.isArray(entry.ambiguity_arc) || entry.ambiguity_arc.length < 2) continue;
+        const isPending = key.startsWith("det-");
+        const age = now - entry.ts;
+        if (isPending) {
+          if (age > PENDING_TOTAL_MS) continue;
+        } else {
+          if (age > ARC_TOTAL_LIFE_MS) continue;
+        }
 
         seen.add(key);
         const isSelected = entry.hex === curSelected;
-        const isPending = key.startsWith("det-");
-        const opacity = isSelected
-          ? 1.0
-          : Math.max(0.0, Math.min(0.95, 1 - age / ARC_TOTAL_LIFE_MS));
+        let opacity;
+        if (isSelected) {
+          opacity = 1.0;
+        } else if (isPending) {
+          opacity = age <= PENDING_GRACE_MS
+            ? 0.95
+            : Math.max(0.0, 0.95 * (1 - (age - PENDING_GRACE_MS) / PENDING_FADE_MS));
+        } else {
+          opacity = Math.max(0.0, Math.min(0.95, 1 - age / ARC_TOTAL_LIFE_MS));
+        }
         const color = entry.target_class === "drone" ? "#fb923c" : dopplerColor(entry.doppler_hz ?? 0);
         // Pending (unidentified) detections render thinner so they're visually
         // distinct from confirmed aircraft arcs.
@@ -673,9 +690,6 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
         const existing = polyMap.get(key);
         if (existing) {
           existing.line.setStyle({ opacity });
-          // Pending arcs refresh their timestamp each WS tick — sync
-          // the polyMap ts so the removal logic sees the correct age.
-          if (isPending) existing.ts = entry.ts;
         } else {
           const line = L.polyline(entry.ambiguity_arc, {
             color,
@@ -685,14 +699,7 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
             lineJoin: "round",
           });
           line.on("click", (e) => {
-            // Stop bubbling so MapClickClear doesn't immediately clear the
-            // selection we're about to set — both setState calls would
-            // batch into one render and cancel each other out.
             L.DomEvent.stopPropagation(e);
-            // Pass shouldFocus=false — clicking a trail arc shouldn't yank
-            // the camera back to the aircraft. Pending arcs have hex=null
-            // (no associated aircraft track yet); for those, only select
-            // the node so we don't try to open an empty detail panel.
             if (entry.hex) onSelectRef.current(entry.hex, false);
             if (entry.node_id) onSelectNodeRef.current(entry.node_id);
           });
@@ -701,24 +708,14 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
         }
       }
 
-      // Remove expired arcs
+      // Remove arcs no longer in seen — either past their fade window or
+      // their buffer entry was pruned.
       for (const [key, info] of polyMap) {
-        if (!seen.has(key)) {
-          const age = now - info.ts;
-          if (age > ARC_TOTAL_LIFE_MS) {
-            info.line.remove();
-            polyMap.delete(key);
-          } else {
-            // Still fading out — update opacity
-            const opacity = Math.max(0.0, Math.min(0.95, 1 - age / ARC_TOTAL_LIFE_MS));
-            if (opacity <= 0) {
-              info.line.remove();
-              polyMap.delete(key);
-            } else {
-              info.line.setStyle({ opacity });
-            }
-          }
-        }
+        if (seen.has(key)) continue;
+        // For both arc types: if we got here the for-loop skipped it
+        // (age past lifetime).  Just remove.
+        info.line.remove();
+        polyMap.delete(key);
       }
     };
 
