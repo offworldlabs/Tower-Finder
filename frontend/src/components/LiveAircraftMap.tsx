@@ -659,6 +659,10 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
       const curSelected = selectedHexRef.current;
 
       const seen = new Set();
+      // Separate seen set for placeholder rings: a key being in `seen` (polyline
+      // still in fade window) doesn't mean we still want a placeholder — at low
+      // zoom we suppress the ring while keeping the polyline.
+      const seenPlaceholders = new Set();
 
       // Add / update arcs from buffer
       for (const key of Object.keys(buf)) {
@@ -679,9 +683,9 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
         if (isSelected) {
           opacity = 1.0;
         } else if (age <= ARC_HOLD_MS) {
-          opacity = 0.95;
+          opacity = 1.0;
         } else {
-          opacity = Math.max(0.0, 0.95 * (1 - (age - ARC_HOLD_MS) / ARC_FADE_MS));
+          opacity = Math.max(0.0, 1.0 - (age - ARC_HOLD_MS) / ARC_FADE_MS);
         }
         const color = entry.target_class === "drone" ? "#fb923c" : dopplerColor(entry.doppler_hz ?? 0);
         // Pending (unidentified) detections render thinner so they're visually
@@ -711,29 +715,36 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
         // Pending-arc placeholder marker (hollow ring at midpoint).
         // Communicates "detection here, no aircraft identity yet" so the user
         // doesn't read pending arcs as "false positive arcs without aircraft".
+        // Skipped at very low zoom because the arc itself shrinks to ~10 px
+        // there and the screen-space ring would dominate the geometry.
         if (isPending) {
-          const arc = entry.ambiguity_arc;
-          const mid = arc[Math.floor(arc.length / 2)];
-          const existingMarker = placeholderMap.get(key);
-          if (existingMarker) {
-            existingMarker.setLatLng(mid);
-            existingMarker.setStyle({ opacity, color });
-          } else {
-            const marker = L.circleMarker(mid, {
-              radius: 5,
-              color,
-              weight: 1.5,
-              fillOpacity: 0,
-              opacity,
-              interactive: true,
-            });
-            marker.on("click", (e) => {
-              L.DomEvent.stopPropagation(e);
-              if (entry.node_id) onSelectNodeRef.current(entry.node_id);
-            });
-            marker.addTo(map);
-            placeholderMap.set(key, marker);
+          if (map.getZoom() >= 7) {
+            seenPlaceholders.add(key);
+            const arc = entry.ambiguity_arc;
+            const mid = arc[Math.floor(arc.length / 2)];
+            const existingMarker = placeholderMap.get(key);
+            if (existingMarker) {
+              existingMarker.setLatLng(mid);
+              existingMarker.setStyle({ opacity, color });
+            } else {
+              const marker = L.circleMarker(mid, {
+                radius: 4,
+                color,
+                weight: 1.5,
+                fillOpacity: 0,
+                opacity,
+                interactive: true,
+              });
+              marker.on("click", (e) => {
+                L.DomEvent.stopPropagation(e);
+                if (entry.node_id) onSelectNodeRef.current(entry.node_id);
+              });
+              marker.addTo(map);
+              placeholderMap.set(key, marker);
+            }
           }
+          // else: zoom < 7 — leave any existing marker for the cleanup loop
+          // below to remove (it's not added to seenPlaceholders, so it'll go).
         }
       }
 
@@ -745,7 +756,7 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
         polyMap.delete(key);
       }
       for (const [key, marker] of placeholderMap) {
-        if (seen.has(key)) continue;
+        if (seenPlaceholders.has(key)) continue;
         marker.remove();
         placeholderMap.delete(key);
       }
@@ -754,8 +765,13 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
     // Initial tick + interval for smooth updates
     tick();
     const intervalId = setInterval(tick, 250);
+    // Zoom changes affect placeholder visibility (suppressed under zoom 7) —
+    // re-tick immediately on zoomend so rings appear/disappear without a 250ms
+    // lag.
+    map.on("zoomend", tick);
     return () => {
       clearInterval(intervalId);
+      map.off("zoomend", tick);
       for (const info of polyMap.values()) info.line.remove();
       polyMap.clear();
       for (const marker of placeholderMap.values()) marker.remove();
