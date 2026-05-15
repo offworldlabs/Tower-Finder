@@ -616,11 +616,13 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             # the honest "radar saw a detection along this curve" signal.
             # Threshold 7 µs: median rms is ~2 µs for clean tracks; bad
             # actors observed at 8–11 µs over dozens of consecutive frames.
+            # Inside the outer `if ambiguity_arc and position_source in (...)`
+            # block, so ambiguity_arc is guaranteed non-null here — only rms
+            # needs checking.
             _rms = getattr(track, "rms_delay", 0.0) or 0.0
-            if ambiguity_arc and _rms > 7.0:
-                if _last_emit:
-                    lat = _last_emit[0]
-                    lon = _last_emit[1]
+            if _rms > 7.0 and _last_emit:
+                lat = _last_emit[0]
+                lon = _last_emit[1]
         elif not ambiguity_arc:
             # Arc is None.  Only suppress the track if there was a valid delay
             # measurement (delay > 0) but the arc still failed — which means

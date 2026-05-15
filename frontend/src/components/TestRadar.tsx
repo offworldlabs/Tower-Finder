@@ -190,7 +190,7 @@ export default function TestRadar() {
                 checked={nodeStyle === opt}
                 onChange={() => setNodeStyle(opt)}
               />{" "}
-              {opt === "circle" ? "CircleMarker (prod)" : opt === "divicon" ? "divIcon (icons.ts nodeIcon)" : "both side-by-side"}
+              {opt === "circle" ? "CircleMarker (synth-* nodes)" : opt === "divicon" ? "divIcon (real radar nodes)" : "both side-by-side"}
             </label>
           ))}
         </div>

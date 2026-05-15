@@ -74,7 +74,11 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
 
         const existing = polyMap.get(key);
         if (existing) {
-          existing.line.setStyle({ opacity });
+          // Refresh color/weight too: a track can flip target_class
+          // (aircraft↔drone) or its doppler band mid-flight, and we want
+          // the polyline to reflect the latest classification rather than
+          // freezing the colour at first-paint until the arc expires.
+          existing.line.setStyle({ opacity, color, weight });
         } else {
           const line = L.polyline(entry.ambiguity_arc, {
             color,

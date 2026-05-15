@@ -3,6 +3,7 @@ import SearchForm from "./components/SearchForm";
 import ResultsTable from "./components/ResultsTable";
 import TowerMap from "./components/TowerMap";
 import PhysicsSettings from "./components/PhysicsSettings";
+import { fetchTowers } from "./api";
 import { isMapDomain, usesRealOnlyFeed } from "./utils/domains";
 
 // Leaflet is ~300 KB — only load it when the Live Radar tab is first opened
@@ -10,7 +11,6 @@ const LiveAircraftMap = lazy(() => import("./components/LiveAircraftMap"));
 // Toy radar sim at /test-radar — dev/flag-gated so it does NOT ship to prod.
 // Without the gate this would bundle into every build.
 const TestRadar = lazy(() => import("./components/TestRadar"));
-import { fetchTowers } from "./api";
 
 // Toggle for /test-radar route. import.meta.env.DEV covers `vite dev`; the
 // VITE_ENABLE_TEST_RADAR flag lets us enable it on staging if needed.

@@ -263,9 +263,10 @@ class TestGatePreservesArc:
 
     def _setup_state(self, *, rms_delay, prev_lat, prev_lon, now_lat, now_lon,
                      prev_age_s=120.0):
-        from pipeline.passive_radar import GeolocatedTrack
-        from core import state
         import time as _time
+
+        from core import state
+        from pipeline.passive_radar import GeolocatedTrack
 
         # Geolocated track positioned where this frame's solver landed.
         track = GeolocatedTrack(
@@ -316,6 +317,7 @@ class TestGatePreservesArc:
 
     def _build(self):
         import types
+
         from services.frame_processor import build_combined_aircraft_json
         # Minimal pipeline shim — build_combined_aircraft_json reads
         # default_pipeline.geolocated_tracks and .config only.
@@ -369,6 +371,7 @@ class TestGatePreservesArc:
         # Position reverted to last good emit.
         assert ac["lat"] == self.PREV_LAT
         assert ac["lon"] == self.PREV_LON
+        assert ac["position_source"] == "single_node_ellipse_arc"
 
 
 if __name__ == "__main__":
