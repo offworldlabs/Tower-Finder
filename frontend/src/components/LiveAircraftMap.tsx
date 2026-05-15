@@ -15,17 +15,14 @@ import "./LiveAircraftMap.css";
 
 import {
   STALE_AIRCRAFT_MS,
-  ARC_HOLD_MS,
-  ARC_FADE_MS,
-  ARC_TOTAL_LIFE_MS,
   POSITION_SOURCE_ARC_ONLY,
-  dopplerColor,
   isPointInViewport,
   isAircraftInViewport,
   sampleTrailPositions,
   buildTrailSegments,
   makeAircraftIcon,
   makeDroneIcon,
+  nodeIcon,
   yagiSectorPositions,
   FitBounds,
   ViewportTracker,
@@ -36,6 +33,7 @@ import {
   AircraftDetailPanel,
   Toolbar,
   PlaybackBar,
+  DetectionArcs,
 } from "./map";
 
 import { fetchRadar3Verification, fetchRadar3DetectionRange, fetchMlatVerification } from "../api";
@@ -574,25 +572,49 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels
   prev.onSelect === next.onSelect
 );
 
-/* ── NodeMarkersLayer: memoized + SVG CircleMarkers (NOT DOM divIcon Markers).
-      914 DOM divs with drop-shadow filters caused severe pan/zoom jank.
-      SVG circles live in a single overlay — browser composites ONE layer. ── */
+/* ── NodeMarkersLayer: SVG CircleMarkers for synthetic nodes + divIcon for the
+      real radar node.
+      Background reason: 914 DOM divs with drop-shadow filters caused severe
+      pan/zoom jank, so the bulk synthetic fleet stays on cheap SVG circles in
+      a single overlay.  But the real node is the one the user is actually
+      tracking, and a 5 px disc was getting lost under nearby aircraft icons —
+      so it gets the larger glowing divIcon (a handful of DOM nodes is fine). ── */
 const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelectNode }) {
-  return visibleNodes.map((n) => (
-    <CircleMarker
-      key={`node-${n.node_id}`}
-      center={[n.rx_lat, n.rx_lon]}
-      radius={5}
-      pathOptions={{ color: "#facc15", fillColor: "#facc15", fillOpacity: 0.55, weight: 1.5 }}
-      eventHandlers={{ click: () => onSelectNode(n.node_id) }}
-    >
-      <Popup>
-        <strong>{n.node_id}</strong><br />
-        Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
-        Range: {n.max_range_km} km
-      </Popup>
-    </CircleMarker>
-  ));
+  return visibleNodes.map((n) => {
+    const isSynth = n.node_id?.startsWith("synth-");
+    if (isSynth) {
+      return (
+        <CircleMarker
+          key={`node-${n.node_id}`}
+          center={[n.rx_lat, n.rx_lon]}
+          radius={5}
+          pathOptions={{ color: "#facc15", fillColor: "#facc15", fillOpacity: 0.55, weight: 1.5 }}
+          eventHandlers={{ click: () => onSelectNode(n.node_id) }}
+        >
+          <Popup>
+            <strong>{n.node_id}</strong><br />
+            Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
+            Range: {n.max_range_km} km
+          </Popup>
+        </CircleMarker>
+      );
+    }
+    return (
+      <Marker
+        key={`node-${n.node_id}`}
+        position={[n.rx_lat, n.rx_lon]}
+        icon={nodeIcon}
+        zIndexOffset={1000}
+        eventHandlers={{ click: () => onSelectNode(n.node_id) }}
+      >
+        <Popup>
+          <strong>{n.node_id}</strong><br />
+          Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
+          Range: {n.max_range_km} km
+        </Popup>
+      </Marker>
+    );
+  });
 });
 
 /* ── CoverageLayer: memoized — only re-renders when nodes or showCoverage changes ── */
@@ -622,164 +644,6 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
       />
     );
   });
-});
-
-/* ── DetectionArcs: imperative Leaflet polylines with timer-driven opacity fade.
-
-      Each arc in the buffer is rendered as its own polyline that fades on
-      its own clock — producing a radar-style afterglow trail behind a moving
-      target. Newer buckets sit at full brightness briefly, then linear-fade
-      to zero over ~8 s. Tick interval is 250 ms which is enough resolution
-      for visibly smooth decay without React re-render cost. ── */
-const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, viewport, onSelect, onSelectNode }) {
-  const map = useMap();
-  const polyMapRef = useRef(new Map()); // key → { line: L.polyline, ts, hex, node_id, ... }
-  // Pending arcs have hex=null and no aircraft entry, so no plane icon is rendered for them.
-  // Without a marker the user reads "arcs without aircraft" as "false detection".
-  // Each pending arc gets a small hollow circle at its midpoint, matching the arc's fade.
-  const placeholderMapRef = useRef(new Map()); // key → L.circleMarker
-  const onSelectRef = useRef(onSelect);
-  const onSelectNodeRef = useRef(onSelectNode);
-  const selectedHexRef = useRef(selectedHex);
-  useEffect(() => { onSelectRef.current = onSelect; }, [onSelect]);
-  useEffect(() => { onSelectNodeRef.current = onSelectNode; }, [onSelectNode]);
-  useEffect(() => { selectedHexRef.current = selectedHex; }, [selectedHex]);
-
-  useEffect(() => {
-    const polyMap = polyMapRef.current;
-    const placeholderMap = placeholderMapRef.current;
-
-    const tick = () => {
-      const buf = arcsBufferRef.current;
-      const now = Date.now();
-      // Unified lifecycle for both bucketed (per-second hex-node-ts) and
-      // pending (det-node-lat-lon) arcs: ARC_HOLD_MS at full opacity, then
-      // linear fade over ARC_FADE_MS.  Constants live in map/constants.ts
-      // so the buffer pruner in hooks.ts can share the same TTL.
-      const curSelected = selectedHexRef.current;
-
-      const seen = new Set();
-      // Separate seen set for placeholder rings: a key being in `seen` (polyline
-      // still in fade window) doesn't mean we still want a placeholder — at low
-      // zoom we suppress the ring while keeping the polyline.
-      const seenPlaceholders = new Set();
-
-      // Add / update arcs from buffer
-      for (const key of Object.keys(buf)) {
-        const entry = buf[key];
-        if (!Array.isArray(entry.ambiguity_arc) || entry.ambiguity_arc.length < 2) continue;
-        // isPending controls weight (thinner stroke than bucketed arcs) and
-        // whether a hollow-ring placeholder is drawn at the midpoint.
-        const isPending = key.startsWith("det-");
-        const age = now - entry.ts;
-        if (age > ARC_TOTAL_LIFE_MS) continue;
-
-        seen.add(key);
-        // Pending arcs have hex=null.  Without the explicit null check this
-        // would compare null === null when no aircraft is selected and treat
-        // every pending arc as "selected".
-        const isSelected = curSelected != null && entry.hex === curSelected;
-        let opacity;
-        if (isSelected) {
-          opacity = 1.0;
-        } else if (age <= ARC_HOLD_MS) {
-          opacity = 1.0;
-        } else {
-          opacity = Math.max(0.0, 1.0 - (age - ARC_HOLD_MS) / ARC_FADE_MS);
-        }
-        const color = entry.target_class === "drone" ? "#fb923c" : dopplerColor(entry.doppler_hz ?? 0);
-        // Pending (unidentified) detections render thinner so they're visually
-        // distinct from confirmed aircraft arcs.
-        const weight = isSelected ? 6 : (isPending ? 2 : 4);
-
-        const existing = polyMap.get(key);
-        if (existing) {
-          existing.line.setStyle({ opacity });
-        } else {
-          const line = L.polyline(entry.ambiguity_arc, {
-            color,
-            weight,
-            opacity,
-            lineCap: "round",
-            lineJoin: "round",
-          });
-          line.on("click", (e) => {
-            L.DomEvent.stopPropagation(e);
-            if (entry.hex) onSelectRef.current(entry.hex, false);
-            if (entry.node_id) onSelectNodeRef.current(entry.node_id);
-          });
-          line.addTo(map);
-          polyMap.set(key, { line, ts: entry.ts, hex: entry.hex, node_id: entry.node_id });
-        }
-
-        // Pending-arc placeholder marker (hollow ring at midpoint).
-        // Communicates "detection here, no aircraft identity yet" so the user
-        // doesn't read pending arcs as "false positive arcs without aircraft".
-        // Skipped at very low zoom because the arc itself shrinks to ~10 px
-        // there and the screen-space ring would dominate the geometry.
-        if (isPending) {
-          if (map.getZoom() >= 7) {
-            seenPlaceholders.add(key);
-            const arc = entry.ambiguity_arc;
-            const mid = arc[Math.floor(arc.length / 2)];
-            const existingMarker = placeholderMap.get(key);
-            if (existingMarker) {
-              existingMarker.setLatLng(mid);
-              existingMarker.setStyle({ opacity, color });
-            } else {
-              const marker = L.circleMarker(mid, {
-                radius: 4,
-                color,
-                weight: 1.5,
-                fillOpacity: 0,
-                opacity,
-                interactive: true,
-              });
-              marker.on("click", (e) => {
-                L.DomEvent.stopPropagation(e);
-                if (entry.node_id) onSelectNodeRef.current(entry.node_id);
-              });
-              marker.addTo(map);
-              placeholderMap.set(key, marker);
-            }
-          }
-          // else: zoom < 7 — leave any existing marker for the cleanup loop
-          // below to remove (it's not added to seenPlaceholders, so it'll go).
-        }
-      }
-
-      // Remove arcs no longer in seen — either past their fade window or
-      // their buffer entry was pruned.
-      for (const [key, info] of polyMap) {
-        if (seen.has(key)) continue;
-        info.line.remove();
-        polyMap.delete(key);
-      }
-      for (const [key, marker] of placeholderMap) {
-        if (seenPlaceholders.has(key)) continue;
-        marker.remove();
-        placeholderMap.delete(key);
-      }
-    };
-
-    // Initial tick + interval for smooth updates
-    tick();
-    const intervalId = setInterval(tick, 250);
-    // Zoom changes affect placeholder visibility (suppressed under zoom 7) —
-    // re-tick immediately on zoomend so rings appear/disappear without a 250ms
-    // lag.
-    map.on("zoomend", tick);
-    return () => {
-      clearInterval(intervalId);
-      map.off("zoomend", tick);
-      for (const info of polyMap.values()) info.line.remove();
-      polyMap.clear();
-      for (const marker of placeholderMap.values()) marker.remove();
-      placeholderMap.clear();
-    };
-  }, [map, arcsBufferRef]);
-
-  return null;
 });
 
 /* ── Main component ───────────────────────────────────────────── */
@@ -1329,7 +1193,7 @@ export default function LiveAircraftMap() {
             })()}
 
             {/* Detection arcs — imperative Leaflet layer, 4Hz opacity fade, sourced from raw WS buffer */}
-            <DetectionArcs arcsBufferRef={arcsBufferRef} selectedHex={selectedHex} viewport={viewport} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} />
+            <DetectionArcs arcsBufferRef={arcsBufferRef} selectedHex={selectedHex} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} />
             {/* Aircraft position markers — all radar-detected aircraft rendered as airplane icons.
                  Color encodes confidence: purple=multinode, teal=ADS-B aided, cyan=single-node.
                  Single-node arc-only tracks are rendered smaller / dashed / semi-transparent to

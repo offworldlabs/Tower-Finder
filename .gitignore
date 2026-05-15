@@ -34,3 +34,13 @@ backend/data/users.db-wal
 skills-lock.json
 frontend/test-results/.last-run.json
 .playwright-mcp/*
+
+# Ad-hoc PNG screenshots captured during dev/QA in the repo root
+/test-radar-*.png
+/testradar-*.png
+/testmap-*.png
+/local-livemap-*.png
+
+# Auto-generated backend runtime state + python coverage artefacts
+backend/data/runtime/
+.coverage

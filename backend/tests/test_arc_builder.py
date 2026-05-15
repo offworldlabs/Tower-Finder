@@ -246,5 +246,130 @@ class TestTrackEntryPaths:
         assert 0 <= t.track_angle < 360
 
 
+# ─── Regression: gates revert position but preserve arc ──────────────────────
+
+class TestGatePreservesArc:
+    """Speed and RMS gates must keep ambiguity_arc on the wire.
+
+    On a previous iteration both gates set ambiguity_arc = None when the
+    measurement looked noisy.  That made the testmap look like every node
+    had gone idle whenever a single bad frame came through (~90% of
+    synthetic single-node tracks routinely sit above the 7 µs RMS threshold).
+    The gates now revert only the displayed lat/lon to the last good emit;
+    the arc itself is still emitted so the user can see what the radar saw.
+    """
+
+    HEX = "rgtest"
+
+    def _setup_state(self, *, rms_delay, prev_lat, prev_lon, now_lat, now_lon,
+                     prev_age_s=120.0):
+        from pipeline.passive_radar import GeolocatedTrack
+        from core import state
+        import time as _time
+
+        # Geolocated track positioned where this frame's solver landed.
+        track = GeolocatedTrack(
+            track_id=f"track-{self.HEX}",
+            lat=now_lat,
+            lon=now_lon,
+            alt_m=3000,
+            vel_east=100.0,
+            vel_north=50.0,
+            vel_up=0.0,
+            rms_delay=rms_delay,
+            rms_doppler=1.0,
+            n_detections=10,
+            timestamp_ms=int(_time.time() * 1000),
+            adsb_hex=None,
+            latest_delay_us=80.0,
+            target_class="aircraft",
+        )
+        # Match the wall-clock so the staleness filter doesn't drop us.
+        track.wall_clock_ts = _time.time()
+
+        node_cfg = dict(_NODE_CFG)
+        state.active_geo_aircraft[self.HEX] = (track, node_cfg)
+        # Last good emit anchored a bit away from the current position.
+        # prev_age_s defaults to 120 s so the speed gate (which only acts on
+        # 0 < dt < 60 s) doesn't fire on the test inputs unless we want it to.
+        state.track_last_emit[self.HEX] = [
+            prev_lat, prev_lon, _time.time() - prev_age_s,
+        ]
+        return track
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        from core import state
+        state.active_geo_aircraft.clear()
+        state.track_last_emit.clear()
+        state.adsb_aircraft.clear()
+        state.external_adsb_cache.clear()
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+        yield
+        state.active_geo_aircraft.clear()
+        state.track_last_emit.clear()
+        state.adsb_aircraft.clear()
+        state.external_adsb_cache.clear()
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+
+    def _build(self):
+        import types
+        from services.frame_processor import build_combined_aircraft_json
+        # Minimal pipeline shim — build_combined_aircraft_json reads
+        # default_pipeline.geolocated_tracks and .config only.
+        pipeline = types.SimpleNamespace(geolocated_tracks={}, config=dict(_NODE_CFG))
+        result = build_combined_aircraft_json(pipeline)
+        return next((a for a in result["aircraft"] if a["hex"] == self.HEX), None)
+
+    # _NODE_CFG beam_azimuth auto-computes from RX→TX bearing + 90° → roughly
+    # 220° (south-west), so both prev and current positions live south-west
+    # of the RX to stay inside the beam.
+    PREV_LAT, PREV_LON = 33.70, -84.85
+    NOW_LAT, NOW_LON = 33.65, -84.95
+
+    def test_rms_gate_keeps_arc_and_reverts_lat_lon(self):
+        self._setup_state(rms_delay=12.5, prev_lat=self.PREV_LAT, prev_lon=self.PREV_LON,
+                          now_lat=self.NOW_LAT, now_lon=self.NOW_LON)
+        ac = self._build()
+        assert ac is not None, "aircraft must still appear in feed"
+        # Arc preserved — the whole point of this regression test.
+        assert ac["ambiguity_arc"] is not None
+        assert len(ac["ambiguity_arc"]) >= 2
+        # Position reverted to last good emit (arc midpoint dictates rounding,
+        # so the new fix is far from prev_lat/prev_lon).
+        assert ac["lat"] == self.PREV_LAT
+        assert ac["lon"] == self.PREV_LON
+        assert ac["position_source"] == "single_node_ellipse_arc"
+
+    def test_clean_rms_keeps_arc_and_new_position(self):
+        # Sanity baseline: when rms_delay is well within tolerance the gate
+        # never fires and lat/lon track the current solve.
+        self._setup_state(rms_delay=1.2, prev_lat=self.PREV_LAT, prev_lon=self.PREV_LON,
+                          now_lat=self.NOW_LAT, now_lon=self.NOW_LON)
+        ac = self._build()
+        assert ac is not None
+        assert ac["ambiguity_arc"] is not None
+        # New emit, not reverted to last_emit.
+        assert (ac["lat"], ac["lon"]) != (self.PREV_LAT, self.PREV_LON)
+        assert ac["position_source"] == "single_node_ellipse_arc"
+
+    def test_speed_gate_keeps_arc_and_reverts_lat_lon(self):
+        # Speed gate fires when arc midpoint jumps > 800 m/s from last emit
+        # within the last 60 s.  Set prev_age = 1 s with ~10 km of move so
+        # the gate trips on speed alone (rms_delay stays clean).
+        self._setup_state(rms_delay=1.2, prev_lat=self.PREV_LAT, prev_lon=self.PREV_LON,
+                          now_lat=self.NOW_LAT, now_lon=self.NOW_LON,
+                          prev_age_s=1.0)
+        ac = self._build()
+        assert ac is not None
+        # Arc preserved even though the gate fired.
+        assert ac["ambiguity_arc"] is not None
+        # Position reverted to last good emit.
+        assert ac["lat"] == self.PREV_LAT
+        assert ac["lon"] == self.PREV_LON
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
