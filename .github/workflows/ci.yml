@@ -155,10 +155,25 @@ jobs:
           key: ${{ secrets.STAGING_SSH_KEY }}
           command_timeout: 20m
           script: |
+            set -e
             cd /opt/tower-finder
+
+            # Pre-flight: refuse to deploy when the disk is near full. Without
+            # this, git fetch silently writes a partial pack, the source tree
+            # never advances, and `docker compose --build` happily caches every
+            # layer and "succeeds" with yesterday's image (run 25923117075).
+            AVAIL_MB=$(df -m / | awk 'NR==2 {print $4}')
+            if [ "${AVAIL_MB:-0}" -lt 2048 ]; then
+              echo "::error::Staging disk only ${AVAIL_MB}MB free (< 2GB threshold). Aborting deploy."
+              df -h /
+              docker system df 2>/dev/null || true
+              exit 1
+            fi
+
             # Hard-reset rather than `git pull` — see the production deploy
             # block for the full incident description; same failure mode would
             # surface here if the staging server ever picked up a local commit.
+            # `set -e` above guarantees a failed fetch/reset aborts the deploy.
             git fetch origin main
             git reset --hard origin/main
             git submodule update --init --recursive
@@ -220,17 +235,32 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           command_timeout: 20m
           script: |
+            set -e
             cd /opt/tower-finder
 
             # Pre-deploy: save rollback image + git tag
             bash deploy/pre-deploy.sh || true
+
+            # Pre-flight: refuse to deploy when the disk is near full. Without
+            # this, git fetch silently writes a partial pack ("No space left on
+            # device"), the working tree never advances, and the subsequent
+            # `docker compose --build` reuses every cached layer and "succeeds"
+            # with yesterday's image (run 25923117075 — backend, frontend, and
+            # dashboard were all stale).
+            AVAIL_MB=$(df -m / | awk 'NR==2 {print $4}')
+            if [ "${AVAIL_MB:-0}" -lt 2048 ]; then
+              echo "::error::Production disk only ${AVAIL_MB}MB free (< 2GB threshold). Aborting deploy."
+              df -h /
+              docker system df 2>/dev/null || true
+              exit 1
+            fi
 
             # Hard-reset rather than `git pull`: the latter aborts silently on
             # divergent branches (deploy run 25481699738 — the server had a
             # local commit, pull printed a hint and exited 0, the build then
             # cached every layer because the source hadn't actually changed,
             # and the new bundle never made it to /app/dashboard/dist).
-            # The deploy server should always mirror origin/main exactly.
+            # `set -e` above guarantees a failed fetch/reset aborts the deploy.
             git fetch origin main
             git reset --hard origin/main
             git submodule update --init --recursive
