@@ -591,6 +591,12 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             # rather than ``track_histories`` (deduped at ~5 m), because dedup
             # can age the history timestamp 20-60 s for slow tracks and let a
             # 20 km mis-association come out under 800 m/s.
+            # We revert the icon's lat/lon to the previous emit so a single
+            # mis-associated frame doesn't yank the marker.  The arc itself is
+            # still emitted: it represents this frame's bistatic measurement,
+            # which the user reads as "radar saw something along this curve".
+            # Nulling it left the testmap looking like every node was idle
+            # whenever a single noisy frame came through.
             _last_emit = state.track_last_emit.get(ac_hex)
             if _last_emit:
                 _prev_lat, _prev_lon, _prev_ts = _last_emit
@@ -602,21 +608,21 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
                     if _speed_ms > 800:
                         lat = _prev_lat
                         lon = _prev_lon
-                        ambiguity_arc = None  # suppress arc; entry still emitted
 
             # RMS gate: persistently high rms_delay means the Kalman filter
             # cannot fit the current measurement — the track is in a
-            # mis-association state and the arc position is unreliable.
-            # Revert to the last emitted position (same source as speed gate)
-            # and suppress the arc so neither dot nor arc reflects bad data.
+            # mis-association state and the icon's midpoint is unreliable.
+            # Revert the icon to the last emitted position; keep the arc as
+            # the honest "radar saw a detection along this curve" signal.
             # Threshold 7 µs: median rms is ~2 µs for clean tracks; bad
             # actors observed at 8–11 µs over dozens of consecutive frames.
+            # Inside the outer `if ambiguity_arc and position_source in (...)`
+            # block, so ambiguity_arc is guaranteed non-null here — only rms
+            # needs checking.
             _rms = getattr(track, "rms_delay", 0.0) or 0.0
-            if ambiguity_arc and _rms > 7.0:
-                if _last_emit:
-                    lat = _last_emit[0]
-                    lon = _last_emit[1]
-                ambiguity_arc = None  # suppress arc; entry still emitted
+            if _rms > 7.0 and _last_emit:
+                lat = _last_emit[0]
+                lon = _last_emit[1]
         elif not ambiguity_arc:
             # Arc is None.  Only suppress the track if there was a valid delay
             # measurement (delay > 0) but the arc still failed — which means

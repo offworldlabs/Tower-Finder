@@ -3,11 +3,21 @@ import SearchForm from "./components/SearchForm";
 import ResultsTable from "./components/ResultsTable";
 import TowerMap from "./components/TowerMap";
 import PhysicsSettings from "./components/PhysicsSettings";
+import { fetchTowers } from "./api";
 import { isMapDomain, usesRealOnlyFeed } from "./utils/domains";
 
 // Leaflet is ~300 KB — only load it when the Live Radar tab is first opened
 const LiveAircraftMap = lazy(() => import("./components/LiveAircraftMap"));
-import { fetchTowers } from "./api";
+// Toy radar sim at /test-radar — dev/flag-gated so it does NOT ship to prod.
+// Without the gate this would bundle into every build.
+const TestRadar = lazy(() => import("./components/TestRadar"));
+
+// Toggle for /test-radar route. import.meta.env.DEV covers `vite dev`; the
+// VITE_ENABLE_TEST_RADAR flag lets us enable it on staging if needed.
+const TEST_RADAR_ENABLED =
+  import.meta.env.DEV || import.meta.env.VITE_ENABLE_TEST_RADAR === "1";
+const IS_TEST_RADAR_ROUTE =
+  typeof window !== "undefined" && window.location.pathname === "/test-radar";
 
 function SummaryStrip({ towers }) {
   if (!towers.length) return null;
@@ -41,6 +51,17 @@ function SummaryStrip({ towers }) {
 }
 
 export default function App() {
+  if (IS_TEST_RADAR_ROUTE && TEST_RADAR_ENABLED) {
+    return (
+      <Suspense fallback={<div style={{ padding: 24, color: "#94a3b8" }}>Loading test radar…</div>}>
+        <TestRadar />
+      </Suspense>
+    );
+  }
+  return <MainApp />;
+}
+
+function MainApp() {
   const [towers, setTowers] = useState([]);
   const [query, setQuery] = useState(null);
   const [loading, setLoading] = useState(false);

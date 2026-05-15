@@ -1,4 +1,14 @@
+/// <reference types="vite/client" />
+
 declare module "*.css" {}
+
+interface ImportMetaEnv {
+  readonly VITE_ENABLE_TEST_RADAR?: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
 
 /* Leaflet internal icon URL fix */
 declare module "leaflet" {
