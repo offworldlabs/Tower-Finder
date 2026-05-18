@@ -61,6 +61,17 @@ track_histories: dict[str, deque] = {}
 # Value: [lat, lon, ts]
 track_last_emit: dict[str, list] = {}
 
+# ── Distinct-position log per track, for gs/heading fallback ──────────────────
+# Each entry is appended only when the emitted position moves > ARC_MOTION_MIN_M
+# from the last logged point.  Used to recover ground speed for single-node
+# ellipse-arc tracks without ADS-B: the LM solver alone can't constrain
+# velocity from doppler, so track.speed_knots routinely comes back 0-5 kt and
+# the aircraft sits frozen on the map between detections.  Arc-midpoint
+# displacement between sparse detections is the only real velocity signal we
+# have for those tracks.
+# Value: list of (lat, lon, ts), capped at TRACK_MOTION_LOG_MAX entries.
+track_arc_motion: dict[str, list] = {}
+
 # ── Ground truth trails from fleet_orchestrator ──────────────────────────
 ground_truth_trails: dict[str, deque] = {}
 ground_truth_meta: dict[str, dict] = {}  # hex → {object_type, is_anomalous}

@@ -374,5 +374,70 @@ class TestGatePreservesArc:
         assert ac["position_source"] == "single_node_ellipse_arc"
 
 
+# ─── Regression: arc-motion gs/heading fallback ──────────────────────────────
+
+class TestArcMotionVelocityFallback:
+    """When ADS-B is unavailable and the LM solver gives track.speed_knots
+    ~ 0 (typical for synthetic single-node tracks), the gs/heading fields
+    must be reconstructed from arc-midpoint displacement so the aircraft
+    visibly moves on the map.
+    """
+
+    HEX = "amvtst"
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        from core import state
+        state.active_geo_aircraft.clear()
+        state.track_last_emit.clear()
+        state.track_arc_motion.clear()
+        state.adsb_aircraft.clear()
+        state.external_adsb_cache.clear()
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+        yield
+        state.active_geo_aircraft.clear()
+        state.track_last_emit.clear()
+        state.track_arc_motion.clear()
+        state.adsb_aircraft.clear()
+        state.external_adsb_cache.clear()
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+
+    def test_estimator_returns_none_without_log(self):
+        from services.frame_processor import _estimate_velocity_from_motion
+        assert _estimate_velocity_from_motion("nope", 33.7, -84.85, 1_700_000_000) is None
+
+    def test_estimator_returns_gs_and_track_from_two_samples(self):
+        from core import state
+        from services.frame_processor import _estimate_velocity_from_motion
+        # Aircraft was at (33.70, -84.85) 40 s ago, now at (33.75, -84.80) —
+        # roughly 7 km north-east → ~340 kt heading ~45°.
+        now = 1_700_000_000.0
+        state.track_arc_motion[self.HEX] = [(33.70, -84.85, now - 40.0)]
+        result = _estimate_velocity_from_motion(self.HEX, 33.75, -84.80, now)
+        assert result is not None
+        gs, track_deg = result
+        assert 200 < gs < 500
+        # Heading ENU: dlat>0 (north), dlon>0 (east) → bearing in [0, 90°]
+        assert 30 < track_deg < 60
+
+    def test_estimator_rejects_too_recent(self):
+        from core import state
+        from services.frame_processor import _estimate_velocity_from_motion
+        now = 1_700_000_000.0
+        # Sample 5 s old — below the 15 s minimum window.
+        state.track_arc_motion[self.HEX] = [(33.70, -84.85, now - 5.0)]
+        assert _estimate_velocity_from_motion(self.HEX, 33.75, -84.80, now) is None
+
+    def test_estimator_rejects_supersonic_clamp(self):
+        from core import state
+        from services.frame_processor import _estimate_velocity_from_motion
+        now = 1_700_000_000.0
+        # 100 km in 20 s = 5000 m/s = ~9700 kt — way above the 800 kt clamp.
+        state.track_arc_motion[self.HEX] = [(33.70, -84.85, now - 20.0)]
+        assert _estimate_velocity_from_motion(self.HEX, 34.60, -84.85, now) is None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

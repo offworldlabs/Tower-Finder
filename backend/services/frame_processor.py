@@ -114,6 +114,83 @@ def append_track_history(hex_code: str, lat: float, lon: float, alt_ft: float, t
     hist.append([round(lat, 6), round(lon, 6), round(alt_ft, 0), round(ts, 1)])
 
 
+# Minimum displacement (metres) before a new arc-motion sample is appended.
+# Smaller than this counts as "same position" — sub-100 m drift on a stationary
+# arc midpoint isn't a real velocity signal.
+_ARC_MOTION_MIN_M = 100.0
+# Number of distinct positions retained per track.  Long enough to span a few
+# bistatic frames (~40 s apart) so velocity estimation can average over
+# 60–120 s windows without holding state forever.
+_ARC_MOTION_LOG_MAX = 6
+
+
+def _record_arc_motion(ac_hex: str, lat: float, lon: float, ts: float) -> None:
+    """Log distinct emitted positions for later velocity estimation.
+
+    Only entries that have moved > _ARC_MOTION_MIN_M from the last logged
+    position are appended — repeated emits at the same arc midpoint between
+    detections would otherwise drown out real motion.
+    """
+    log = state.track_arc_motion.get(ac_hex)
+    if log:
+        plat, plon, _pts = log[-1]
+        cos_lat = math.cos(math.radians(lat)) or 1e-9
+        dlat_m = (lat - plat) * 111_320
+        dlon_m = (lon - plon) * 111_320 * cos_lat
+        if math.hypot(dlat_m, dlon_m) < _ARC_MOTION_MIN_M:
+            return
+    else:
+        log = []
+        state.track_arc_motion[ac_hex] = log
+    log.append((lat, lon, ts))
+    if len(log) > _ARC_MOTION_LOG_MAX:
+        log.pop(0)
+
+
+def _estimate_velocity_from_motion(
+    ac_hex: str, lat: float, lon: float, now: float,
+) -> tuple[float, float] | None:
+    """Return (gs_knots, track_deg) inferred from arc-midpoint motion, or None.
+
+    Used as a last-resort fallback when both ADS-B (live + external cache)
+    are unavailable and the LM solver's velocity estimate is suspiciously
+    low — typical for synthetic single-node tracks where doppler alone
+    cannot constrain velocity, leaving the displayed aircraft frozen
+    between sparse bistatic frames.
+
+    Searches the per-track motion log for the oldest sample 15–120 s old
+    that's > 200 m from the current position; uses that displacement to
+    derive an averaged ground speed and bearing.  Returns None if no
+    sample is recent-enough-but-old-enough or the displacement is too
+    small to trust.
+    """
+    log = state.track_arc_motion.get(ac_hex)
+    if not log:
+        return None
+    cos_lat = math.cos(math.radians(lat)) or 1e-9
+    for plat, plon, pts in log:
+        dt = now - pts
+        if dt < 15:
+            continue  # too recent — noise dominates
+        if dt > 120:
+            continue  # too old — aircraft may have manoeuvred
+        dlat_m = (lat - plat) * 111_320
+        dlon_m = (lon - plon) * 111_320 * cos_lat
+        dist_m = math.hypot(dlat_m, dlon_m)
+        if dist_m < 200:
+            continue  # essentially still — can't infer velocity
+        gs_kn = (dist_m / dt) * 1.94384
+        # Clamp to a generous-but-finite envelope so a single bad sample
+        # doesn't emit a Mach-3 ghost.  Real-aircraft cruise tops out at
+        # ~600 kt; we cap at 800 kt to leave headroom for headwind/tailwind
+        # combinations and military traffic.
+        if gs_kn > 800:
+            continue
+        bearing_deg = math.degrees(math.atan2(dlon_m, dlat_m)) % 360.0
+        return round(gs_kn, 1), round(bearing_deg, 1)
+    return None
+
+
 def resolve_ground_truth_hex(
     ac_hex: str, lat: float, lon: float, max_distance_km: float = 8.0,
 ) -> str | None:
@@ -635,21 +712,40 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
 
         # Dead-reckon from last fix using stored velocity so positions
         # update smoothly between frame arrivals (~10 s real-time gaps).
-        # Mirrors the multinode dead-reckoning in Section 3.
-        if position_source != "single_node_ellipse_arc":
-            _vel_e = getattr(track, 'vel_east', 0.0) or 0.0
-            _vel_n = getattr(track, 'vel_north', 0.0) or 0.0
-            _pft = getattr(track, 'pos_fix_ts', 0.0) or getattr(track, 'wall_clock_ts', 0.0) or 0.0
-            _dr_elapsed = min(now - _pft, 60.0)
-            if _dr_elapsed > 0.5 and (_vel_e != 0.0 or _vel_n != 0.0):
-                _cos_lat = math.cos(math.radians(lat)) or 1e-9
-                lat = round(lat + (_vel_n / 111_320.0) * _dr_elapsed, 6)
-                lon = round(lon + (_vel_e / (111_320.0 * _cos_lat)) * _dr_elapsed, 6)
+        # Mirrors the multinode dead-reckoning in Section 3.  Applied to
+        # arc-only tracks too, even though the LM solver's velocity for
+        # single-node tracks is unreliable — when it is non-zero, dead
+        # reckoning helps; when it's zero, the block is a no-op.
+        _vel_e = getattr(track, 'vel_east', 0.0) or 0.0
+        _vel_n = getattr(track, 'vel_north', 0.0) or 0.0
+        _pft = getattr(track, 'pos_fix_ts', 0.0) or getattr(track, 'wall_clock_ts', 0.0) or 0.0
+        _dr_elapsed = min(now - _pft, 60.0)
+        if _dr_elapsed > 0.5 and (_vel_e != 0.0 or _vel_n != 0.0):
+            _cos_lat = math.cos(math.radians(lat)) or 1e-9
+            lat = round(lat + (_vel_n / 111_320.0) * _dr_elapsed, 6)
+            lon = round(lon + (_vel_e / (111_320.0 * _cos_lat)) * _dr_elapsed, 6)
 
         append_track_history(ac_hex, lat, lon, alt_ft, now)
+        # Log distinct positions for later arc-motion velocity estimation.
+        # Only positions that have moved > 100 m from the last logged sample
+        # are appended; this filters out the long quiescent runs at the same
+        # arc midpoint between bistatic frames.
+        _record_arc_motion(ac_hex, lat, lon, now)
         # Refresh the speed-gate reference on every emit (dedup-free) so the
         # next frame's gate sees the true emit-to-emit interval.
         state.track_last_emit[ac_hex] = [lat, lon, now]
+
+        # gs/heading fallback for single-node arc tracks without ADS-B: the
+        # LM solver routinely emits track.speed_knots in the 0–5 kt range
+        # because doppler-only velocity is poorly constrained, and the
+        # aircraft sits frozen on the map between sparse bistatic frames.
+        # Derive a plausible gs/track from the arc-midpoint displacement
+        # logged across recent emits — the only honest velocity signal
+        # we have for those tracks.
+        if gs < 10 and not has_adsb:
+            _est = _estimate_velocity_from_motion(ac_hex, lat, lon, now)
+            if _est is not None:
+                gs, heading = _est
 
         # Record ADS-B-verified positions as calibration points for empirical coverage.
         if has_adsb:
