@@ -662,10 +662,18 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         ambiguity_arc = _build_single_node_arc(
             track, node_cfg, target_lat=track.lat, target_lon=track.lon,
         )
+        # raw_midpoint_lat/lon: the bistatic arc midpoint *before* any gates
+        # or smoothing.  Captured for the arc-motion log so velocity
+        # estimation is fed only true bistatic positions, not feedback from
+        # the smoothing pipeline or gate-reverted last_emit values.
+        raw_midpoint_lat = None
+        raw_midpoint_lon = None
         if ambiguity_arc and position_source in ("solver_single_node", "solver_adsb_seed"):
             midpoint = ambiguity_arc[len(ambiguity_arc) // 2]
             lat = round(midpoint[0], 6)
             lon = round(midpoint[1], 6)
+            raw_midpoint_lat = lat
+            raw_midpoint_lon = lon
             position_source = "single_node_ellipse_arc"
 
             # Speed gate: if the new arc midpoint moved faster than 800 m/s
@@ -717,14 +725,16 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             if _arc_delay and _arc_delay > 0:
                 return None
 
-        # Record arc-motion samples from the *raw* bistatic position (arc
-        # midpoint, before any dead-reckoning).  These samples are the only
-        # honest velocity signal we have for single-node tracks without
-        # ADS-B, so the log must not be contaminated with our own DR output.
-        # Between detections the raw arc midpoint is static — no new sample
-        # is appended.  At detection the midpoint jumps — a fresh sample is
-        # appended.  Velocity estimator reads from this clean log.
-        _record_arc_motion(ac_hex, lat, lon, now)
+        # Record arc-motion samples from the *raw* bistatic midpoint (the
+        # one captured before gates / smoothing).  Between detections the
+        # raw midpoint is static — no new sample is appended.  At detection
+        # the midpoint jumps — a fresh sample is appended.  Keeping the log
+        # free of gate-reverted or smoothed positions is critical: the
+        # velocity estimator reads from this log, and any feedback from the
+        # smoothing pipeline would oscillate the implied direction every
+        # other emit.
+        if raw_midpoint_lat is not None:
+            _record_arc_motion(ac_hex, raw_midpoint_lat, raw_midpoint_lon, now)
 
         # Effective velocity: LM-solver vel_east/vel_north when non-trivial,
         # otherwise the arc-motion estimator for synthetic single-node
