@@ -725,60 +725,30 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             if _arc_delay and _arc_delay > 0:
                 return None
 
-        # Record arc-motion samples from the *raw* bistatic midpoint (the
-        # one captured before gates / smoothing).  Between detections the
-        # raw midpoint is static — no new sample is appended.  At detection
-        # the midpoint jumps — a fresh sample is appended.  Keeping the log
-        # free of gate-reverted or smoothed positions is critical: the
-        # velocity estimator reads from this log, and any feedback from the
-        # smoothing pipeline would oscillate the implied direction every
-        # other emit.
+        # Dead-reckon non-arc tracks (multinode, solver_adsb_seed) from the
+        # last fix using stored velocity so positions update smoothly
+        # between frame arrivals.  Arc tracks (single_node_ellipse_arc)
+        # stay pinned to the bistatic-detected position — attempts to
+        # extrapolate the arc midpoint between detections produced visible
+        # oscillation because multiple node-pipelines can update the same
+        # hex with conflicting track.lat values.  The frontend's own 60 fps
+        # icon dead-reckoning still slides the visible aircraft forward
+        # between emits using the gs / track fields.
+        if position_source != "single_node_ellipse_arc":
+            _vel_e = getattr(track, 'vel_east', 0.0) or 0.0
+            _vel_n = getattr(track, 'vel_north', 0.0) or 0.0
+            _pft = getattr(track, 'pos_fix_ts', 0.0) or getattr(track, 'wall_clock_ts', 0.0) or 0.0
+            _dr_elapsed = min(now - _pft, 60.0)
+            if _dr_elapsed > 0.5 and (_vel_e != 0.0 or _vel_n != 0.0):
+                _cos_lat = math.cos(math.radians(lat)) or 1e-9
+                lat = round(lat + (_vel_n / 111_320.0) * _dr_elapsed, 6)
+                lon = round(lon + (_vel_e / (111_320.0 * _cos_lat)) * _dr_elapsed, 6)
+
+        # Record arc-motion samples from the raw bistatic midpoint (kept
+        # for the gs/heading estimator that drives the frontend's icon
+        # dead-reckoning on tracks without ADS-B).
         if raw_midpoint_lat is not None:
             _record_arc_motion(ac_hex, raw_midpoint_lat, raw_midpoint_lon, now)
-
-        # Effective velocity: LM-solver vel_east/vel_north when non-trivial,
-        # otherwise the arc-motion estimator for synthetic single-node
-        # tracks whose doppler-only solve emits near-zero velocity.
-        _vel_e = getattr(track, 'vel_east', 0.0) or 0.0
-        _vel_n = getattr(track, 'vel_north', 0.0) or 0.0
-        if abs(_vel_e) < 1.0 and abs(_vel_n) < 1.0 and not has_adsb:
-            _est_ms = _estimate_velocity_ms_from_motion(ac_hex, lat, lon, now)
-            if _est_ms is not None:
-                _vel_e, _vel_n = _est_ms
-
-        # Position smoothing: anchor the emit to the last emit's position
-        # and integrate forward by velocity * dt.  Pull weakly toward the
-        # raw arc midpoint with a 10 s time constant so detection-time
-        # jumps (track.lat snaps every ~40 s) bleed in gradually instead of
-        # snapping the emit.  This is what kept the previous attempt at
-        # arc-rebuilding twitchy: anchoring to track.lat made every
-        # detection an instantaneous reset, oscillating ~200 m per cycle.
-        _last_anchor = state.track_last_emit.get(ac_hex)
-        if _last_anchor and (_vel_e != 0.0 or _vel_n != 0.0):
-            _plat, _plon, _pts = _last_anchor
-            _dt_emit = now - _pts
-            if 0 < _dt_emit < 30:
-                _cos_lat = math.cos(math.radians(_plat)) or 1e-9
-                _int_lat = _plat + (_vel_n / 111_320.0) * _dt_emit
-                _int_lon = _plon + (_vel_e / (111_320.0 * _cos_lat)) * _dt_emit
-                _alpha = 1.0 - math.exp(-_dt_emit / 10.0)
-                lat = round(_int_lat * (1.0 - _alpha) + lat * _alpha, 6)
-                lon = round(_int_lon * (1.0 - _alpha) + lon * _alpha, 6)
-
-        # Rebuild the arc trim segment around the smoothed position so the
-        # rendered arc tracks the moving aircraft instead of staying pinned
-        # to the bistatic detection point.  The bistatic ellipse curve
-        # itself (set by delay_us) is unchanged — we just shift the
-        # 25-km window along the locus to where the aircraft is now.
-        if ambiguity_arc and position_source == "single_node_ellipse_arc":
-            _rebuilt = _build_single_node_arc(
-                track, node_cfg, target_lat=lat, target_lon=lon,
-            )
-            if _rebuilt and len(_rebuilt) >= 2:
-                ambiguity_arc = _rebuilt
-                _mid = ambiguity_arc[len(ambiguity_arc) // 2]
-                lat = round(_mid[0], 6)
-                lon = round(_mid[1], 6)
 
         append_track_history(ac_hex, lat, lon, alt_ft, now)
         # Refresh the speed-gate reference on every emit (dedup-free) so the

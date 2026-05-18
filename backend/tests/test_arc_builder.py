@@ -339,12 +339,9 @@ class TestGatePreservesArc:
         # Arc preserved — the whole point of this regression test.
         assert ac["ambiguity_arc"] is not None
         assert len(ac["ambiguity_arc"]) >= 2
-        # Position anchored to the last good emit.  The arc rebuild step
-        # snaps lat/lon onto the new arc's midpoint, so the value is close
-        # to but not exactly PREV — what matters is the icon stayed near
-        # the previous position and didn't yank to NOW.
-        assert abs(ac["lat"] - self.PREV_LAT) < abs(ac["lat"] - self.NOW_LAT)
-        assert abs(ac["lon"] - self.PREV_LON) < abs(ac["lon"] - self.NOW_LON)
+        # Position reverted to last good emit.
+        assert ac["lat"] == self.PREV_LAT
+        assert ac["lon"] == self.PREV_LON
         assert ac["position_source"] == "single_node_ellipse_arc"
 
     def test_clean_rms_keeps_arc_and_new_position(self):
@@ -370,10 +367,9 @@ class TestGatePreservesArc:
         assert ac is not None
         # Arc preserved even though the gate fired.
         assert ac["ambiguity_arc"] is not None
-        # Position anchored near PREV (smoothing + arc rebuild bias the
-        # emit away from the NOW position the speed gate rejected).
-        assert abs(ac["lat"] - self.PREV_LAT) < abs(ac["lat"] - self.NOW_LAT)
-        assert abs(ac["lon"] - self.PREV_LON) < abs(ac["lon"] - self.NOW_LON)
+        # Position reverted to last good emit.
+        assert ac["lat"] == self.PREV_LAT
+        assert ac["lon"] == self.PREV_LON
         assert ac["position_source"] == "single_node_ellipse_arc"
 
 
