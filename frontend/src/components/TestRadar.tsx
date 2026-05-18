@@ -13,6 +13,19 @@ import {
 // Marietta GA — same coords as the production radar3-retnode site.
 const MARIETTA = { lat: 33.9526, lon: -84.5499 };
 
+// Compute (range_km, bearing_deg) from a fixed RX to a given lat/lon. Lets
+// the simulator march the aircraft in absolute world coordinates while still
+// feeding buildArc the polar form it expects.
+function rangeBearingFromRx(rxLat, rxLon, lat, lon) {
+  const cosLat = Math.cos((rxLat * Math.PI) / 180);
+  const east_km = (lon - rxLon) * 111.32 * cosLat;
+  const north_km = (lat - rxLat) * 111.32;
+  return {
+    rangeKm: Math.hypot(east_km, north_km),
+    bearingDeg: (Math.atan2(east_km, north_km) * 180) / Math.PI,
+  };
+}
+
 // Build a synthetic bistatic ellipse arc around the node at a given bearing
 // and radius. 21 points across a 36° arc is enough to read as a smooth ellipse
 // without being expensive. Returns [lat, lon] pairs.
@@ -74,13 +87,69 @@ export default function TestRadar() {
   //            is rendered and no arc is in the buffer.  This is the state
   //            users complained looked like "no detection" on testmap.
   const [arcMode, setArcMode] = useState("bucketed");
-  const [aircraftBearing, setAircraftBearing] = useState(90); // east of node
-  const [aircraftRangeKm, setAircraftRangeKm] = useState(25);
   const [stats, setStats] = useState({ polys: 0, buffered: 0 });
   const [nodeStyle, setNodeStyle] = useState("divicon"); // "circle" | "divicon" | "both" — default to the production-real-node visual
 
-  // Geometry derived from the slider inputs. Memoized so identity is stable
-  // across renders that don't change the inputs.
+  // Autopilot state: a single simulated aircraft flying straight at a fixed
+  // ground speed and heading.  Lives in world coords (lat/lon) so motion
+  // looks identical to a production track — radar polar coords are derived
+  // for the arc builder.  Initial state: 25 km east of Marietta, heading
+  // north-east at 480 kt, cruise altitude.
+  const [posLat, setPosLat] = useState(MARIETTA.lat);
+  const [posLon, setPosLon] = useState(MARIETTA.lon + 0.27); // ~25 km east at 34°N
+  const [gs, setGs] = useState(480); // knots
+  const [track, setTrack] = useState(45); // degrees
+  const [flying, setFlying] = useState(true);
+
+  // Advance lat/lon every animation frame.  Wrap the aircraft back to the
+  // start when it strays past 80 km from the node so the demo keeps looping
+  // without manual intervention.  The two functional setters compose lat/lon
+  // updates from the latest values without stale-closure issues.
+  useEffect(() => {
+    if (!flying) return;
+    let prev = performance.now();
+    let rafId;
+    const KNOTS_TO_MS = 0.514444;
+    const DEG_PER_M = 1 / 111_320;
+    const WRAP_RANGE_KM = 80;
+    const START_LON_OFFSET = 0.27; // ~25 km east at 34°N
+    const tick = (nowTs) => {
+      const dt = Math.min((nowTs - prev) / 1000, 0.1);
+      prev = nowTs;
+      const gs_ms = gs * KNOTS_TO_MS;
+      const rad = (track * Math.PI) / 180;
+      setPosLat((lat) => {
+        const next = lat + gs_ms * Math.cos(rad) * DEG_PER_M * dt;
+        // Wrap check happens inside setPosLon so both axes reset together.
+        return next;
+      });
+      setPosLon((lon) => {
+        // Use the freshest lat for cos(lat) — slight staleness is fine since
+        // dt is tens of ms; an exact value would need useRef.  Wrap on range.
+        const cosLat = Math.cos((MARIETTA.lat * Math.PI) / 180) || 1;
+        const nextLon = lon + (gs_ms * Math.sin(rad)) / (111_320 * cosLat) * dt;
+        // Recompute range from the *next* lat/lon to decide wrap.  We can't
+        // read posLat synchronously here, so approximate with the freshest
+        // value seen in this scope.
+        const { rangeKm } = rangeBearingFromRx(MARIETTA.lat, MARIETTA.lon, posLat, nextLon);
+        if (rangeKm > WRAP_RANGE_KM) {
+          setPosLat(MARIETTA.lat);
+          return MARIETTA.lon + START_LON_OFFSET;
+        }
+        return nextLon;
+      });
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [flying, gs, track, posLat]);
+
+  // Geometry derived from the current aircraft position.  Memoised so
+  // identity is stable when the position doesn't change.
+  const { rangeKm: aircraftRangeKm, bearingDeg: aircraftBearing } = useMemo(
+    () => rangeBearingFromRx(MARIETTA.lat, MARIETTA.lon, posLat, posLon),
+    [posLat, posLon],
+  );
   const arc = useMemo(
     () => buildArc(MARIETTA.lat, MARIETTA.lon, aircraftRangeKm, aircraftBearing),
     [aircraftBearing, aircraftRangeKm],
@@ -94,13 +163,14 @@ export default function TestRadar() {
       lat: aircraftPos[0],
       lon: aircraftPos[1],
       alt_baro: 32000,
-      track: aircraftBearing + 90,
+      track,
+      gs,
       position_source: "single_node_ellipse_arc",
       node_id: "radar3-retnode",
       ambiguity_arc: arc,
       doppler_hz: 0,
     }),
-    [arc, aircraftPos, aircraftBearing],
+    [arc, aircraftPos, track, gs],
   );
 
   const aircraftIcon = useMemo(
@@ -244,25 +314,55 @@ export default function TestRadar() {
         </div>
 
         <h3 style={{ marginTop: 18, fontSize: 11, color: "#94a3b8", letterSpacing: 1 }}>AIRCRAFT</h3>
+        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+          <button
+            onClick={() => setFlying((v) => !v)}
+            style={{
+              padding: "6px 10px",
+              border: "1px solid #334155",
+              background: flying ? "#16a34a" : "#1e293b",
+              color: "#f1f5f9",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              fontSize: 11,
+            }}
+          >
+            {flying ? "FLYING" : "PAUSED"}
+          </button>
+          <button
+            onClick={() => { setPosLat(MARIETTA.lat); setPosLon(MARIETTA.lon + 0.27); }}
+            style={{
+              padding: "6px 10px",
+              border: "1px solid #334155",
+              background: "#1e293b",
+              color: "#f1f5f9",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              fontSize: 11,
+            }}
+          >
+            RESET POS
+          </button>
+        </div>
         <label style={{ display: "block", marginBottom: 8 }}>
-          Bearing from node: {aircraftBearing.toFixed(0)}°
+          Ground speed: {gs} kt
           <input
             type="range"
             min={0}
-            max={360}
-            value={aircraftBearing}
-            onChange={(e) => setAircraftBearing(Number(e.target.value))}
+            max={600}
+            value={gs}
+            onChange={(e) => setGs(Number(e.target.value))}
             style={{ display: "block", width: "100%" }}
           />
         </label>
         <label style={{ display: "block" }}>
-          Range from node: {aircraftRangeKm.toFixed(0)} km
+          Heading: {track.toFixed(0)}°
           <input
             type="range"
-            min={5}
-            max={80}
-            value={aircraftRangeKm}
-            onChange={(e) => setAircraftRangeKm(Number(e.target.value))}
+            min={0}
+            max={360}
+            value={track}
+            onChange={(e) => setTrack(Number(e.target.value))}
             style={{ display: "block", width: "100%" }}
           />
         </label>
@@ -270,6 +370,8 @@ export default function TestRadar() {
         <h3 style={{ marginTop: 18, fontSize: 11, color: "#94a3b8", letterSpacing: 1 }}>DIAGNOSTICS</h3>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <tbody>
+            <tr><td style={{ color: "#94a3b8" }}>range from node</td><td style={{ textAlign: "right" }}>{aircraftRangeKm.toFixed(1)} km</td></tr>
+            <tr><td style={{ color: "#94a3b8" }}>bearing from node</td><td style={{ textAlign: "right" }}>{((aircraftBearing + 360) % 360).toFixed(0)}°</td></tr>
             <tr><td style={{ color: "#94a3b8" }}>buffer keys</td><td style={{ textAlign: "right" }}>{stats.buffered}</td></tr>
             <tr><td style={{ color: "#94a3b8" }}>SVG paths in overlay</td><td style={{ textAlign: "right" }}>{stats.polys}</td></tr>
             <tr><td style={{ color: "#94a3b8" }}>HOLD / FADE</td><td style={{ textAlign: "right" }}>{ARC_HOLD_MS / 1000}s / {ARC_FADE_MS / 1000}s</td></tr>
@@ -277,8 +379,9 @@ export default function TestRadar() {
         </table>
 
         <p style={{ marginTop: 22, color: "#475569", fontSize: 10, lineHeight: 1.4 }}>
-          Pause to watch the {ARC_HOLD_MS / 1000}s hold + {ARC_FADE_MS / 1000}s fade. Move the slider while
-          refreshing to lay an afterglow trail (bucketed mode only).
+          Aircraft autopilots from a point ~25 km east of the node at the chosen
+          speed and heading; wraps back to start past 80 km. Pause to watch the
+          {" "}{ARC_HOLD_MS / 1000}s hold + {ARC_FADE_MS / 1000}s fade.
         </p>
       </aside>
 
