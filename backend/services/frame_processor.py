@@ -147,22 +147,16 @@ def _record_arc_motion(ac_hex: str, lat: float, lon: float, ts: float) -> None:
         log.pop(0)
 
 
-def _estimate_velocity_from_motion(
+def _estimate_velocity_ms_from_motion(
     ac_hex: str, lat: float, lon: float, now: float,
 ) -> tuple[float, float] | None:
-    """Return (gs_knots, track_deg) inferred from arc-midpoint motion, or None.
-
-    Used as a last-resort fallback when both ADS-B (live + external cache)
-    are unavailable and the LM solver's velocity estimate is suspiciously
-    low — typical for synthetic single-node tracks where doppler alone
-    cannot constrain velocity, leaving the displayed aircraft frozen
-    between sparse bistatic frames.
+    """Return (vel_east_ms, vel_north_ms) inferred from arc-midpoint motion.
 
     Searches the per-track motion log for the oldest sample 15–120 s old
     that's > 200 m from the current position; uses that displacement to
-    derive an averaged ground speed and bearing.  Returns None if no
-    sample is recent-enough-but-old-enough or the displacement is too
-    small to trust.
+    derive an averaged east/north velocity.  Returns None if no sample is
+    recent-enough-but-old-enough or the displacement is too small to trust
+    or the implied speed exceeds an 800 kt sanity bound.
     """
     log = state.track_arc_motion.get(ac_hex)
     if not log:
@@ -179,16 +173,29 @@ def _estimate_velocity_from_motion(
         dist_m = math.hypot(dlat_m, dlon_m)
         if dist_m < 200:
             continue  # essentially still — can't infer velocity
-        gs_kn = (dist_m / dt) * 1.94384
-        # Clamp to a generous-but-finite envelope so a single bad sample
-        # doesn't emit a Mach-3 ghost.  Real-aircraft cruise tops out at
-        # ~600 kt; we cap at 800 kt to leave headroom for headwind/tailwind
-        # combinations and military traffic.
-        if gs_kn > 800:
+        # Clamp: real cruise tops at ~600 kt, cap at 800 kt (~411 m/s) to
+        # leave headroom for headwind combinations and military traffic.
+        if dist_m / dt > 411.0:
             continue
-        bearing_deg = math.degrees(math.atan2(dlon_m, dlat_m)) % 360.0
-        return round(gs_kn, 1), round(bearing_deg, 1)
+        return dlon_m / dt, dlat_m / dt
     return None
+
+
+def _estimate_velocity_from_motion(
+    ac_hex: str, lat: float, lon: float, now: float,
+) -> tuple[float, float] | None:
+    """Return (gs_knots, track_deg) inferred from arc-midpoint motion, or None.
+
+    Thin wrapper over _estimate_velocity_ms_from_motion that converts to the
+    knots/degrees form used by the emitted aircraft entry.
+    """
+    ms = _estimate_velocity_ms_from_motion(ac_hex, lat, lon, now)
+    if ms is None:
+        return None
+    vel_e_ms, vel_n_ms = ms
+    gs_kn = math.hypot(vel_e_ms, vel_n_ms) * 1.94384
+    bearing_deg = math.degrees(math.atan2(vel_e_ms, vel_n_ms)) % 360.0
+    return round(gs_kn, 1), round(bearing_deg, 1)
 
 
 def resolve_ground_truth_hex(
@@ -713,17 +720,37 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         # Dead-reckon from last fix using stored velocity so positions
         # update smoothly between frame arrivals (~10 s real-time gaps).
         # Mirrors the multinode dead-reckoning in Section 3.  Applied to
-        # arc-only tracks too, even though the LM solver's velocity for
-        # single-node tracks is unreliable — when it is non-zero, dead
-        # reckoning helps; when it's zero, the block is a no-op.
+        # arc-only tracks too.  Velocity preference: LM-solver vel_east /
+        # vel_north when non-trivial, falling back to the arc-motion
+        # estimator for synthetic single-node tracks whose doppler-only
+        # solve emits near-zero velocity.
         _vel_e = getattr(track, 'vel_east', 0.0) or 0.0
         _vel_n = getattr(track, 'vel_north', 0.0) or 0.0
+        if abs(_vel_e) < 1.0 and abs(_vel_n) < 1.0 and not has_adsb:
+            _est_ms = _estimate_velocity_ms_from_motion(ac_hex, lat, lon, now)
+            if _est_ms is not None:
+                _vel_e, _vel_n = _est_ms
         _pft = getattr(track, 'pos_fix_ts', 0.0) or getattr(track, 'wall_clock_ts', 0.0) or 0.0
         _dr_elapsed = min(now - _pft, 60.0)
         if _dr_elapsed > 0.5 and (_vel_e != 0.0 or _vel_n != 0.0):
             _cos_lat = math.cos(math.radians(lat)) or 1e-9
             lat = round(lat + (_vel_n / 111_320.0) * _dr_elapsed, 6)
             lon = round(lon + (_vel_e / (111_320.0 * _cos_lat)) * _dr_elapsed, 6)
+            # Rebuild the arc trim window around the dead-reckoned position
+            # so the displayed arc tracks the moving aircraft instead of
+            # staying pinned to the last bistatic detection.  The bistatic
+            # ellipse curve itself (determined by delay_us) is unchanged —
+            # we just render the segment near where the aircraft is now.
+            # No effect on tests where pos_fix_ts ≈ now (no dead-reckoning).
+            if ambiguity_arc and position_source == "single_node_ellipse_arc":
+                _rebuilt = _build_single_node_arc(
+                    track, node_cfg, target_lat=lat, target_lon=lon,
+                )
+                if _rebuilt and len(_rebuilt) >= 2:
+                    ambiguity_arc = _rebuilt
+                    _mid = ambiguity_arc[len(ambiguity_arc) // 2]
+                    lat = round(_mid[0], 6)
+                    lon = round(_mid[1], 6)
 
         append_track_history(ac_hex, lat, lon, alt_ft, now)
         # Log distinct positions for later arc-motion velocity estimation.
