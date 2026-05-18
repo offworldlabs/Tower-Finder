@@ -717,40 +717,26 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             if _arc_delay and _arc_delay > 0:
                 return None
 
-        # Dead-reckon from last fix using stored velocity so positions
-        # update smoothly between frame arrivals (~10 s real-time gaps).
-        # Mirrors the multinode dead-reckoning in Section 3.  Applied to
-        # arc-only tracks too.  Velocity preference: LM-solver vel_east /
-        # vel_north when non-trivial, falling back to the arc-motion
-        # estimator for synthetic single-node tracks whose doppler-only
-        # solve emits near-zero velocity.
-        _vel_e = getattr(track, 'vel_east', 0.0) or 0.0
-        _vel_n = getattr(track, 'vel_north', 0.0) or 0.0
-        if abs(_vel_e) < 1.0 and abs(_vel_n) < 1.0 and not has_adsb:
-            _est_ms = _estimate_velocity_ms_from_motion(ac_hex, lat, lon, now)
-            if _est_ms is not None:
-                _vel_e, _vel_n = _est_ms
-        _pft = getattr(track, 'pos_fix_ts', 0.0) or getattr(track, 'wall_clock_ts', 0.0) or 0.0
-        _dr_elapsed = min(now - _pft, 60.0)
-        if _dr_elapsed > 0.5 and (_vel_e != 0.0 or _vel_n != 0.0):
-            _cos_lat = math.cos(math.radians(lat)) or 1e-9
-            lat = round(lat + (_vel_n / 111_320.0) * _dr_elapsed, 6)
-            lon = round(lon + (_vel_e / (111_320.0 * _cos_lat)) * _dr_elapsed, 6)
-            # Rebuild the arc trim window around the dead-reckoned position
-            # so the displayed arc tracks the moving aircraft instead of
-            # staying pinned to the last bistatic detection.  The bistatic
-            # ellipse curve itself (determined by delay_us) is unchanged —
-            # we just render the segment near where the aircraft is now.
-            # No effect on tests where pos_fix_ts ≈ now (no dead-reckoning).
-            if ambiguity_arc and position_source == "single_node_ellipse_arc":
-                _rebuilt = _build_single_node_arc(
-                    track, node_cfg, target_lat=lat, target_lon=lon,
-                )
-                if _rebuilt and len(_rebuilt) >= 2:
-                    ambiguity_arc = _rebuilt
-                    _mid = ambiguity_arc[len(ambiguity_arc) // 2]
-                    lat = round(_mid[0], 6)
-                    lon = round(_mid[1], 6)
+        # Dead-reckon non-arc tracks (multinode, solver_adsb_seed) from the
+        # last fix using stored velocity so positions update smoothly
+        # between frame arrivals.  For single_node_ellipse_arc tracks we
+        # leave lat/lon pinned to the bistatic-detected position: the
+        # backend can't reliably extrapolate the arc midpoint without
+        # creating visible oscillation as each new detection resets the
+        # baseline (the rebuilt arc midpoint kept snapping back and forth
+        # ~200 m per emit cycle).  The frontend handles smooth visual
+        # motion via its own 60 fps dead-reckoning using the gs / track
+        # fields, so the icon glides forward while the arc sits at the
+        # detection point — same behaviour as a real radar ping trail.
+        if position_source != "single_node_ellipse_arc":
+            _vel_e = getattr(track, 'vel_east', 0.0) or 0.0
+            _vel_n = getattr(track, 'vel_north', 0.0) or 0.0
+            _pft = getattr(track, 'pos_fix_ts', 0.0) or getattr(track, 'wall_clock_ts', 0.0) or 0.0
+            _dr_elapsed = min(now - _pft, 60.0)
+            if _dr_elapsed > 0.5 and (_vel_e != 0.0 or _vel_n != 0.0):
+                _cos_lat = math.cos(math.radians(lat)) or 1e-9
+                lat = round(lat + (_vel_n / 111_320.0) * _dr_elapsed, 6)
+                lon = round(lon + (_vel_e / (111_320.0 * _cos_lat)) * _dr_elapsed, 6)
 
         append_track_history(ac_hex, lat, lon, alt_ft, now)
         # Log distinct positions for later arc-motion velocity estimation.
