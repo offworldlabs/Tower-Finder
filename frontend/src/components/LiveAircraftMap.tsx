@@ -724,6 +724,16 @@ export default function LiveAircraftMap() {
   } = useAircraftFeed();
 
   const nodes = useNodes();
+  // Per-node geometry lookup for the client-side bistatic-arc rebuilder.
+  // Mirrors `nodes` content but keyed by node_id for O(1) access inside the
+  // DetectionArcs render tick.  Kept on a ref so the tick can read fresh
+  // values without re-running the effect on every nodes-poll cycle (30 s).
+  const nodesByIdRef = useRef({});
+  useEffect(() => {
+    const m = {};
+    for (const n of nodes) m[n.node_id] = n;
+    nodesByIdRef.current = m;
+  }, [nodes]);
 
   /* ── Local UI state ─────────────────────────────────────────── */
   const [displayAircraft, setDisplayAircraft] = useState([]);
@@ -1328,7 +1338,7 @@ export default function LiveAircraftMap() {
             })()}
 
             {/* Detection arcs — imperative Leaflet layer, 4Hz opacity fade, sourced from raw WS buffer */}
-            <DetectionArcs arcsBufferRef={arcsBufferRef} selectedHex={selectedHex} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} />
+            <DetectionArcs arcsBufferRef={arcsBufferRef} selectedHex={selectedHex} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} smoothRef={smoothRef} nodesByIdRef={nodesByIdRef} />
             {/* Aircraft position markers — all radar-detected aircraft rendered as airplane icons.
                  Color encodes confidence: purple=multinode, teal=ADS-B aided, cyan=single-node.
                  Single-node arc-only tracks are rendered smaller / dashed / semi-transparent to

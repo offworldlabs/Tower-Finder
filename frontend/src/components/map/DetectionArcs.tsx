@@ -3,6 +3,7 @@ import { memo, useEffect, useRef } from "react";
 import { useMap } from "react-leaflet";
 import L from "leaflet";
 import { ARC_HOLD_MS, ARC_FADE_MS, ARC_TOTAL_LIFE_MS, dopplerColor } from "./constants";
+import { buildBistaticArc } from "./bistaticArc";
 
 /* ── DetectionArcs: imperative Leaflet polylines with timer-driven opacity fade.
 
@@ -11,7 +12,7 @@ import { ARC_HOLD_MS, ARC_FADE_MS, ARC_TOTAL_LIFE_MS, dopplerColor } from "./con
       target. Newer buckets sit at full brightness briefly, then linear-fade
       to zero over ~10 s. Tick interval is 250 ms which is enough resolution
       for visibly smooth decay without React re-render cost. ── */
-const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, onSelect, onSelectNode }) {
+const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, onSelect, onSelectNode, smoothRef, nodesByIdRef }) {
   const map = useMap();
   const polyMapRef = useRef(new Map()); // key → { line: L.polyline, ts, hex, node_id, ... }
   // Pending arcs have hex=null and no aircraft entry, so no plane icon is rendered for them.
@@ -87,7 +88,27 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
           // freezing the colour at first-paint until the arc expires.
           existing.line.setStyle({ opacity, color, weight });
         } else {
-          const line = L.polyline(entry.ambiguity_arc, {
+          // Client-side bistatic-arc rebuild: when we know delay_us + the
+          // source node's geometry + where the icon is right now, recompute
+          // the trim segment along the same bistatic locus around the
+          // dead-reckoned position.  This is the right way to make the arc
+          // follow a moving aircraft: the curve stays physically valid (it's
+          // a real point on the locus for the measured delay), only the
+          // 25-km display window slides.  Earlier attempts that *translated*
+          // the arc by (icon - midpoint) drew the curve in regions outside
+          // any node's beam — wrong physics.  Falls back to the backend arc
+          // when we don't have the geometry yet (e.g. node config still
+          // loading) or for pending arcs (entry.hex is null).
+          let arcPoints = entry.ambiguity_arc;
+          if (entry.hex && entry.delay_us && entry.node_id) {
+            const node = nodesByIdRef?.current?.[entry.node_id];
+            const sm = smoothRef?.current?.[entry.hex];
+            if (node && sm) {
+              const rebuilt = buildBistaticArc(entry.delay_us, node, sm.lat, sm.lon);
+              if (rebuilt && rebuilt.length >= 2) arcPoints = rebuilt;
+            }
+          }
+          const line = L.polyline(arcPoints, {
             color,
             weight,
             opacity,
@@ -168,7 +189,7 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
       for (const marker of placeholderMap.values()) marker.remove();
       placeholderMap.clear();
     };
-  }, [map, arcsBufferRef]);
+  }, [map, arcsBufferRef, smoothRef, nodesByIdRef]);
 
   return null;
 });
