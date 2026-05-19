@@ -7,6 +7,7 @@ export function FitBounds({ aircraft, nodes, selectedHex, focusNonce }) {
   const initialFitted = useRef(false);
   const userMoved = useRef(false);
   const lastFocusNonce = useRef(null);
+  const prevSelectedHex = useRef(selectedHex);
 
   useEffect(() => {
     const onMove = () => {
@@ -22,6 +23,18 @@ export function FitBounds({ aircraft, nodes, selectedHex, focusNonce }) {
 
   useEffect(() => {
     const isExplicit = focusNonce !== lastFocusNonce.current;
+    // Deselecting an aircraft (selectedHex N→null) without an explicit focus
+    // bump must NOT refit: the user clicked the map to dismiss the selection,
+    // not to reset the viewport. Without this guard the effect re-runs with
+    // userMoved=false (click doesn't fire dragstart/zoomstart) and refits to
+    // all aircraft, yanking the user out of their pan/zoom.
+    const wasSelected = prevSelectedHex.current;
+    prevSelectedHex.current = selectedHex;
+    if (initialFitted.current && !isExplicit && wasSelected && !selectedHex) {
+      // Treat deselection as user intent — pin viewport in place.
+      userMoved.current = true;
+      return;
+    }
     if (initialFitted.current && userMoved.current && !isExplicit) return;
 
     const pts = getFocusPoints(aircraft, nodes, selectedHex);
