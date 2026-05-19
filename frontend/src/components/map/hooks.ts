@@ -120,6 +120,10 @@ export function useAircraftFeed() {
             hex: ac.hex,
             node_id: ac.node_id,
             ambiguity_arc: ac.ambiguity_arc,
+            // delay_us is the only bistatic parameter we need to rebuild
+            // the locus client-side at the icon's current dead-reckoned
+            // position; geometry comes from useNodes.
+            delay_us: ac.delay_us ?? null,
             doppler_hz: ac.doppler_hz ?? 0,
             target_class: ac.target_class,
             ts: now,
