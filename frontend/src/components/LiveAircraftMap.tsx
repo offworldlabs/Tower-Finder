@@ -1273,6 +1273,29 @@ export default function LiveAircraftMap() {
               })
             }
 
+            {/* Single-node selection — highlight the source node + connect to
+                 aircraft.  Mirrors the multinode block above but for the
+                 90 % of tracks that come from a single radar node. */}
+            {selectedAc && !selectedAc.multinode && selectedAc.node_id && (() => {
+              const sn = nodes.find((n) => n.node_id === selectedAc.node_id);
+              if (!sn) return null;
+              return (
+                <>
+                  <CircleMarker
+                    center={[sn.rx_lat, sn.rx_lon]}
+                    radius={14}
+                    pathOptions={{ color: "#fbbf24", weight: 3, fillColor: "#fbbf24", fillOpacity: 0.25 }}
+                  />
+                  {selectedAc.lat && selectedAc.lon && (
+                    <Polyline
+                      positions={[[selectedAc.lat, selectedAc.lon], [sn.rx_lat, sn.rx_lon]]}
+                      pathOptions={{ color: "#fbbf24", weight: 1.5, opacity: 0.6, dashArray: "6 4" }}
+                    />
+                  )}
+                </>
+              );
+            })()}
+
             {/* Per-aircraft trails for every visible target — imperative canvas
                  layer that subscribes to frontendTrailsRef.  Excludes the
                  selected aircraft, which gets the prominent gradient trail
