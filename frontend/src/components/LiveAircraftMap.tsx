@@ -772,10 +772,61 @@ export default function LiveAircraftMap() {
   /* ── Record server fixes when new WS data arrives ───────────── */
   useEffect(() => {
     const now = Date.now();
+    // Equirect distance approximation (km) — good enough for the
+    // "is this jump plausible?" test (< 1% error inside a metro area).
+    const distKm = (lat1, lon1, lat2, lon2) => {
+      const cosLat = Math.cos(((lat1 + lat2) / 2) * (Math.PI / 180));
+      const dx = (lon2 - lon1) * 111.32 * cosLat;
+      const dy = (lat2 - lat1) * 111.32;
+      return Math.hypot(dx, dy);
+    };
     for (const ac of aircraft) {
       if (!ac.lat || !ac.lon) continue;
       const prev = fixesRef.current[ac.hex];
       const posChanged = !prev || prev._fixLat !== ac.lat || prev._fixLon !== ac.lon;
+
+      // Teleport guard: if a new fix arrives implausibly far from where the
+      // icon is currently being rendered (smoothed/dead-reckoned), don't
+      // glide across the gap (the exponential smoother would otherwise
+      // animate a multi-km "supersonic swoosh" over ~2-3 s).  Instead snap
+      // smoothRef directly to the new fix and drop the per-hex trail so the
+      // polyline doesn't connect the old and new positions through the gap.
+      // A jump is implausible when it exceeds (max aircraft ground speed)
+      // × elapsed since the previous fix, plus a small tolerance.
+      if (posChanged && prev) {
+        const dtSec = Math.max((now - (prev._fixTs ?? now)) / 1000, 0.1);
+        // 1.0 km/s ≈ Mach 3 — well above any civil/commercial target we
+        // expect.  Anything beyond this is a solver/association glitch.
+        const maxPlausibleKm = 0.6 + 1.0 * dtSec;
+        const sm = smoothRef.current[ac.hex];
+        const refLat = sm?.lat ?? prev._fixLat;
+        const refLon = sm?.lon ?? prev._fixLon;
+        const jumpKm = distKm(refLat, refLon, ac.lat, ac.lon);
+        if (jumpKm > maxPlausibleKm) {
+          if (sm) {
+            sm.lat = ac.lat;
+            sm.lon = ac.lon;
+          } else {
+            smoothRef.current[ac.hex] = {
+              lat: ac.lat,
+              lon: ac.lon,
+              track: ac.track || 0,
+            };
+          }
+          // Reset the cached Leaflet LatLng so the marker.update() in the
+          // tick loop renders at the new position on the next frame.
+          const cachedLL = latLngCacheRef.current[ac.hex];
+          if (cachedLL) {
+            cachedLL.lat = ac.lat;
+            cachedLL.lng = ac.lon;
+          }
+          // Drop the trail so the polyline doesn't draw a straight line
+          // through the discontinuity.
+          delete frontendTrailsRef.current[ac.hex];
+          delete lastTrailSampleRef.current[ac.hex];
+        }
+      }
+
       fixesRef.current[ac.hex] = {
         ...ac,
         _fixLat: ac.lat,
