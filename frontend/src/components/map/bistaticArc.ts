@@ -100,9 +100,16 @@ export function buildBistaticArc(
     const targetEastKm = (targetLon - rx_lon) * 111.32 * cosLat;
     const targetNorthKm = (targetLat - rx_lat) * 111.32;
     const targetRangeKm = Math.max(Math.hypot(targetEastKm, targetNorthKm), 5);
-    const BLIP_ARC_LENGTH_KM = 25;
+    // Geometric sweep that produces a ~12 km visible arc segment at the
+    // aircraft's range, then capped at 36° so close-in targets don't get
+    // the gigantic 120°-wide curve that the beam-width cap allowed (a 120°
+    // sweep at 8 km range draws a ~17 km radius near-straight line that
+    // dwarfs the icon).  36° matches the /test-radar reference fan and
+    // reads as a clearly curved short ellipse segment at typical zooms.
+    const BLIP_ARC_LENGTH_KM = 12;
+    const MAX_SWEEP_DEG = 36;
     sweepWidthDeg = Math.min(
-      beamWidthDeg,
+      Math.min(beamWidthDeg, MAX_SWEEP_DEG),
       (BLIP_ARC_LENGTH_KM / targetRangeKm) * (180 / Math.PI),
     );
     steps = 18;
