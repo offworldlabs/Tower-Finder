@@ -3,7 +3,7 @@ import { memo, useEffect, useRef } from "react";
 import { useMap } from "react-leaflet";
 import L from "leaflet";
 import { ARC_HOLD_MS, ARC_FADE_MS, ARC_TOTAL_LIFE_MS, dopplerColor } from "./constants";
-import { buildBistaticArc } from "./bistaticArc";
+import { buildBistaticArc, computeBistaticDelayUs } from "./bistaticArc";
 
 /* ── DetectionArcs: imperative Leaflet polylines with timer-driven opacity fade.
 
@@ -87,25 +87,47 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
           // the polyline to reflect the latest classification rather than
           // freezing the colour at first-paint until the arc expires.
           existing.line.setStyle({ opacity, color, weight });
-        } else {
-          // Client-side bistatic-arc rebuild: when we know delay_us + the
-          // source node's geometry + where the icon is right now, recompute
-          // the trim segment along the same bistatic locus around the
-          // dead-reckoned position.  This is the right way to make the arc
-          // follow a moving aircraft: the curve stays physically valid (it's
-          // a real point on the locus for the measured delay), only the
-          // 25-km display window slides.  Earlier attempts that *translated*
-          // the arc by (icon - midpoint) drew the curve in regions outside
-          // any node's beam — wrong physics.  Falls back to the backend arc
-          // when we don't have the geometry yet (e.g. node config still
-          // loading) or for pending arcs (entry.hex is null).
-          let arcPoints = entry.ambiguity_arc;
-          if (entry.hex && entry.delay_us && entry.node_id) {
+          // Keep the newest arc glued to the dead-reckoned icon.  Arcs
+          // within the current-second window (~1.5 s) get their geometry
+          // refreshed at each 250 ms tick via setLatLngs so the curve
+          // slides smoothly with the icon rather than snapping once per WS
+          // update.  Older arcs are the afterglow trail and stay frozen.
+          // We compute the *effective* bistatic delay from the current sm
+          // position (inverting the delay→locus formula) so the arc always
+          // passes through the aircraft icon regardless of how stale the
+          // measured delay_us is — mirrors the test-radar behaviour where
+          // aircraftPos = arcMidpoint(arc).
+          if (age < 1500 && entry.hex && entry.node_id) {
             const node = nodesByIdRef?.current?.[entry.node_id];
             const sm = smoothRef?.current?.[entry.hex];
             if (node && sm) {
-              const rebuilt = buildBistaticArc(entry.delay_us, node, sm.lat, sm.lon);
-              if (rebuilt && rebuilt.length >= 2) arcPoints = rebuilt;
+              const rxLat = node.rx_lat_real ?? node.rx_lat;
+              const rxLon = node.rx_lon_real ?? node.rx_lon;
+              const effectiveDelay = computeBistaticDelayUs(sm.lat, sm.lon, rxLat, rxLon, node.tx_lat, node.tx_lon);
+              if (effectiveDelay > 0) {
+                const updated = buildBistaticArc(effectiveDelay, node, sm.lat, sm.lon);
+                if (updated && updated.length >= 2) existing.line.setLatLngs(updated);
+              }
+            }
+          }
+        } else {
+          // First creation: compute the effective bistatic delay from the
+          // current dead-reckoned icon position (sm) so the arc passes
+          // through the icon.  Falls back to the backend arc when we don't
+          // have node geometry yet (useNodes still loading) or for pending
+          // arcs (entry.hex is null, no sm to reference).
+          let arcPoints = entry.ambiguity_arc;
+          if (entry.hex && entry.node_id) {
+            const node = nodesByIdRef?.current?.[entry.node_id];
+            const sm = smoothRef?.current?.[entry.hex];
+            if (node && sm) {
+              const rxLat = node.rx_lat_real ?? node.rx_lat;
+              const rxLon = node.rx_lon_real ?? node.rx_lon;
+              const effectiveDelay = computeBistaticDelayUs(sm.lat, sm.lon, rxLat, rxLon, node.tx_lat, node.tx_lon);
+              if (effectiveDelay > 0) {
+                const rebuilt = buildBistaticArc(effectiveDelay, node, sm.lat, sm.lon);
+                if (rebuilt && rebuilt.length >= 2) arcPoints = rebuilt;
+              }
             }
           }
           const line = L.polyline(arcPoints, {
