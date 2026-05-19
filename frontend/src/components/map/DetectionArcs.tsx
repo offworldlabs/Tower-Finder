@@ -67,7 +67,14 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
         } else {
           opacity = Math.max(0.0, 1.0 - (age - ARC_HOLD_MS) / ARC_FADE_MS);
         }
-        const color = entry.target_class === "drone" ? "#fb923c" : dopplerColor(entry.doppler_hz ?? 0);
+        // Selected aircraft's arc switches to amber so it stands out from
+        // neighbouring doppler-coloured arcs at the same map region — useful
+        // in dense areas where cyan/red arcs overlap and the +2 weight bump
+        // alone isn't enough to identify which arc belongs to the selected
+        // target.
+        const color = isSelected
+          ? "#fbbf24"
+          : (entry.target_class === "drone" ? "#fb923c" : dopplerColor(entry.doppler_hz ?? 0));
         // Pending (unidentified) detections render thinner so they're visually
         // distinct from confirmed aircraft arcs.
         const weight = isSelected ? 6 : (isPending ? 2 : 4);
