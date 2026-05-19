@@ -135,3 +135,30 @@ export function buildBistaticArc(
   if (points.length < 2) return null;
   return points;
 }
+
+/**
+ * Compute the bistatic differential-range delay (µs) for a point at
+ * (targetLat, targetLon) given RX and TX positions.
+ *
+ * This is the inverse of the delay→locus mapping: given the current
+ * dead-reckoned icon position, compute which bistatic locus it sits on.
+ * Using this as the delayUs input to buildBistaticArc ensures the resulting
+ * arc passes through the aircraft icon regardless of how stale the last
+ * measured delay_us is — matching the test-radar behaviour where
+ * aircraftPos = arcMidpoint(arc).
+ */
+export function computeBistaticDelayUs(
+  targetLat: number, targetLon: number,
+  rxLat: number, rxLon: number,
+  txLat: number, txLon: number,
+): number {
+  const cosLat = Math.max(0.1, Math.cos(((rxLat + txLat) / 2 * Math.PI) / 180));
+  const txEastKm  = (txLon - rxLon) * 111.32 * cosLat;
+  const txNorthKm = (txLat - rxLat) * 111.32;
+  const baselineKm = Math.hypot(txEastKm, txNorthKm);
+  const tgtEastKm  = (targetLon - rxLon) * 111.32 * cosLat;
+  const tgtNorthKm = (targetLat - rxLat) * 111.32;
+  const tgtRxKm  = Math.hypot(tgtEastKm, tgtNorthKm);
+  const tgtTxKm  = Math.hypot(tgtEastKm - txEastKm, tgtNorthKm - txNorthKm);
+  return (tgtRxKm + tgtTxKm - baselineKm) / 0.299792458;
+}
