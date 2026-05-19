@@ -572,6 +572,65 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels
   prev.onSelect === next.onSelect
 );
 
+/* ── AircraftTrailsLayer: imperative L.polyline per visible aircraft, fed by
+      frontendTrailsRef (per-hex buffer of smoothed positions sampled at 2 Hz).
+      Updated at 2 Hz so 100+ trails stay cheap; uses a single L.canvas
+      renderer so all trails draw on one canvas tile instead of N <path>
+      elements.  Skips the selected aircraft (its prominent trail is rendered
+      separately by the existing selectedTrailPositions block). ── */
+const _trailsCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
+
+const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraft, frontendTrailsRef, selectedHex }) {
+  const map = useMap();
+  const linesRef = useRef(new Map()); // hex → L.polyline
+
+  useEffect(() => {
+    const lines = linesRef.current;
+    const tick = () => {
+      const trails = frontendTrailsRef.current || {};
+      const seen = new Set();
+      for (const ac of visibleAircraft) {
+        if (!ac.hex || ac.hex === selectedHex) continue;
+        const buf = trails[ac.hex];
+        if (!buf || buf.length < 2) continue;
+        seen.add(ac.hex);
+        const positions = buf.map((p) => [p[0], p[1]]);
+        let line = lines.get(ac.hex);
+        if (line) {
+          line.setLatLngs(positions);
+        } else {
+          line = L.polyline(positions, {
+            renderer: _trailsCanvas,
+            color: "#f59e0b",
+            weight: 1.2,
+            opacity: 0.5,
+            lineCap: "round",
+            lineJoin: "round",
+          });
+          line.addTo(map);
+          lines.set(ac.hex, line);
+        }
+      }
+      // Remove trails for aircraft no longer in viewport / selected.
+      for (const [hex, line] of lines) {
+        if (!seen.has(hex)) {
+          line.remove();
+          lines.delete(hex);
+        }
+      }
+    };
+    tick();
+    const id = setInterval(tick, 500);
+    return () => {
+      clearInterval(id);
+      for (const line of lines.values()) line.remove();
+      lines.clear();
+    };
+  }, [map, visibleAircraft, frontendTrailsRef, selectedHex]);
+
+  return null;
+});
+
 /* ── NodeMarkersLayer: SVG CircleMarkers for synthetic nodes + divIcon for the
       real radar node.
       Background reason: 914 DOM divs with drop-shadow filters caused severe
@@ -1213,6 +1272,18 @@ export default function LiveAircraftMap() {
                 );
               })
             }
+
+            {/* Per-aircraft trails for every visible target — imperative canvas
+                 layer that subscribes to frontendTrailsRef.  Excludes the
+                 selected aircraft, which gets the prominent gradient trail
+                 rendered below from the same buffer source. */}
+            {showTrails && (
+              <AircraftTrailsLayer
+                visibleAircraft={visibleAircraft}
+                frontendTrailsRef={frontendTrailsRef}
+                selectedHex={selectedHex}
+              />
+            )}
 
             {/* Selected trail — gradient fade; dashed for arc-type tracks */}
             {showTrails && selectedTrailPositions.length >= 2 && (() => {
