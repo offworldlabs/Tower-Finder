@@ -11,7 +11,7 @@ import { ARC_HOLD_MS, ARC_FADE_MS, ARC_TOTAL_LIFE_MS, dopplerColor } from "./con
       target. Newer buckets sit at full brightness briefly, then linear-fade
       to zero over ~10 s. Tick interval is 250 ms which is enough resolution
       for visibly smooth decay without React re-render cost. ── */
-const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, onSelect, onSelectNode, smoothRef }) {
+const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, onSelect, onSelectNode }) {
   const map = useMap();
   const polyMapRef = useRef(new Map()); // key → { line: L.polyline, ts, hex, node_id, ... }
   // Pending arcs have hex=null and no aircraft entry, so no plane icon is rendered for them.
@@ -80,26 +80,7 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
           // freezing the colour at first-paint until the arc expires.
           existing.line.setStyle({ opacity, color, weight });
         } else {
-          // Trail-by-translation: backend emits the same arc geometry every
-          // WS message between detections (single_node_ellipse_arc tracks
-          // only refresh on new bistatic detections, ~40 s apart per node).
-          // Stacking 12 identical arcs gives no visible trail.  Shift each
-          // new bucket to align its midpoint with the icon's current
-          // dead-reckoned position so each second's bucket lands at a
-          // slightly newer position along the flight path; older buckets
-          // stay where they were created and fade out behind the moving
-          // aircraft.  No backend changes, no extrapolation risk.
-          let arcPoints = entry.ambiguity_arc;
-          const iconPos = entry.hex && smoothRef?.current?.[entry.hex];
-          if (iconPos && Array.isArray(arcPoints) && arcPoints.length >= 2) {
-            const midIdx = Math.floor(arcPoints.length / 2);
-            const dlat = iconPos.lat - arcPoints[midIdx][0];
-            const dlon = iconPos.lon - arcPoints[midIdx][1];
-            if (Math.abs(dlat) > 1e-6 || Math.abs(dlon) > 1e-6) {
-              arcPoints = arcPoints.map(([lat, lon]) => [lat + dlat, lon + dlon]);
-            }
-          }
-          const line = L.polyline(arcPoints, {
+          const line = L.polyline(entry.ambiguity_arc, {
             color,
             weight,
             opacity,
@@ -180,7 +161,7 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
       for (const marker of placeholderMap.values()) marker.remove();
       placeholderMap.clear();
     };
-  }, [map, arcsBufferRef, smoothRef]);
+  }, [map, arcsBufferRef]);
 
   return null;
 });
