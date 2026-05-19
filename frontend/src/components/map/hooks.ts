@@ -326,19 +326,45 @@ export function useNodes() {
         const data = await res.json();
         const nodeList = [];
         for (const [id, info] of Object.entries(data.nodes || {})) {
-          // Skip synthetic nodes on map.retina.fm
-          if (usesRealOnlyFeed && id.startsWith("synth-")) continue;
+          // Mirror backend's is_synthetic_node() prefix list. The backend
+          // already strips these from real_only feeds, but the analytics
+          // endpoint without real_only=true returns them. Also catch any
+          // leftover e2e/test-leak via a defensive client filter.
+          if (
+            usesRealOnlyFeed && (
+              id.startsWith("synth-") ||
+              id.startsWith("e2e-") ||
+              id.startsWith("test-") ||
+              id.startsWith("realnode-")
+            )
+          ) continue;
           const da = (info as any).detection_area;
           const ec = (info as any).empirical_coverage;
           if (da) {
+            // Skip null-island nodes (rx=(0,0)) that result from backend
+            // register_node() defaulting missing rx/tx coords to 0.  These
+            // show up after HTTP-registration without a config block
+            // (notably e2e bulk tests) and render as a stray marker in the
+            // Atlantic Ocean.  Use a small epsilon so we still allow a real
+            // node legitimately near the equator/prime-meridian, but
+            // dismiss the exact-zero default sentinel.
+            const rxLat = da.rx.lat;
+            const rxLon = da.rx.lon;
+            if (Math.abs(rxLat) < 1e-6 && Math.abs(rxLon) < 1e-6) continue;
             // Deterministic privacy fuzz for RX location — same node_id always gets the
             // same offset so the map is stable, but the true operator location cannot be
             // read directly from the display. ±~400m radius (≈0.0036°).
             const [dLat, dLon] = nodeDisplayFuzz(id);
             nodeList.push({
               node_id: id,
-              rx_lat: da.rx.lat + dLat,
-              rx_lon: da.rx.lon + dLon,
+              rx_lat: rxLat + dLat,
+              rx_lon: rxLon + dLon,
+              // Unfuzzed coords for client-side bistatic-arc rebuild — the
+              // backend builds the arc from the true RX, so fuzzing the
+              // rebuild inputs would offset the arc by ~400 m perpendicular
+              // to the locus relative to the backend's curve.
+              rx_lat_real: rxLat,
+              rx_lon_real: rxLon,
               tx_lat: da.tx.lat,
               tx_lon: da.tx.lon,
               beam_azimuth_deg: da.beam_azimuth_deg,
