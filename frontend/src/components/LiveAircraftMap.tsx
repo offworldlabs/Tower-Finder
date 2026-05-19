@@ -691,6 +691,14 @@ export default function LiveAircraftMap() {
   const rafFrameRef = useRef(0);  // throttle React re-renders to ~2fps (position/rotation at 60fps via direct L.Marker/DOM)
   const markerRegistryRef = useRef(new Map()); // hex → L.Marker for imperative 60fps setLatLng
   const latLngCacheRef    = useRef({});         // hex → L.LatLng — mutated in place to avoid per-frame allocation
+  // Per-hex trail of smoothed lat/lon samples taken from the 60fps DR loop.
+  // For arc-only tracks the backend's recent_positions stays at 1 point
+  // (append_track_history dedupes positions < 5 m apart, and the arc midpoint
+  // doesn't change between detections).  Sampling smoothRef into a frontend
+  // buffer at ~2 Hz lets us draw a trail behind the dead-reckoned icon
+  // without needing backend changes.  Bounded to 60 samples per hex (30 s).
+  const frontendTrailsRef = useRef({});  // hex → Array<[lat, lon, ts_sec]>
+  const lastTrailSampleRef = useRef({}); // hex → last sample timestamp (ms)
 
   /* ── Record server fixes when new WS data arrives ───────────── */
   useEffect(() => {
@@ -717,6 +725,8 @@ export default function LiveAircraftMap() {
         delete fixesRef.current[hex];
         delete smoothRef.current[hex];
         delete svgElemsRef.current[hex];
+        delete frontendTrailsRef.current[hex];
+        delete lastTrailSampleRef.current[hex];
       }
     }
   }, [aircraft]);
@@ -788,6 +798,19 @@ export default function LiveAircraftMap() {
           // L.Marker has a fresh _latlng that isn't our cached object.
           if (marker._latlng !== ll) marker._latlng = ll;
           marker.update();
+        }
+
+        // Sample the smoothed position into a per-hex trail buffer at ~2 Hz
+        // (every 500 ms).  This is the source for the trail polyline on
+        // arc-only tracks whose backend recent_positions stays at 1 point
+        // because the arc midpoint doesn't move between detections.
+        const lastSample = lastTrailSampleRef.current[fix.hex] || 0;
+        if (now - lastSample >= 500) {
+          lastTrailSampleRef.current[fix.hex] = now;
+          let trail = frontendTrailsRef.current[fix.hex];
+          if (!trail) { trail = []; frontendTrailsRef.current[fix.hex] = trail; }
+          trail.push([sLat, sLon, now / 1000]);
+          if (trail.length > 60) trail.shift();
         }
       }
 
@@ -920,12 +943,30 @@ export default function LiveAircraftMap() {
   }, [selectedHex, trailTick, viewport]);
 
   const selectedTrailPositions = useMemo(() => {
-    if (!visibleTrailEntries.length) return [];
-    const [, positions] = visibleTrailEntries[0];
-    const pts = sampleTrailPositions(positions).map((p) => [p[0], p[1]]);
+    if (!selectedHex) return [];
+    // Start from backend's recent_positions if present.
+    const pts = [];
+    if (visibleTrailEntries.length) {
+      const [, positions] = visibleTrailEntries[0];
+      for (const p of sampleTrailPositions(positions)) pts.push([p[0], p[1]]);
+    }
+    // Merge in the frontend trail (per-hex smoothed samples at 2 Hz).
+    // For arc-only tracks the backend recent_positions stays at 1 point
+    // because the arc midpoint doesn't move between detections, so without
+    // this fallback the selected aircraft would render no trail at all.
+    // Skip front samples already covered by the backend tail to avoid
+    // doubling up on the very recent positions.
+    const frontTrail = frontendTrailsRef.current[selectedHex];
+    if (frontTrail && frontTrail.length) {
+      const lastBack = pts[pts.length - 1];
+      for (const [lat, lon] of frontTrail) {
+        if (lastBack && Math.abs(lastBack[0] - lat) < 1e-5 && Math.abs(lastBack[1] - lon) < 1e-5) continue;
+        pts.push([lat, lon]);
+      }
+    }
     // smoothRef is updated at 60fps (vs displayedAircraftRef which is only 2fps)
     // so the trail tip connects exactly to the current smoothed position.
-    const animated = selectedHex ? smoothRef.current[selectedHex] : null;
+    const animated = smoothRef.current[selectedHex];
     if (animated?.lat && animated?.lon) {
       const last = pts[pts.length - 1];
       if (!last || Math.abs(last[0] - animated.lat) > 0.00001 || Math.abs(last[1] - animated.lon) > 0.00001) {
