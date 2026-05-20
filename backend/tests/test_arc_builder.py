@@ -438,5 +438,83 @@ class TestArcMotionVelocityFallback:
         assert _estimate_velocity_from_motion(self.HEX, 34.60, -84.85, now) is None
 
 
+# ─── Regression: position-jump (teleport) anomaly ────────────────────────────
+
+class TestPositionJumpAnomaly:
+    """A track whose emitted position teleports across the map must be flagged
+    is_anomalous with a "position_jump" type — even without ADS-B and even
+    when the tracker itself saw nothing wrong.  The speed gate only reverts
+    arc-track positions (silently) and is skipped at dt ≥ 60 s; multinode
+    tracks have no gate at all.
+    """
+
+    HEX = "jmptst"
+
+    def _setup(self, *, now_lat, now_lon, prev_lat, prev_lon, prev_age_s):
+        import time as _time
+
+        from core import state
+        from pipeline.passive_radar import GeolocatedTrack
+        track = GeolocatedTrack(
+            track_id=f"track-{self.HEX}",
+            lat=now_lat, lon=now_lon, alt_m=3000,
+            vel_east=0.0, vel_north=0.0, vel_up=0.0,
+            rms_delay=1.0, rms_doppler=1.0, n_detections=10,
+            timestamp_ms=int(_time.time() * 1000),
+            adsb_hex=None, latest_delay_us=80.0, target_class="aircraft",
+        )
+        track.wall_clock_ts = _time.time()
+        state.active_geo_aircraft[self.HEX] = (track, dict(_NODE_CFG))
+        state.track_last_emit[self.HEX] = [prev_lat, prev_lon, _time.time() - prev_age_s]
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        from core import state
+        for d in (state.active_geo_aircraft, state.track_last_emit,
+                  state.track_arc_motion, state.adsb_aircraft,
+                  state.external_adsb_cache, state.multinode_tracks,
+                  state.track_histories):
+            d.clear()
+        state.anomaly_hexes.discard(self.HEX)
+        yield
+        for d in (state.active_geo_aircraft, state.track_last_emit,
+                  state.track_arc_motion, state.adsb_aircraft,
+                  state.external_adsb_cache, state.multinode_tracks,
+                  state.track_histories):
+            d.clear()
+        state.anomaly_hexes.discard(self.HEX)
+
+    def _build(self):
+        import types
+
+        from services.frame_processor import build_combined_aircraft_json
+        pipeline = types.SimpleNamespace(geolocated_tracks={}, config=dict(_NODE_CFG))
+        result = build_combined_aircraft_json(pipeline)
+        return next((a for a in result["aircraft"] if a["hex"] == self.HEX), None)
+
+    def test_teleport_flagged(self):
+        from core import state
+        # Previous emit ~200 km south, 90 s ago (dt ≥ 60 so the speed gate is
+        # skipped → the jump is emitted, not reverted).  Current arc midpoint
+        # lands SW of the Atlanta RX.  Absolute leap >> 30 km → flagged.
+        self._setup(now_lat=33.70, now_lon=-84.85,
+                    prev_lat=31.90, prev_lon=-84.85, prev_age_s=90.0)
+        ac = self._build()
+        assert ac is not None
+        assert ac["is_anomalous"] is True
+        assert "position_jump" in ac["anomaly_types"]
+        assert self.HEX in state.anomaly_hexes
+
+    def test_normal_motion_not_flagged(self):
+        from core import state
+        # Previous emit ~1 km away, 3 s ago → ~330 kt, well within normal.
+        self._setup(now_lat=33.70, now_lon=-84.85,
+                    prev_lat=33.691, prev_lon=-84.85, prev_age_s=3.0)
+        ac = self._build()
+        assert ac is not None
+        assert "position_jump" not in (ac["anomaly_types"] or [])
+        assert self.HEX not in state.anomaly_hexes
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
