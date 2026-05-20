@@ -750,6 +750,40 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         if raw_midpoint_lat is not None:
             _record_arc_motion(ac_hex, raw_midpoint_lat, raw_midpoint_lon, now)
 
+        # ── Position-jump anomaly ──────────────────────────────────────────
+        # Flag a track that teleports — the solver mis-associated a far-away
+        # measurement and the position leapt across the map.  The tracker's
+        # own anomaly checks (supersonic, position_mismatch, identity_swap)
+        # all require ADS-B truth, so non-ADS-B synthetic single-node tracks
+        # had no jump detection at all; the speed gate above only reverts
+        # arc-track positions (silently, no flag) and is skipped entirely
+        # when dt ≥ 60 s, and multinode tracks have no gate.  This check is
+        # universal: it compares the candidate position (the raw solver /
+        # arc-midpoint position, *before* the arc-track revert hides it)
+        # against the last emit and flags an implausible jump.
+        #
+        # state.track_last_emit still holds the PREVIOUS emit here — it is
+        # refreshed on the line below.  We compare the FINAL emitted position
+        # (post-revert), so an arc jump that the speed gate already caught
+        # and reverted is NOT flagged — there's no visible teleport in that
+        # case.  Only positions that actually leap on screen get flagged.
+        _position_jump = False
+        _prev_emit = state.track_last_emit.get(ac_hex)
+        if _prev_emit:
+            _pe_lat, _pe_lon, _pe_ts = _prev_emit
+            _jdt = now - _pe_ts
+            _jdlat = (lat - _pe_lat) * 111_320
+            _jdlon = (lon - _pe_lon) * 111_320 * math.cos(math.radians(lat))
+            _jdist_m = math.hypot(_jdlat, _jdlon)
+            # Trigger on either: a sustained-interval speed above Mach 3
+            # (~1029 m/s — well past any real aircraft, so no false positives
+            # on legitimate military supersonic traffic), or an absolute
+            # single-emit leap over 30 km regardless of dt (covers the
+            # reappear-after-gap case where dt is large and the implied speed
+            # looks deceptively low).
+            if (0 < _jdt < 120 and _jdist_m / _jdt > 1029.0) or _jdist_m > 30_000.0:
+                _position_jump = True
+
         append_track_history(ac_hex, lat, lon, alt_ft, now)
         # Refresh the speed-gate reference on every emit (dedup-free) so the
         # next frame's gate sees the true emit-to-emit interval.
@@ -786,9 +820,14 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         rms_delay = round(getattr(track, "rms_delay", 0.0) or 0.0, 3)
         rms_doppler = round(getattr(track, "rms_doppler", 0.0) or 0.0, 2)
 
-        # Anomaly propagation: GeolocatedTrack → state.anomaly_hexes
-        _is_anom = getattr(track, "is_anomalous", False)
-        _anom_types = getattr(track, "anomaly_types", set())
+        # Anomaly propagation: GeolocatedTrack → state.anomaly_hexes.
+        # Fold in the position-jump flag computed above so a teleporting
+        # track is marked anomalous even when the tracker itself saw nothing
+        # wrong (no ADS-B to contradict, doppler within Mach 1).
+        _anom_types = set(getattr(track, "anomaly_types", set()))
+        if _position_jump:
+            _anom_types.add("position_jump")
+        _is_anom = bool(getattr(track, "is_anomalous", False)) or _position_jump
         _max_vel = getattr(track, "max_velocity_ms", 0.0)
         _flag_hex = ac_hex
         with state.anomaly_lock:
