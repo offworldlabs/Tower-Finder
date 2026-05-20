@@ -25,7 +25,25 @@ from config.constants import (
 
 logger = logging.getLogger(__name__)
 
-_ARCHIVE_DIR = Path(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))) / "coverage_data" / "archive"
+_COVERAGE_DIR = Path(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))) / "coverage_data"
+_ARCHIVE_DIR = _COVERAGE_DIR / "archive"
+# Track-solver Parquet output (services.tasks.track_archive).  Hive-partitioned
+# as tracks/year=YYYY/month=MM/day=DD/part-*.parquet — a different layout from
+# the detection archive, and historically NOT swept by this lifecycle: the
+# old iterator only walked _ARCHIVE_DIR's year/month/day/node tree, so track
+# Parquet accumulated forever (observed: 67 GB filling a 77 GB prod disk).
+_TRACKS_DIR = _COVERAGE_DIR / "tracks"
+
+def _archive_roots():
+    """Local dir → R2 prefix pairs swept every cycle.
+
+    Built fresh from the module globals (not frozen at import) so tests that
+    monkeypatch _ARCHIVE_DIR / _TRACKS_DIR to temp paths take effect.
+    """
+    return [
+        (_ARCHIVE_DIR, "archive"),
+        (_TRACKS_DIR, "tracks"),
+    ]
 
 # Caps to prevent runaway work in a single cycle
 _MAX_UPLOAD_PER_CYCLE = 500
@@ -55,12 +73,9 @@ def run_archive_lifecycle() -> dict:
     deletion_enabled = ARCHIVE_RETENTION_DAYS > 0
     delete_cutoff = now - (ARCHIVE_RETENTION_DAYS * 86400) if deletion_enabled else 0.0
 
-    if not _ARCHIVE_DIR.exists():
-        return stats
-
     use_r2 = r2_enabled()
 
-    for json_file in _iter_archive_files():
+    for json_file, root_dir, r2_prefix in _iter_archive_files():
         if stats["uploaded"] + stats["deleted"] >= _MAX_DELETE_PER_CYCLE:
             stats["skipped"] += 1
             continue
@@ -70,8 +85,8 @@ def run_archive_lifecycle() -> dict:
         except OSError:
             continue
 
-        rel = json_file.relative_to(_ARCHIVE_DIR)
-        r2_key = f"archive/{rel}"
+        rel = json_file.relative_to(root_dir)
+        r2_key = f"{r2_prefix}/{rel}"
         sentinel = _sentinel_path(json_file)
         already_uploaded = sentinel.exists()
 
@@ -108,8 +123,9 @@ def run_archive_lifecycle() -> dict:
             except OSError:
                 stats["errors"] += 1
 
-    # Phase 3: Clean up empty directories (bottom-up)
-    _prune_empty_dirs(_ARCHIVE_DIR)
+    # Phase 3: Clean up empty directories (bottom-up) in every root.
+    for root_dir, _prefix in _archive_roots():
+        _prune_empty_dirs(root_dir)
 
     if stats["uploaded"] or stats["deleted"]:
         logger.info(
@@ -121,31 +137,45 @@ def run_archive_lifecycle() -> dict:
 
 
 def _iter_archive_files():
-    """Yield .json files from the archive directory, oldest first."""
-    if not _ARCHIVE_DIR.exists():
-        return
-    # Walk year/month/day/node dirs in order — naturally chronological
-    try:
-        for year_dir in sorted(_ARCHIVE_DIR.iterdir()):
-            if not year_dir.is_dir():
-                continue
-            for month_dir in sorted(year_dir.iterdir()):
-                if not month_dir.is_dir():
+    """Yield (file, root_dir, r2_prefix) for every archived file, oldest-ish first.
+
+    Sweeps both archive roots:
+      - archive/  detection JSON/Parquet under year/month/day/node/
+      - tracks/   solver Parquet under Hive year=…/month=…/day=… partitions
+    The tracks/ root is globbed recursively because its layout (and any future
+    partition scheme) differs from the detection archive's fixed depth.
+    """
+    # Detection archive: fixed year/month/day/node tree, walked in order.
+    if _ARCHIVE_DIR.exists():
+        try:
+            for year_dir in sorted(_ARCHIVE_DIR.iterdir()):
+                if not year_dir.is_dir():
                     continue
-                for day_dir in sorted(month_dir.iterdir()):
-                    if not day_dir.is_dir():
+                for month_dir in sorted(year_dir.iterdir()):
+                    if not month_dir.is_dir():
                         continue
-                    for node_dir in sorted(day_dir.iterdir()):
-                        if not node_dir.is_dir():
+                    for day_dir in sorted(month_dir.iterdir()):
+                        if not day_dir.is_dir():
                             continue
-                        files = [
-                            *node_dir.glob("*.parquet"),
-                            *node_dir.glob("*.json"),
-                        ]
-                        for f in sorted(files):
-                            yield f
-    except OSError:
-        logger.debug("Error iterating archive directory", exc_info=True)
+                        for node_dir in sorted(day_dir.iterdir()):
+                            if not node_dir.is_dir():
+                                continue
+                            files = [
+                                *node_dir.glob("*.parquet"),
+                                *node_dir.glob("*.json"),
+                            ]
+                            for f in sorted(files):
+                                yield f, _ARCHIVE_DIR, "archive"
+        except OSError:
+            logger.debug("Error iterating archive directory", exc_info=True)
+
+    # Track-solver Parquet: recursive glob, skip our own .uploaded sentinels.
+    if _TRACKS_DIR.exists():
+        try:
+            for f in sorted(_TRACKS_DIR.glob("**/*.parquet")):
+                yield f, _TRACKS_DIR, "tracks"
+        except OSError:
+            logger.debug("Error iterating tracks directory", exc_info=True)
 
 
 def _prune_empty_dirs(base: Path):
