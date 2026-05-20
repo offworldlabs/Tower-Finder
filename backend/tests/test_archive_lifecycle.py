@@ -85,11 +85,17 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         self._archive_dir = Path(self._tmpdir.name) / "archive"
         self._archive_dir.mkdir()
+        self._tracks_dir = Path(self._tmpdir.name) / "tracks"
+        self._tracks_dir.mkdir()
 
         import services.tasks.archive_lifecycle as alc
 
         self._orig_archive_dir = alc._ARCHIVE_DIR
+        self._orig_tracks_dir = alc._TRACKS_DIR
         alc._ARCHIVE_DIR = self._archive_dir
+        # Redirect tracks/ too so the lifecycle doesn't sweep the real
+        # coverage_data/tracks on the test host.
+        alc._TRACKS_DIR = self._tracks_dir
 
         self._env_patcher = unittest.mock.patch.dict(
             os.environ, _FAKE_R2_ENV, clear=False
@@ -111,6 +117,7 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         import services.tasks.archive_lifecycle as alc
 
         alc._ARCHIVE_DIR = self._orig_archive_dir
+        alc._TRACKS_DIR = self._orig_tracks_dir
 
         self._r2._ENABLED = self._orig_enabled
         self._r2._BUCKET = self._orig_bucket
@@ -262,6 +269,48 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         stats = run_archive_lifecycle()
         self.assertLessEqual(stats["uploaded"], cap)
 
+    def _make_tracks_parquet(self, age_days: float) -> Path:
+        """Create a Hive-partitioned tracks/ Parquet file with the given age."""
+        mtime = time.time() - age_days * 86400
+        part_dir = (
+            self._tracks_dir / "year=2026" / "month=05" / "day=01"
+        )
+        part_dir.mkdir(parents=True, exist_ok=True)
+        f = part_dir / "part-120000.parquet"
+        f.write_bytes(b"PAR1")
+        os.utime(f, (mtime, mtime))
+        return f
+
+    @mock_aws
+    def test_tracks_parquet_uploaded_under_tracks_prefix(self):
+        """Track Parquet in tracks/ must be offloaded under the 'tracks/' R2 prefix.
+
+        The old iterator only walked archive/, so tracks/ Parquet accumulated
+        on disk forever. It must now be swept like the detection archive.
+        """
+        _make_bucket()
+        self._make_tracks_parquet(age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1)
+        from services.r2_client import list_keys
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        stats = run_archive_lifecycle()
+        self.assertGreater(stats["uploaded"], 0)
+        keys = list_keys("tracks/")
+        self.assertEqual(len(keys), 1)
+        self.assertTrue(keys[0].startswith("tracks/year=2026/"))
+
+    @mock_aws
+    def test_tracks_parquet_deleted_past_retention(self):
+        """Track Parquet past retention is deleted locally once confirmed in R2."""
+        _make_bucket()
+        f = self._make_tracks_parquet(age_days=_TEST_RETENTION_DAYS + 1)
+        from services.tasks.archive_lifecycle import run_archive_lifecycle
+
+        with _patch_retention():
+            stats = run_archive_lifecycle()
+        self.assertGreater(stats["deleted"], 0)
+        self.assertFalse(f.exists(), "track Parquet past retention must be deleted")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Suite 2: unit tests for error paths and edge cases (no moto required)
@@ -275,6 +324,10 @@ class _ArchiveUnitTestBase(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         self._archive_dir = Path(self._tmpdir.name) / "archive"
         self._archive_dir.mkdir()
+        # Isolate the tracks/ root too, so the lifecycle never touches the
+        # real coverage_data/tracks on the test host.
+        self._tracks_dir = Path(self._tmpdir.name) / "tracks"
+        self._tracks_dir.mkdir()
 
     def tearDown(self):
         self._tmpdir.cleanup()
@@ -288,6 +341,8 @@ class _ArchiveUnitTestBase(unittest.TestCase):
         """
         with unittest.mock.patch(
             "services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir
+        ), unittest.mock.patch(
+            "services.tasks.archive_lifecycle._TRACKS_DIR", new=self._tracks_dir
         ):
             with unittest.mock.patch(
                 "services.r2_client.is_enabled", return_value=r2_enabled
@@ -309,10 +364,13 @@ class TestRunArchiveLifecycleEmptyDir(unittest.TestCase):
     def test_nonexistent_dir_returns_zero_stats(self):
         with tempfile.TemporaryDirectory() as td:
             missing = Path(td) / "no_such_archive"
-            # missing is NOT created
+            missing_tracks = Path(td) / "no_such_tracks"
+            # neither is created
 
             with unittest.mock.patch(
                 "services.tasks.archive_lifecycle._ARCHIVE_DIR", new=missing
+            ), unittest.mock.patch(
+                "services.tasks.archive_lifecycle._TRACKS_DIR", new=missing_tracks
             ):
                 from services.tasks.archive_lifecycle import run_archive_lifecycle
 
@@ -463,12 +521,20 @@ class TestIterArchiveFiles(_ArchiveUnitTestBase):
     """_iter_archive_files: non-dirs skipped, OSError doesn't crash."""
 
     def _collect(self):
+        """Return just the file paths yielded for the archive/ root.
+
+        _iter_archive_files now yields (file, root_dir, r2_prefix) tuples and
+        sweeps both roots; these tests only assert on archive/ files, so we
+        point tracks/ at an empty temp dir and unwrap the file from each tuple.
+        """
         from services.tasks.archive_lifecycle import _iter_archive_files
 
         with unittest.mock.patch(
             "services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir
+        ), unittest.mock.patch(
+            "services.tasks.archive_lifecycle._TRACKS_DIR", new=self._tracks_dir
         ):
-            return list(_iter_archive_files())
+            return [f for f, _root, _prefix in _iter_archive_files()]
 
     def test_non_dir_entries_at_each_level_are_skipped(self):
         """Files placed at year/month/day/node level (not in a dir) are not yielded."""
