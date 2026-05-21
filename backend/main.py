@@ -56,6 +56,8 @@ from services.background import (
     archive_flush_task,
     archive_lifecycle_task,
     frame_processor_loop,
+    health_monitor_task,
+    heartbeat_task,
     prune_synthetic_nodes,
     reputation_evaluator,
     start_solver_workers,
@@ -151,6 +153,8 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(analytics_refresh_task()),
             asyncio.create_task(storage_refresh_task()),
             asyncio.create_task(blah2_bridge_task()),
+            asyncio.create_task(health_monitor_task()),
+            asyncio.create_task(heartbeat_task()),
             asyncio.create_task(_snapshot_loop()),
             *[asyncio.create_task(frame_processor_loop(radar_pipeline))
               for _ in range(_n_frame_workers)],

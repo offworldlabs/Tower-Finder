@@ -5,13 +5,13 @@ import logging
 import os
 
 import httpx
-import orjson
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 
 from clients.fcc import fetch_fcc_broadcast_systems
 from clients.maprad import fetch_broadcast_systems
 from core.users import require_admin
-from services.alerting import send_alert
+from services.health import compute_health_issues
 from services.tower_ranking import (
     _CONFIG_PATH,
     DEFAULT_LIMIT,
@@ -20,8 +20,6 @@ from services.tower_ranking import (
     process_and_rank,
     reload_config,
 )
-
-_NODE_DROPOUT_THRESHOLD = float(os.getenv("NODE_DROPOUT_THRESHOLD", "0.8"))
 
 router = APIRouter()
 
@@ -154,112 +152,22 @@ async def find_towers(
 
 
 @router.get("/api/health")
-async def health():
-    import resource
-    import shutil
-    import sys
-    import time
+async def health(strict: bool = Query(False)):
+    """Report server health.
 
-    from core import state
-
-    issues = []
-
-    # Check frame queue saturation (>90% = unhealthy)
-    q_pct = state.frame_queue.qsize() / max(state.frame_queue.maxsize, 1)
-    if q_pct > 0.9:
-        issues.append(f"frame_queue_saturated ({q_pct:.0%})")
-
-    # Check critical task staleness
-    now = time.time()
-    critical_tasks = {"frame_processor": 20, "analytics_refresh": 120, "aircraft_flush": 15}
-    for task, max_age_s in critical_tasks.items():
-        last = state.task_last_success.get(task)
-        if last is not None and (now - last) > max_age_s:
-            issues.append(f"stale_task:{task}")
-
-    # Check solver queue drops (growing = solver can't keep up)
-    if state.solver_queue_drops > 0:
-        issues.append(f"solver_queue_drops:{state.solver_queue_drops}")
-
-    # Check disk space (<500 MB free = critical)
-    try:
-        disk = shutil.disk_usage(state.COVERAGE_STORAGE_DIR)
-        free_mb = disk.free / (1024 * 1024)
-        if free_mb < 500:
-            issues.append(f"disk_low:{free_mb:.0f}MB")
-    except Exception:
-        pass
-
-    # Check process memory (>3 GB on a 4 GB droplet = danger)
-    try:
-        rusage = resource.getrusage(resource.RUSAGE_SELF)
-        rss_mb = rusage.ru_maxrss / 1024 if sys.platform == "linux" else rusage.ru_maxrss / (1024 * 1024)
-        if rss_mb > 3000:
-            issues.append(f"memory_high:{rss_mb:.0f}MB")
-    except Exception:
-        pass
-
-    # Solver queue backpressure (>50% = early warning before drops start)
-    solver_q_pct = state.solver_queue.qsize() / max(state.solver_queue.maxsize, 1)
-    if solver_q_pct > 0.5:
-        issues.append(f"solver_queue_high:{solver_q_pct:.0%}")
-
-    # Solver end-to-end latency (>30s = solver threads are badly overloaded)
-    if state.solver_last_latency_s > 30:
-        issues.append(f"solver_latency_high:{state.solver_last_latency_s:.0f}s")
-
-    # Node dropout (active nodes <80% of peak — fleet disconnect or TCP issue)
-    # threshold cached at module level (_NODE_DROPOUT_THRESHOLD)
-    with state.connected_nodes_lock:
-        active_nodes = sum(
-            1 for n in state.connected_nodes.values() if n.get("status") != "disconnected"
-        )
-    if (
-        state.peak_connected_nodes > 10
-        and active_nodes < state.peak_connected_nodes * _NODE_DROPOUT_THRESHOLD
-    ):
-        issues.append(f"node_dropout:{active_nodes}/{state.peak_connected_nodes}")
-
-    # Zero tracks (0 aircraft after warmup = pipeline failure)
-    if (
-        state.frames_processed > 500
-        and len(state.adsb_aircraft) == 0
-        and len(state.multinode_tracks) == 0
-    ):
-        issues.append("no_active_tracks")
-
-    # Anomaly flood (>50% of aircraft anomalous = tracker misfiring, real alerts buried)
-    _total_aircraft = len(state.adsb_aircraft)
-    if _total_aircraft > 10 and len(state.anomaly_hexes) / _total_aircraft > 0.5:
-        issues.append(f"anomaly_flood:{len(state.anomaly_hexes)}/{_total_aircraft}")
-
-    # Solver accuracy degradation (mean position error >10 km = output untrustworthy)
-    try:
-        if state.latest_accuracy_bytes and state.latest_accuracy_bytes != b"{}":
-            _acc = orjson.loads(state.latest_accuracy_bytes)
-            if _acc.get("n_samples", 0) > 20 and _acc.get("mean_km", 0) > 10:
-                issues.append(f"solver_accuracy_degraded:{_acc['mean_km']:.1f}km")
-    except Exception:
-        pass
-
-    # Fleet-wide miss rate (avg >70% = sensor network effectively blind)
-    try:
-        if state.latest_missed_detections:
-            _rates = [
-                v["miss_rate"]
-                for v in state.latest_missed_detections.values()
-                if v.get("in_range", 0) > 0
-            ]
-            if _rates:
-                _avg = sum(_rates) / len(_rates)
-                if _avg > 0.7:
-                    issues.append(f"high_miss_rate:{_avg:.0%}")
-    except Exception:
-        pass
-
+    Always 200 by default (liveness — used by the Docker healthcheck, which
+    must not restart the container on transient degradation). Pass ``strict=1``
+    for a readiness probe that returns 503 when degraded — use this for the
+    external uptime monitor. Alerting is owned by the health-monitor task, not
+    this endpoint, so health stays observable even when nothing polls it.
+    """
+    issues = compute_health_issues()
     if issues:
-        logging.warning("Health check degraded: %s", ", ".join(issues))
-        send_alert("health_degraded", f"Health check degraded: {', '.join(issues)}", {"issues": issues})
+        # Details are logged (and alerted on by the monitor), never exposed on
+        # this unauthenticated endpoint.
+        logging.warning("Health check degraded: %s", ", ".join(i["type"] for i in issues))
+        if strict:
+            return JSONResponse({"status": "degraded"}, status_code=503)
         return {"status": "degraded"}
     return {"status": "ok"}
 

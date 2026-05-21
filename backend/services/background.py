@@ -14,6 +14,8 @@ from services.tasks import (  # noqa: F401
     archive_flush_task,
     archive_lifecycle_task,
     frame_processor_loop,
+    health_monitor_task,
+    heartbeat_task,
     prune_synthetic_nodes,
     reputation_evaluator,
     start_solver_workers,
