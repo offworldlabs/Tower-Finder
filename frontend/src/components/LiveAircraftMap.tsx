@@ -707,6 +707,37 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
   });
 });
 
+/* ── IlluminatorsLayer: TX (broadcast transmitter) positions the nodes use.
+      Off by default — multiple nodes often share one illuminator, so we dedupe
+      by TX coordinate and render one pink marker per unique transmitter with the
+      list of nodes that bounce off it. Only the illuminators our own nodes use,
+      not every broadcast tower in range (that would be unreadable clutter). ── */
+const IlluminatorsLayer = memo(function IlluminatorsLayer({ visibleNodes, showIlluminators }) {
+  if (!showIlluminators) return null;
+  const byTx = new Map();
+  for (const n of visibleNodes) {
+    if (typeof n.tx_lat !== "number" || typeof n.tx_lon !== "number") continue;
+    if (Math.abs(n.tx_lat) < 1e-6 && Math.abs(n.tx_lon) < 1e-6) continue;
+    const key = `${n.tx_lat.toFixed(4)},${n.tx_lon.toFixed(4)}`;
+    if (!byTx.has(key)) byTx.set(key, { lat: n.tx_lat, lon: n.tx_lon, nodes: [] });
+    byTx.get(key).nodes.push(n.node_id);
+  }
+  return [...byTx.entries()].map(([key, tx]) => (
+    <CircleMarker
+      key={`illum-${key}`}
+      center={[tx.lat, tx.lon]}
+      radius={6}
+      pathOptions={{ color: "#f472b6", fillColor: "#f472b6", fillOpacity: 0.7, weight: 1.5 }}
+    >
+      <Popup>
+        <strong>Illuminator</strong><br />
+        {tx.lat.toFixed(4)}, {tx.lon.toFixed(4)}<br />
+        Used by {tx.nodes.length} node{tx.nodes.length === 1 ? "" : "s"}: {tx.nodes.join(", ")}
+      </Popup>
+    </CircleMarker>
+  ));
+});
+
 /* ── Main component ───────────────────────────────────────────── */
 
 export default function LiveAircraftMap() {
@@ -766,6 +797,7 @@ export default function LiveAircraftMap() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [viewport, setViewport] = useState(null);
   const [showAnomaliesOnly, setShowAnomaliesOnly] = useState(false);
+  const [showIlluminators, setShowIlluminators] = useState(false);
 
   const animationFrameRef = useRef(null);
   const displayedAircraftRef = useRef({});
@@ -1191,11 +1223,13 @@ export default function LiveAircraftMap() {
         showTrails={showTrails}
         showGroundTruth={showGroundTruth}
         showAnomaliesOnly={showAnomaliesOnly}
+        showIlluminators={showIlluminators}
         onToggleCoverage={() => setShowCoverage((v) => !v)}
         onToggleLabels={() => setShowLabels((v) => !v)}
         onToggleTrails={() => setShowTrails((v) => !v)}
         onToggleGroundTruth={() => setShowGroundTruth((v) => !v)}
         onToggleAnomaliesOnly={() => setShowAnomaliesOnly((v) => !v)}
+        onToggleIlluminators={() => setShowIlluminators((v) => !v)}
         onTogglePause={handleTogglePause}
         onFit={() => setFocusNonce((n) => n + 1)}
       />
@@ -1240,6 +1274,9 @@ export default function LiveAircraftMap() {
                 re-renders every 30s when node data refreshes, not on every pan/zoom.
                 SVG circles all share one composited layer — no per-element pan cost. */}
             <NodeMarkersLayer visibleNodes={nodes} onSelectNode={handleSelectNode} />
+
+            {/* Illuminators (TX towers our nodes use) — off by default, deduped per transmitter */}
+            <IlluminatorsLayer visibleNodes={nodes} showIlluminators={showIlluminators} />
 
             {/* Selected node: detection cone + TX tower + aircraft highlights */}
             {selectedNodeId && (() => {

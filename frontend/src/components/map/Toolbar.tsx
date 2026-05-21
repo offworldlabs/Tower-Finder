@@ -8,11 +8,13 @@ export default function Toolbar({
   showTrails,
   showGroundTruth,
   showAnomaliesOnly,
+  showIlluminators,
   onToggleCoverage,
   onToggleLabels,
   onToggleTrails,
   onToggleGroundTruth,
   onToggleAnomaliesOnly,
+  onToggleIlluminators,
   onTogglePause,
   onFit,
 }) {
@@ -27,6 +29,9 @@ export default function Toolbar({
 
       <button className={`toggle-btn${showCoverage ? " active" : ""}`} onClick={onToggleCoverage}>
         Coverage
+      </button>
+      <button className={`toggle-btn${showIlluminators ? " active" : ""}`} onClick={onToggleIlluminators}>
+        Illuminators
       </button>
       <button className={`toggle-btn${showLabels ? " active" : ""}`} onClick={onToggleLabels}>
         Labels
@@ -72,6 +77,11 @@ export default function Toolbar({
         <span className="legend-item">
           <span className="legend-dot" style={{ background: "#facc15" }} /> Node
         </span>
+        {showIlluminators && (
+          <span className="legend-item">
+            <span className="legend-dot" style={{ background: "#f472b6" }} /> Illuminator
+          </span>
+        )}
       </span>
     </div>
   );
