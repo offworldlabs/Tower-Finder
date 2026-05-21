@@ -14,7 +14,8 @@ export {
 export { mergeTrailPositions, sampleTrailPositions, buildTrailSegments } from "./trails";
 export { PLANE_PATH, getAircraftColor, makeAircraftIcon, makeDroneIcon, nodeIcon } from "./icons";
 export { FitBounds, ViewportTracker, MapClickClear } from "./MapControls";
-export { useAircraftFeed, useNodes } from "./hooks";
+export { useAircraftFeed, useNodes, useAuth } from "./hooks";
+export { default as NodeOwnerControl } from "./NodeOwnerControl";
 export { default as AircraftListPanel } from "./AircraftListPanel";
 export { default as AircraftDetailPanel } from "./AircraftDetailPanel";
 export { default as Toolbar } from "./Toolbar";

@@ -14,6 +14,7 @@ from core import state  # noqa: E402
 from services.tasks.aircraft_flush import (  # noqa: E402
     _build_real_only_payload,
     broadcast_aircraft,
+    filter_payload_to_nodes,
 )
 
 
@@ -68,6 +69,43 @@ class TestBuildRealOnlyPayload:
         hexes = [a["hex"] for a in out["aircraft"]]
         assert "MN1" in hexes
         assert "MN2" not in hexes
+
+
+class TestFilterPayloadToNodes:
+    def test_filters_to_given_nodes(self):
+        data = {
+            "now": 2.0,
+            "aircraft": [
+                {"hex": "A1", "node_id": "mine"},
+                {"hex": "A2", "node_id": "theirs"},
+            ],
+            "detection_arcs": [
+                {"id": "arc1", "node_id": "mine"},
+                {"id": "arc2", "node_id": "theirs"},
+            ],
+        }
+        out = orjson.loads(filter_payload_to_nodes(data, {"mine"}))
+        assert [a["hex"] for a in out["aircraft"]] == ["A1"]
+        assert [a["id"] for a in out["detection_arcs"]] == ["arc1"]
+        assert out["messages"] == 1
+
+    def test_empty_node_set_yields_nothing(self):
+        data = {"now": 1.0, "aircraft": [{"hex": "A1", "node_id": "mine"}], "detection_arcs": []}
+        out = orjson.loads(filter_payload_to_nodes(data, set()))
+        assert out["aircraft"] == []
+        assert out["messages"] == 0
+
+    def test_multinode_kept_when_contributor_owned(self):
+        data = {
+            "now": 1.0,
+            "aircraft": [{
+                "hex": "MN1", "node_id": "theirs", "multinode": True,
+                "contributing_node_ids": ["theirs", "mine"],
+            }],
+            "detection_arcs": [],
+        }
+        out = orjson.loads(filter_payload_to_nodes(data, {"mine"}))
+        assert [a["hex"] for a in out["aircraft"]] == ["MN1"]
 
 
 class _FakeWS:
@@ -131,6 +169,49 @@ class TestBroadcastAircraft:
         finally:
             # Broken socket should have been removed from the set
             assert broken not in state.ws_live_clients
+            assert broken.closed
+
+    async def test_owner_client_gets_only_their_nodes(self, monkeypatch):
+        monkeypatch.setattr(state, "connected_nodes", {})
+        state.ws_clients.clear()
+        state.ws_live_clients.clear()
+        state.ws_owner_clients.clear()
+
+        owner_ws = _FakeWS()
+        state.ws_owner_clients[owner_ws] = {"mine"}
+        data = {
+            "now": 1.0,
+            "aircraft": [
+                {"hex": "MINE", "node_id": "mine"},
+                {"hex": "THEIRS", "node_id": "theirs"},
+            ],
+            "detection_arcs": [],
+            "ground_truth": {},
+        }
+        try:
+            await broadcast_aircraft(data, orjson.dumps(data))
+        finally:
+            state.ws_owner_clients.pop(owner_ws, None)
+
+        assert len(owner_ws.sent) == 1
+        payload = orjson.loads(owner_ws.sent[0])
+        assert [a["hex"] for a in payload["aircraft"]] == ["MINE"]
+
+    async def test_failing_owner_client_is_removed(self, monkeypatch):
+        monkeypatch.setattr(state, "connected_nodes", {})
+        state.ws_clients.clear()
+        state.ws_live_clients.clear()
+        state.ws_owner_clients.clear()
+
+        broken = _FakeWS(fail=True)
+        state.ws_owner_clients[broken] = {"mine"}
+        try:
+            await broadcast_aircraft(
+                {"now": 1.0, "aircraft": [], "detection_arcs": [], "ground_truth": {}},
+                b"{}",
+            )
+        finally:
+            assert broken not in state.ws_owner_clients
             assert broken.closed
 
     async def test_ground_truth_slimmed_to_last_position(self, monkeypatch):

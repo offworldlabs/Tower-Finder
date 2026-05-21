@@ -78,3 +78,25 @@ export async function fetchMlatAccuracy() {
   if (!res.ok) return null;
   return res.json();
 }
+
+// Returns the current user dict, or null when not authenticated (401) or unreachable.
+export async function fetchMe() {
+  try {
+    const res = await fetch(`${API_BASE}/auth/me`, { credentials: "same-origin" });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+// Returns the list of nodes owned by the current user ([] when unauthenticated/unreachable).
+export async function fetchMyNodes() {
+  try {
+    const res = await fetch(`${API_BASE}/auth/me/nodes`, { credentials: "same-origin" });
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}

@@ -29,6 +29,8 @@ import {
   MapClickClear,
   useAircraftFeed,
   useNodes,
+  useAuth,
+  NodeOwnerControl,
   AircraftListPanel,
   AircraftDetailPanel,
   Toolbar,
@@ -708,6 +710,13 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
 /* ── Main component ───────────────────────────────────────────── */
 
 export default function LiveAircraftMap() {
+  /* ── Node-owner view ─────────────────────────────────────────── */
+  // Resolved before the feed so `ownerOnly` can pick the server-filtered
+  // /ws/aircraft/owner endpoint. Only takes effect once the user is logged in.
+  const { user, ownedNodeIds, loading: authLoading } = useAuth();
+  const [ownerOnly, setOwnerOnly] = useState(false);
+  const ownedSet = useMemo(() => new Set(ownedNodeIds), [ownedNodeIds]);
+
   /* ── Data feeds ─────────────────────────────────────────────── */
   const {
     aircraft,
@@ -721,9 +730,16 @@ export default function LiveAircraftMap() {
     historyRef,
     setPaused: setFeedPaused,
     arcsBufferRef,
-  } = useAircraftFeed();
+  } = useAircraftFeed(ownerOnly);
 
-  const nodes = useNodes();
+  const allNodes = useNodes();
+  // In owner mode the map shows only the user's own nodes. The aircraft/arc
+  // feed is already server-filtered; this filters the node markers/coverage to
+  // match. Falls back to all nodes when the toggle is off.
+  const nodes = useMemo(
+    () => (ownerOnly ? allNodes.filter((n) => ownedSet.has(n.node_id)) : allNodes),
+    [allNodes, ownerOnly, ownedSet],
+  );
   // Per-node geometry lookup for the client-side bistatic-arc rebuilder.
   // Mirrors `nodes` content but keyed by node_id for O(1) access inside the
   // DetectionArcs render tick.  Kept on a ref so the tick can read fresh
@@ -1197,6 +1213,17 @@ export default function LiveAircraftMap() {
         />
 
         <div className="live-map-area">
+          <NodeOwnerControl
+            user={user}
+            ownedCount={ownedNodeIds.length}
+            ownerOnly={ownerOnly}
+            loading={authLoading}
+            onToggle={(on) => {
+              setOwnerOnly(on);
+              // Refit to the user's nodes when entering owner mode.
+              if (on) setFocusNonce((n) => n + 1);
+            }}
+          />
           <MapContainer center={[34.0, -84.5]} zoom={8} style={{ height: "100%", width: "100%" }} attributionControl={false}>
             <TileLayer
               url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"

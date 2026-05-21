@@ -245,6 +245,24 @@ def user_to_dict(user: User) -> dict:
 _SENTINEL = object()
 
 
+async def read_user_from_token(token: str | None) -> User | None:
+    """Validate a raw auth_token JWT and return the User, or None if invalid.
+
+    Usable outside the request/response cycle (e.g. WebSocket handshakes, where
+    the cookie is read off ws.cookies rather than a Request).
+    """
+    if not token:
+        return None
+    strategy = get_jwt_strategy()
+    async with async_session_maker() as session:
+        user_db = SQLAlchemyUserDatabase(session, User)
+        user_manager = UserManager(user_db)
+        try:
+            return await strategy.read_token(token, user_manager)
+        except Exception:
+            return None
+
+
 async def _read_user_from_request(request: Request) -> User | None:
     """Validate the auth_token cookie using fastapi-users' JWTStrategy.
 
@@ -253,15 +271,7 @@ async def _read_user_from_request(request: Request) -> User | None:
     cached = getattr(request.state, "_auth_user", _SENTINEL)
     if cached is not _SENTINEL:
         return cached
-    token = request.cookies.get("auth_token")
-    if not token:
-        request.state._auth_user = None
-        return None
-    strategy = get_jwt_strategy()
-    async with async_session_maker() as session:
-        user_db = SQLAlchemyUserDatabase(session, User)
-        user_manager = UserManager(user_db)
-        user = await strategy.read_token(token, user_manager)
+    user = await read_user_from_token(request.cookies.get("auth_token"))
     request.state._auth_user = user
     return user
 
