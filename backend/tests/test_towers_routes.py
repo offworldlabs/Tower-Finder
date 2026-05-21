@@ -75,6 +75,22 @@ class TestHealth:
         finally:
             state.task_last_success.pop("frame_processor", None)
 
+    def test_health_strict_returns_503_when_degraded(self, client):
+        import time
+
+        state.task_last_success["frame_processor"] = time.time() - 9999
+        try:
+            r = client.get("/api/health?strict=1")
+            assert r.status_code == 503
+            assert r.json()["status"] == "degraded"
+        finally:
+            state.task_last_success.pop("frame_processor", None)
+
+    def test_health_strict_returns_200_when_ok(self, client):
+        r = client.get("/api/health?strict=1")
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
+
     def test_health_degraded_queue_saturated(self, client):
         """Fill the frame queue past 90% to trigger saturation warning."""
         import queue
