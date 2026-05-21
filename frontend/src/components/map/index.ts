@@ -12,7 +12,7 @@ export {
   bistaticOvalPositions,
 } from "./geo";
 export { mergeTrailPositions, sampleTrailPositions, buildTrailSegments } from "./trails";
-export { PLANE_PATH, getAircraftColor, makeAircraftIcon, makeDroneIcon, nodeIcon } from "./icons";
+export { PLANE_PATH, getAircraftColor, altitudeColor, ALTITUDE_LEGEND, makeAircraftIcon, makeDroneIcon, nodeIcon } from "./icons";
 export { FitBounds, ViewportTracker, MapClickClear } from "./MapControls";
 export { useAircraftFeed, useNodes, useAuth } from "./hooks";
 export { default as NodeOwnerControl } from "./NodeOwnerControl";

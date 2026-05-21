@@ -541,7 +541,7 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
       (selection, labels, callsign, altitude band, type).  lat/lon/track/gs are updated
       imperatively at 60fps via markerRegistry → marker.setLatLng() in the RAF loop,
       completely bypassing React reconcile. ── */
-const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels, onSelect, markerRegistry }) {
+const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels, colorByAlt, onSelect, markerRegistry }) {
   const altBand = Math.floor((ac.alt_baro ?? 0) / 5000);
   const markerRef = useRef(null);
 
@@ -556,9 +556,9 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels
   const icon = useMemo(
     () => ac.target_class === "drone"
       ? makeDroneIcon(ac, showLabels, isSelected)
-      : makeAircraftIcon(ac, showLabels, isSelected),
+      : makeAircraftIcon(ac, showLabels, isSelected, colorByAlt),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [ac.hex, isSelected, showLabels, ac.flight, ac.target_class, altBand],
+    [ac.hex, isSelected, showLabels, colorByAlt, ac.flight, ac.target_class, altBand],
   );
   const handlers = useMemo(() => ({ click: () => onSelect(ac.hex) }), [ac.hex, onSelect]);
   return <Marker ref={markerRef} position={[ac.lat, ac.lon]} icon={icon} eventHandlers={handlers} />;
@@ -567,6 +567,7 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels
   // by the RAF loop via marker.setLatLng() without touching React at all.
   prev.isSelected === next.isSelected &&
   prev.showLabels === next.showLabels &&
+  prev.colorByAlt === next.colorByAlt &&
   prev.ac.hex === next.ac.hex &&
   prev.ac.flight === next.ac.flight &&
   prev.ac.target_class === next.ac.target_class &&
@@ -738,6 +739,23 @@ const IlluminatorsLayer = memo(function IlluminatorsLayer({ visibleNodes, showIl
   ));
 });
 
+/* ── FollowController: when "Follow" is on and an aircraft is selected, keep the
+      map centred on its smoothed position. Reads smoothRef (60fps dead-reckoned)
+      on a 100ms interval and pans without animation so it tracks smoothly.
+      Toggle off (or deselect) to regain free pan/zoom. ── */
+const FollowController = memo(function FollowController({ followSelected, selectedHex, smoothRef }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!followSelected || !selectedHex) return;
+    const id = setInterval(() => {
+      const sm = smoothRef.current?.[selectedHex];
+      if (sm) map.panTo([sm.lat, sm.lon], { animate: false });
+    }, 100);
+    return () => clearInterval(id);
+  }, [followSelected, selectedHex, map, smoothRef]);
+  return null;
+});
+
 /* ── Main component ───────────────────────────────────────────── */
 
 export default function LiveAircraftMap() {
@@ -798,6 +816,11 @@ export default function LiveAircraftMap() {
   const [viewport, setViewport] = useState(null);
   const [showAnomaliesOnly, setShowAnomaliesOnly] = useState(false);
   const [showIlluminators, setShowIlluminators] = useState(false);
+  const [colorByAlt, setColorByAlt] = useState(false);
+  const [followSelected, setFollowSelected] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
+  // Enthusiast filters: altitude band (FL, hundreds of ft), speed floor, type.
+  const [filters, setFilters] = useState({ minFl: "", maxFl: "", minGs: "", type: "all" });
 
   const animationFrameRef = useRef(null);
   const displayedAircraftRef = useRef({});
@@ -1007,11 +1030,25 @@ export default function LiveAircraftMap() {
   /* ── Derived: radar-detected only (exclude pure ADS-B not seen by radar) ── */
   const radarAircraft = useMemo(
     () => {
-      const base = displayAircraft.filter((ac) => ac.position_source || ac.multinode);
-      if (showAnomaliesOnly) return base.filter((ac) => ac.is_anomalous);
+      let base = displayAircraft.filter((ac) => ac.position_source || ac.multinode);
+      if (showAnomaliesOnly) base = base.filter((ac) => ac.is_anomalous);
+      // Enthusiast filters: altitude (flight level = alt_baro/100), ground speed, type.
+      const minFl = filters.minFl === "" ? null : Number(filters.minFl);
+      const maxFl = filters.maxFl === "" ? null : Number(filters.maxFl);
+      const minGs = filters.minGs === "" ? null : Number(filters.minGs);
+      base = base.filter((ac) => {
+        const fl = (ac.alt_baro ?? 0) / 100;
+        if (minFl != null && fl < minFl) return false;
+        if (maxFl != null && fl > maxFl) return false;
+        if (minGs != null && (ac.gs ?? 0) < minGs) return false;
+        if (filters.type === "drone" && ac.target_class !== "drone") return false;
+        if (filters.type === "aircraft" && ac.target_class === "drone") return false;
+        if (filters.type === "multinode" && !(ac.multinode || ac.position_source === "multinode_solve")) return false;
+        return true;
+      });
       return base;
     },
-    [displayAircraft, showAnomaliesOnly],
+    [displayAircraft, showAnomaliesOnly, filters],
   );
 
   const anomalyCount = useMemo(
@@ -1224,12 +1261,18 @@ export default function LiveAircraftMap() {
         showGroundTruth={showGroundTruth}
         showAnomaliesOnly={showAnomaliesOnly}
         showIlluminators={showIlluminators}
+        colorByAlt={colorByAlt}
+        followSelected={followSelected}
+        showFilters={showFilters}
         onToggleCoverage={() => setShowCoverage((v) => !v)}
         onToggleLabels={() => setShowLabels((v) => !v)}
         onToggleTrails={() => setShowTrails((v) => !v)}
         onToggleGroundTruth={() => setShowGroundTruth((v) => !v)}
         onToggleAnomaliesOnly={() => setShowAnomaliesOnly((v) => !v)}
         onToggleIlluminators={() => setShowIlluminators((v) => !v)}
+        onToggleColorByAlt={() => setColorByAlt((v) => !v)}
+        onToggleFollow={() => setFollowSelected((v) => !v)}
+        onToggleFilters={() => setShowFilters((v) => !v)}
         onTogglePause={handleTogglePause}
         onFit={() => setFocusNonce((n) => n + 1)}
       />
@@ -1258,6 +1301,44 @@ export default function LiveAircraftMap() {
               if (on) setFocusNonce((n) => n + 1);
             }}
           />
+          {showFilters && (
+            <div style={{
+              position: "absolute", top: 12, left: 52, zIndex: 1000,
+              background: "rgba(2,6,23,0.9)", color: "#e2e8f0", border: "1px solid #1e293b",
+              borderRadius: 8, padding: "10px 12px", fontSize: 12, display: "flex",
+              flexDirection: "column", gap: 8, boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
+            }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <strong>Filters</strong>
+                <button
+                  onClick={() => setFilters({ minFl: "", maxFl: "", minGs: "", type: "all" })}
+                  style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 11 }}
+                >clear</button>
+              </div>
+              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                FL
+                <input type="number" placeholder="min" value={filters.minFl} style={{ width: 56 }}
+                  onChange={(e) => setFilters((f) => ({ ...f, minFl: e.target.value }))} />
+                –
+                <input type="number" placeholder="max" value={filters.maxFl} style={{ width: 56 }}
+                  onChange={(e) => setFilters((f) => ({ ...f, maxFl: e.target.value }))} />
+              </label>
+              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                Min speed (kt)
+                <input type="number" placeholder="0" value={filters.minGs} style={{ width: 56 }}
+                  onChange={(e) => setFilters((f) => ({ ...f, minGs: e.target.value }))} />
+              </label>
+              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                Type
+                <select value={filters.type} onChange={(e) => setFilters((f) => ({ ...f, type: e.target.value }))}>
+                  <option value="all">All</option>
+                  <option value="aircraft">Aircraft</option>
+                  <option value="drone">Drones</option>
+                  <option value="multinode">Multi-node only</option>
+                </select>
+              </label>
+            </div>
+          )}
           <MapContainer center={[34.0, -84.5]} zoom={8} style={{ height: "100%", width: "100%" }} attributionControl={false}>
             <TileLayer
               url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
@@ -1266,6 +1347,7 @@ export default function LiveAircraftMap() {
             <ViewportTracker onChange={handleViewportChange} />
             <MapClickClear onClear={handleMapClick} />
             <FitBounds aircraft={radarAircraft} nodes={nodes} selectedHex={selectedHex} focusNonce={focusNonce} />
+            <FollowController followSelected={followSelected} selectedHex={selectedHex} smoothRef={smoothRef} />
 
             {/* Coverage zones — memoized, only re-renders on nodes/showCoverage change */}
             <CoverageLayer visibleNodes={visibleNodes} showCoverage={showCoverage} />
@@ -1468,6 +1550,7 @@ export default function LiveAircraftMap() {
                   ac={ac}
                   isSelected={isSelected}
                   showLabels={showLabels}
+                  colorByAlt={colorByAlt}
                   onSelect={handleSelectAircraft}
                   markerRegistry={markerRegistryRef.current}
                 />

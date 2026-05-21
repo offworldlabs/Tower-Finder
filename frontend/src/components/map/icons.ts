@@ -20,15 +20,37 @@ export const DRONE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="22" hei
   <circle cx="12" cy="12" r="2.5" fill="#f59e0b"/>
 </svg>`;
 
-export function getAircraftColor(ac) {
+// Altitude → colour bands (low warm → high cool), FlightRadar-style. Band edges
+// are multiples of 5000 ft so they line up with the AircraftMarker altBand
+// memo key — crossing a band re-renders the icon with the new colour.
+export function altitudeColor(altFt) {
+  if (altFt >= 40000) return "#a855f7";
+  if (altFt >= 30000) return "#3b82f6";
+  if (altFt >= 20000) return "#22c55e";
+  if (altFt >= 10000) return "#eab308";
+  if (altFt >= 5000) return "#f97316";
+  return "#ef4444";
+}
+
+export const ALTITUDE_LEGEND = [
+  ["#ef4444", "<5k"],
+  ["#f97316", "5–10k"],
+  ["#eab308", "10–20k"],
+  ["#22c55e", "20–30k"],
+  ["#3b82f6", "30–40k"],
+  ["#a855f7", "40k+"],
+];
+
+export function getAircraftColor(ac, colorByAlt = false) {
+  if (colorByAlt && typeof ac.alt_baro === "number") return altitudeColor(ac.alt_baro);
   if (ac.multinode || ac.position_source === "multinode_solve") return "#a78bfa";
   if (ac.position_source === "solver_adsb_seed") return "#2dd4bf";
   return "#38bdf8";
 }
 
-export function makeAircraftIcon(ac, showLabel, isSelected) {
+export function makeAircraftIcon(ac, showLabel, isSelected, colorByAlt = false) {
   const track = ac.track ?? 0;
-  const color = getAircraftColor(ac);
+  const color = getAircraftColor(ac, colorByAlt);
   const label = ac.flight?.trim() || ac.hex?.slice(-6)?.toUpperCase() || "";
   const alt = ac.alt_baro ? `FL${Math.round(ac.alt_baro / 100)}` : "";
 
