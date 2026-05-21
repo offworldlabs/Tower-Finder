@@ -1,3 +1,5 @@
+import { ALTITUDE_LEGEND } from "./icons";
+
 export default function Toolbar({
   connected,
   paused,
@@ -9,12 +11,18 @@ export default function Toolbar({
   showGroundTruth,
   showAnomaliesOnly,
   showIlluminators,
+  colorByAlt,
+  followSelected,
+  showFilters,
   onToggleCoverage,
   onToggleLabels,
   onToggleTrails,
   onToggleGroundTruth,
   onToggleAnomaliesOnly,
   onToggleIlluminators,
+  onToggleColorByAlt,
+  onToggleFollow,
+  onToggleFilters,
   onTogglePause,
   onFit,
 }) {
@@ -52,6 +60,15 @@ export default function Toolbar({
       >
         ⚠ Anomalies{anomalyCount > 0 ? ` (${anomalyCount})` : ""}
       </button>
+      <button className={`toggle-btn${colorByAlt ? " active" : ""}`} onClick={onToggleColorByAlt}>
+        Alt color
+      </button>
+      <button className={`toggle-btn${showFilters ? " active" : ""}`} onClick={onToggleFilters}>
+        Filters
+      </button>
+      <button className={`toggle-btn${followSelected ? " active" : ""}`} onClick={onToggleFollow}>
+        Follow
+      </button>
 
       <div className="toolbar-separator" />
 
@@ -63,6 +80,14 @@ export default function Toolbar({
       </button>
 
       <span className="map-legend">
+        {colorByAlt ? (
+          ALTITUDE_LEGEND.map(([c, lbl]) => (
+            <span className="legend-item" key={lbl}>
+              <span className="legend-dot" style={{ background: c }} /> {lbl}
+            </span>
+          ))
+        ) : (
+        <>
         <span className="legend-item">
           <span className="legend-dot" style={{ background: "#2dd4bf" }} /> Solver+ADS-B
         </span>
@@ -73,6 +98,8 @@ export default function Toolbar({
           <span className="legend-item">
             <span className="legend-dot" style={{ background: "#2dd4bf" }} /> Truth
           </span>
+        )}
+        </>
         )}
         <span className="legend-item">
           <span className="legend-dot" style={{ background: "#facc15" }} /> Node
