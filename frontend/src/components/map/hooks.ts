@@ -2,12 +2,19 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { API_BASE, ARC_TOTAL_LIFE_MS, MAX_HISTORY } from "./constants";
 import { mergeTrailPositions } from "./trails";
 import { usesRealOnlyFeed } from "../../utils/domains";
+import { fetchMe, fetchMyNodes } from "../../api";
 
 /**
  * Manages the WebSocket connection to /ws/aircraft with auto-reconnect,
  * plus an HTTP polling fallback when WS is unavailable.
+ *
+ * When `ownerOnly` is true, connects to /ws/aircraft/owner instead — a
+ * server-filtered feed authenticated by the auth_token cookie that only emits
+ * aircraft/arcs for nodes the logged-in user owns. The HTTP polling fallback
+ * is disabled in this mode because the public aircraft.json is unfiltered and
+ * would leak other nodes' data.
  */
-export function useAircraftFeed() {
+export function useAircraftFeed(ownerOnly = false) {
   const [aircraft, setAircraft] = useState([]);
   const [connected, setConnected] = useState(false);
 
@@ -170,8 +177,11 @@ export function useAircraftFeed() {
   const connectWs = useCallback(() => {
     if (wsRef.current) return;
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    // map.retina.fm (not testmap) streams only the real radar node
-    const wsPath = usesRealOnlyFeed ? "/ws/aircraft/live" : "/ws/aircraft";
+    // Owner mode overrides the public feeds with a server-filtered, cookie-authed feed.
+    // Otherwise map.retina.fm streams only the real radar node; testmap streams all.
+    const wsPath = ownerOnly
+      ? "/ws/aircraft/owner"
+      : usesRealOnlyFeed ? "/ws/aircraft/live" : "/ws/aircraft";
     const ws = new WebSocket(`${proto}//${window.location.host}${wsPath}`);
 
     ws.onopen = () => {
@@ -201,7 +211,7 @@ export function useAircraftFeed() {
 
     ws.onerror = () => ws.close();
     wsRef.current = ws;
-  }, [ingestAircraft]);
+  }, [ingestAircraft, ownerOnly]);
 
   useEffect(() => {
     connectWs();
@@ -235,6 +245,9 @@ export function useAircraftFeed() {
   // --- HTTP polling fallback ---
   useEffect(() => {
     if (connected) return;
+    // No HTTP fallback in owner mode: the public aircraft.json is unfiltered,
+    // so polling it would leak other nodes' data. Wait for the WS to reconnect.
+    if (ownerOnly) return;
     // On map.retina.fm use the real-node-only endpoint so unfiltered synthetic
     // aircraft never appear even when the WS is temporarily disconnected.
     const pollPath = usesRealOnlyFeed
@@ -262,7 +275,7 @@ export function useAircraftFeed() {
       clearInterval(interval);
       controller.abort();
     };
-  }, [connected, ingestAircraft]);
+  }, [connected, ingestAircraft, ownerOnly]);
 
   return {
     aircraft,
@@ -386,4 +399,32 @@ export function useNodes() {
   }, []);
 
   return nodes;
+}
+
+/**
+ * Resolves the current user (via the shared auth_token cookie) and the set of
+ * node ids they own. `user` is null when not authenticated. Used to gate the
+ * node-owner view on the testmap.
+ */
+export function useAuth() {
+  const [user, setUser] = useState(null);
+  const [ownedNodeIds, setOwnedNodeIds] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const me = await fetchMe();
+      if (cancelled) return;
+      if (me && me.email) {
+        setUser(me);
+        const myNodes = await fetchMyNodes();
+        if (!cancelled) setOwnedNodeIds((myNodes || []).map((n) => n.node_id));
+      }
+      if (!cancelled) setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  return { user, ownedNodeIds, loading };
 }

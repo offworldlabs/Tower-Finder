@@ -9,6 +9,9 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from core import state
+from core.auth import get_user_nodes
+from core.users import AUTH_BYPASS, read_user_from_token
+from services.tasks.aircraft_flush import filter_payload_to_nodes
 
 router = APIRouter()
 
@@ -75,6 +78,45 @@ async def websocket_aircraft_live(ws: WebSocket):
     finally:
         state.ws_live_clients.discard(ws)
         logging.info("WS live client disconnected (%d remaining)", len(state.ws_live_clients))
+
+
+@router.websocket("/ws/aircraft/owner")
+async def websocket_aircraft_owner(ws: WebSocket):
+    """Per-owner aircraft feed — only aircraft/arcs from the caller's own nodes.
+
+    Authenticated via the same auth_token cookie as the dashboard (sent
+    automatically on same-origin WS handshakes). Unlike the public feeds this
+    is true server-side data isolation: the connection never receives data for
+    nodes the user doesn't own.
+    """
+    if not await _authenticate_ws(ws):
+        return
+    if AUTH_BYPASS:
+        # Dev/staging with no OAuth: the anonymous admin owns whatever rows
+        # are assigned to the all-zero uuid (usually nothing).
+        owned = set(await get_user_nodes("00000000-0000-0000-0000-000000000000"))
+    else:
+        user = await read_user_from_token(ws.cookies.get("auth_token"))
+        if user is None or not user.is_active:
+            await ws.close(code=1008, reason="Unauthorized")
+            return
+        owned = set(await get_user_nodes(str(user.id)))
+
+    await ws.accept()
+    state.ws_owner_clients[ws] = owned
+    logging.info("WS owner client connected (%d nodes, %d total)", len(owned), len(state.ws_owner_clients))
+    try:
+        if state.latest_aircraft_json.get("aircraft"):
+            await ws.send_text(filter_payload_to_nodes(state.latest_aircraft_json, owned).decode())
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+    finally:
+        state.ws_owner_clients.pop(ws, None)
+        logging.info("WS owner client disconnected (%d remaining)", len(state.ws_owner_clients))
 
 
 @router.get("/api/radar/stream")
