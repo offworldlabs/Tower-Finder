@@ -45,13 +45,21 @@ dmesg | grep -i "killed process" | tail -5
 
 ---
 
-### `health_degraded`
+### Health alerts (per-condition)
 
-**Trigger:** `/api/health` found one or more issues. The `issues` array in the alert meta tells you exactly which sub-checks failed. See the individual sub-check entries below for specifics.
+The `health_monitor` task evaluates the health checks every ~30s and fires a
+**separate alert per failing condition** (the sub-checks listed below), each with
+its own dedup/cooldown and a `severity` (`critical`/`warning`) in the alert meta.
+When a condition clears, a one-off `resolved:<type>` alert is sent. This runs on
+the server's own schedule, independent of who polls `/api/health` — see
+[`alerting.md`](alerting.md).
 
-**Quick view of all current issues:**
+`/api/health` itself stays **200** (liveness, used by the Docker healthcheck);
+`/api/health?strict=1` returns **503** when degraded (readiness, for an external
+uptime monitor). Details are never exposed on the endpoint — read them from logs:
+
 ```bash
-curl -sk https://157.245.214.30/api/health
+docker compose logs --tail=200 | grep "Health check degraded"
 curl -sk https://157.245.214.30/api/admin/metrics | python3 -m json.tool
 ```
 

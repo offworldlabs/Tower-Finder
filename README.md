@@ -1,4 +1,16 @@
-# Tower Finder
+# Tower Finder / RETINA
+
+This repo powers RETINA, a passive-radar system: receiver nodes detect aircraft
+from reflections of broadcast transmitters, and the backend turns those
+detections into live tracks shown on a web map. "Tower Finder" — the original
+illuminator-search feature documented below — is one of several surfaces (along
+with the live map and the admin dashboard).
+
+> **New here?** Start with [`ONBOARDING.md`](ONBOARDING.md) for the full picture
+> and local setup, and [`docs/architecture.md`](docs/architecture.md) for how the
+> pieces fit together.
+
+## Tower Finder feature
 
 Web application and API that helps passive radar operators find suitable broadcast tower illuminators near their location.
 
