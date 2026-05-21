@@ -104,12 +104,26 @@ def compute_health_issues() -> list[dict]:
     if total_aircraft > 10 and len(state.anomaly_hexes) / total_aircraft > 0.5:
         add("anomaly_flood", WARNING, f"Anomaly flood: {len(state.anomaly_hexes)}/{total_aircraft}")
 
-    # Solver accuracy degradation (mean error >10 km)
+    # Solver accuracy degradation (mean error >10 km).
+    # Threshold only on *trusted point fixes* — multi-node and ADS-B-anchored
+    # solves. Single-receiver positions (`single_node_ellipse_arc`,
+    # `solver_single_node`) are geometry-limited loci that sit tens of km off
+    # truth by construction (bistatic root ambiguity / poor GDOP); including
+    # them made the overall mean read ~27 km on prod even though multi-node
+    # accuracy is ~1 km, masking real solver regressions behind a constant flag.
     try:
         if state.latest_accuracy_bytes and state.latest_accuracy_bytes != b"{}":
             acc = orjson.loads(state.latest_accuracy_bytes)
-            if acc.get("n_samples", 0) > 20 and acc.get("mean_km", 0) > 10:
-                add("solver_accuracy_degraded", WARNING, f"Solver mean error {acc['mean_km']:.1f}km")
+            by_source = acc.get("by_source") or {}
+            untrusted = {"single_node_ellipse_arc", "solver_single_node"}
+            trusted = [(st.get("n_samples", 0), st.get("mean_km", 0.0))
+                       for src, st in by_source.items() if src not in untrusted]
+            n_trusted = sum(n for n, _ in trusted)
+            if n_trusted > 20:
+                mean_trusted = sum(n * m for n, m in trusted) / n_trusted
+                if mean_trusted > 10:
+                    add("solver_accuracy_degraded", WARNING,
+                        f"Solver mean error {mean_trusted:.1f}km over {n_trusted} trusted-position samples")
     except Exception:
         pass
 
