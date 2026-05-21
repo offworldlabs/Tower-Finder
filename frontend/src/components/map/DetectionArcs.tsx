@@ -86,30 +86,12 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
           // (aircraft↔drone) or its doppler band mid-flight, and we want
           // the polyline to reflect the latest classification rather than
           // freezing the colour at first-paint until the arc expires.
+          // Geometry is frozen at creation: a bistatic arc is the locus of
+          // positions consistent with the delay measured at detection time, so
+          // it stays put and fades in place as the aircraft flies on. Only the
+          // visual style is refreshed (a track can flip target_class or doppler
+          // band mid-flight, and the selected arc switches to amber).
           existing.line.setStyle({ opacity, color, weight });
-          // Keep the newest arc glued to the dead-reckoned icon.  Arcs
-          // within the current-second window (~1.5 s) get their geometry
-          // refreshed at each 250 ms tick via setLatLngs so the curve
-          // slides smoothly with the icon rather than snapping once per WS
-          // update.  Older arcs are the afterglow trail and stay frozen.
-          // We compute the *effective* bistatic delay from the current sm
-          // position (inverting the delay→locus formula) so the arc always
-          // passes through the aircraft icon regardless of how stale the
-          // measured delay_us is — mirrors the test-radar behaviour where
-          // aircraftPos = arcMidpoint(arc).
-          if (age < 1500 && entry.hex && entry.node_id) {
-            const node = nodesByIdRef?.current?.[entry.node_id];
-            const sm = smoothRef?.current?.[entry.hex];
-            if (node && sm) {
-              const rxLat = node.rx_lat_real ?? node.rx_lat;
-              const rxLon = node.rx_lon_real ?? node.rx_lon;
-              const effectiveDelay = computeBistaticDelayUs(sm.lat, sm.lon, rxLat, rxLon, node.tx_lat, node.tx_lon);
-              if (effectiveDelay > 0) {
-                const updated = buildBistaticArc(effectiveDelay, node, sm.lat, sm.lon);
-                if (updated && updated.length >= 2) existing.line.setLatLngs(updated);
-              }
-            }
-          }
         } else {
           // First creation: compute the effective bistatic delay from the
           // current dead-reckoned icon position (sm) so the arc passes
