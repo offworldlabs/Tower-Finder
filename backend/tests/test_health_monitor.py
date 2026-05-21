@@ -29,6 +29,30 @@ class TestComputeHealthIssues:
         assert "solver_queue_drops" in issues
         assert issues["solver_queue_drops"]["severity"] == health.WARNING
 
+    def test_single_node_arc_error_does_not_flag_accuracy(self, monkeypatch):
+        # Single-node loci are wildly off (30 km) but multi-node is great (1 km):
+        # accuracy must NOT be flagged — the loci aren't trusted point fixes.
+        import orjson
+        payload = orjson.dumps({
+            "n_samples": 140, "mean_km": 27.0,
+            "by_source": {
+                "single_node_ellipse_arc": {"n_samples": 100, "mean_km": 30.0},
+                "multinode_solve": {"n_samples": 40, "mean_km": 1.0},
+            },
+        })
+        monkeypatch.setattr(health.state, "latest_accuracy_bytes", payload)
+        assert "solver_accuracy_degraded" not in {i["type"] for i in compute_health_issues()}
+
+    def test_trusted_solve_degradation_flags_accuracy(self, monkeypatch):
+        # Multi-node solves themselves degrade past 10 km → flag fires.
+        import orjson
+        payload = orjson.dumps({
+            "n_samples": 60, "mean_km": 14.0,
+            "by_source": {"multinode_solve": {"n_samples": 60, "mean_km": 14.0}},
+        })
+        monkeypatch.setattr(health.state, "latest_accuracy_bytes", payload)
+        assert "solver_accuracy_degraded" in {i["type"] for i in compute_health_issues()}
+
 
 class TestRunCycle:
     def test_fires_alert_per_issue(self, monkeypatch):

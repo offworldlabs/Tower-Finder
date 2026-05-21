@@ -89,7 +89,10 @@ class TestHealthDegradedBranches:
 
     def test_solver_accuracy_degraded(self, client):
         orig = state.latest_accuracy_bytes
-        state.latest_accuracy_bytes = orjson.dumps({"n_samples": 50, "mean_km": 25.0})
+        state.latest_accuracy_bytes = orjson.dumps({
+            "n_samples": 50, "mean_km": 25.0,
+            "by_source": {"multinode_solve": {"n_samples": 50, "mean_km": 25.0}},
+        })
         try:
             _assert_degraded(client.get("/api/health"))
         finally:
