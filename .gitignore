@@ -40,6 +40,7 @@ frontend/test-results/.last-run.json
 /testradar-*.png
 /testmap-*.png
 /local-livemap-*.png
+/postdeploy-*.png
 
 # Auto-generated backend runtime state + python coverage artefacts
 backend/data/runtime/
