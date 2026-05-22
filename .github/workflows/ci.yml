@@ -145,7 +145,11 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     concurrency:
       group: staging-deploy
-      cancel-in-progress: true
+      # Queue deploys instead of cancelling: a cancelled deploy can abort after
+      # `git reset --hard` but before `docker compose up -d --build`, leaving the
+      # box on fresh code with stale running containers (config/image changes
+      # silently never take effect). Matches deploy-production.
+      cancel-in-progress: false
     steps:
       - name: Deploy to staging via SSH
         uses: appleboy/ssh-action@v1
