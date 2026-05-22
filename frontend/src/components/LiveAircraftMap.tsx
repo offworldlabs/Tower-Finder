@@ -743,7 +743,7 @@ const IlluminatorsLayer = memo(function IlluminatorsLayer({ visibleNodes, showIl
       map centred on its smoothed position. Reads smoothRef (60fps dead-reckoned)
       on a 100ms interval and pans without animation so it tracks smoothly.
       Toggle off (or deselect) to regain free pan/zoom. ── */
-const FollowController = memo(function FollowController({ followSelected, selectedHex, smoothRef }) {
+const FollowController = memo(function FollowController({ followSelected, selectedHex, smoothRef, onDisengage }) {
   const map = useMap();
   useEffect(() => {
     if (!followSelected || !selectedHex) return;
@@ -751,8 +751,16 @@ const FollowController = memo(function FollowController({ followSelected, select
       const sm = smoothRef.current?.[selectedHex];
       if (sm) map.panTo([sm.lat, sm.lon], { animate: false });
     }, 100);
-    return () => clearInterval(id);
-  }, [followSelected, selectedHex, map, smoothRef]);
+    // A manual drag means the user wants to look elsewhere — disengage follow.
+    // panTo({animate:false}) above doesn't fire dragstart, so this only
+    // triggers on genuine user panning (zoom stays followed, to look closer).
+    const release = () => onDisengage?.();
+    map.on("dragstart", release);
+    return () => {
+      clearInterval(id);
+      map.off("dragstart", release);
+    };
+  }, [followSelected, selectedHex, map, smoothRef, onDisengage]);
   return null;
 });
 
@@ -1347,7 +1355,7 @@ export default function LiveAircraftMap() {
             <ViewportTracker onChange={handleViewportChange} />
             <MapClickClear onClear={handleMapClick} />
             <FitBounds aircraft={radarAircraft} nodes={nodes} selectedHex={selectedHex} focusNonce={focusNonce} />
-            <FollowController followSelected={followSelected} selectedHex={selectedHex} smoothRef={smoothRef} />
+            <FollowController followSelected={followSelected} selectedHex={selectedHex} smoothRef={smoothRef} onDisengage={() => setFollowSelected(false)} />
 
             {/* Coverage zones — memoized, only re-renders on nodes/showCoverage change */}
             <CoverageLayer visibleNodes={visibleNodes} showCoverage={showCoverage} />
