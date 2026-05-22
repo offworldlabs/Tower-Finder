@@ -19,6 +19,8 @@ MAX_RANGE_KM="${FLEET_MAX_RANGE_KM:-0}"
 CONCURRENCY="${FLEET_CONCURRENCY:-50}"
 CONNECT_RETRIES="${FLEET_CONNECT_RETRIES:-3}"
 VALIDATE="${FLEET_VALIDATE:-false}"
+N_CLUSTER="${FLEET_N_CLUSTER:-8}"
+N_CLUSTERS="${FLEET_N_CLUSTERS:-1}"
 VALIDATION_URL="${FLEET_VALIDATION_URL:-http://localhost:8000}"
 
 echo "═══════════════════════════════════════════════════"
@@ -59,7 +61,7 @@ done
 
 # Generate fleet config
 echo "Generating fleet config (${NODES} nodes, regions=${REGIONS})..."
-python3 -m retina_simulation.generator --nodes "${NODES}" --regions "${REGIONS}" --seed "${SEED}" --output /app/data/fleet_config.json
+python3 -m retina_simulation.generator --nodes "${NODES}" --regions "${REGIONS}" --seed "${SEED}" --n-cluster "${N_CLUSTER}" --n-clusters "${N_CLUSTERS}" --output /app/data/fleet_config.json
 
 # Build orchestrator args
 ARGS="--config /app/data/fleet_config.json"
