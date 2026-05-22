@@ -59,13 +59,6 @@ services:
     environment:
       - FLEET_NODES=50
       - FLEET_REGIONS=us
-      # Spread the multi-node cluster budget across several inland metros so
-      # multinode solves appear across the map (only tightly-clustered nodes
-      # share overlap zones). Aircraft spawn near a random node, so making most
-      # nodes cluster nodes (30/50) means most aircraft start in an overlap zone
-      # → lively multinode across 5 metros. Same node count → same frame rate.
-      - FLEET_N_CLUSTER=30
-      - FLEET_N_CLUSTERS=5
       - FLEET_MODE=adsb
       - FLEET_INTERVAL=40.0
       - FLEET_TIME_SCALE=1.0
