@@ -26,6 +26,9 @@ services:
       - RADAR_TCP_PORT=3012
       - FRAME_WORKERS=6
       - FRAME_QUEUE_SIZE=10000
+      # Bind the API on the compose network (port 8000 is NOT published in
+      # `ports:`, so it stays off-host) so the fleet can POST ADS-B/ground-truth.
+      - UVICORN_HOST=0.0.0.0
     command: ["/bin/sh", "/app/deploy/start.sh"]
     restart: unless-stopped
     healthcheck:
@@ -68,6 +71,10 @@ services:
       - FLEET_HOST=tower-finder
       - FLEET_PORT=3012
       - FLEET_VALIDATE=false
+      # HTTP base URL for live ADS-B / ground-truth pushes (the moving "truth"
+      # tracks). Must point at the server over the compose network, not the
+      # fleet's own localhost. Reaches uvicorn directly (UVICORN_HOST=0.0.0.0).
+      - FLEET_VALIDATION_URL=http://tower-finder:8000
       - FLEET_SEED=42
     restart: unless-stopped
     deploy:
