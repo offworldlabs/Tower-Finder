@@ -71,8 +71,13 @@ ARGS="${ARGS} --beam-width-deg ${BEAM_WIDTH_DEG} --max-range-km ${MAX_RANGE_KM}"
 ARGS="${ARGS} --concurrency ${CONCURRENCY} --connect-retries ${CONNECT_RETRIES}"
 ARGS="${ARGS} --ground-truth-path /app/data/ground_truth.json"
 
+# Always pass the server URL: the orchestrator uses it to POST live ADS-B and
+# ground-truth positions (the moving "truth" tracks on the map), not just for
+# --validate. Without it the orchestrator falls back to http://localhost:8000,
+# which inside the fleet container is the fleet itself → all pushes refused.
+ARGS="${ARGS} --validation-url ${VALIDATION_URL}"
 if [ "${VALIDATE}" = "true" ]; then
-    ARGS="${ARGS} --validate --validation-url ${VALIDATION_URL}"
+    ARGS="${ARGS} --validate"
 fi
 
 # Launch fleet orchestrator

@@ -39,8 +39,12 @@ fi
 cd /app/backend
 (
   while true; do
-    echo "[supervisor] starting uvicorn..."
-    uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1 --log-level warning
+    echo "[supervisor] starting uvicorn on ${UVICORN_HOST:-127.0.0.1}:8000..."
+    # Default 127.0.0.1: only nginx (same container) reaches the app; port 8000
+    # is never published to the host. Staging sets UVICORN_HOST=0.0.0.0 so the
+    # fleet container can POST ground-truth/ADS-B to the API over the compose
+    # network (8000 stays unpublished, so it is still not exposed off-host).
+    uvicorn main:app --host "${UVICORN_HOST:-127.0.0.1}" --port 8000 --workers 1 --log-level warning
     EXIT_CODE=$?
     echo "[supervisor] uvicorn exited with code $EXIT_CODE, restarting in 2s..."
     sleep 2
