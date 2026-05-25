@@ -1,6 +1,9 @@
 import { useState, useEffect } from "react";
 import { fetchMlatAccuracy, fetchMlatVerification, fetchRadar3Verification } from "../../api";
 import { POSITION_SOURCE_ARC_ONLY } from "./constants";
+import { classifyHex, emergencySquawkLabel } from "./hexInfo";
+import { trailToCsv, downloadCsv } from "./trailExport";
+import { copyToClipboard, toast } from "./toast";
 
 export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError }) {
   if (!ac) return null;
@@ -12,6 +15,32 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
   const truthPts = gtTrail?.length || 0;
   const gtLast = gtTrail?.length ? gtTrail[gtTrail.length - 1] : null;
   const altErrFt = gtLast ? Math.abs((ac.alt_baro || 0) - gtLast[2] / 0.3048) : null;
+
+  // Enthusiast classification — military/govt/test hex ranges and special
+  // squawk codes. Both are "always on": even a truth-only entry gets a
+  // hex-range badge if it lands in a known range.
+  const hexInfo = classifyHex(ac.hex);
+  const emergency = emergencySquawkLabel(ac.squawk);
+
+  const handleExportTrail = () => {
+    // `trails` (prop) is the canonical solved-position trail buffer maintained
+    // by LiveAircraftMap. Backend rows are [lat, lon, alt_ft, ts_ms]; the
+    // exporter's normaliseRow handles the legacy 3-tuple form too.
+    const rows = ((trails && trails[ac.hex]) || []).filter(Boolean).slice();
+    if (!rows.length) {
+      // No buffered points — fall back to the current single fix so the user
+      // still gets a non-empty CSV.
+      if (ac.lat != null && ac.lon != null) {
+        rows.push([ac.lat, ac.lon, (ac.alt_baro || 0), Date.now()]);
+      } else {
+        toast("No trail data yet", { tone: "warn" });
+        return;
+      }
+    }
+    const csv = trailToCsv(ac.hex, ac.flight, rows);
+    downloadCsv(`tower-finder-trail-${ac.hex}-${Date.now()}.csv`, csv);
+    toast(`Exported ${rows.length} points`, { tone: "success" });
+  };
 
   const isMultinode = ac.multinode;
   const hasAdsb = ac.type !== "tisb_other" && ac.type !== "multinode_solve";
@@ -42,10 +71,48 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
         </button>
       </div>
       <div className="detail-panel-body">
+        {emergency && (
+          <div
+            style={{
+              background: "rgba(244, 63, 94, 0.15)",
+              border: "1px solid #f43f5e",
+              color: "#fecaca",
+              padding: "8px 10px",
+              borderRadius: 6,
+              marginBottom: 10,
+              fontWeight: 600,
+              fontSize: 13,
+            }}
+            title="Emergency squawk code reported by aircraft transponder"
+          >
+            ⚠ {emergency}
+          </div>
+        )}
         {/* Identity */}
         <div className="detail-section">
           <div className="detail-section-title">Identity</div>
-          <Field label="HEX" value={<span className="detail-hex-badge">{ac.hex}</span>} />
+          <Field label="HEX" value={<span className="detail-hex-badge" onClick={() => copyToClipboard(ac.hex, "HEX copied")} title="Click to copy" style={{ cursor: "pointer" }}>{ac.hex}</span>} />
+          {hexInfo.label && (
+            <Field
+              label="Registry"
+              value={
+                <span
+                  style={{
+                    color: hexInfo.color,
+                    fontWeight: 600,
+                    border: `1px solid ${hexInfo.color}`,
+                    padding: "1px 6px",
+                    borderRadius: 4,
+                    fontSize: 11,
+                    textTransform: "uppercase",
+                    letterSpacing: 0.4,
+                  }}
+                >
+                  {hexInfo.label}
+                </span>
+              }
+            />
+          )}
           {!isTruthOnly && (
             <>
               <Field label="Callsign" value={ac.flight?.trim() || "\u2014"} />
@@ -212,6 +279,28 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
             <Field label="Points" value={ac.points || 0} />
           </div>
         )}
+
+        {/* Export — handy for enthusiasts pulling tracks into KML/QGIS. */}
+        <div className="detail-section" style={{ borderTop: "1px solid #1e293b", paddingTop: 10 }}>
+          <button
+            type="button"
+            onClick={handleExportTrail}
+            style={{
+              width: "100%",
+              background: "#1e293b",
+              border: "1px solid #334155",
+              color: "#e2e8f0",
+              padding: "8px 10px",
+              borderRadius: 6,
+              cursor: "pointer",
+              fontSize: 12,
+              fontWeight: 500,
+            }}
+            title="Download recent positions as CSV (lat, lon, alt, timestamp)"
+          >
+            ⇩ Export trail (CSV)
+          </button>
+        </div>
       </div>
     </div>
   );

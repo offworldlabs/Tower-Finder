@@ -149,6 +149,27 @@
   color: #94a3b8;
 }
 
+.al-sort {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px 6px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+.al-sort label { text-transform: uppercase; letter-spacing: 0.05em; }
+.al-sort select {
+  flex: 1;
+  background: rgba(15, 23, 42, 0.6);
+  color: #e2e8f0;
+  border: 1px solid #1e293b;
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 11px;
+  outline: none;
+}
+.al-sort select:focus { border-color: #38bdf8; }
+
 .al-list {
   flex: 1;
   overflow-y: auto;

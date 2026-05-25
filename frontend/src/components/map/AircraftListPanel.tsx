@@ -1,6 +1,8 @@
 import { useEffect, useRef, useMemo, useState, useCallback } from "react";
 import { PLANE_PATH, getAircraftColor } from "./icons";
 import { POSITION_SOURCE_ARC_ONLY } from "./constants";
+import { classifyHex } from "./hexInfo";
+import { distanceKm } from "./distance";
 
 // Fixed row height must match .al-row CSS (height: 40px, box-sizing: border-box).
 // Changing this constant without updating the CSS will break the virtual list.
@@ -16,6 +18,12 @@ export default function AircraftListPanel({
   onToggleCollapse,
   searchQuery,
   onSearchChange,
+  searchInputRef,
+  sortMode = "altitude",
+  onSortChange,
+  pinned,
+  onTogglePin,
+  userLoc,
 }) {
   const containerRef     = useRef(null);
   const [scrollTop, setScrollTop]         = useState(0);
@@ -38,16 +46,34 @@ export default function AircraftListPanel({
   }, []);
 
   const all = useMemo(
-    () =>
-      [
+    () => {
+      const merged = [
         ...allAircraft.map((ac) => ({ ...ac, _isSolved: true })),
         ...truthOnly.map((ac) => ({ ...ac, _isSolved: false })),
-      ].sort((a, b) => {
-        const altA = a.alt_baro ?? (a.alt_m ? a.alt_m / 0.3048 : 0);
-        const altB = b.alt_baro ?? (b.alt_m ? b.alt_m / 0.3048 : 0);
-        return altB - altA;
-      }),
-    [allAircraft, truthOnly],
+      ];
+      const pinSet = pinned instanceof Set ? pinned : new Set(pinned || []);
+      const altOf = (a) => a.alt_baro ?? (a.alt_m ? a.alt_m / 0.3048 : 0);
+      const distOf = (a) =>
+        userLoc && Number.isFinite(a.lat) && Number.isFinite(a.lon)
+          ? distanceKm(userLoc.lat, userLoc.lon, a.lat, a.lon)
+          : Number.POSITIVE_INFINITY;
+      const callsignOf = (a) => (a.flight?.trim() || a.hex || "").toUpperCase();
+      const cmp = (a, b) => {
+        // Pinned aircraft always sort first regardless of mode.
+        const pa = pinSet.has(a.hex) ? 1 : 0;
+        const pb = pinSet.has(b.hex) ? 1 : 0;
+        if (pa !== pb) return pb - pa;
+        switch (sortMode) {
+          case "speed":    return (b.gs || 0) - (a.gs || 0);
+          case "callsign": return callsignOf(a).localeCompare(callsignOf(b));
+          case "distance": return distOf(a) - distOf(b);
+          case "altitude":
+          default:         return altOf(b) - altOf(a);
+        }
+      };
+      return merged.sort(cmp);
+    },
+    [allAircraft, truthOnly, pinned, sortMode, userLoc],
   );
 
   const filtered = useMemo(() => {
@@ -83,6 +109,21 @@ export default function AircraftListPanel({
   const totalHeight  = filtered.length * ROW_HEIGHT;
   const offsetY      = startIdx * ROW_HEIGHT;
 
+  const pinSet = pinned instanceof Set ? pinned : new Set(pinned || []);
+  const nowMs = Date.now();
+  const formatAge = (ac) => {
+    // `seen` is seconds since last update (tar1090 convention). Some objects
+    // carry `last_seen_ts` (ms) — handle both.
+    let sec = null;
+    if (Number.isFinite(ac.seen)) sec = ac.seen;
+    else if (Number.isFinite(ac.last_seen_ts)) sec = (nowMs - ac.last_seen_ts) / 1000;
+    if (sec == null || sec < 0) return null;
+    if (sec < 10) return "now";
+    if (sec < 60) return `${Math.round(sec)}s`;
+    if (sec < 3600) return `${Math.round(sec / 60)}m`;
+    return `${Math.round(sec / 3600)}h`;
+  };
+
   return (
     <div className={`aircraft-list-panel${collapsed ? " collapsed" : ""}`}>
       <div className="al-header">
@@ -114,12 +155,29 @@ export default function AircraftListPanel({
               placeholder="Search callsign / hex…"
               value={searchQuery}
               onChange={(e) => onSearchChange(e.target.value)}
+              ref={searchInputRef}
             />
             {searchQuery && (
               <button className="al-clear" onClick={() => onSearchChange("")}>
                 ×
               </button>
             )}
+          </div>
+
+          <div className="al-sort">
+            <label htmlFor="al-sort-select">Sort</label>
+            <select
+              id="al-sort-select"
+              value={sortMode}
+              onChange={(e) => onSortChange?.(e.target.value)}
+            >
+              <option value="altitude">Altitude</option>
+              <option value="speed">Speed</option>
+              <option value="callsign">Callsign</option>
+              <option value="distance" disabled={!userLoc}>
+                Distance{userLoc ? "" : " (no GPS)"}
+              </option>
+            </select>
           </div>
 
           <div className="al-list" ref={containerRef} onScroll={handleScroll}>
@@ -152,6 +210,9 @@ export default function AircraftListPanel({
                             ? "Solver·ADS-B"
                             : "Solver";
                   const isDrone = ac.target_class === "drone";
+                  // Highlight military / govt hex ranges with a small badge
+                  // so enthusiasts can scan the list for non-civilian traffic.
+                  const hexInfo = classifyHex(ac.hex);
 
                   return (
                     <div
@@ -184,8 +245,49 @@ export default function AircraftListPanel({
                         )}
                       </svg>
                       <div className="al-info">
-                        <span className="al-callsign">{callsign}</span>
-                        <span className="al-sub">{sourceLabel}</span>
+                        <span className="al-callsign">
+                          {onTogglePin && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); onTogglePin(ac.hex); }}
+                              title={pinSet.has(ac.hex) ? "Unpin" : "Pin to top"}
+                              style={{
+                                background: "none",
+                                border: "none",
+                                color: pinSet.has(ac.hex) ? "#facc15" : "#475569",
+                                cursor: "pointer",
+                                fontSize: 12,
+                                padding: 0,
+                                marginRight: 4,
+                                lineHeight: 1,
+                              }}
+                            >★</button>
+                          )}
+                          {callsign}
+                          {hexInfo.color && (
+                            <span
+                              title={hexInfo.label || ""}
+                              style={{
+                                display: "inline-block",
+                                width: 6,
+                                height: 6,
+                                borderRadius: "50%",
+                                background: hexInfo.color,
+                                marginLeft: 6,
+                                verticalAlign: "middle",
+                              }}
+                            />
+                          )}
+                        </span>
+                        <span className="al-sub">
+                          {sourceLabel}
+                          {(() => {
+                            const age = formatAge(ac);
+                            return age ? ` · ${age}` : "";
+                          })()}
+                          {userLoc && Number.isFinite(ac.lat) && Number.isFinite(ac.lon)
+                            ? ` · ${distanceKm(userLoc.lat, userLoc.lon, ac.lat, ac.lon).toFixed(0)}km`
+                            : ""}
+                        </span>
                       </div>
                       <div className="al-stats">
                         <span className="al-alt">{alt}</span>
