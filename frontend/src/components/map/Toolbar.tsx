@@ -14,6 +14,8 @@ export default function Toolbar({
   colorByAlt,
   followSelected,
   showFilters,
+  showStats,
+  showRangeRings,
   onToggleCoverage,
   onToggleLabels,
   onToggleTrails,
@@ -23,6 +25,9 @@ export default function Toolbar({
   onToggleColorByAlt,
   onToggleFollow,
   onToggleFilters,
+  onToggleStats,
+  onToggleRangeRings,
+  onShowHelp,
   onTogglePause,
   onFit,
 }) {
@@ -69,6 +74,12 @@ export default function Toolbar({
       <button className={`toggle-btn${followSelected ? " active" : ""}`} onClick={onToggleFollow}>
         Follow
       </button>
+      <button className={`toggle-btn${showRangeRings ? " active" : ""}`} onClick={onToggleRangeRings} title="Show 5/10/20 km range rings around the selected aircraft">
+        Range
+      </button>
+      <button className={`toggle-btn${showStats ? " active" : ""}`} onClick={onToggleStats} title="Show / hide the live stats panel (s)">
+        Stats
+      </button>
 
       <div className="toolbar-separator" />
 
@@ -77,6 +88,9 @@ export default function Toolbar({
       </button>
       <button className="toggle-btn" onClick={onFit}>
         ◎ Fit
+      </button>
+      <button className="toggle-btn" onClick={onShowHelp} title="Keyboard shortcuts (?)">
+        ?
       </button>
 
       <span className="map-legend">

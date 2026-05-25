@@ -1,6 +1,7 @@
 import { useEffect, useRef, useMemo, useState, useCallback } from "react";
 import { PLANE_PATH, getAircraftColor } from "./icons";
 import { POSITION_SOURCE_ARC_ONLY } from "./constants";
+import { classifyHex } from "./hexInfo";
 
 // Fixed row height must match .al-row CSS (height: 40px, box-sizing: border-box).
 // Changing this constant without updating the CSS will break the virtual list.
@@ -16,6 +17,7 @@ export default function AircraftListPanel({
   onToggleCollapse,
   searchQuery,
   onSearchChange,
+  searchInputRef,
 }) {
   const containerRef     = useRef(null);
   const [scrollTop, setScrollTop]         = useState(0);
@@ -114,6 +116,7 @@ export default function AircraftListPanel({
               placeholder="Search callsign / hex…"
               value={searchQuery}
               onChange={(e) => onSearchChange(e.target.value)}
+              ref={searchInputRef}
             />
             {searchQuery && (
               <button className="al-clear" onClick={() => onSearchChange("")}>
@@ -152,6 +155,9 @@ export default function AircraftListPanel({
                             ? "Solver·ADS-B"
                             : "Solver";
                   const isDrone = ac.target_class === "drone";
+                  // Highlight military / govt hex ranges with a small badge
+                  // so enthusiasts can scan the list for non-civilian traffic.
+                  const hexInfo = classifyHex(ac.hex);
 
                   return (
                     <div
@@ -184,7 +190,23 @@ export default function AircraftListPanel({
                         )}
                       </svg>
                       <div className="al-info">
-                        <span className="al-callsign">{callsign}</span>
+                        <span className="al-callsign">
+                          {callsign}
+                          {hexInfo.color && (
+                            <span
+                              title={hexInfo.label || ""}
+                              style={{
+                                display: "inline-block",
+                                width: 6,
+                                height: 6,
+                                borderRadius: "50%",
+                                background: hexInfo.color,
+                                marginLeft: 6,
+                                verticalAlign: "middle",
+                              }}
+                            />
+                          )}
+                        </span>
                         <span className="al-sub">{sourceLabel}</span>
                       </div>
                       <div className="al-stats">

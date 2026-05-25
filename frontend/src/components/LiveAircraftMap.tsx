@@ -6,9 +6,11 @@ import {
   Marker,
   Popup,
   CircleMarker,
+  Circle,
   Polygon,
   Polyline,
   useMap,
+  useMapEvents,
 } from "react-leaflet";
 import L from "leaflet";
 import "./LiveAircraftMap.css";
@@ -40,6 +42,12 @@ import {
 
 import { fetchRadar3Verification, fetchRadar3DetectionRange, fetchMlatVerification } from "../api";
 import { defaultsGroundTruthOff } from "../utils/domains";
+import { usePersistedState } from "./map/usePersistedState";
+import { parseHash, useHashWriter, encodeLayers } from "./map/useUrlHashState";
+import { useKeyboardShortcuts } from "./map/useKeyboardShortcuts";
+import { trailToCsv, downloadCsv } from "./map/trailExport";
+import StatsOverlay from "./map/StatsOverlay";
+import ShortcutHelp from "./map/ShortcutHelp";
 
 // Fix default icon paths
 delete L.Icon.Default.prototype._getIconUrl;
@@ -764,6 +772,46 @@ const FollowController = memo(function FollowController({ followSelected, select
   return null;
 });
 
+/* ── HashSync: pipes map move/zoom events into a parent callback so the
+      enclosing component can mirror lat/lon/z into `location.hash` for
+      deep-link sharing. Also draws three range rings (5/10/20 km) around
+      the currently-selected aircraft when toggled on — done here because
+      it needs `useMap()` to access the live smoothed position via
+      `smoothRef`, which other map children already pattern. ── */
+const HashSync = memo(function HashSync({ onMove, showRangeRings, selectedHex, smoothRef }) {
+  const map = useMapEvents({
+    moveend: () => {
+      const c = map.getCenter();
+      onMove?.({ lat: c.lat, lon: c.lng, z: map.getZoom() });
+    },
+  });
+  // Initial fire so the hash is correct even if the user never pans.
+  useEffect(() => {
+    const c = map.getCenter();
+    onMove?.({ lat: c.lat, lon: c.lng, z: map.getZoom() });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (!showRangeRings || !selectedHex) return null;
+  const sm = smoothRef.current?.[selectedHex];
+  if (!sm) return null;
+  // Three rings at 5/10/20 km — useful for judging "how far away" without
+  // dropping into the detail panel.  Light, dashed strokes keep the rings
+  // from competing with the aircraft icon.
+  return (
+    <>
+      {[5000, 10000, 20000].map((r) => (
+        <Circle
+          key={r}
+          center={[sm.lat, sm.lon]}
+          radius={r}
+          pathOptions={{ color: "#38bdf8", weight: 1, opacity: 0.5, fill: false, dashArray: "4 4" }}
+        />
+      ))}
+    </>
+  );
+});
+
 /* ── Main component ───────────────────────────────────────────── */
 
 export default function LiveAircraftMap() {
@@ -809,26 +857,48 @@ export default function LiveAircraftMap() {
   }, [nodes]);
 
   /* ── Local UI state ─────────────────────────────────────────── */
+  // URL-hash deep-link state — parsed once at mount.  Anything we find here
+  // overrides the user's persisted preferences, so a teammate sharing a
+  // link sees the exact view that was sent.
+  const initialHash = useMemo(() => parseHash(), []);
+  const initialLayers = useMemo(() => {
+    const s = initialHash.layers;
+    if (!s) return null;
+    return {
+      coverage:     s.includes("c"),
+      labels:       s.includes("l"),
+      trails:       s.includes("t"),
+      groundTruth:  s.includes("g"),
+      illuminators: s.includes("i"),
+      colorByAlt:   s.includes("a"),
+      stats:        s.includes("s"),
+      rangeRings:   s.includes("r"),
+    };
+  }, [initialHash]);
+
   const [displayAircraft, setDisplayAircraft] = useState([]);
-  const [showCoverage, setShowCoverage] = useState(false);
-  const [showTrails, setShowTrails] = useState(true);
+  const [showCoverage, setShowCoverage] = usePersistedState("tf.layer.coverage", initialLayers?.coverage ?? false);
+  const [showTrails, setShowTrails] = usePersistedState("tf.layer.trails", initialLayers?.trails ?? true);
   // Default GT on for testmap/staging-testmap (simulation demo); off on map.* and staging-map.* (real only)
-  const [showGroundTruth, setShowGroundTruth] = useState(() => !defaultsGroundTruthOff);
-  const [showLabels, setShowLabels] = useState(true);
-  const [selectedHex, setSelectedHex] = useState(null);
+  const [showGroundTruth, setShowGroundTruth] = usePersistedState("tf.layer.groundTruth", initialLayers?.groundTruth ?? !defaultsGroundTruthOff);
+  const [showLabels, setShowLabels] = usePersistedState("tf.layer.labels", initialLayers?.labels ?? true);
+  const [selectedHex, setSelectedHex] = useState(initialHash.hex ?? null);
   const [selectedNodeId, setSelectedNodeId] = useState(null);
   const [focusNonce, setFocusNonce] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [paused, setPaused] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = usePersistedState("tf.sidebar.collapsed", false);
   const [viewport, setViewport] = useState(null);
   const [showAnomaliesOnly, setShowAnomaliesOnly] = useState(false);
-  const [showIlluminators, setShowIlluminators] = useState(false);
-  const [colorByAlt, setColorByAlt] = useState(false);
+  const [showIlluminators, setShowIlluminators] = usePersistedState("tf.layer.illuminators", initialLayers?.illuminators ?? false);
+  const [colorByAlt, setColorByAlt] = usePersistedState("tf.layer.colorByAlt", initialLayers?.colorByAlt ?? false);
   const [followSelected, setFollowSelected] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
+  const [showStats, setShowStats] = usePersistedState("tf.layer.stats", initialLayers?.stats ?? true);
+  const [showRangeRings, setShowRangeRings] = usePersistedState("tf.layer.rangeRings", initialLayers?.rangeRings ?? false);
+  const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   // Enthusiast filters: altitude band (FL, hundreds of ft), speed floor, type.
-  const [filters, setFilters] = useState({ minFl: "", maxFl: "", minGs: "", type: "all" });
+  const [filters, setFilters] = usePersistedState("tf.filters", { minFl: "", maxFl: "", minGs: "", type: "all" });
 
   const animationFrameRef = useRef(null);
   const displayedAircraftRef = useRef({});
@@ -1240,6 +1310,74 @@ export default function LiveAircraftMap() {
     setSelectedHex(null);
   }, []);
 
+  /* ── URL-hash mirror ─────────────────────────────────────────
+     One throttled writer fed by both map move/zoom events and
+     toggle/selection changes. Lets users share a deep-link URL that
+     re-creates the same view + selected aircraft on load. */
+  const writeHash = useHashWriter();
+  const mapPosRef = useRef({ lat: initialHash.lat, lon: initialHash.lon, z: initialHash.z });
+  const handleMapMove = useCallback((p) => {
+    mapPosRef.current = p;
+    writeHash({
+      lat: p.lat, lon: p.lon, z: p.z,
+      hex: selectedHex,
+      layers: encodeLayers({
+        coverage: showCoverage, labels: showLabels, trails: showTrails,
+        groundTruth: showGroundTruth, illuminators: showIlluminators,
+        colorByAlt, stats: showStats, rangeRings: showRangeRings,
+      }),
+    });
+  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings]);
+
+  // Push hash when selection or toggles change without waiting for a pan.
+  useEffect(() => {
+    const p = mapPosRef.current;
+    writeHash({
+      lat: p.lat, lon: p.lon, z: p.z,
+      hex: selectedHex,
+      layers: encodeLayers({
+        coverage: showCoverage, labels: showLabels, trails: showTrails,
+        groundTruth: showGroundTruth, illuminators: showIlluminators,
+        colorByAlt, stats: showStats, rangeRings: showRangeRings,
+      }),
+    });
+  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings]);
+
+  /* ── Keyboard shortcuts ─────────────────────────────────────
+     Single-letter bindings.  Suppressed while typing in inputs so the
+     search box still works.  See ShortcutHelp for the user-facing list. */
+  const searchInputRef = useRef(null);
+  const exportSelectedTrail = useCallback(() => {
+    if (!selectedHex) return;
+    const ac = (radarAircraft || []).find((a) => a.hex === selectedHex);
+    if (!ac) return;
+    const rows = ac.recent_positions || [];
+    const csv = trailToCsv(ac.hex, ac.flight, rows);
+    downloadCsv(`trail-${ac.hex}-${Date.now()}.csv`, csv);
+  }, [selectedHex, radarAircraft]);
+
+  const shortcutMap = useMemo(() => ({
+    "?": () => setShowShortcutHelp((v) => !v),
+    "/": (e) => { e.preventDefault?.(); searchInputRef.current?.focus?.(); },
+    "Escape": () => {
+      if (showShortcutHelp) { setShowShortcutHelp(false); return; }
+      if (searchQuery) { setSearchQuery(""); return; }
+      setSelectedHex(null);
+    },
+    " ": () => handleTogglePause(),
+    f: () => setShowFilters((v) => !v),
+    l: () => setShowLabels((v) => !v),
+    t: () => setShowTrails((v) => !v),
+    c: () => setShowCoverage((v) => !v),
+    i: () => setShowIlluminators((v) => !v),
+    g: () => setShowGroundTruth((v) => !v),
+    a: () => setColorByAlt((v) => !v),
+    s: () => setShowStats((v) => !v),
+    r: () => setShowRangeRings((v) => !v),
+    x: () => exportSelectedTrail(),
+  }), [showShortcutHelp, searchQuery, exportSelectedTrail, setShowLabels, setShowTrails, setShowCoverage, setShowIlluminators, setShowGroundTruth, setColorByAlt, setShowStats, setShowRangeRings]);
+  useKeyboardShortcuts(shortcutMap);
+
   function computeError(hex, ac) {
     const gtHex = ac.ground_truth_hex || hex;
     const gtTrail = groundTruthRef.current[gtHex];
@@ -1272,6 +1410,8 @@ export default function LiveAircraftMap() {
         colorByAlt={colorByAlt}
         followSelected={followSelected}
         showFilters={showFilters}
+        showStats={showStats}
+        showRangeRings={showRangeRings}
         onToggleCoverage={() => setShowCoverage((v) => !v)}
         onToggleLabels={() => setShowLabels((v) => !v)}
         onToggleTrails={() => setShowTrails((v) => !v)}
@@ -1281,6 +1421,9 @@ export default function LiveAircraftMap() {
         onToggleColorByAlt={() => setColorByAlt((v) => !v)}
         onToggleFollow={() => setFollowSelected((v) => !v)}
         onToggleFilters={() => setShowFilters((v) => !v)}
+        onToggleStats={() => setShowStats((v) => !v)}
+        onToggleRangeRings={() => setShowRangeRings((v) => !v)}
+        onShowHelp={() => setShowShortcutHelp(true)}
         onTogglePause={handleTogglePause}
         onFit={() => setFocusNonce((n) => n + 1)}
       />
@@ -1295,6 +1438,7 @@ export default function LiveAircraftMap() {
           onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
+          searchInputRef={searchInputRef}
         />
 
         <div className="live-map-area">
@@ -1347,12 +1491,23 @@ export default function LiveAircraftMap() {
               </label>
             </div>
           )}
-          <MapContainer center={[34.0, -84.5]} zoom={8} style={{ height: "100%", width: "100%" }} attributionControl={false}>
+          <MapContainer
+            center={[initialHash.lat ?? 34.0, initialHash.lon ?? -84.5]}
+            zoom={initialHash.z ?? 8}
+            style={{ height: "100%", width: "100%" }}
+            attributionControl={false}
+          >
             <TileLayer
               url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
             />
 
             <ViewportTracker onChange={handleViewportChange} />
+            <HashSync
+              onMove={handleMapMove}
+              showRangeRings={showRangeRings}
+              selectedHex={selectedHex}
+              smoothRef={smoothRef}
+            />
             <MapClickClear onClear={handleMapClick} />
             <FitBounds aircraft={radarAircraft} nodes={nodes} selectedHex={selectedHex} focusNonce={focusNonce} />
             <FollowController followSelected={followSelected} selectedHex={selectedHex} smoothRef={smoothRef} onDisengage={() => setFollowSelected(false)} />
@@ -1615,6 +1770,15 @@ export default function LiveAircraftMap() {
               smoothRef={smoothRef}
             />
           </MapContainer>
+
+          <StatsOverlay
+            aircraft={radarAircraft}
+            truth={showGroundTruth ? truthOnlyAircraft : []}
+            anomalyCount={anomalyCount}
+            visible={showStats}
+            onToggle={() => setShowStats((v) => !v)}
+          />
+          <ShortcutHelp visible={showShortcutHelp} onClose={() => setShowShortcutHelp(false)} />
 
           {selectedAc && (
             <AircraftDetailPanel
