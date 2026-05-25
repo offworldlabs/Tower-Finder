@@ -16,6 +16,9 @@ export default function Toolbar({
   showFilters,
   showStats,
   showRangeRings,
+  soundOn,
+  tileTheme,
+  hasUserLoc,
   onToggleCoverage,
   onToggleLabels,
   onToggleTrails,
@@ -27,6 +30,11 @@ export default function Toolbar({
   onToggleFilters,
   onToggleStats,
   onToggleRangeRings,
+  onToggleSound,
+  onCycleTheme,
+  onShare,
+  onLocate,
+  onExportAll,
   onShowHelp,
   onTogglePause,
   onFit,
@@ -88,6 +96,21 @@ export default function Toolbar({
       </button>
       <button className="toggle-btn" onClick={onFit}>
         ◎ Fit
+      </button>
+      <button className={`toggle-btn${hasUserLoc ? " active" : ""}`} onClick={onLocate} title="Center on my GPS location (m)">
+        📍 Me
+      </button>
+      <button className="toggle-btn" onClick={onShare} title="Copy a shareable link to this view">
+        🔗 Share
+      </button>
+      <button className="toggle-btn" onClick={onExportAll} title="Export all visible trails as CSV (Shift+X)">
+        ⇩ CSV
+      </button>
+      <button className={`toggle-btn${soundOn ? " active" : ""}`} onClick={onToggleSound} title="Audio alert on emergency squawks (n)">
+        {soundOn ? "🔔" : "🔕"}
+      </button>
+      <button className="toggle-btn" onClick={onCycleTheme} title={`Map theme: ${tileTheme}`}>
+        🗺 {tileTheme === "voyager" ? "Dark" : tileTheme === "positron" ? "Light" : "OSM"}
       </button>
       <button className="toggle-btn" onClick={onShowHelp} title="Keyboard shortcuts (?)">
         ?

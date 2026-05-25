@@ -3,6 +3,7 @@ import { fetchMlatAccuracy, fetchMlatVerification, fetchRadar3Verification } fro
 import { POSITION_SOURCE_ARC_ONLY } from "./constants";
 import { classifyHex, emergencySquawkLabel } from "./hexInfo";
 import { trailToCsv, downloadCsv } from "./trailExport";
+import { copyToClipboard, toast } from "./toast";
 
 export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError }) {
   if (!ac) return null;
@@ -22,17 +23,23 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
   const emergency = emergencySquawkLabel(ac.squawk);
 
   const handleExportTrail = () => {
-    const rows = (ac.recent_positions || []).filter(Boolean);
+    // `trails` (prop) is the canonical solved-position trail buffer maintained
+    // by LiveAircraftMap. Backend rows are [lat, lon, alt_ft, ts_ms]; the
+    // exporter's normaliseRow handles the legacy 3-tuple form too.
+    const rows = ((trails && trails[ac.hex]) || []).filter(Boolean).slice();
     if (!rows.length) {
-      // No buffered points yet — fall back to the current single point.
+      // No buffered points — fall back to the current single fix so the user
+      // still gets a non-empty CSV.
       if (ac.lat != null && ac.lon != null) {
-        rows.push([ac.lat, ac.lon, (ac.alt_baro || 0) * 0.3048, Date.now() / 1000]);
+        rows.push([ac.lat, ac.lon, (ac.alt_baro || 0), Date.now()]);
       } else {
+        toast("No trail data yet", { tone: "warn" });
         return;
       }
     }
     const csv = trailToCsv(ac.hex, ac.flight, rows);
     downloadCsv(`tower-finder-trail-${ac.hex}-${Date.now()}.csv`, csv);
+    toast(`Exported ${rows.length} points`, { tone: "success" });
   };
 
   const isMultinode = ac.multinode;
@@ -84,7 +91,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
         {/* Identity */}
         <div className="detail-section">
           <div className="detail-section-title">Identity</div>
-          <Field label="HEX" value={<span className="detail-hex-badge">{ac.hex}</span>} />
+          <Field label="HEX" value={<span className="detail-hex-badge" onClick={() => copyToClipboard(ac.hex, "HEX copied")} title="Click to copy" style={{ cursor: "pointer" }}>{ac.hex}</span>} />
           {hexInfo.label && (
             <Field
               label="Registry"

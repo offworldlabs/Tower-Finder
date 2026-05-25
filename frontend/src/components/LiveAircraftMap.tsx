@@ -45,7 +45,10 @@ import { defaultsGroundTruthOff } from "../utils/domains";
 import { usePersistedState } from "./map/usePersistedState";
 import { parseHash, useHashWriter, encodeLayers } from "./map/useUrlHashState";
 import { useKeyboardShortcuts } from "./map/useKeyboardShortcuts";
-import { trailToCsv, downloadCsv } from "./map/trailExport";
+import { trailToCsv, trailsToBulkCsv, downloadCsv } from "./map/trailExport";
+import { toast, copyToClipboard } from "./map/toast";
+import { checkEmergencySquawks, resetEmergencyAlertCache } from "./map/emergencyAudio";
+import { distanceKm } from "./map/distance";
 import StatsOverlay from "./map/StatsOverlay";
 import ShortcutHelp from "./map/ShortcutHelp";
 
@@ -899,6 +902,26 @@ export default function LiveAircraftMap() {
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   // Enthusiast filters: altitude band (FL, hundreds of ft), speed floor, type.
   const [filters, setFilters] = usePersistedState("tf.filters", { minFl: "", maxFl: "", minGs: "", type: "all" });
+  // List sort & pinning. Pinned hex codes always render at the top of the
+  // list and survive page reloads.
+  const [sortMode, setSortMode] = usePersistedState("tf.list.sort", "altitude");
+  const [pinned, setPinned] = usePersistedState("tf.list.pinned", []);
+  const pinnedSet = useMemo(() => new Set(pinned || []), [pinned]);
+  const togglePinned = useCallback((hex) => {
+    if (!hex) return;
+    setPinned((arr) => {
+      const list = Array.isArray(arr) ? arr : [];
+      return list.includes(hex) ? list.filter((h) => h !== hex) : [...list, hex];
+    });
+  }, [setPinned]);
+  // Audio alert for emergency squawks (7500/7600/7700). One chime per
+  // (hex, squawk) until the user clears the cache.
+  const [soundOn, setSoundOn] = usePersistedState("tf.sound.emergency", true);
+  // User geolocation — opt-in. Drives the "you are here" marker and the
+  // distance column in the list panel.
+  const [userLoc, setUserLoc] = useState(null); // { lat, lon } | null
+  // Tile theme — voyager (default dark-ish), positron (light), osm (classic).
+  const [tileTheme, setTileTheme] = usePersistedState("tf.tile.theme", "voyager");
 
   const animationFrameRef = useRef(null);
   const displayedAircraftRef = useRef({});
@@ -1348,13 +1371,59 @@ export default function LiveAircraftMap() {
      search box still works.  See ShortcutHelp for the user-facing list. */
   const searchInputRef = useRef(null);
   const exportSelectedTrail = useCallback(() => {
-    if (!selectedHex) return;
+    if (!selectedHex) { toast("Select an aircraft first", { tone: "warn" }); return; }
     const ac = (radarAircraft || []).find((a) => a.hex === selectedHex);
     if (!ac) return;
-    const rows = ac.recent_positions || [];
+    // Prefer the backend-fed trail (alt + ms timestamps); fall back to the
+    // frontend smoothed trail (no altitude) when no backend points exist.
+    const rows =
+      (trailsRef.current && trailsRef.current[ac.hex]) ||
+      (frontendTrailsRef.current && frontendTrailsRef.current[ac.hex]) ||
+      [];
+    if (!rows.length) { toast("No trail data yet", { tone: "warn" }); return; }
     const csv = trailToCsv(ac.hex, ac.flight, rows);
     downloadCsv(`trail-${ac.hex}-${Date.now()}.csv`, csv);
-  }, [selectedHex, radarAircraft]);
+    toast(`Exported ${rows.length} points`, { tone: "success" });
+  }, [selectedHex, radarAircraft, trailsRef]);
+
+  const exportAllTrails = useCallback(() => {
+    const csv = trailsToBulkCsv(radarAircraft || [], trailsRef.current || {});
+    downloadCsv(`tower-finder-trails-${Date.now()}.csv`, csv);
+    toast(`Exported ${radarAircraft?.length || 0} aircraft`, { tone: "success" });
+  }, [radarAircraft, trailsRef]);
+
+  const shareLink = useCallback(() => {
+    // The hash already encodes view + layers + selection — `location.href`
+    // is the canonical share URL.
+    copyToClipboard(window.location.href, "Link copied to clipboard");
+  }, []);
+
+  const locateMe = useCallback(() => {
+    if (!navigator.geolocation) { toast("Geolocation unavailable", { tone: "error" }); return; }
+    toast("Locating…", { tone: "info" });
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setUserLoc({ lat: pos.coords.latitude, lon: pos.coords.longitude });
+        toast("Location set", { tone: "success" });
+      },
+      (err) => {
+        toast(`Location: ${err.message || "denied"}`, { tone: "error" });
+      },
+      { enableHighAccuracy: false, maximumAge: 60_000, timeout: 8_000 },
+    );
+  }, []);
+
+  // Emergency squawk audio + visual nudge. Runs once per render-tick;
+  // dedupes internally so the same aircraft only chimes once.
+  useEffect(() => {
+    const fired = checkEmergencySquawks(radarAircraft || [], soundOn);
+    for (const ev of fired) {
+      toast(`⚠ Squawk ${ev.squawk} — ${ev.hex.toUpperCase()}`, { tone: "error", durationMs: 6000 });
+    }
+  }, [radarAircraft, soundOn]);
+  // Forget alerted-cache when the operator pauses/resumes so a long-running
+  // emergency re-announces after a deliberate reset.
+  useEffect(() => { if (!paused) resetEmergencyAlertCache(); }, [paused]);
 
   const shortcutMap = useMemo(() => ({
     "?": () => setShowShortcutHelp((v) => !v),
@@ -1375,7 +1444,11 @@ export default function LiveAircraftMap() {
     s: () => setShowStats((v) => !v),
     r: () => setShowRangeRings((v) => !v),
     x: () => exportSelectedTrail(),
-  }), [showShortcutHelp, searchQuery, exportSelectedTrail, setShowLabels, setShowTrails, setShowCoverage, setShowIlluminators, setShowGroundTruth, setColorByAlt, setShowStats, setShowRangeRings]);
+    X: () => exportAllTrails(),
+    p: () => { if (selectedHex) { togglePinned(selectedHex); toast(pinnedSet.has(selectedHex) ? "Unpinned" : "Pinned"); } },
+    m: () => locateMe(),
+    n: () => { setSoundOn((v) => { toast(v ? "Sound off" : "Sound on"); return !v; }); },
+  }), [showShortcutHelp, searchQuery, exportSelectedTrail, exportAllTrails, locateMe, selectedHex, togglePinned, pinnedSet, setSoundOn, setShowLabels, setShowTrails, setShowCoverage, setShowIlluminators, setShowGroundTruth, setColorByAlt, setShowStats, setShowRangeRings]);
   useKeyboardShortcuts(shortcutMap);
 
   function computeError(hex, ac) {
@@ -1412,6 +1485,9 @@ export default function LiveAircraftMap() {
         showFilters={showFilters}
         showStats={showStats}
         showRangeRings={showRangeRings}
+        soundOn={soundOn}
+        tileTheme={tileTheme}
+        hasUserLoc={!!userLoc}
         onToggleCoverage={() => setShowCoverage((v) => !v)}
         onToggleLabels={() => setShowLabels((v) => !v)}
         onToggleTrails={() => setShowTrails((v) => !v)}
@@ -1423,6 +1499,11 @@ export default function LiveAircraftMap() {
         onToggleFilters={() => setShowFilters((v) => !v)}
         onToggleStats={() => setShowStats((v) => !v)}
         onToggleRangeRings={() => setShowRangeRings((v) => !v)}
+        onToggleSound={() => setSoundOn((v) => !v)}
+        onCycleTheme={() => setTileTheme((t) => t === "voyager" ? "positron" : t === "positron" ? "osm" : "voyager")}
+        onShare={shareLink}
+        onLocate={locateMe}
+        onExportAll={exportAllTrails}
         onShowHelp={() => setShowShortcutHelp(true)}
         onTogglePause={handleTogglePause}
         onFit={() => setFocusNonce((n) => n + 1)}
@@ -1439,6 +1520,11 @@ export default function LiveAircraftMap() {
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
           searchInputRef={searchInputRef}
+          sortMode={sortMode}
+          onSortChange={setSortMode}
+          pinned={pinnedSet}
+          onTogglePin={togglePinned}
+          userLoc={userLoc}
         />
 
         <div className="live-map-area">
@@ -1498,7 +1584,14 @@ export default function LiveAircraftMap() {
             attributionControl={false}
           >
             <TileLayer
-              url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+              key={tileTheme}
+              url={
+                tileTheme === "positron"
+                  ? "https://{s}.basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}{r}.png"
+                  : tileTheme === "osm"
+                    ? "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    : "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+              }
             />
 
             <ViewportTracker onChange={handleViewportChange} />
@@ -1508,6 +1601,14 @@ export default function LiveAircraftMap() {
               selectedHex={selectedHex}
               smoothRef={smoothRef}
             />
+            {userLoc && (
+              <CircleMarker
+                center={[userLoc.lat, userLoc.lon]}
+                radius={7}
+                pathOptions={{ color: "#38bdf8", fillColor: "#38bdf8", fillOpacity: 0.7, weight: 2 }}
+                interactive={false}
+              />
+            )}
             <MapClickClear onClear={handleMapClick} />
             <FitBounds aircraft={radarAircraft} nodes={nodes} selectedHex={selectedHex} focusNonce={focusNonce} />
             <FollowController followSelected={followSelected} selectedHex={selectedHex} smoothRef={smoothRef} onDisengage={() => setFollowSelected(false)} />
