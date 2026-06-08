@@ -27,6 +27,13 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    networks:
+      - default
+      - retina-edge
+
+networks:
+  retina-edge:
+    external: true
 
 volumes:
   backend-data:
