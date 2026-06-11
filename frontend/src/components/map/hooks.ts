@@ -103,25 +103,24 @@ export function useAircraftFeed(ownerOnly = false) {
         anomalyHexesRef.current = new Set(anomalyHexes);
       }
 
-      // Accumulate detection arcs as a radar-style afterglow trail. Each WS
-      // update creates a NEW arc bucketed by the current second, so the same
-      // aircraft+node pair seen over many frames lays down a sequence of
-      // separate arcs that each fade independently — instead of one arc that
-      // rigidly tracks the aircraft and resets its age timer every frame.
+      // Accumulate detection arcs as a radar-style afterglow trail. Each
+      // ingest of new data from the backend lays down a new ellipse per
+      // (aircraft, node) pair; each ellipse fades on its own clock.  Keying
+      // by the ingest timestamp (rather than a measurement value like
+      // delay_us) means a stationary aircraft, whose measurement values do
+      // not change, still gets a fresh ellipse per backend update — keeping
+      // it visibly bright rather than strobing — and a moving aircraft lays
+      // down one ellipse per snapshot at slightly different geometry, which
+      // is the trail.
       const now = Date.now();
-      // Each ellipse persists for ARC_TOTAL_LIFE_MS and monotonically dims.
-      // Buckets are NEVER overwritten after first creation — so multiple WS
-      // updates within a second can't reset a fading ellipse's age or move
-      // its geometry.
       const ARC_MAX_AGE_MS = ARC_TOTAL_LIFE_MS;
-      const tsBucket = Math.floor(now / 1000);
       const buf = arcsBufferRef.current;
       for (const ac of newAircraft) {
         if (Array.isArray(ac.ambiguity_arc) && ac.ambiguity_arc.length >= 2 && ac.node_id) {
-          const key = `${ac.hex}-${ac.node_id}-${tsBucket}`;
-          // Skip if already created this second — keep the original
-          // detection's geometry and timestamp so the ellipse fades
-          // monotonically from its birth moment.
+          const key = `${ac.hex}-${ac.node_id}-${now}`;
+          // Defensive: if two ingests landed in the same millisecond they
+          // would collide on key.  Skip rather than overwrite so the
+          // existing ellipse keeps fading from its original ts.
           if (key in buf) continue;
           buf[key] = {
             hex: ac.hex,
