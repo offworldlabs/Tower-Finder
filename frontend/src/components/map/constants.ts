@@ -9,8 +9,8 @@ export const FOCUS_CLUSTER_LIMIT = 24;
 // DetectionArcs) and the buffer pruner (hooks.useAircraftFeed).  They must
 // agree: a renderer life > pruner TTL would leave the renderer hunting for
 // already-deleted buffer entries; the reverse keeps stale entries in memory.
-export const ARC_HOLD_MS = 2_000;
-export const ARC_FADE_MS = 10_000;
+export const ARC_HOLD_MS = 0;
+export const ARC_FADE_MS = 5_000;
 export const ARC_TOTAL_LIFE_MS = ARC_HOLD_MS + ARC_FADE_MS;
 
 // position_source string for single-node arc-only aircraft (lat/lon is the
