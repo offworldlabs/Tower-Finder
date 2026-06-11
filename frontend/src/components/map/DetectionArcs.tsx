@@ -45,10 +45,13 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
 
         seen.add(key);
         const isSelected = curSelected != null && entry.hex === curSelected;
+        // Opacity depends only on the ellipse's own age — not on whether
+        // its aircraft is currently selected.  Selection affects colour
+        // and stroke weight (below), so the user can still tell which
+        // trail belongs to the selection, but each ellipse fades on its
+        // own independent clock.
         let opacity;
-        if (isSelected) {
-          opacity = 1.0;
-        } else if (age <= ARC_HOLD_MS) {
+        if (age <= ARC_HOLD_MS) {
           opacity = 1.0;
         } else {
           opacity = Math.max(0.0, 1.0 - (age - ARC_HOLD_MS) / ARC_FADE_MS);
