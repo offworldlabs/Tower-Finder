@@ -87,7 +87,7 @@ export function useAircraftFeed(ownerOnly = false) {
 
   // Shared history + state update
   const ingestAircraft = useCallback(
-    (newAircraft, groundTruth, groundTruthMeta, anomalyHexes, detectionArcs) => {
+    (newAircraft, groundTruth, groundTruthMeta, anomalyHexes) => {
       historyRef.current.push({ aircraft: newAircraft, ts: Date.now() });
       if (historyRef.current.length > MAX_HISTORY) historyRef.current.shift();
 
@@ -136,33 +136,9 @@ export function useAircraftFeed(ownerOnly = false) {
           };
         }
       }
-      // Also ingest pending detection arcs from tracker tracks (not yet geolocated).
-      if (Array.isArray(detectionArcs)) {
-        for (const arc of detectionArcs) {
-          if (Array.isArray(arc.ambiguity_arc) && arc.ambiguity_arc.length >= 2 && arc.node_id) {
-            const mid = arc.ambiguity_arc[Math.floor(arc.ambiguity_arc.length / 2)];
-            // Pending detections span the full beam — trailing successive
-            // copies at different timestamps creates N overlapping identical
-            // arcs (up to 12 over the 12-second fade window) without any
-            // useful positional trail. Use a fixed key per detection position
-            // and always overwrite with the latest data so the arc stays at
-            // full opacity while the detection persists and fades only when
-            // the detection disappears.
-            const key = `det-${arc.node_id}-${Math.round(mid[0] * 100)}-${Math.round(mid[1] * 100)}`;
-            buf[key] = {
-              hex: null,
-              node_id: arc.node_id,
-              ambiguity_arc: arc.ambiguity_arc,
-              doppler_hz: arc.doppler_hz ?? 0,
-              target_class: arc.target_class,
-              ts: now,
-            };
-          }
-        }
-      }
-      // Prune arcs older than ARC_MAX_AGE_MS.  Both arc types share the same
-      // 12 s lifetime in the renderer — bucketed arcs have immutable ts (form
-      // an afterglow trail), pending arcs refresh their ts each WS message.
+      // Prune arcs older than ARC_MAX_AGE_MS — they will already have
+      // faded to zero opacity in the renderer; this keeps the buffer
+      // bounded.
       for (const key of Object.keys(buf)) {
         if (now - buf[key].ts > ARC_MAX_AGE_MS) delete buf[key];
       }
@@ -193,7 +169,7 @@ export function useAircraftFeed(ownerOnly = false) {
       lastMsgRef.current = Date.now(); // keep watchdog alive
       try {
         const data = JSON.parse(evt.data);
-        ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes, data.detection_arcs);
+        ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes);
       } catch {
         /* ignore */
       }
@@ -258,7 +234,7 @@ export function useAircraftFeed(ownerOnly = false) {
         const res = await fetch(pollPath, { signal: controller.signal });
         if (res.ok) {
           const data = await res.json();
-          ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes, data.detection_arcs);
+          ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes);
         }
       } catch (err) {
         if (err.name !== "AbortError") {
