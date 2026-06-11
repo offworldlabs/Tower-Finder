@@ -38,6 +38,7 @@ import {
   Toolbar,
   PlaybackBar,
   DetectionArcs,
+  InBeamDiagnostic,
 } from "./map";
 
 import { fetchRadar3Verification, fetchRadar3DetectionRange, fetchMlatVerification } from "../api";
@@ -1800,6 +1801,9 @@ export default function LiveAircraftMap() {
 
             {/* Detection arcs — imperative Leaflet layer, 4Hz opacity fade, sourced from raw WS buffer */}
             <DetectionArcs arcsBufferRef={arcsBufferRef} selectedHex={selectedHex} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} smoothRef={smoothRef} nodesByIdRef={nodesByIdRef} />
+            {/* In-beam-no-detection diagnostic — red dashed lines from a node's RX to any
+                 ADS-B aircraft sitting inside its beam that the node is NOT currently detecting. */}
+            <InBeamDiagnostic arcsBufferRef={arcsBufferRef} groundTruthRef={groundTruthRef} nodesByIdRef={nodesByIdRef} />
             {/* Aircraft position markers — all radar-detected aircraft rendered as airplane icons.
                  Color encodes confidence: purple=multinode, teal=ADS-B aided, cyan=single-node.
                  Single-node arc-only tracks are rendered smaller / dashed / semi-transparent to
