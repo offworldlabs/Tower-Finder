@@ -1,0 +1,65 @@
+name: Claude Code Review — one-off fork run
+
+# One-off workflow to run Claude Code Review for a forked PR.
+# Usage: commit this file, then in Actions -> Run workflow -> set pr_number=129 and run.
+# Remove the file after the run if you want to restore "only repo" behavior.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull request number to run the review for'
+        required: true
+        default: '129'
+
+jobs:
+  one-off-claude:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+
+    steps:
+      - name: Resolve PR head repo and ref
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = parseInt(github.context.payload.inputs.pr_number, 10);
+            if (!prNumber) throw new Error('pr_number input missing or invalid');
+            const { data } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            core.setOutput('head_repo', data.head.repo.full_name);
+            core.setOutput('head_ref', data.head.ref);
+            core.setOutput('head_sha', data.head.sha);
+            core.info(`Resolved head: ${data.head.repo.full_name}@${data.head.ref} (${data.head.sha})`);
+
+      - name: Checkout PR head (fork)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.pr.outputs.head_repo }}
+          ref: ${{ steps.pr.outputs.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+
+      - name: Show debug info
+        run: |
+          echo "Running Claude Code Review for PR ${{ github.event.inputs.pr_number }}"
+          echo "Checked out repo: ${{ steps.pr.outputs.head_repo }}"
+          echo "Checked out ref: ${{ steps.pr.outputs.head_ref }}"
+          git rev-parse --abbrev-ref HEAD || true
+          git rev-parse HEAD
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.inputs.pr_number }}'
