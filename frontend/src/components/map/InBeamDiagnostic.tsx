@@ -8,16 +8,17 @@ import { isInBeam } from "./geo";
       have no recent confirmed detection from that node.  Renders a
       dashed red polyline from the node's RX position to the aircraft —
       one per (aircraft, node) pair — so the "missing link" is
-      geometrically visible.  Uses arcsBufferRef as the recently-detected
-      oracle: its existing TTL gives the grace period the spec asks for
-      (don't flag a detection that only just expired).  Thresholds are
-      tightened to 0.9 × beam width and 0.95 × max range to avoid
+      geometrically visible.  Reads detectionsRef as the recently-detected
+      oracle — a "hex|node_id" → ts map covering every detection shape
+      (single-node and multinode), TTL-pruned so its grace period matches
+      the spec (don't flag a detection that only just expired).  Thresholds
+      are tightened to 0.9 × beam width and 0.95 × max range to avoid
       flagging aircraft that are only momentarily clipping the edges. ── */
 
 const BEAM_WIDTH_FACTOR = 0.9;
 const MAX_RANGE_FACTOR = 0.95;
 
-const InBeamDiagnostic = memo(function InBeamDiagnostic({ arcsBufferRef, groundTruthRef, nodesByIdRef, smoothRef }) {
+const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundTruthRef, nodesByIdRef, smoothRef }) {
   const map = useMap();
   const polyMapRef = useRef(new Map()); // pairKey → L.polyline
 
@@ -25,15 +26,10 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ arcsBufferRef, groundT
     const polyMap = polyMapRef.current;
 
     const tick = () => {
-      // Build "(hex, node_id) currently detected" set from the arc buffer.
-      // Any entry still in the buffer means there's been a confirmed
-      // detection from that node for that aircraft within ARC_TOTAL_LIFE_MS.
-      const recentDetections = new Set();
-      const buf = arcsBufferRef.current || {};
-      for (const key of Object.keys(buf)) {
-        const e = buf[key];
-        if (e?.hex && e?.node_id) recentDetections.add(`${e.hex}|${e.node_id}`);
-      }
+      // "(hex, node_id) recently detected" map, maintained in the aircraft
+      // feed. A present key means that node contributed a detection for that
+      // aircraft within the grace window (ARC_TOTAL_LIFE_MS).
+      const recentDetections = detectionsRef.current || {};
 
       const truth = groundTruthRef.current || {};
       const nodes = nodesByIdRef?.current || {};
@@ -61,7 +57,7 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ arcsBufferRef, groundT
         const acLon = s ? s.lon : beamLon;
 
         for (const [nodeId, node] of Object.entries(nodes)) {
-          if (recentDetections.has(`${hex}|${nodeId}`)) continue;
+          if (recentDetections[`${hex}|${nodeId}`] != null) continue;
 
           const { rx_lat: rxLat, rx_lon: rxLon, beam_azimuth_deg: azimuth, beam_width_deg: beamWidth, max_range_km: maxRange } = node;
           if (rxLat == null || rxLon == null || azimuth == null || beamWidth == null || maxRange == null) continue;
@@ -105,7 +101,7 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ arcsBufferRef, groundT
       for (const line of polyMap.values()) line.remove();
       polyMap.clear();
     };
-  }, [map, arcsBufferRef, groundTruthRef, nodesByIdRef, smoothRef]);
+  }, [map, detectionsRef, groundTruthRef, nodesByIdRef, smoothRef]);
 
   return null;
 });

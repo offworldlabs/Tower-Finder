@@ -86,6 +86,8 @@ export interface AircraftFeedReturn {
   historyRef: React.MutableRefObject<{ aircraft: Aircraft[]; ts: number }[]>;
   setPaused: (val: boolean) => void;
   arcsBufferRef: React.MutableRefObject<Record<string, ArcEntry>>;
+  /** "hex|node_id" → timestamp of that node's most recent detection of the aircraft. */
+  detectionsRef: React.MutableRefObject<Record<string, number>>;
 }
 
 /** Radar node metadata from /api/radar/analytics */

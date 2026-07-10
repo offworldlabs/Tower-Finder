@@ -839,6 +839,7 @@ export default function LiveAircraftMap() {
     historyRef,
     setPaused: setFeedPaused,
     arcsBufferRef,
+    detectionsRef,
   } = useAircraftFeed(ownerOnly);
 
   const allNodes = useNodes();
@@ -1810,7 +1811,7 @@ export default function LiveAircraftMap() {
             {/* In-beam-no-detection diagnostic — red dashed lines from a node's RX to any
                  ADS-B aircraft sitting inside its beam that the node is NOT currently detecting. */}
             {showInBeamDiag && (
-              <InBeamDiagnostic arcsBufferRef={arcsBufferRef} groundTruthRef={groundTruthRef} nodesByIdRef={nodesByIdRef} smoothRef={smoothRef} />
+              <InBeamDiagnostic detectionsRef={detectionsRef} groundTruthRef={groundTruthRef} nodesByIdRef={nodesByIdRef} smoothRef={smoothRef} />
             )}
             {/* Aircraft position markers — all radar-detected aircraft rendered as airplane icons.
                  Color encodes confidence: purple=multinode, teal=ADS-B aided, cyan=single-node.

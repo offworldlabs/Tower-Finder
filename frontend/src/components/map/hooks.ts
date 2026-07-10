@@ -41,6 +41,15 @@ export function useAircraftFeed(ownerOnly = false) {
   // Arcs persist for ARC_MAX_AGE_MS after last update, enabling fade-out per detection.
   const arcsBufferRef = useRef({});
 
+  // Detection-presence oracle: "hex|node_id" → ts of last time that node
+  // contributed to a track for that aircraft.  Populated from EVERY detection
+  // shape (single-node arc, single-node no-arc, and multinode via
+  // contributing_node_ids), so it is a complete "is this aircraft currently
+  // detected by this node" record — unlike the arc buffer, which only holds
+  // arc-bearing single-node detections.  TTL-pruned on the same grace window
+  // as the arc buffer (don't flag a detection that only just expired).
+  const detectionsRef = useRef({});
+
   const setPaused = useCallback((val) => {
     pausedRef.current = val;
   }, []);
@@ -141,6 +150,27 @@ export function useAircraftFeed(ownerOnly = false) {
       // bounded.
       for (const key of Object.keys(buf)) {
         if (now - buf[key].ts > ARC_MAX_AGE_MS) delete buf[key];
+      }
+
+      // Detection-presence oracle (consumed by InBeamDiagnostic). Record
+      // every (aircraft, node) pair that produced ANY detection this frame:
+      // single-node tracks via node_id, multinode solves via every
+      // contributing node. Key on ground_truth_hex when present, else hex —
+      // the same identity the ground-truth trail is keyed by, so a multinode
+      // track (whose own hex is synthetic) still joins to its aircraft.
+      const det = detectionsRef.current;
+      for (const ac of newAircraft) {
+        const hex = ac.ground_truth_hex || ac.hex;
+        if (!hex) continue;
+        if (ac.node_id) det[`${hex}|${ac.node_id}`] = now;
+        if (Array.isArray(ac.contributing_node_ids)) {
+          for (const nid of ac.contributing_node_ids) det[`${hex}|${nid}`] = now;
+        }
+      }
+      // Prune on the same TTL as the arc buffer, so a detection that only
+      // just expired still counts within the grace window.
+      for (const key of Object.keys(det)) {
+        if (now - det[key] > ARC_MAX_AGE_MS) delete det[key];
       }
 
       updateTrails(newAircraft);
@@ -264,6 +294,7 @@ export function useAircraftFeed(ownerOnly = false) {
     historyRef,
     setPaused,
     arcsBufferRef,
+    detectionsRef,
   };
 }
 
