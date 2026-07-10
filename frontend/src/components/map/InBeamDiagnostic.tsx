@@ -17,7 +17,7 @@ import { isInBeam } from "./geo";
 const BEAM_WIDTH_FACTOR = 0.9;
 const MAX_RANGE_FACTOR = 0.95;
 
-const InBeamDiagnostic = memo(function InBeamDiagnostic({ arcsBufferRef, groundTruthRef, nodesByIdRef }) {
+const InBeamDiagnostic = memo(function InBeamDiagnostic({ arcsBufferRef, groundTruthRef, nodesByIdRef, smoothRef }) {
   const map = useMap();
   const polyMapRef = useRef(new Map()); // pairKey → L.polyline
 
@@ -39,13 +39,26 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ arcsBufferRef, groundT
       const nodes = nodesByIdRef?.current || {};
       const seen = new Set();
 
+      const smooth = smoothRef?.current || {};
+
       for (const [hex, trail] of Object.entries(truth)) {
         if (!Array.isArray(trail) || trail.length === 0) continue;
         const last = trail[trail.length - 1];
         if (!last) continue;
-        const acLat = last[0];
-        const acLon = last[1];
-        if (acLat == null || acLon == null) continue;
+        // Beam membership is tested against the raw ground-truth sample —
+        // the freshest real fix. A dead-reckoned position extrapolates the
+        // last velocity and, for a stalled/lost track, can glide across a
+        // beam edge and fabricate (or hide) a gap, so it must NOT drive the
+        // in/out decision.
+        const beamLat = last[0];
+        const beamLon = last[1];
+        if (beamLat == null || beamLon == null) continue;
+        // The drawn endpoint, by contrast, prefers the dead-reckoned position
+        // (same source that draws the aircraft dot) so the line's far end
+        // lands on the icon rather than lagging behind it by one update.
+        const s = smooth[hex];
+        const acLat = s ? s.lat : beamLat;
+        const acLon = s ? s.lon : beamLon;
 
         for (const [nodeId, node] of Object.entries(nodes)) {
           if (recentDetections.has(`${hex}|${nodeId}`)) continue;
@@ -53,7 +66,7 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ arcsBufferRef, groundT
           const { rx_lat: rxLat, rx_lon: rxLon, beam_azimuth_deg: azimuth, beam_width_deg: beamWidth, max_range_km: maxRange } = node;
           if (rxLat == null || rxLon == null || azimuth == null || beamWidth == null || maxRange == null) continue;
 
-          if (!isInBeam(rxLat, rxLon, azimuth, beamWidth * BEAM_WIDTH_FACTOR, maxRange * MAX_RANGE_FACTOR, acLat, acLon)) continue;
+          if (!isInBeam(rxLat, rxLon, azimuth, beamWidth * BEAM_WIDTH_FACTOR, maxRange * MAX_RANGE_FACTOR, beamLat, beamLon)) continue;
 
           const pairKey = `${hex}|${nodeId}`;
           seen.add(pairKey);
@@ -92,7 +105,7 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ arcsBufferRef, groundT
       for (const line of polyMap.values()) line.remove();
       polyMap.clear();
     };
-  }, [map, arcsBufferRef, groundTruthRef, nodesByIdRef]);
+  }, [map, arcsBufferRef, groundTruthRef, nodesByIdRef, smoothRef]);
 
   return null;
 });
