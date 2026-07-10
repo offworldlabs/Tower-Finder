@@ -41,6 +41,15 @@ export function useAircraftFeed(ownerOnly = false) {
   // Arcs persist for ARC_MAX_AGE_MS after last update, enabling fade-out per detection.
   const arcsBufferRef = useRef({});
 
+  // Detection-presence oracle: "hex|node_id" → ts of last time that node
+  // contributed to a track for that aircraft.  Populated from EVERY detection
+  // shape (single-node arc, single-node no-arc, and multinode via
+  // contributing_node_ids), so it is a complete "is this aircraft currently
+  // detected by this node" record — unlike the arc buffer, which only holds
+  // arc-bearing single-node detections.  TTL-pruned on the same grace window
+  // as the arc buffer (don't flag a detection that only just expired).
+  const detectionsRef = useRef({});
+
   const setPaused = useCallback((val) => {
     pausedRef.current = val;
   }, []);
@@ -87,7 +96,7 @@ export function useAircraftFeed(ownerOnly = false) {
 
   // Shared history + state update
   const ingestAircraft = useCallback(
-    (newAircraft, groundTruth, groundTruthMeta, anomalyHexes, detectionArcs) => {
+    (newAircraft, groundTruth, groundTruthMeta, anomalyHexes) => {
       historyRef.current.push({ aircraft: newAircraft, ts: Date.now() });
       if (historyRef.current.length > MAX_HISTORY) historyRef.current.shift();
 
@@ -103,25 +112,24 @@ export function useAircraftFeed(ownerOnly = false) {
         anomalyHexesRef.current = new Set(anomalyHexes);
       }
 
-      // Accumulate detection arcs as a radar-style afterglow trail. Each WS
-      // update creates a NEW arc bucketed by the current second, so the same
-      // aircraft+node pair seen over many frames lays down a sequence of
-      // separate arcs that each fade independently — instead of one arc that
-      // rigidly tracks the aircraft and resets its age timer every frame.
+      // Accumulate detection arcs as a radar-style afterglow trail. Each
+      // ingest of new data from the backend lays down a new ellipse per
+      // (aircraft, node) pair; each ellipse fades on its own clock.  Keying
+      // by the ingest timestamp (rather than a measurement value like
+      // delay_us) means a stationary aircraft, whose measurement values do
+      // not change, still gets a fresh ellipse per backend update — keeping
+      // it visibly bright rather than strobing — and a moving aircraft lays
+      // down one ellipse per snapshot at slightly different geometry, which
+      // is the trail.
       const now = Date.now();
-      // Each ellipse persists for ARC_TOTAL_LIFE_MS and monotonically dims.
-      // Buckets are NEVER overwritten after first creation — so multiple WS
-      // updates within a second can't reset a fading ellipse's age or move
-      // its geometry.
       const ARC_MAX_AGE_MS = ARC_TOTAL_LIFE_MS;
-      const tsBucket = Math.floor(now / 1000);
       const buf = arcsBufferRef.current;
       for (const ac of newAircraft) {
         if (Array.isArray(ac.ambiguity_arc) && ac.ambiguity_arc.length >= 2 && ac.node_id) {
-          const key = `${ac.hex}-${ac.node_id}-${tsBucket}`;
-          // Skip if already created this second — keep the original
-          // detection's geometry and timestamp so the ellipse fades
-          // monotonically from its birth moment.
+          const key = `${ac.hex}-${ac.node_id}-${now}`;
+          // Defensive: if two ingests landed in the same millisecond they
+          // would collide on key.  Skip rather than overwrite so the
+          // existing ellipse keeps fading from its original ts.
           if (key in buf) continue;
           buf[key] = {
             hex: ac.hex,
@@ -137,35 +145,32 @@ export function useAircraftFeed(ownerOnly = false) {
           };
         }
       }
-      // Also ingest pending detection arcs from tracker tracks (not yet geolocated).
-      if (Array.isArray(detectionArcs)) {
-        for (const arc of detectionArcs) {
-          if (Array.isArray(arc.ambiguity_arc) && arc.ambiguity_arc.length >= 2 && arc.node_id) {
-            const mid = arc.ambiguity_arc[Math.floor(arc.ambiguity_arc.length / 2)];
-            // Pending detections span the full beam — trailing successive
-            // copies at different timestamps creates N overlapping identical
-            // arcs (up to 12 over the 12-second fade window) without any
-            // useful positional trail. Use a fixed key per detection position
-            // and always overwrite with the latest data so the arc stays at
-            // full opacity while the detection persists and fades only when
-            // the detection disappears.
-            const key = `det-${arc.node_id}-${Math.round(mid[0] * 100)}-${Math.round(mid[1] * 100)}`;
-            buf[key] = {
-              hex: null,
-              node_id: arc.node_id,
-              ambiguity_arc: arc.ambiguity_arc,
-              doppler_hz: arc.doppler_hz ?? 0,
-              target_class: arc.target_class,
-              ts: now,
-            };
-          }
-        }
-      }
-      // Prune arcs older than ARC_MAX_AGE_MS.  Both arc types share the same
-      // 12 s lifetime in the renderer — bucketed arcs have immutable ts (form
-      // an afterglow trail), pending arcs refresh their ts each WS message.
+      // Prune arcs older than ARC_MAX_AGE_MS — they will already have
+      // faded to zero opacity in the renderer; this keeps the buffer
+      // bounded.
       for (const key of Object.keys(buf)) {
         if (now - buf[key].ts > ARC_MAX_AGE_MS) delete buf[key];
+      }
+
+      // Detection-presence oracle (consumed by InBeamDiagnostic). Record
+      // every (aircraft, node) pair that produced ANY detection this frame:
+      // single-node tracks via node_id, multinode solves via every
+      // contributing node. Key on ground_truth_hex when present, else hex —
+      // the same identity the ground-truth trail is keyed by, so a multinode
+      // track (whose own hex is synthetic) still joins to its aircraft.
+      const det = detectionsRef.current;
+      for (const ac of newAircraft) {
+        const hex = ac.ground_truth_hex || ac.hex;
+        if (!hex) continue;
+        if (ac.node_id) det[`${hex}|${ac.node_id}`] = now;
+        if (Array.isArray(ac.contributing_node_ids)) {
+          for (const nid of ac.contributing_node_ids) det[`${hex}|${nid}`] = now;
+        }
+      }
+      // Prune on the same TTL as the arc buffer, so a detection that only
+      // just expired still counts within the grace window.
+      for (const key of Object.keys(det)) {
+        if (now - det[key] > ARC_MAX_AGE_MS) delete det[key];
       }
 
       updateTrails(newAircraft);
@@ -194,7 +199,7 @@ export function useAircraftFeed(ownerOnly = false) {
       lastMsgRef.current = Date.now(); // keep watchdog alive
       try {
         const data = JSON.parse(evt.data);
-        ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes, data.detection_arcs);
+        ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes);
       } catch {
         /* ignore */
       }
@@ -259,7 +264,7 @@ export function useAircraftFeed(ownerOnly = false) {
         const res = await fetch(pollPath, { signal: controller.signal });
         if (res.ok) {
           const data = await res.json();
-          ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes, data.detection_arcs);
+          ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes);
         }
       } catch (err) {
         if (err.name !== "AbortError") {
@@ -289,6 +294,7 @@ export function useAircraftFeed(ownerOnly = false) {
     historyRef,
     setPaused,
     arcsBufferRef,
+    detectionsRef,
   };
 }
 

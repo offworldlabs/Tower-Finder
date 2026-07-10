@@ -16,6 +16,7 @@ export default function Toolbar({
   showFilters,
   showStats,
   showRangeRings,
+  showInBeamDiag,
   soundOn,
   tileTheme,
   hasUserLoc,
@@ -30,6 +31,7 @@ export default function Toolbar({
   onToggleFilters,
   onToggleStats,
   onToggleRangeRings,
+  onToggleInBeamDiag,
   onToggleSound,
   onCycleTheme,
   onShare,
@@ -84,6 +86,9 @@ export default function Toolbar({
       </button>
       <button className={`toggle-btn${showRangeRings ? " active" : ""}`} onClick={onToggleRangeRings} title="Show 5/10/20 km range rings around the selected aircraft">
         Range
+      </button>
+      <button className={`toggle-btn${showInBeamDiag ? " active" : ""}`} onClick={onToggleInBeamDiag} title="Show red lines from a node to in-beam aircraft it is NOT currently detecting (beam-coverage gaps)">
+        Beam gaps
       </button>
       <button className={`toggle-btn${showStats ? " active" : ""}`} onClick={onToggleStats} title="Show / hide the live stats panel (s)">
         Stats

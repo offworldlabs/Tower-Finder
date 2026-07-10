@@ -21,3 +21,4 @@ export { default as AircraftDetailPanel } from "./AircraftDetailPanel";
 export { default as Toolbar } from "./Toolbar";
 export { default as PlaybackBar } from "./PlaybackBar";
 export { default as DetectionArcs } from "./DetectionArcs";
+export { default as InBeamDiagnostic } from "./InBeamDiagnostic";

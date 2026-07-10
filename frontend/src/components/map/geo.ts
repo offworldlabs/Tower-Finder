@@ -120,6 +120,37 @@ export function yagiSectorPositions(rxLat, rxLon, txLat, txLon, beamAzimuthDeg, 
   return points;
 }
 
+const EARTH_RADIUS_KM = 6371;
+
+export function haversineDistanceKm(lat1, lon1, lat2, lon2) {
+  const phi1 = lat1 * Math.PI / 180;
+  const phi2 = lat2 * Math.PI / 180;
+  const dPhi = (lat2 - lat1) * Math.PI / 180;
+  const dLambda = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dPhi / 2) ** 2 + Math.cos(phi1) * Math.cos(phi2) * Math.sin(dLambda / 2) ** 2;
+  return EARTH_RADIUS_KM * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+export function bearingDeg(fromLat, fromLon, toLat, toLon) {
+  const phi1 = fromLat * Math.PI / 180;
+  const phi2 = toLat * Math.PI / 180;
+  const dLambda = (toLon - fromLon) * Math.PI / 180;
+  const y = Math.sin(dLambda) * Math.cos(phi2);
+  const x = Math.cos(phi1) * Math.sin(phi2) - Math.sin(phi1) * Math.cos(phi2) * Math.cos(dLambda);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+export function isInBeam(rxLat, rxLon, azimuthDeg, beamWidthDeg, maxRangeKm, acLat, acLon) {
+  if (haversineDistanceKm(rxLat, rxLon, acLat, acLon) > maxRangeKm) return false;
+  const bearing = bearingDeg(rxLat, rxLon, acLat, acLon);
+  // +540 (= 360 + 180) keeps the operand to % positive — JS's % returns the
+  // sign of the dividend, so (bearing - azimuth + 180) % 360 - 180 breaks
+  // when bearing - azimuth < -180.  Normalising to [-180, 180] this way is
+  // safe for any input.
+  const delta = ((bearing - azimuthDeg + 540) % 360) - 180;
+  return Math.abs(delta) <= beamWidthDeg / 2;
+}
+
 /**
  * @deprecated Use yagiSectorPositions instead.
  * Kept for reference — the bistatic ellipse no longer reflects the actual
