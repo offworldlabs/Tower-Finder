@@ -67,6 +67,12 @@ services:
         condition: service_healthy
     environment:
       - FLEET_NODES=200
+      # Fan the cluster budget across all 5 metros (Dallas, Chicago, Atlanta,
+      # Denver, Kansas City) instead of the default single Dallas cluster.
+      # FLEET_N_CLUSTER is the TOTAL clustered-node budget split across the
+      # metros (divmod), so 40 / 5 = ~8 nodes per metro ring.
+      - FLEET_N_CLUSTERS=5
+      - FLEET_N_CLUSTER=40
       - FLEET_REGIONS=us
       - FLEET_MODE=adsb
       # 200 nodes / 8.0s = 25 fps — matches the Kalman tracker ceiling
