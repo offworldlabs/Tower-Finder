@@ -41,6 +41,7 @@ function encodeLayers(t: Record<string, boolean>): string {
   if (t.colorByAlt)   out += "a";
   if (t.stats)        out += "s";
   if (t.rangeRings)   out += "r";
+  if (t.inBeamDiag)   out += "b";
   return out;
 }
 
@@ -55,6 +56,7 @@ function decodeLayers(s: string | undefined): Partial<Record<string, boolean>> {
     colorByAlt:   s.includes("a"),
     stats:        s.includes("s"),
     rangeRings:   s.includes("r"),
+    inBeamDiag:   s.includes("b"),
   };
 }
 

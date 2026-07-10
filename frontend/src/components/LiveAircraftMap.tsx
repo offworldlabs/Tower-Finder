@@ -877,6 +877,7 @@ export default function LiveAircraftMap() {
       colorByAlt:   s.includes("a"),
       stats:        s.includes("s"),
       rangeRings:   s.includes("r"),
+      inBeamDiag:   s.includes("b"),
     };
   }, [initialHash]);
 
@@ -900,6 +901,7 @@ export default function LiveAircraftMap() {
   const [showFilters, setShowFilters] = useState(false);
   const [showStats, setShowStats] = usePersistedState("tf.layer.stats", initialLayers?.stats ?? true);
   const [showRangeRings, setShowRangeRings] = usePersistedState("tf.layer.rangeRings", initialLayers?.rangeRings ?? false);
+  const [showInBeamDiag, setShowInBeamDiag] = usePersistedState("tf.layer.inBeamDiag", initialLayers?.inBeamDiag ?? true);
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   // Enthusiast filters: altitude band (FL, hundreds of ft), speed floor, type.
   const [filters, setFilters] = usePersistedState("tf.filters", { minFl: "", maxFl: "", minGs: "", type: "all" });
@@ -1349,9 +1351,10 @@ export default function LiveAircraftMap() {
         coverage: showCoverage, labels: showLabels, trails: showTrails,
         groundTruth: showGroundTruth, illuminators: showIlluminators,
         colorByAlt, stats: showStats, rangeRings: showRangeRings,
+        inBeamDiag: showInBeamDiag,
       }),
     });
-  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings]);
+  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings, showInBeamDiag]);
 
   // Push hash when selection or toggles change without waiting for a pan.
   useEffect(() => {
@@ -1363,9 +1366,10 @@ export default function LiveAircraftMap() {
         coverage: showCoverage, labels: showLabels, trails: showTrails,
         groundTruth: showGroundTruth, illuminators: showIlluminators,
         colorByAlt, stats: showStats, rangeRings: showRangeRings,
+        inBeamDiag: showInBeamDiag,
       }),
     });
-  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings]);
+  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings, showInBeamDiag]);
 
   /* ── Keyboard shortcuts ─────────────────────────────────────
      Single-letter bindings.  Suppressed while typing in inputs so the
@@ -1486,6 +1490,7 @@ export default function LiveAircraftMap() {
         showFilters={showFilters}
         showStats={showStats}
         showRangeRings={showRangeRings}
+        showInBeamDiag={showInBeamDiag}
         soundOn={soundOn}
         tileTheme={tileTheme}
         hasUserLoc={!!userLoc}
@@ -1500,6 +1505,7 @@ export default function LiveAircraftMap() {
         onToggleFilters={() => setShowFilters((v) => !v)}
         onToggleStats={() => setShowStats((v) => !v)}
         onToggleRangeRings={() => setShowRangeRings((v) => !v)}
+        onToggleInBeamDiag={() => setShowInBeamDiag((v) => !v)}
         onToggleSound={() => setSoundOn((v) => !v)}
         onCycleTheme={() => setTileTheme((t) => t === "voyager" ? "positron" : t === "positron" ? "osm" : "voyager")}
         onShare={shareLink}
@@ -1803,7 +1809,9 @@ export default function LiveAircraftMap() {
             <DetectionArcs arcsBufferRef={arcsBufferRef} selectedHex={selectedHex} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} smoothRef={smoothRef} nodesByIdRef={nodesByIdRef} />
             {/* In-beam-no-detection diagnostic — red dashed lines from a node's RX to any
                  ADS-B aircraft sitting inside its beam that the node is NOT currently detecting. */}
-            <InBeamDiagnostic arcsBufferRef={arcsBufferRef} groundTruthRef={groundTruthRef} nodesByIdRef={nodesByIdRef} smoothRef={smoothRef} />
+            {showInBeamDiag && (
+              <InBeamDiagnostic arcsBufferRef={arcsBufferRef} groundTruthRef={groundTruthRef} nodesByIdRef={nodesByIdRef} smoothRef={smoothRef} />
+            )}
             {/* Aircraft position markers — all radar-detected aircraft rendered as airplane icons.
                  Color encodes confidence: purple=multinode, teal=ADS-B aided, cyan=single-node.
                  Single-node arc-only tracks are rendered smaller / dashed / semi-transparent to
