@@ -45,3 +45,6 @@ frontend/test-results/.last-run.json
 # Auto-generated backend runtime state + python coverage artefacts
 backend/data/runtime/
 .coverage
+
+# local testmap runner (justfile) pids/logs
+.testmap-run/
