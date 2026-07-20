@@ -1,7 +1,9 @@
 set shell := ["bash", "-cu"]
 
 # Local dev runner for the testmap live map: backend + synthetic fleet + frontend.
-# `just setup` once, then `just up` / `just down`. Runtime pids/logs go in .testmap-run/.
+# `just setup` once, then `just up` / `just down`. Runtime logs go in .testmap-run/.
+# up/down/status are PORT-based (backend :8000+:3012, frontend :5173) so stale state
+# can't strand orphaned processes or silently fail on a port clash.
 
 root := justfile_directory()
 be   := root / "backend"
@@ -36,69 +38,96 @@ setup:
     echo "✓ setup complete — now: just up"
 
 # Bring up backend + synthetic fleet + frontend (background). Open http://testmap.localhost:5173/
-up:
+# Fleet profile: `just up` (local, dense) · `just up testmap` (8s) · `just up prod` (40s).
+# testmap/prod read their fleet params LIVE from the real deploy configs so they can't drift.
+up profile="local":
     #!/usr/bin/env bash
     set -euo pipefail
     [ -x "{{py}}" ] || { echo "no backend venv — run: just setup"; exit 1; }
     [ -d "{{fe}}/node_modules" ] || { echo "no frontend deps — run: just setup"; exit 1; }
-    if [ -f "{{run}}/backend.pid" ] && kill -0 "$(cat {{run}}/backend.pid)" 2>/dev/null; then
-        echo "already running — 'just down' first, or 'just status'"; exit 1
-    fi
+    # ── Resolve fleet params by profile ────────────────────────────────────────
+    #  local   — dev-only dense stream (~1 ellipse/s); no deployed equivalent.
+    #  testmap — sourced from docker-compose.test.yml   (the testmap.retina.fm test stack).
+    #  prod    — sourced from deploy/restart-fleet-prod.sh (what actually serves the live
+    #            testmap.retina.fm + map.retina.fm — verified on the prod droplet).
+    case "{{profile}}" in
+      local)
+        FLEET_NODES=200; FLEET_MODE=detection; FLEET_INTERVAL=0.5
+        FLEET_TIME_SCALE=1.0; FLEET_MIN_AIRCRAFT=40; FLEET_MAX_AIRCRAFT=60 ;;
+      testmap)
+        # every FLEET_* value comes straight from the compose file's fleet-simulator block
+        eval "$(grep -oE 'FLEET_[A-Z_]+=[^[:space:]]+' "{{root}}/docker-compose.test.yml")" ;;
+      prod)
+        # pull the env-overridable defaults (VAR="${VAR:-default}") out of the prod script
+        src="{{root}}/deploy/restart-fleet-prod.sh"
+        get() { grep -E "^$1=" "$src" | sed -E 's/.*:-([^}]+)\}.*/\1/'; }
+        FLEET_NODES="$(get NODES)";           FLEET_INTERVAL="$(get INTERVAL)"
+        FLEET_TIME_SCALE="$(get TIME_SCALE)"; FLEET_MIN_AIRCRAFT="$(get MIN_AIRCRAFT)"
+        FLEET_MAX_AIRCRAFT="$(get MAX_AIRCRAFT)"; FLEET_MODE=adsb ;;
+      *)
+        echo "✗ unknown profile '{{profile}}' — use: local | testmap | prod"; exit 1 ;;
+    esac
+    # fail loudly if extraction ever silently breaks, rather than launch a wrong fleet
+    : "${FLEET_INTERVAL:?could not resolve fleet params for profile '{{profile}}'}"
+    # preflight: refuse to start (silently half-broken) if a port is already taken
+    for p in 8000 3012 5173; do
+        if lsof -nP -iTCP:$p -sTCP:LISTEN >/dev/null 2>&1; then
+            echo "✗ port :$p already in use — run 'just down' first (inspect: lsof -iTCP:$p)"; exit 1
+        fi
+    done
     mkdir -p "{{run}}"
 
     echo "→ backend (uvicorn — http :8000, detection TCP ingest :3012)"
     ( cd "{{be}}" && RETINA_ENV=dev "{{venv}}/bin/uvicorn" main:app --reload ) \
         > "{{run}}/backend.log" 2>&1 &
-    echo $! > "{{run}}/backend.pid"
 
     echo "→ waiting for backend TCP ingest on :3012 (max 30s) ..."
-    for _ in $(seq 1 30); do nc -z 127.0.0.1 3012 2>/dev/null && break; sleep 1; done
+    ok=0; for _ in $(seq 1 30); do nc -z 127.0.0.1 3012 2>/dev/null && { ok=1; break; }; sleep 1; done
+    if [ "$ok" != 1 ]; then
+        echo "✗ backend never opened :3012 — see {{run}}/backend.log. Cleaning up."
+        pkill -f 'uvicorn main:app' 2>/dev/null || true
+        exit 1
+    fi
 
-    echo "→ synthetic fleet (retina_simulation.orchestrator, 200 nodes, ~40-60 aircraft, offline detection mode)"
+    echo "→ synthetic fleet [{{profile}}]: ${FLEET_NODES} nodes, mode=${FLEET_MODE}, interval=${FLEET_INTERVAL}s, ${FLEET_MIN_AIRCRAFT}-${FLEET_MAX_AIRCRAFT} aircraft"
     ( cd "{{be}}" && PYTHONPATH=. "{{py}}" -m retina_simulation.orchestrator \
-        --nodes 200 --mode detection --min-aircraft 40 --max-aircraft 60 ) \
+        --nodes "${FLEET_NODES}" --mode "${FLEET_MODE}" \
+        --interval "${FLEET_INTERVAL}" --time-scale "${FLEET_TIME_SCALE:-1.0}" \
+        --min-aircraft "${FLEET_MIN_AIRCRAFT}" --max-aircraft "${FLEET_MAX_AIRCRAFT}" \
+        --seed "${FLEET_SEED:-42}" ) \
         > "{{run}}/fleet.log" 2>&1 &
-    echo $! > "{{run}}/fleet.pid"
 
     echo "→ frontend (vite :5173)"
     ( cd "{{fe}}" && npm run dev ) > "{{run}}/frontend.log" 2>&1 &
-    echo $! > "{{run}}/frontend.pid"
 
     echo
-    echo "✓ up.  Open →  http://testmap.localhost:5173/"
+    echo "✓ up [{{profile}}].  Open →  http://testmap.localhost:5173/"
     echo "  (plain localhost shows tower search — the testmap.* host selects the live map)"
+    echo "  fleet [{{profile}}]: ${FLEET_NODES} nodes @ ${FLEET_INTERVAL}s.  Profiles: local | testmap (8s) | prod (40s)"
     echo "  logs: just logs    status: just status    stop: just down"
 
-# Stop everything 'just up' started (kills each process tree, then a pattern-based sweep)
+# Stop everything (by port for the servers, by pattern for the portless fleet client)
 down:
     #!/usr/bin/env bash
     set -uo pipefail
     kt() { local p="$1"; for c in $(pgrep -P "$p" 2>/dev/null); do kt "$c"; done; kill "$p" 2>/dev/null || true; }
-    if [ -d "{{run}}" ]; then
-        for svc in frontend fleet backend; do
-            f="{{run}}/$svc.pid"
-            [ -f "$f" ] || continue
-            echo "→ stopping $svc (pid $(cat "$f") + children)"
-            kt "$(cat "$f")"
-            rm -f "$f"
+    for port in 8000 3012 5173; do
+        for pid in $(lsof -nP -tiTCP:$port -sTCP:LISTEN 2>/dev/null); do
+            echo "→ killing pid $pid on :$port"; kt "$pid"
         done
-    fi
-    # belt-and-braces in case a pid file was stale
+    done
+    # the fleet is an outbound TCP client (no listening port); uvicorn --reload has a
+    # parent reloader that owns no socket — pattern-kill catches both
+    pkill -f 'retina_simulation.orchestrator' 2>/dev/null && echo "→ killed fleet orchestrator" || true
     pkill -f 'uvicorn main:app' 2>/dev/null || true
-    pkill -f 'retina_simulation.orchestrator' 2>/dev/null || true
     echo "✓ down"
 
-# Which of the three are alive
+# Which of the three are alive (port-based, so it never lies due to stale pids)
 status:
     #!/usr/bin/env bash
-    for svc in backend fleet frontend; do
-        f="{{run}}/$svc.pid"
-        if [ -f "$f" ] && kill -0 "$(cat "$f")" 2>/dev/null; then
-            echo "  $svc: running (pid $(cat "$f"))"
-        else
-            echo "  $svc: not running"
-        fi
-    done
+    lsof -nP -iTCP:8000 -sTCP:LISTEN >/dev/null 2>&1 && echo "  backend:  running (:8000/:3012)" || echo "  backend:  not running"
+    pgrep -f 'retina_simulation.orchestrator' >/dev/null 2>&1 && echo "  fleet:    running" || echo "  fleet:    not running"
+    lsof -nP -iTCP:5173 -sTCP:LISTEN >/dev/null 2>&1 && echo "  frontend: running (:5173)" || echo "  frontend: not running"
 
 # Tail all three logs (Ctrl-C to stop tailing; services keep running)
 logs:
