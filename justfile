@@ -48,8 +48,8 @@ up profile="local":
     # ── Resolve fleet params by profile ────────────────────────────────────────
     #  local   — dev-only dense stream (~1 ellipse/s); no deployed equivalent.
     #  testmap — sourced from docker-compose.test.yml   (the testmap.retina.fm test stack).
-    #  prod    — sourced from deploy/restart-fleet-prod.sh (what actually serves the live
-    #            testmap.retina.fm + map.retina.fm — verified on the prod droplet).
+    #  prod    — sourced from docker-compose.yml's `fleet` service (the Compose
+    #            service that actually serves the live testmap.retina.fm + map.retina.fm).
     case "{{profile}}" in
       local)
         FLEET_NODES=200; FLEET_MODE=detection; FLEET_INTERVAL=0.5
@@ -58,12 +58,9 @@ up profile="local":
         # every FLEET_* value comes straight from the compose file's fleet-simulator block
         eval "$(grep -oE 'FLEET_[A-Z_]+=[^[:space:]]+' "{{root}}/docker-compose.test.yml")" ;;
       prod)
-        # pull the env-overridable defaults (VAR="${VAR:-default}") out of the prod script
-        src="{{root}}/deploy/restart-fleet-prod.sh"
-        get() { grep -E "^$1=" "$src" | sed -E 's/.*:-([^}]+)\}.*/\1/'; }
-        FLEET_NODES="$(get NODES)";           FLEET_INTERVAL="$(get INTERVAL)"
-        FLEET_TIME_SCALE="$(get TIME_SCALE)"; FLEET_MIN_AIRCRAFT="$(get MIN_AIRCRAFT)"
-        FLEET_MAX_AIRCRAFT="$(get MAX_AIRCRAFT)"; FLEET_MODE=adsb ;;
+        # every FLEET_* value comes straight from docker-compose.yml's `fleet`
+        # service block (same extraction the testmap profile uses on test.yml)
+        eval "$(grep -oE 'FLEET_[A-Z_]+=[^[:space:]]+' "{{root}}/docker-compose.yml")" ;;
       *)
         echo "✗ unknown profile '{{profile}}' — use: local | testmap | prod"; exit 1 ;;
     esac

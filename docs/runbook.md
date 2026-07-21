@@ -358,20 +358,23 @@ ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 'top -bn1 | head -20'
 ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 'df -h /opt/tower-finder/backend/coverage_data'
 ```
 
-### Start the fleet simulator (after a rebuild)
-The fleet loses all TCP connections when the container restarts. Always start a fresh systemd unit with an incremented name to avoid conflicts:
+### Start / bounce the fleet simulator
+The fleet is a Compose service (`fleet` in `/opt/tower-finder/docker-compose.yml`,
+`restart: unless-stopped`). It starts automatically on deploy (CI `docker compose
+up -d --build`) and on reboot (docker is enabled) — you normally do NOT start it by
+hand. To manually bounce just the fleet (it loses its TCP connections and
+regenerates ~200 nodes, taking a minute+):
 ```bash
 ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 \
-  'systemd-run --unit=fleet79 --working-directory=/opt/tower-finder \
-  python3 backend/simulation/orchestrator.py \
-  --nodes 200 --mode adsb \
-  --validation-url https://localhost \
-  --concurrency 20 --connect-retries 999 \
-  --interval 40.0 --time-scale 1.0 \
-  --min-aircraft 60 --max-aircraft 100'
+  'bash /opt/tower-finder/deploy/restart-fleet-prod.sh'   # docker compose up -d --no-deps fleet
 ```
-Do NOT use `--time-scale 4.0` — aircraft lifetimes become too short for M-of-N track promotion.  
-Do NOT pass `--beam-width-deg` or `--max-range-km` — use per-node config from the generator.
+Params (nodes/interval/mode/aircraft) live in the `fleet` service block in
+`docker-compose.yml` — edit them there, not on the command line.
+
+⚠️ Do NOT start the fleet with `systemd-run`/`python3 -m retina_simulation.orchestrator`
+by hand while the Compose `fleet` service is running — two fleets double-count nodes
+and aircraft on testmap. The host-process path exists only as the disabled fallback
+in `deploy/fleet.service` (see its header for the mutual-exclusion procedure).
 
 ### Quick fleet health snapshot
 ```bash
