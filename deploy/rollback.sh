@@ -17,6 +17,7 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/tower-finder}"
 IMAGE_NAME="tower-finder"
+FLEET_IMAGE_NAME="tower-finder-fleet"
 COMPOSE_FILE="${APP_DIR}/docker-compose.yml"
 
 cd "$APP_DIR"
@@ -56,6 +57,17 @@ else
         fi
         docker compose -f "$COMPOSE_FILE" down --timeout 30
         docker tag "${IMAGE_NAME}:rollback" "${IMAGE_NAME}:latest"
+        # Symmetric fleet rollback: retag the saved fleet image too, so the single
+        # `up -d` below brings the fleet back on its good build alongside the app.
+        # Guarded because a box predating this change (or one where pre-deploy.sh
+        # found no running fleet) never captured tower-finder-fleet:rollback — in
+        # that case roll the app back cleanly and leave the fleet image as-is.
+        if docker image inspect "${FLEET_IMAGE_NAME}:rollback" >/dev/null 2>&1; then
+            docker tag "${FLEET_IMAGE_NAME}:rollback" "${FLEET_IMAGE_NAME}:latest"
+            echo "Restored fleet image ${FLEET_IMAGE_NAME}:rollback -> ${FLEET_IMAGE_NAME}:latest"
+        else
+            echo "No ${FLEET_IMAGE_NAME}:rollback image found; rolling back app only, fleet image left as-is."
+        fi
         docker compose -f "$COMPOSE_FILE" up -d
     else
         echo "No rollback image found. Falling back to previous git commit."

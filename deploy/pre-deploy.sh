@@ -12,6 +12,8 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-/opt/tower-finder}"
 IMAGE_NAME="tower-finder"
 COMPOSE_SERVICE="tower-finder"
+FLEET_IMAGE_NAME="tower-finder-fleet"
+FLEET_SERVICE="fleet"
 
 cd "$APP_DIR"
 
@@ -27,6 +29,20 @@ if [ -n "$CURRENT_IMAGE" ]; then
     echo "Saved current image as ${IMAGE_NAME}:rollback (${CURRENT_IMAGE:0:12})"
 else
     echo "Warning: no running image found for ${COMPOSE_SERVICE}"
+fi
+
+# ── Save current fleet image ─────────────────────────────────────────────────
+# Mirror the app snapshot above so rollback is symmetric: without a saved fleet
+# image, a rollback reverts the app but leaves the fleet on the bad deploy's
+# build. Same empty-output handling (fresh box, fleet never built): warn, don't
+# fail — a missing fleet image must not abort under `set -o pipefail`.
+CURRENT_FLEET_IMAGE=$(docker compose images -q "$FLEET_SERVICE" 2>/dev/null)
+CURRENT_FLEET_IMAGE=${CURRENT_FLEET_IMAGE%%$'\n'*}
+if [ -n "$CURRENT_FLEET_IMAGE" ]; then
+    docker tag "$CURRENT_FLEET_IMAGE" "${FLEET_IMAGE_NAME}:rollback"
+    echo "Saved current fleet image as ${FLEET_IMAGE_NAME}:rollback (${CURRENT_FLEET_IMAGE:0:12})"
+else
+    echo "Warning: no running image found for ${FLEET_SERVICE}"
 fi
 
 # ── Tag current git commit ───────────────────────────────────────────────────

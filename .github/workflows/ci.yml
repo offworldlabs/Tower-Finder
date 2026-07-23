@@ -184,7 +184,14 @@ jobs:
             # Ensure tar1090 static assets are present
             [ -d tar1090/html ] || git clone --depth 1 https://github.com/wiedehopf/tar1090.git tar1090
             docker compose -f docker-compose.staging.yml down --timeout 30
-            docker builder prune -f
+            # Prune only build cache unused for >7 days, not the whole cache:
+            # keeps recent layers so incremental builds stay fast while still
+            # reclaiming disk. The stale-layer failure this used to guard against
+            # was rooted in disk-full (partial git pack -> source never advanced
+            # -> cache legitimately reused); the disk pre-flight above now catches
+            # that root cause, so a blanket wipe is redundant and only made every
+            # deploy a slow from-scratch rebuild.
+            docker builder prune -f --filter until=168h
             # Deploy the app FIRST, on its own — building only `tower-finder`
             # means a broken Dockerfile.fleet can't abort the staging app deploy
             # (which would block the whole pipeline). Fleet is a separate step below.
@@ -287,10 +294,14 @@ jobs:
             git submodule update --init --recursive
             pip3 install -e libs/retina-custody/ --break-system-packages --ignore-installed -q
             pip3 install -e libs/retina-simulation/ --break-system-packages -q
-            # Prune the builder cache so a stale dashboard-build layer can't
-            # keep the old bundle alive (see commit 01ca7f6 — the staging fix
-            # that was never ported to production).
-            docker builder prune -f
+            # Prune only build cache unused for >7 days, not the whole cache.
+            # The stale-layer incident this guarded against (commit 01ca7f6) was
+            # rooted in disk-full (partial git pack -> source never advanced ->
+            # cache legitimately reused); the disk pre-flight above now catches
+            # that root cause, so a blanket wipe is redundant and only forced a
+            # slow from-scratch rebuild every deploy. Keeping recent cache gives
+            # fast incremental builds while still reclaiming week-old cache.
+            docker builder prune -f --filter until=168h
             # Deploy the app FIRST, on its own. Building only `tower-finder`
             # here means a broken Dockerfile.fleet can't abort the production
             # app deploy (the fleet is a separate step below, after health).

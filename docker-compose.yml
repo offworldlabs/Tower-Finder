@@ -65,6 +65,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.fleet
+    # Pin an explicit image name (mirrors the app's `image: tower-finder:latest`)
+    # so pre-deploy/rollback can save + retag a stable fleet image. Without this
+    # Compose auto-names it `<dir>-fleet` and a rollback would leave the fleet on
+    # the bad deploy's build while only the app reverted.
+    image: tower-finder-fleet:latest
     container_name: retina-prod-fleet
     depends_on:
       tower-finder:
