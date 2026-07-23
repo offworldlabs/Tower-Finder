@@ -1,22 +1,18 @@
 #!/bin/bash
 # ── Tower Finder: Full Server Setup + Security Hardening ──────────────────────
 # Run this on a fresh Ubuntu 24.04 DigitalOcean droplet as root.
-# Usage: bash setup-server.sh <MAPRAD_API_KEY>
+# Usage: MAPRAD_API_KEY=... RADAR_API_KEY=... bash setup-server.sh
 #
 # Prerequisites:
 #   - SSH access as root
 #   - The repo should be copied to the server (via git clone or scp)
 set -euo pipefail
 
-MAPRAD_API_KEY="${1:-}"
-RADAR_API_KEY="${2:-}"
-if [ -z "$MAPRAD_API_KEY" ] || [ -z "$RADAR_API_KEY" ]; then
-    echo "Usage: bash setup-server.sh <MAPRAD_API_KEY> <RADAR_API_KEY>"
-    echo "  RADAR_API_KEY: ingest key. The prod backend enforces X-API-Key on"
-    echo "  ingest and the fleet Compose service reads it from backend/.env, so"
-    echo "  its ADS-B/ground-truth pushes 401 without a matching key."
-    exit 1
-fi
+# Secrets come from the environment, not argv: keeps them out of `ps` output and
+# shell history, and is order-independent (no positional-arg swap footgun). The
+# `:?` form aborts with the given message if the var is unset or empty.
+: "${MAPRAD_API_KEY:?set MAPRAD_API_KEY (Maprad tower API key)}"
+: "${RADAR_API_KEY:?set RADAR_API_KEY (ingest key: the prod backend enforces X-API-Key on ingest and the fleet reads it from backend/.env, so its pushes 401 without a match)}"
 
 echo "══════════════════════════════════════════════════"
 echo "  Tower Finder — Server Setup & Hardening"

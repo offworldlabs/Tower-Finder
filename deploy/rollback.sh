@@ -34,24 +34,27 @@ else
     # Rollback using the saved Docker image
     if docker image inspect "${IMAGE_NAME}:rollback" >/dev/null 2>&1; then
         echo "Rolling back to saved image: ${IMAGE_NAME}:rollback"
-        docker compose -f "$COMPOSE_FILE" down --timeout 30
-        # Also revert the source tree to the commit that image was built from,
-        # otherwise the box runs the good image but /opt/tower-finder still holds
-        # the bad commit — and the next `docker compose up --build` (a manual
-        # redeploy, or restart-fleet-prod.sh) silently rebuilds the bad code,
-        # undoing this rollback. pre-deploy.sh tags each pre-deploy commit
-        # `deploy-<timestamp>`, so the newest such tag is the last-known-good.
-        # Checkout (detached HEAD) matches the fallback path below; re-attach
-        # later with `git checkout main && git pull`. Done BEFORE `up` so Compose
-        # reads the good docker-compose.yml.
+        # Revert the source tree to the commit the saved image was built from,
+        # BEFORE stopping the app. pre-deploy.sh tags each pre-deploy commit
+        # `deploy-<timestamp>`, so the newest is the last-known-good. Without this
+        # the box runs the good image over the bad commit, and the next
+        # `docker compose up --build` (a manual redeploy, or restart-fleet-prod.sh)
+        # silently rebuilds the bad code, undoing the rollback.
+        # Ordering matters: doing this FIRST (before `down`) means a git failure —
+        # e.g. a submodule fetch during a GitHub outage, which is exactly when
+        # rollbacks run — aborts with the app STILL UP, rather than stranding it
+        # between `down` and `up`. `reset --hard` (not `checkout`) matches the
+        # deploy path, tolerates untracked/conflicting files, and keeps HEAD on
+        # its branch instead of leaving a detached HEAD.
         LAST_GOOD=$(git tag --list 'deploy-*' --sort=-creatordate | head -1)
         if [ -n "$LAST_GOOD" ]; then
             echo "Reverting source tree to last-good tag: ${LAST_GOOD}"
-            git checkout "$LAST_GOOD"
+            git reset --hard "$LAST_GOOD"
             git submodule update --init --recursive
         else
             echo "WARNING: no deploy-* tag found; restoring image only, source tree left as-is."
         fi
+        docker compose -f "$COMPOSE_FILE" down --timeout 30
         docker tag "${IMAGE_NAME}:rollback" "${IMAGE_NAME}:latest"
         docker compose -f "$COMPOSE_FILE" up -d
     else

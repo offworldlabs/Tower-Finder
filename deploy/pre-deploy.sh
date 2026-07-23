@@ -16,7 +16,12 @@ COMPOSE_SERVICE="tower-finder"
 cd "$APP_DIR"
 
 # ── Save current Docker image ────────────────────────────────────────────────
-CURRENT_IMAGE=$(docker compose images -q "$COMPOSE_SERVICE" 2>/dev/null | head -1)
+# No `| head -1` here: piping into head can close the pipe early and, under
+# `set -o pipefail`, surface a spurious SIGPIPE (exit 141) that would now abort
+# the whole deploy (the CI step no longer swallows pre-deploy failures). Capture
+# the full output and take the first line in-shell instead.
+CURRENT_IMAGE=$(docker compose images -q "$COMPOSE_SERVICE" 2>/dev/null)
+CURRENT_IMAGE=${CURRENT_IMAGE%%$'\n'*}
 if [ -n "$CURRENT_IMAGE" ]; then
     docker tag "$CURRENT_IMAGE" "${IMAGE_NAME}:rollback"
     echo "Saved current image as ${IMAGE_NAME}:rollback (${CURRENT_IMAGE:0:12})"
