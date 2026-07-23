@@ -1,4 +1,7 @@
-#!/bin/sh
+#!/bin/bash
+# bash (not POSIX sh) is used for `wait -n` in the supervisor loop below, which
+# lets us block on BOTH nginx and uvicorn at once and react to whichever exits
+# first. bash 5.2 ships in the image; everything else here stays POSIX-simple.
 set -e
 
 # Tunable via env vars (docker-compose or .env)
@@ -104,16 +107,31 @@ while true; do
   uvicorn main:app --host "${UVICORN_HOST:-127.0.0.1}" --port 8000 --workers 1 --log-level warning &
   UVICORN_PID=$!
   EXIT_CODE=0
-  # `|| EXIT_CODE=$?` keeps `set -e` from exiting on a non-zero uvicorn crash.
-  wait "$UVICORN_PID" || EXIT_CODE=$?
+  # Block until EITHER child exits, not just uvicorn. Waiting only on uvicorn
+  # let nginx die unnoticed under a healthy uvicorn: the container stayed up —
+  # and `healthy`, since the compose healthcheck hits uvicorn on :8000 directly,
+  # bypassing nginx — so `restart: unless-stopped` never fired while :80/:443
+  # served nothing. `wait -n` returns on the first of the two to exit, and `$?`
+  # is that process's status. (`|| EXIT_CODE=$?` keeps `set -e` off our back.)
+  wait -n "$NGINX_PID" "$UVICORN_PID" || EXIT_CODE=$?
   END=$(date +%s)
 
-  # If the container is stopping, uvicorn's exit is expected (SIGTERM), not a
-  # crash. Break without counting it so normal shutdown never trips the
-  # give-up path.
+  # If the container is stopping, the exit is expected (SIGTERM), not a crash.
+  # Break without counting it so normal shutdown never trips the give-up path.
   if [ "$SHUTTING_DOWN" = "1" ]; then
     echo "[supervisor] shutting down; not restarting uvicorn"
     break
+  fi
+
+  # nginx is the one that died? Recreate the container rather than loop-restart
+  # uvicorn behind a dead proxy (this is the case the old `wait $UVICORN_PID`
+  # could never reach). EXIT_CODE here is nginx's status, which is why it is not
+  # fed into the uvicorn fast-failure logic below.
+  if ! kill -0 "$NGINX_PID" 2>/dev/null; then
+    echo "[supervisor] nginx exited (code $EXIT_CODE); stopping uvicorn and exiting so Docker recreates the container"
+    kill "$UVICORN_PID" 2>/dev/null || true
+    wait "$UVICORN_PID" 2>/dev/null || true
+    exit 1
   fi
 
   RAN=$((END - START))
