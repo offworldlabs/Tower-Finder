@@ -233,7 +233,12 @@ jobs:
   deploy-production:
     name: Deploy to production
     runs-on: ubuntu-latest
-    needs: [staging-smoke-tests]
+    # Gate prod on BOTH the staging smoke tests and the full staging Playwright
+    # E2E suite (`e2e`). Previously only staging-smoke-tests gated this, so the
+    # ~127-test E2E ran in parallel with the prod deploy and couldn't stop a bad
+    # build reaching prod. This serialises the pipeline (E2E is now on the
+    # critical path before prod) in exchange for real pre-prod coverage.
+    needs: [staging-smoke-tests, e2e]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     concurrency:
       group: production-deploy
@@ -250,8 +255,12 @@ jobs:
             set -e
             cd /opt/tower-finder
 
-            # Pre-deploy: save rollback image + git tag
-            bash deploy/pre-deploy.sh || true
+            # Pre-deploy: save rollback image + git tag. NOT `|| true`: if we
+            # cannot capture a rollback point, abort the deploy rather than ship
+            # with no way back. A swallowed failure here previously let a deploy
+            # proceed with a stale/absent rollback image, so a later rollback
+            # silently restored the wrong build.
+            bash deploy/pre-deploy.sh
 
             # Pre-flight: refuse to deploy when the disk is near full. Without
             # this, git fetch silently writes a partial pack ("No space left on
@@ -403,3 +412,18 @@ jobs:
           echo ""
           echo "Results: $PASS passed, $FAIL failed"
           [ "$FAIL" -eq 0 ] || exit 1
+      # Auto-rollback on smoke failure, mirroring the prod E2E job. A failed
+      # smoke test means a bad build is live serving prod; revert to
+      # last-known-good rather than leaving it up for a human to catch. The
+      # stabilise loop above (3 consecutive stable checks) guards against a
+      # transient fleet-reconnect flap tripping this.
+      - name: Rollback production on smoke-test failure
+        if: failure()
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: root
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            echo "Production smoke tests failed — rolling back production..."
+            cd /opt/tower-finder && bash deploy/rollback.sh

@@ -1,6 +1,12 @@
 services:
   tower-finder:
     build: .
+    # Pin an explicit image name so it is stable and independent of the Compose
+    # project (directory) name. deploy/pre-deploy.sh + deploy/rollback.sh key the
+    # rollback on `tower-finder:latest`; without this, Compose builds an
+    # auto-named `<dir>-tower-finder` image and the rollback tag is never the one
+    # Compose actually runs, so `rollback.sh` silently restarts the bad build.
+    image: tower-finder:latest
     ports:
       - "80:80"
       - "443:443"

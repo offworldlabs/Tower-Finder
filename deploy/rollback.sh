@@ -35,6 +35,23 @@ else
     if docker image inspect "${IMAGE_NAME}:rollback" >/dev/null 2>&1; then
         echo "Rolling back to saved image: ${IMAGE_NAME}:rollback"
         docker compose -f "$COMPOSE_FILE" down --timeout 30
+        # Also revert the source tree to the commit that image was built from,
+        # otherwise the box runs the good image but /opt/tower-finder still holds
+        # the bad commit — and the next `docker compose up --build` (a manual
+        # redeploy, or restart-fleet-prod.sh) silently rebuilds the bad code,
+        # undoing this rollback. pre-deploy.sh tags each pre-deploy commit
+        # `deploy-<timestamp>`, so the newest such tag is the last-known-good.
+        # Checkout (detached HEAD) matches the fallback path below; re-attach
+        # later with `git checkout main && git pull`. Done BEFORE `up` so Compose
+        # reads the good docker-compose.yml.
+        LAST_GOOD=$(git tag --list 'deploy-*' --sort=-creatordate | head -1)
+        if [ -n "$LAST_GOOD" ]; then
+            echo "Reverting source tree to last-good tag: ${LAST_GOOD}"
+            git checkout "$LAST_GOOD"
+            git submodule update --init --recursive
+        else
+            echo "WARNING: no deploy-* tag found; restoring image only, source tree left as-is."
+        fi
         docker tag "${IMAGE_NAME}:rollback" "${IMAGE_NAME}:latest"
         docker compose -f "$COMPOSE_FILE" up -d
     else
