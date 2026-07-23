@@ -9,8 +9,12 @@
 set -euo pipefail
 
 MAPRAD_API_KEY="${1:-}"
-if [ -z "$MAPRAD_API_KEY" ]; then
-    echo "Usage: bash setup-server.sh <MAPRAD_API_KEY>"
+RADAR_API_KEY="${2:-}"
+if [ -z "$MAPRAD_API_KEY" ] || [ -z "$RADAR_API_KEY" ]; then
+    echo "Usage: bash setup-server.sh <MAPRAD_API_KEY> <RADAR_API_KEY>"
+    echo "  RADAR_API_KEY: ingest key. The prod backend enforces X-API-Key on"
+    echo "  ingest and the fleet Compose service reads it from backend/.env, so"
+    echo "  its ADS-B/ground-truth pushes 401 without a matching key."
     exit 1
 fi
 
@@ -94,14 +98,25 @@ if [ -d "$APP_DIR/.git" ]; then
     git submodule update --init --recursive
 else
     echo "  Cloning repository..."
-    git clone --recursive https://github.com/pavlodef/Tower-Finder.git "$APP_DIR"
+    # Canonical org repo. (The live boxes use the SSH remote
+    # git@github.com:offworldlabs/Tower-Finder.git, but a fresh droplet has no
+    # deploy key yet, so clone over HTTPS; `git remote set-url` to SSH later if
+    # you add a key.) Must NOT be a personal fork — this becomes `origin`, which
+    # every subsequent CI `git fetch origin main` deploys from.
+    git clone --recursive https://github.com/offworldlabs/Tower-Finder.git "$APP_DIR"
     cd "$APP_DIR"
 fi
 
-# Create .env with API key
-echo "MAPRAD_API_KEY=${MAPRAD_API_KEY}" > backend/.env
-# CORS for production domains
-echo 'CORS_ORIGINS=https://retina.fm,https://api.retina.fm,http://localhost:5173' >> backend/.env
+# Create .env with API keys + CORS for the REAL production domains.
+# NOTE: this writes the minimum to boot the app + fleet. The live box also
+# carries deploy-specific config/secrets not set here (R2_* archive storage,
+# TOWER_API_URL, RETINA_ENV, COVERAGE_ENABLED); add those manually if needed.
+{
+    echo "MAPRAD_API_KEY=${MAPRAD_API_KEY}"
+    echo "RADAR_API_KEY=${RADAR_API_KEY}"
+    # Browser-facing origins, from deploy/nginx.conf server_name (not retina.fm).
+    echo "CORS_ORIGINS=https://towers.retina.fm,https://map.retina.fm,https://testmap.retina.fm,https://dash.retina.fm,https://admin.retina.fm,https://api.retina.fm"
+} > backend/.env
 
 chmod 600 backend/.env
 
