@@ -10,7 +10,7 @@
 #   docker compose -f docker-compose.test.yml -f docker-compose.local.yml logs -f
 #   docker compose -f docker-compose.test.yml -f docker-compose.local.yml down
 #
-# Endpoints (see deploy/nginx-local.conf, selected via RETINA_ENV=local):
+# Endpoints (see deploy/nginx-local.conf, selected via NGINX_PROFILE=local):
 #   http://testmap.localhost:8080  → tar1090 live aircraft map (also plain localhost:8080)
 #   http://testapi.localhost:8080  → API + WebSocket
 #
@@ -33,9 +33,13 @@ services:
       - path: backend/.env
         required: false
     environment:
-      # Overrides RETINA_ENV=test from the base file; start-test.sh then picks
-      # deploy/nginx-local.conf instead of the TLS test config.
-      - RETINA_ENV=local
+      # Leave RETINA_ENV=test (inherited from the base file): that is the
+      # environment the droplet actually runs, so the backend behaves identically
+      # here, and it stays inside the dev/test allowlists (JWT secret, auth
+      # bypass) rather than tripping the production-only guards. The cert-free
+      # nginx is selected on a separate axis so transport (plain HTTP) is not
+      # entangled with the app environment.
+      - NGINX_PROFILE=local
     # Don't resurrect the stack on every Docker Desktop start
     restart: "no"
 

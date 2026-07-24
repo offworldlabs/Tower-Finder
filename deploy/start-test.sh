@@ -6,11 +6,16 @@ WORKERS="${UVICORN_WORKERS:-1}"
 
 echo "Starting Retina server (workers=${WORKERS}, nginx=${NGINX_CONF})"
 
-# Use the environment-specific nginx config when one exists
-# (test → nginx-test.conf, local → nginx-local.conf)
-if [ -n "${RETINA_ENV:-}" ] && [ -f "/app/deploy/nginx-${RETINA_ENV}.conf" ]; then
-    echo "Using nginx-${RETINA_ENV}.conf for RETINA_ENV=${RETINA_ENV}"
-    cp "/app/deploy/nginx-${RETINA_ENV}.conf" /etc/nginx/sites-available/default
+# Pick the nginx config for the selected profile when one exists. The profile
+# defaults to RETINA_ENV (test → nginx-test.conf), but the local stack sets
+# NGINX_PROFILE=local to select the cert-free nginx-local.conf without having to
+# pretend the backend is running in a different environment (RETINA_ENV drives
+# the app's own env gating, so overloading it for nginx selection broke the
+# dev/test allowlists).
+NGINX_PROFILE="${NGINX_PROFILE:-${RETINA_ENV:-}}"
+if [ -n "${NGINX_PROFILE}" ] && [ -f "/app/deploy/nginx-${NGINX_PROFILE}.conf" ]; then
+    echo "Using nginx-${NGINX_PROFILE}.conf (profile=${NGINX_PROFILE})"
+    cp "/app/deploy/nginx-${NGINX_PROFILE}.conf" /etc/nginx/sites-available/default
 fi
 
 # Start FastAPI backend
