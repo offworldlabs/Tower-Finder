@@ -47,6 +47,7 @@ fi
 
 # ── Tag current git commit ───────────────────────────────────────────────────
 TAG="deploy-$(date -u +%Y%m%d-%H%M%S)"
-git tag "$TAG" 2>/dev/null && echo "Git tag created: $TAG" || echo "Warning: failed to create git tag"
+git tag "$TAG"
+echo "Git tag created: $TAG"
 
 echo "Pre-deploy snapshot complete. To rollback: deploy/rollback.sh"

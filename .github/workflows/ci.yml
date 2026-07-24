@@ -372,6 +372,7 @@ jobs:
           echo "::error::Fleet did not stabilize at ≥${MIN_NODES} nodes after 60s + 18×10s"
           exit 1
       - name: Run production smoke tests
+        id: smoke
         env:
           BASE_URL: https://api.retina.fm
         run: |
@@ -427,9 +428,11 @@ jobs:
       # smoke test means a bad build is live serving prod; revert to
       # last-known-good rather than leaving it up for a human to catch. The
       # stabilise loop above (3 consecutive stable checks) guards against a
-      # transient fleet-reconnect flap tripping this.
+      # transient fleet-reconnect flap tripping this. The condition is scoped to
+      # the smoke step's own outcome, so a stabilise-loop timeout fails the job
+      # for a human to inspect without triggering an automatic rollback.
       - name: Rollback production on smoke-test failure
-        if: failure()
+        if: failure() && steps.smoke.outcome == 'failure'
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SERVER_HOST }}
