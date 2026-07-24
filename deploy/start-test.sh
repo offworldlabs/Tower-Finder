@@ -6,10 +6,11 @@ WORKERS="${UVICORN_WORKERS:-1}"
 
 echo "Starting Retina server (workers=${WORKERS}, nginx=${NGINX_CONF})"
 
-# Use test nginx config if RETINA_ENV=test
-if [ "${RETINA_ENV}" = "test" ] && [ -f /app/deploy/nginx-test.conf ]; then
-    echo "Using test nginx config for testmap/testapi domains"
-    cp /app/deploy/nginx-test.conf /etc/nginx/sites-available/default
+# Use the environment-specific nginx config when one exists
+# (test → nginx-test.conf, local → nginx-local.conf)
+if [ -n "${RETINA_ENV:-}" ] && [ -f "/app/deploy/nginx-${RETINA_ENV}.conf" ]; then
+    echo "Using nginx-${RETINA_ENV}.conf for RETINA_ENV=${RETINA_ENV}"
+    cp "/app/deploy/nginx-${RETINA_ENV}.conf" /etc/nginx/sites-available/default
 fi
 
 # Start FastAPI backend

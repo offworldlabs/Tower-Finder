@@ -1,0 +1,43 @@
+# ── Local override for the test stack ────────────────────────────────────────
+# Runs docker-compose.test.yml (server + fleet simulator) on a laptop: no
+# Cloudflare cert mount, no 443, HTTP on a high port. Everything else (image,
+# fleet shape, resource limits, env) is inherited from the test compose file so
+# this stays a faithful pre-deploy smoke check rather than a second config to
+# maintain.
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml -f docker-compose.local.yml up -d --build
+#   docker compose -f docker-compose.test.yml -f docker-compose.local.yml logs -f
+#   docker compose -f docker-compose.test.yml -f docker-compose.local.yml down
+#
+# Endpoints (see deploy/nginx-local.conf, selected via RETINA_ENV=local):
+#   http://testmap.localhost:8080  → tar1090 live aircraft map (also plain localhost:8080)
+#   http://testapi.localhost:8080  → API + WebSocket
+#
+# Note: the local `just up` runner and this stack both want :3012 free only if
+# you publish it; here the fleet talks to the server over the compose network,
+# so no host ports clash with `just up`.
+
+services:
+  tower-finder-test:
+    ports: !override
+      - "8080:80"
+    # Same data volumes as the test stack, minus the /etc/ssl/cloudflare bind
+    # mount (absent on a laptop; nginx-local.conf does not reference certs).
+    volumes: !override
+      - test-coverage-data:/app/backend/coverage_data
+      - test-archive-data:/app/backend/coverage_data/archive
+    # backend/.env holds deploy secrets (Maprad key) that the testmap does not
+    # need; make it optional so a fresh clone can run this without `just setup`.
+    env_file: !override
+      - path: backend/.env
+        required: false
+    environment:
+      # Overrides RETINA_ENV=test from the base file; start-test.sh then picks
+      # deploy/nginx-local.conf instead of the TLS test config.
+      - RETINA_ENV=local
+    # Don't resurrect the stack on every Docker Desktop start
+    restart: "no"
+
+  fleet-simulator:
+    restart: "no"
