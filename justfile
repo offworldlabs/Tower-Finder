@@ -24,7 +24,7 @@ setup:
     git -C "{{root}}" submodule update --init --recursive
     echo "→ backend venv + deps (uv)"
     cd "{{be}}"
-    uv venv .venv
+    uv venv .venv   # interpreter pinned by backend/.python-version (3.12, matches Dockerfile)
     uv pip install --python "{{py}}" -r requirements.txt -r requirements-dev.txt
     # The fleet (retina-simulation) depends on the other four libs — install all five
     # editable together or imports fail. (README only needs two for tower search.)
