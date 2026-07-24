@@ -10,13 +10,13 @@
 #   docker compose -f docker-compose.test.yml -f docker-compose.local.yml logs -f
 #   docker compose -f docker-compose.test.yml -f docker-compose.local.yml down
 #
-# Endpoints (see deploy/nginx-local.conf, selected via NGINX_PROFILE=local):
+# Endpoints (nginx routing lives in deploy/nginx-local.conf, selected via
+# NGINX_PROFILE=local; *.localhost resolves to 127.0.0.1):
 #   http://testmap.localhost:8080  → tar1090 live aircraft map (also plain localhost:8080)
-#   http://testapi.localhost:8080  → API + WebSocket
+#   http://testapi.localhost:8080  → API reverse proxy
 #
-# Note: the local `just up` runner and this stack both want :3012 free only if
-# you publish it; here the fleet talks to the server over the compose network,
-# so no host ports clash with `just up`.
+# The fleet reaches the server over the compose network, so this publishes no
+# host ports beyond 8080 and cannot clash with a concurrent `just up`.
 
 services:
   tower-finder-test:
