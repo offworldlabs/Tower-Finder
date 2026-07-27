@@ -29,7 +29,9 @@ services:
       # Bind the API on the compose network (port 8000 is NOT published in
       # `ports:`, so it stays off-host) so the fleet can POST ADS-B/ground-truth.
       - UVICORN_HOST=0.0.0.0
-    command: ["/bin/sh", "/app/deploy/start.sh"]
+    # bash, not sh: start.sh's supervisor uses `wait -n`, a bash builtin that
+    # dash rejects ("Illegal option -n"), which crash-loops the server.
+    command: ["/bin/bash", "/app/deploy/start.sh"]
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
