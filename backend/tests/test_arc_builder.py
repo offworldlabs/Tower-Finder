@@ -589,5 +589,69 @@ class TestSingleNodeArcCache:
         assert cached is not None  # sanity: these inputs produce a real arc
 
 
+# ─── Arc cache wired into build_combined_aircraft_json ──────────────────────
+
+
+class TestArcCacheIntegration:
+    HEX_A = "aaa111"
+    HEX_B = "bbb222"
+
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        _fp._single_node_arc_cache.clear()
+        state.active_geo_aircraft.clear()
+        state.track_last_emit.clear()
+        state.track_histories.clear()
+        state.adsb_aircraft.clear()
+        state.external_adsb_cache.clear()
+        state.multinode_tracks.clear()
+        yield
+        _fp._single_node_arc_cache.clear()
+        state.active_geo_aircraft.clear()
+        state.track_last_emit.clear()
+        state.track_histories.clear()
+        state.adsb_aircraft.clear()
+        state.external_adsb_cache.clear()
+        state.multinode_tracks.clear()
+
+    def _put(self, hexid, lat, lon):
+        import time as _time
+
+        from pipeline.passive_radar import GeolocatedTrack
+        track = GeolocatedTrack(
+            track_id=f"t-{hexid}", lat=lat, lon=lon, alt_m=3000,
+            vel_east=100.0, vel_north=50.0, vel_up=0.0,
+            rms_delay=1.0, rms_doppler=1.0, n_detections=10,
+            timestamp_ms=int(_time.time() * 1000), adsb_hex=None,
+            latest_delay_us=80.0, target_class="aircraft",
+        )
+        track.wall_clock_ts = _time.time()
+        state.active_geo_aircraft[hexid] = (track, dict(_NODE_CFG))
+
+    def _build(self):
+        import types
+        pipeline = types.SimpleNamespace(geolocated_tracks={}, config=dict(_NODE_CFG))
+        return _fp.build_combined_aircraft_json(pipeline)
+
+    def test_dropped_hex_is_evicted(self):
+        self._put(self.HEX_A, 33.65, -84.95)
+        self._put(self.HEX_B, 33.66, -84.96)
+        self._build()
+        assert (self.HEX_A, "test_node") in _fp._single_node_arc_cache
+        assert (self.HEX_B, "test_node") in _fp._single_node_arc_cache
+        # HEX_B leaves the feed; next build must prune its key.
+        state.active_geo_aircraft.pop(self.HEX_B)
+        self._build()
+        assert (self.HEX_A, "test_node") in _fp._single_node_arc_cache
+        assert (self.HEX_B, "test_node") not in _fp._single_node_arc_cache
+
+    def test_unchanged_fleet_second_build_zero_rebuilds(self, monkeypatch):
+        self._put(self.HEX_A, 33.65, -84.95)
+        self._build()  # first build populates the cache
+        calls = _spy_build_count(monkeypatch)
+        self._build()  # fleet unchanged -> every arc is a cache hit
+        assert calls["n"] == 0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

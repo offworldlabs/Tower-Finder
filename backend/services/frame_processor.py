@@ -625,6 +625,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     """Merge per-node pipelines, default pipeline, multinode, ADS-B into one feed."""
     now = time.time()
     seen_hex: set[str] = set()
+    _touched_arc_keys: set[tuple[str, str | None]] = set()
     aircraft: list[dict] = []
 
     def _fresh_adsb(ac_hex: str):
@@ -705,8 +706,8 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         # arc points, and the position falls back to an unstable raw solver
         # output that jumps tens of km between frames.  track.lat/lon is
         # always the bistatic-constrained estimate — correct sector, stable arc.
-        ambiguity_arc = _build_single_node_arc(
-            track, node_cfg, target_lat=track.lat, target_lon=track.lon,
+        ambiguity_arc = _cached_single_node_arc(
+            ac_hex, track, node_cfg, _touched_arc_keys,
         )
         # raw_midpoint_lat/lon: the bistatic arc midpoint *before* any gates
         # or smoothing.  Captured for the arc-motion log so velocity
@@ -1082,6 +1083,12 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             if trail
         }
         _cached_gt_meta = dict(state.ground_truth_meta)
+
+    # Evict arc-cache entries for tracks not present this build, bounding the
+    # cache to the live fleet with no timer: a plane is either in this snapshot
+    # or it is not.  An empty touched set (no arc tracks this build) prunes all.
+    for _stale_key in [k for k in _single_node_arc_cache if k not in _touched_arc_keys]:
+        del _single_node_arc_cache[_stale_key]
 
     return {
         "now": now,
