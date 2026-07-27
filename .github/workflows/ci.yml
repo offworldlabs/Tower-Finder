@@ -80,7 +80,7 @@ jobs:
         run: git clone --depth 1 https://github.com/wiedehopf/tar1090.git tar1090
       - run: docker build -t tower-finder:ci .
 
-  e2e:
+  e2e-staging:
     name: Playwright E2E (staging)
     runs-on: ubuntu-latest
     needs: [staging-smoke-tests]
@@ -184,21 +184,36 @@ jobs:
             # Ensure tar1090 static assets are present
             [ -d tar1090/html ] || git clone --depth 1 https://github.com/wiedehopf/tar1090.git tar1090
             docker compose -f docker-compose.staging.yml down --timeout 30
-            docker builder prune -f
-            docker compose -f docker-compose.staging.yml up -d --build
+            # Cap build cache at ~10GB (LRU eviction) rather than wiping it all:
+            # keeps recent layers so incremental builds stay fast, and bounds
+            # total size so cache growth can't trip the disk pre-flight above.
+            # The stale-layer failure the old blanket wipe guarded against was
+            # rooted in disk-full (partial git pack -> source never advanced ->
+            # cache reused); the disk pre-flight now catches that root cause, so a
+            # full wipe is redundant and only forced slow from-scratch rebuilds.
+            docker builder prune -f --keep-storage 10GB
+            # Deploy the app FIRST, on its own — building only `tower-finder`
+            # means a broken Dockerfile.fleet can't abort the staging app deploy
+            # (which would block the whole pipeline). Fleet is a separate step below.
+            docker compose -f docker-compose.staging.yml up -d --build tower-finder
             # Wait for server to become healthy (up to 90s)
             for i in $(seq 1 18); do
               if docker compose -f docker-compose.staging.yml exec -T tower-finder \
                 python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
                 echo "Staging server healthy after ~$((i*5))s"
-                exit 0
+                break
               fi
               echo "Waiting for health check... attempt $i/18"
               sleep 5
+              if [ "$i" = "18" ]; then
+                echo "Staging health check failed after 90s"
+                docker compose -f docker-compose.staging.yml logs --tail=50
+                exit 1
+              fi
             done
-            echo "Staging health check failed after 90s"
-            docker compose -f docker-compose.staging.yml logs --tail=50
-            exit 1
+            # Now the fleet, separately — a fleet build/start failure surfaces
+            # loudly here without taking the already-healthy app down with it.
+            docker compose -f docker-compose.staging.yml up -d --build --no-deps fleet
 
   staging-smoke-tests:
     name: Staging smoke tests
@@ -225,7 +240,12 @@ jobs:
   deploy-production:
     name: Deploy to production
     runs-on: ubuntu-latest
-    needs: [staging-smoke-tests]
+    # Gate prod on BOTH the staging smoke tests and the full staging Playwright
+    # E2E suite (`e2e-staging`). Previously only staging-smoke-tests gated this,
+    # so the ~127-test E2E ran in parallel with the prod deploy and couldn't
+    # stop a bad build reaching prod. This serialises the pipeline (E2E is now
+    # on the critical path before prod) in exchange for real pre-prod coverage.
+    needs: [staging-smoke-tests, e2e-staging]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     concurrency:
       group: production-deploy
@@ -242,8 +262,12 @@ jobs:
             set -e
             cd /opt/tower-finder
 
-            # Pre-deploy: save rollback image + git tag
-            bash deploy/pre-deploy.sh || true
+            # Pre-deploy: save rollback image + git tag. NOT `|| true`: if we
+            # cannot capture a rollback point, abort the deploy rather than ship
+            # with no way back. A swallowed failure here previously let a deploy
+            # proceed with a stale/absent rollback image, so a later rollback
+            # silently restored the wrong build.
+            bash deploy/pre-deploy.sh
 
             # Pre-flight: refuse to deploy when the disk is near full. Without
             # this, git fetch silently writes a partial pack ("No space left on
@@ -270,30 +294,44 @@ jobs:
             git submodule update --init --recursive
             pip3 install -e libs/retina-custody/ --break-system-packages --ignore-installed -q
             pip3 install -e libs/retina-simulation/ --break-system-packages -q
-            # Prune the builder cache so a stale dashboard-build layer can't
-            # keep the old bundle alive (see commit 01ca7f6 — the staging fix
-            # that was never ported to production).
-            docker builder prune -f
-            docker compose up -d --build
+            # Cap build cache at ~10GB (LRU eviction) rather than wiping it all,
+            # bounding total size so cache growth can't trip the disk pre-flight.
+            # The stale-layer incident this guarded against (commit 01ca7f6) was
+            # rooted in disk-full (partial git pack -> source never advanced ->
+            # cache reused); the disk pre-flight above now catches that root
+            # cause, so a full wipe is redundant and only forced slow from-scratch
+            # rebuilds. 10GB leaves ample headroom on both droplets (>60GB free).
+            docker builder prune -f --keep-storage 10GB
+            # Deploy the app FIRST, on its own. Building only `tower-finder`
+            # here means a broken Dockerfile.fleet can't abort the production
+            # app deploy (the fleet is a separate step below, after health).
+            docker compose up -d --build tower-finder
 
-            # Wait for backend to become healthy (up to 60s)
-            for i in $(seq 1 12); do
+            # Wait for backend to become healthy (up to 90s — matches staging
+            # and the healthcheck start_period; a cold boot can need >60s).
+            for i in $(seq 1 18); do
               if docker compose exec -T tower-finder python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
                 echo "Deploy successful (healthy after ~$((i*5))s)"
                 break
               fi
-              echo "Waiting for health check... attempt $i/12"
+              echo "Waiting for health check... attempt $i/18"
               sleep 5
-              if [ "$i" = "12" ]; then
-                echo "Health check failed after 60s"
+              if [ "$i" = "18" ]; then
+                echo "Health check failed after 90s"
                 docker compose logs --tail=50
                 exit 1
               fi
             done
 
-            # Restart fleet simulator (stop old units, start new one with API key)
-            RADAR_API_KEY=${{ secrets.RADAR_API_KEY }} \
-              bash /opt/tower-finder/deploy/restart-fleet-prod.sh
+            # Now bring up the fleet simulator (Compose `fleet` service). This
+            # is a SEPARATE step so a fleet build/start failure surfaces loudly
+            # here — with the real error — but only AFTER the app above is
+            # already deployed and healthy, so it can't take the app down with
+            # it. --no-deps: the app is up already; don't let --build touch it.
+            # The fleet has restart: unless-stopped, so unlike the old transient
+            # systemd-run unit it also survives reboots. (RADAR_API_KEY reaches
+            # it via backend/.env, the same file the app loads.)
+            docker compose up -d --build --no-deps fleet
 
   production-smoke-tests:
     name: Production smoke tests
@@ -334,6 +372,7 @@ jobs:
           echo "::error::Fleet did not stabilize at ≥${MIN_NODES} nodes after 60s + 18×10s"
           exit 1
       - name: Run production smoke tests
+        id: smoke
         env:
           BASE_URL: https://api.retina.fm
         run: |
@@ -385,3 +424,20 @@ jobs:
           echo ""
           echo "Results: $PASS passed, $FAIL failed"
           [ "$FAIL" -eq 0 ] || exit 1
+      # Auto-rollback on smoke failure, mirroring the prod E2E job. A failed
+      # smoke test means a bad build is live serving prod; revert to
+      # last-known-good rather than leaving it up for a human to catch. The
+      # stabilise loop above (3 consecutive stable checks) guards against a
+      # transient fleet-reconnect flap tripping this. The condition is scoped to
+      # the smoke step's own outcome, so a stabilise-loop timeout fails the job
+      # for a human to inspect without triggering an automatic rollback.
+      - name: Rollback production on smoke-test failure
+        if: failure() && steps.smoke.outcome == 'failure'
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: root
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            echo "Production smoke tests failed — rolling back production..."
+            cd /opt/tower-finder && bash deploy/rollback.sh

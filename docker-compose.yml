@@ -1,6 +1,12 @@
 services:
   tower-finder:
     build: .
+    # Pin an explicit image name so it is stable and independent of the Compose
+    # project (directory) name. deploy/pre-deploy.sh + deploy/rollback.sh key the
+    # rollback on `tower-finder:latest`; without this, Compose builds an
+    # auto-named `<dir>-tower-finder` image and the rollback tag is never the one
+    # Compose actually runs, so `rollback.sh` silently restarts the bad build.
+    image: tower-finder:latest
     ports:
       - "80:80"
       - "443:443"
@@ -11,6 +17,14 @@ services:
       - backend-coverage-data:/app/backend/coverage_data
     env_file:
       - backend/.env
+    environment:
+      # Bind uvicorn on 0.0.0.0 so the fleet container (below) can POST live
+      # ADS-B / ground-truth to the API over the compose network. Port 8000 is
+      # NOT in `ports:`, so it stays off-host — only reachable inside compose.
+      # Without this uvicorn binds 127.0.0.1 and the fleet's pushes are refused.
+      # (Detections themselves flow over the published TCP port 3012.) Mirrors
+      # docker-compose.staging.yml.
+      - UVICORN_HOST=0.0.0.0
     restart: unless-stopped
     deploy:
       resources:
@@ -27,9 +41,78 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+      # Grace window for a cold boot (state/coverage warmup): failing checks
+      # here don't count toward `retries` or flip the container `unhealthy`.
+      # This gates the fleet's `depends_on: service_healthy` on a plain
+      # `docker compose up` (local/manual bring-up). The CI deploy starts the
+      # fleet with --no-deps and reboots ignore depends_on, so this doesn't
+      # affect those paths — it just prevents a slow-but-fine boot from being
+      # branded `unhealthy` and aborting a plain `up`.
+      start_period: 90s
     networks:
       - default
       - retina-edge
+
+  # ── Fleet simulator: synthetic radar nodes + ground-truth aircraft ─────────
+  # This is what makes testmap.retina.fm differ from map.retina.fm. It was
+  # previously started out-of-band by deploy/restart-fleet-prod.sh via a
+  # transient `systemd-run` unit that did NOT survive reboots — that is how the
+  # fleet silently vanished after the RAM-expansion reboot. As a Compose service
+  # it now restarts exactly like the app: on boot (docker is enabled) and via
+  # the CI `docker compose up -d --build` step. Modeled on the proven `fleet`
+  # service in docker-compose.staging.yml, with production params.
+  fleet:
+    build:
+      context: .
+      dockerfile: Dockerfile.fleet
+    # Pin an explicit image name (mirrors the app's `image: tower-finder:latest`)
+    # so pre-deploy/rollback can save + retag a stable fleet image. Without this
+    # Compose auto-names it `<dir>-fleet` and a rollback would leave the fleet on
+    # the bad deploy's build while only the app reverted.
+    image: tower-finder-fleet:latest
+    container_name: retina-prod-fleet
+    depends_on:
+      tower-finder:
+        condition: service_healthy
+    # RADAR_API_KEY comes from backend/.env (same file the app loads). The prod
+    # backend enforces X-API-Key on its ingest whenever it has the key set
+    # (radar.py), so the fleet MUST present the matching key or its ground-truth
+    # / ADS-B pushes 401. This replaces the `-E RADAR_API_KEY` that the old
+    # restart-fleet-prod.sh passed to the transient unit. FLEET_* below override
+    # anything in .env (Compose: `environment` wins over `env_file`).
+    env_file:
+      - backend/.env
+    environment:
+      - FLEET_NODES=200
+      - FLEET_REGIONS=us
+      - FLEET_MODE=adsb
+      - FLEET_INTERVAL=40.0
+      - FLEET_TIME_SCALE=1.0
+      - FLEET_MIN_AIRCRAFT=60
+      - FLEET_MAX_AIRCRAFT=100
+      - FLEET_BEAM_WIDTH_DEG=0
+      - FLEET_MAX_RANGE_KM=0
+      - FLEET_CONCURRENCY=20
+      # `restart: unless-stopped` recovers the fleet if the app restarts, so we
+      # no longer need the script's 999-retry hack — but keep a healthy margin
+      # so a slow app health-up can't drop the fleet mid-deploy.
+      - FLEET_CONNECT_RETRIES=30
+      - FLEET_HOST=tower-finder
+      - FLEET_PORT=3012
+      - FLEET_VALIDATE=false
+      - FLEET_VALIDATION_URL=http://tower-finder:8000
+      - FLEET_SEED=42
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
 networks:
   retina-edge:

@@ -36,6 +36,13 @@ services:
       interval: 15s
       timeout: 5s
       retries: 5
+      # Grace window for a cold boot (state/coverage warmup): failing checks
+      # here don't count toward `retries` or flip the container `unhealthy`, so
+      # a slow-but-fine boot isn't branded unhealthy and doesn't abort the
+      # fleet's `depends_on: service_healthy`. Matches prod (docker-compose.yml)
+      # and composes safely with start.sh's fast-failure supervisor, whose T
+      # (60s) sits below this so a slow-but-running boot never counts as a crash.
+      start_period: 90s
     deploy:
       resources:
         limits:

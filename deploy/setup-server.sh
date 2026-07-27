@@ -1,18 +1,18 @@
 #!/bin/bash
 # ── Tower Finder: Full Server Setup + Security Hardening ──────────────────────
 # Run this on a fresh Ubuntu 24.04 DigitalOcean droplet as root.
-# Usage: bash setup-server.sh <MAPRAD_API_KEY>
+# Usage: MAPRAD_API_KEY=... RADAR_API_KEY=... bash setup-server.sh
 #
 # Prerequisites:
 #   - SSH access as root
 #   - The repo should be copied to the server (via git clone or scp)
 set -euo pipefail
 
-MAPRAD_API_KEY="${1:-}"
-if [ -z "$MAPRAD_API_KEY" ]; then
-    echo "Usage: bash setup-server.sh <MAPRAD_API_KEY>"
-    exit 1
-fi
+# Secrets come from the environment, not argv: keeps them out of `ps` output and
+# shell history, and is order-independent (no positional-arg swap footgun). The
+# `:?` form aborts with the given message if the var is unset or empty.
+: "${MAPRAD_API_KEY:?set MAPRAD_API_KEY (Maprad tower API key)}"
+: "${RADAR_API_KEY:?set RADAR_API_KEY (ingest key: the prod backend enforces X-API-Key on ingest and the fleet reads it from backend/.env, so its pushes 401 without a match)}"
 
 echo "══════════════════════════════════════════════════"
 echo "  Tower Finder — Server Setup & Hardening"
@@ -94,14 +94,25 @@ if [ -d "$APP_DIR/.git" ]; then
     git submodule update --init --recursive
 else
     echo "  Cloning repository..."
-    git clone --recursive https://github.com/pavlodef/Tower-Finder.git "$APP_DIR"
+    # Canonical org repo. (The live boxes use the SSH remote
+    # git@github.com:offworldlabs/Tower-Finder.git, but a fresh droplet has no
+    # deploy key yet, so clone over HTTPS; `git remote set-url` to SSH later if
+    # you add a key.) Must NOT be a personal fork — this becomes `origin`, which
+    # every subsequent CI `git fetch origin main` deploys from.
+    git clone --recursive https://github.com/offworldlabs/Tower-Finder.git "$APP_DIR"
     cd "$APP_DIR"
 fi
 
-# Create .env with API key
-echo "MAPRAD_API_KEY=${MAPRAD_API_KEY}" > backend/.env
-# CORS for production domains
-echo 'CORS_ORIGINS=https://retina.fm,https://api.retina.fm,http://localhost:5173' >> backend/.env
+# Create .env with API keys + CORS for the REAL production domains.
+# NOTE: this writes the minimum to boot the app + fleet. The live box also
+# carries deploy-specific config/secrets not set here (R2_* archive storage,
+# TOWER_API_URL, RETINA_ENV, COVERAGE_ENABLED); add those manually if needed.
+{
+    echo "MAPRAD_API_KEY=${MAPRAD_API_KEY}"
+    echo "RADAR_API_KEY=${RADAR_API_KEY}"
+    # Browser-facing origins, from deploy/nginx.conf server_name (not retina.fm).
+    echo "CORS_ORIGINS=https://towers.retina.fm,https://map.retina.fm,https://testmap.retina.fm,https://dash.retina.fm,https://admin.retina.fm,https://api.retina.fm"
+} > backend/.env
 
 chmod 600 backend/.env
 
