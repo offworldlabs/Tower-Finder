@@ -31,7 +31,7 @@ GROUND_TRUTH_MAX = 120                # Ground truth trail length
 ANOMALY_LOG_MAX = 500                 # Max anomaly log entries
 
 # ── Flush & refresh intervals (seconds) ──────────────────────────────────────
-AIRCRAFT_FLUSH_INTERVAL_S = 1.0       # aircraft.json write cadence
+AIRCRAFT_FLUSH_INTERVAL_S = 1.0       # aircraft.json write + WS broadcast cadence (1 Hz)
 ANALYTICS_REFRESH_INTERVAL_S = 30     # Background analytics recompute
 # Detection archive batch write — one Parquet file per node per hour.
 # At ~1 fps that's ~3600 frames/hour ≈ 300 KB zstd Parquet, which is the
