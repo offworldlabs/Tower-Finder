@@ -9,6 +9,8 @@ import math
 
 import pytest
 
+import services.frame_processor as _fp
+from core import state
 from services.frame_processor import _bearing_deg, _build_single_node_arc, _enu_to_lla
 
 # ─── Minimal fake track ─────────────────────────────────────────────────────
@@ -265,7 +267,6 @@ class TestGatePreservesArc:
                      prev_age_s=120.0):
         import time as _time
 
-        from core import state
         from pipeline.passive_radar import GeolocatedTrack
 
         # Geolocated track positioned where this frame's solver landed.
@@ -300,7 +301,6 @@ class TestGatePreservesArc:
 
     @pytest.fixture(autouse=True)
     def _clean_state(self):
-        from core import state
         state.active_geo_aircraft.clear()
         state.track_last_emit.clear()
         state.adsb_aircraft.clear()
@@ -386,7 +386,6 @@ class TestArcMotionVelocityFallback:
 
     @pytest.fixture(autouse=True)
     def _clean_state(self):
-        from core import state
         state.active_geo_aircraft.clear()
         state.track_last_emit.clear()
         state.track_arc_motion.clear()
@@ -408,7 +407,6 @@ class TestArcMotionVelocityFallback:
         assert _estimate_velocity_from_motion("nope", 33.7, -84.85, 1_700_000_000) is None
 
     def test_estimator_returns_gs_and_track_from_two_samples(self):
-        from core import state
         from services.frame_processor import _estimate_velocity_from_motion
         # Aircraft was at (33.70, -84.85) 40 s ago, now at (33.75, -84.80) —
         # roughly 7 km north-east → ~340 kt heading ~45°.
@@ -422,7 +420,6 @@ class TestArcMotionVelocityFallback:
         assert 30 < track_deg < 60
 
     def test_estimator_rejects_too_recent(self):
-        from core import state
         from services.frame_processor import _estimate_velocity_from_motion
         now = 1_700_000_000.0
         # Sample 5 s old — below the 15 s minimum window.
@@ -430,7 +427,6 @@ class TestArcMotionVelocityFallback:
         assert _estimate_velocity_from_motion(self.HEX, 33.75, -84.80, now) is None
 
     def test_estimator_rejects_supersonic_clamp(self):
-        from core import state
         from services.frame_processor import _estimate_velocity_from_motion
         now = 1_700_000_000.0
         # 100 km in 20 s = 5000 m/s = ~9700 kt — way above the 800 kt clamp.
@@ -453,7 +449,6 @@ class TestPositionJumpAnomaly:
     def _setup(self, *, now_lat, now_lon, prev_lat, prev_lon, prev_age_s):
         import time as _time
 
-        from core import state
         from pipeline.passive_radar import GeolocatedTrack
         track = GeolocatedTrack(
             track_id=f"track-{self.HEX}",
@@ -469,7 +464,6 @@ class TestPositionJumpAnomaly:
 
     @pytest.fixture(autouse=True)
     def _clean_state(self):
-        from core import state
         for d in (state.active_geo_aircraft, state.track_last_emit,
                   state.track_arc_motion, state.adsb_aircraft,
                   state.external_adsb_cache, state.multinode_tracks,
@@ -493,7 +487,6 @@ class TestPositionJumpAnomaly:
         return next((a for a in result["aircraft"] if a["hex"] == self.HEX), None)
 
     def test_teleport_flagged(self):
-        from core import state
         # Previous emit ~200 km south, 90 s ago (dt ≥ 60 so the speed gate is
         # skipped → the jump is emitted, not reverted).  Current arc midpoint
         # lands SW of the Atlanta RX.  Absolute leap >> 30 km → flagged.
@@ -506,7 +499,6 @@ class TestPositionJumpAnomaly:
         assert self.HEX in state.anomaly_hexes
 
     def test_normal_motion_not_flagged(self):
-        from core import state
         # Previous emit ~1 km away, 3 s ago → ~330 kt, well within normal.
         self._setup(now_lat=33.70, now_lon=-84.85,
                     prev_lat=33.691, prev_lon=-84.85, prev_age_s=3.0)
@@ -514,6 +506,87 @@ class TestPositionJumpAnomaly:
         assert ac is not None
         assert "position_jump" not in (ac["anomaly_types"] or [])
         assert self.HEX not in state.anomaly_hexes
+
+
+# ─── Single-node arc cache ───────────────────────────────────────────────────
+
+
+class _ArcTrack:
+    """Minimal track exposing the fields the arc cache fingerprints."""
+
+    def __init__(self, delay_us, lat, lon):
+        self.latest_delay_us = delay_us
+        self.lat = lat
+        self.lon = lon
+
+
+def _spy_build_count(monkeypatch):
+    """Wrap _build_single_node_arc to count how often it actually rebuilds."""
+    calls = {"n": 0}
+    real = _fp._build_single_node_arc
+
+    def _spy(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(_fp, "_build_single_node_arc", _spy)
+    return calls
+
+
+class TestSingleNodeArcCache:
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        _fp._single_node_arc_cache.clear()
+        yield
+        _fp._single_node_arc_cache.clear()
+
+    def test_identical_inputs_build_once(self, monkeypatch):
+        calls = _spy_build_count(monkeypatch)
+        cfg, touched = dict(_NODE_CFG), set()
+        a1 = _fp._cached_single_node_arc("abc123", _ArcTrack(80.0, 33.65, -84.95), cfg, touched)
+        a2 = _fp._cached_single_node_arc("abc123", _ArcTrack(80.0, 33.65, -84.95), cfg, touched)
+        assert calls["n"] == 1
+        assert a1 == a2
+
+    def test_delay_change_rebuilds(self, monkeypatch):
+        calls = _spy_build_count(monkeypatch)
+        cfg, touched = dict(_NODE_CFG), set()
+        _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95), cfg, touched)
+        _fp._cached_single_node_arc("abc", _ArcTrack(85.0, 33.65, -84.95), cfg, touched)
+        assert calls["n"] == 2
+
+    def test_position_change_rebuilds(self, monkeypatch):
+        calls = _spy_build_count(monkeypatch)
+        cfg, touched = dict(_NODE_CFG), set()
+        _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.6500, -84.95), cfg, touched)
+        _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.6502, -84.95), cfg, touched)
+        assert calls["n"] == 2
+
+    def test_jitter_within_epsilon_hits(self, monkeypatch):
+        calls = _spy_build_count(monkeypatch)
+        cfg, touched = dict(_NODE_CFG), set()
+        _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95), cfg, touched)
+        # delay jitter < 5e-4 and position jitter < 5e-7 round to the same
+        # fingerprint, so this is a hit, not a rebuild.
+        _fp._cached_single_node_arc("abc", _ArcTrack(80.0004, 33.6500001, -84.9500001), cfg, touched)
+        assert calls["n"] == 1
+
+    def test_none_delay_caches_and_hits(self, monkeypatch):
+        calls = _spy_build_count(monkeypatch)
+        cfg, touched = dict(_NODE_CFG), set()
+        a1 = _fp._cached_single_node_arc("abc", _ArcTrack(None, 33.65, -84.95), cfg, touched)
+        a2 = _fp._cached_single_node_arc("abc", _ArcTrack(None, 33.65, -84.95), cfg, touched)
+        assert a1 is None  # builder returns None when delay_us is None
+        assert a2 is None  # cache hit returns the same (cached) None
+        assert calls["n"] == 1  # built once; the None result is cached and hit
+
+    def test_cached_equals_fresh(self):
+        cfg, touched = dict(_NODE_CFG), set()
+        track = _ArcTrack(80.0, 33.65, -84.95)
+        cached = _fp._cached_single_node_arc("abc", track, cfg, touched)
+        fresh = _fp._build_single_node_arc(track, cfg, target_lat=track.lat, target_lon=track.lon)
+        assert cached == fresh
+        assert cached is not None  # sanity: these inputs produce a real arc
 
 
 if __name__ == "__main__":

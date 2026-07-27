@@ -564,6 +564,52 @@ _cached_gt_snapshot: dict = {}
 _cached_gt_meta: dict = {}
 _gt_last_ts: float = 0.0
 
+# Per-track single-node arc memo.  _build_single_node_arc is a pure function
+# of (delay_us, target position, node geometry); the flush loop rebuilds it
+# every cycle even when the detection is unchanged, which is the compute the
+# ~4s map pulse traces back to.  Key by (ac_hex, node_id) -- the identity the
+# rest of the pipeline and the frontend already use -- with a fingerprint of
+# the non-static inputs, so a miss happens exactly when a new detection changes
+# them (invalidate on arrival, no timer).  node_cfg is treated as static per
+# node_id.  The fingerprint is None-safe: latest_delay_us is None for ADS-B-only
+# tracks and rounding None would raise.
+_single_node_arc_cache: dict[tuple[str, str | None], tuple[tuple, list | None]] = {}
+
+
+def _cached_single_node_arc(ac_hex, track, node_cfg, touched_keys):
+    """Memoised _build_single_node_arc for the per-geolocated-track arc.
+
+    Returns exactly what
+        _build_single_node_arc(track, node_cfg,
+                               target_lat=track.lat, target_lon=track.lon)
+    returns, but recomputes only when the detection's inputs change.  The arc is
+    a pure function of those inputs, so this is transparent to callers and the
+    wire format.  ``touched_keys`` accumulates the keys visited this build so the
+    caller can evict everything else, bounding the cache to the live fleet.
+    """
+    node_id = node_cfg.get("node_id")
+    key = (ac_hex, node_id)
+    touched_keys.add(key)
+
+    delay_us = getattr(track, "latest_delay_us", None)
+    fingerprint = (
+        None if delay_us is None else round(delay_us, 3),
+        round(track.lat, 6),
+        round(track.lon, 6),
+    )
+    cached = _single_node_arc_cache.get(key)
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
+
+    arc = _build_single_node_arc(
+        track,
+        node_cfg,
+        target_lat=track.lat,
+        target_lon=track.lon,
+    )
+    _single_node_arc_cache[key] = (fingerprint, arc)
+    return arc
+
 
 def _record_accuracy_sample(ac_hex: str, error_km: float, position_source: str, ts: float):
     """Append a solver-vs-ADS-B accuracy sample for the rolling accuracy API."""
