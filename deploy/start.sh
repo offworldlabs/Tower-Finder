@@ -38,7 +38,7 @@ if [ "${RETINA_ENV}" = "staging" ] && [ -f /app/deploy/nginx-staging.conf ]; the
     cp /app/deploy/nginx-staging.conf /etc/nginx/sites-available/default
 fi
 
-# ── uvicorn supervision (Option A: exit on persistent fast crash-loop) ───────
+# ── uvicorn supervision: exit on a persistent fast crash-loop ────────────────
 # The fast in-process restart below absorbs *transient* uvicorn crashes without
 # recreating the whole container. But if uvicorn crash-loops persistently the
 # in-process loop alone would spin forever while nginx keeps the container

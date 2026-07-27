@@ -80,7 +80,7 @@ jobs:
         run: git clone --depth 1 https://github.com/wiedehopf/tar1090.git tar1090
       - run: docker build -t tower-finder:ci .
 
-  e2e:
+  e2e-staging:
     name: Playwright E2E (staging)
     runs-on: ubuntu-latest
     needs: [staging-smoke-tests]
@@ -241,11 +241,11 @@ jobs:
     name: Deploy to production
     runs-on: ubuntu-latest
     # Gate prod on BOTH the staging smoke tests and the full staging Playwright
-    # E2E suite (`e2e`). Previously only staging-smoke-tests gated this, so the
-    # ~127-test E2E ran in parallel with the prod deploy and couldn't stop a bad
-    # build reaching prod. This serialises the pipeline (E2E is now on the
-    # critical path before prod) in exchange for real pre-prod coverage.
-    needs: [staging-smoke-tests, e2e]
+    # E2E suite (`e2e-staging`). Previously only staging-smoke-tests gated this,
+    # so the ~127-test E2E ran in parallel with the prod deploy and couldn't
+    # stop a bad build reaching prod. This serialises the pipeline (E2E is now
+    # on the critical path before prod) in exchange for real pre-prod coverage.
+    needs: [staging-smoke-tests, e2e-staging]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     concurrency:
       group: production-deploy
