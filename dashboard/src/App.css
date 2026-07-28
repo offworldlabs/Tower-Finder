@@ -249,7 +249,9 @@ a:hover {
   color: var(--text-muted);
 }
 
-.nav-external svg {
+/* Higher specificity than `.nav-item svg` so the smaller size wins regardless
+   of rule order. */
+.nav-item .nav-external svg {
   width: 14px;
   height: 14px;
 }
