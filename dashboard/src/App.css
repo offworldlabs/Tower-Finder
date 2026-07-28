@@ -242,6 +242,18 @@ a:hover {
   flex-shrink: 0;
 }
 
+/* Trailing "opens in a new tab" glyph on external links, pushed to the row end. */
+.nav-external {
+  margin-left: auto;
+  display: inline-flex;
+  color: var(--text-muted);
+}
+
+.nav-external svg {
+  width: 14px;
+  height: 14px;
+}
+
 /* ── Main Content ────────────────────────────────────────────────────────── */
 .main-area {
   flex: 1;

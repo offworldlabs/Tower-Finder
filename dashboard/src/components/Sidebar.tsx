@@ -1,6 +1,16 @@
 import { NavLink } from "react-router-dom";
 
-const userNav = [
+type NavItem = {
+  label: string;
+  icon: string;
+  to?: string; // internal route (react-router)
+  href?: string; // external URL, opens in a new tab
+  external?: boolean;
+};
+
+type NavSection = { title: string; items: NavItem[] };
+
+const userNav: NavSection[] = [
   {
     title: "Dashboard",
     items: [
@@ -10,6 +20,8 @@ const userNav = [
       { to: "/contribution", label: "Network", icon: "globe" },
       { to: "/alerts", label: "Alerts", icon: "bell" },
       { to: "/anomalies", label: "Anomalies", icon: "alertTriangle" },
+      { href: "https://map.retina.fm/", label: "Map", icon: "map", external: true },
+      { href: "https://towers.retina.fm/", label: "Tower Finder", icon: "radio", external: true },
     ],
   },
   {
@@ -35,7 +47,7 @@ const userNav = [
   },
 ];
 
-const adminNav = [
+const adminNav: NavSection[] = [
   {
     title: "Monitoring",
     items: [
@@ -205,6 +217,26 @@ const icons = {
       <line x1="1" y1="9" x2="4" y2="9" /><line x1="1" y1="14" x2="4" y2="14" />
     </svg>
   ),
+  map: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6" />
+      <line x1="8" y1="2" x2="8" y2="18" />
+      <line x1="16" y1="6" x2="16" y2="22" />
+    </svg>
+  ),
+  radio: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="2" />
+      <path d="M16.24 7.76a6 6 0 010 8.49m-8.48-.01a6 6 0 010-8.49m11.31-2.82a10 10 0 010 14.14m-14.14 0a10 10 0 010-14.14" />
+    </svg>
+  ),
+  externalLink: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" />
+      <polyline points="15 3 21 3 21 9" />
+      <line x1="10" y1="14" x2="21" y2="3" />
+    </svg>
+  ),
 };
 
 export default function Sidebar({ isAdmin }) {
@@ -223,19 +255,33 @@ export default function Sidebar({ isAdmin }) {
         {nav.map((section) => (
           <div className="nav-section" key={section.title}>
             <div className="nav-section-title">{section.title}</div>
-            {section.items.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.to === "/"}
-                className={({ isActive }) =>
-                  `nav-item${isActive ? " active" : ""}`
-                }
-              >
-                {icons[item.icon]}
-                {item.label}
-              </NavLink>
-            ))}
+            {section.items.map((item) =>
+              item.external ? (
+                <a
+                  key={item.href}
+                  href={item.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="nav-item"
+                >
+                  {icons[item.icon]}
+                  {item.label}
+                  <span className="nav-external">{icons.externalLink}</span>
+                </a>
+              ) : (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.to === "/"}
+                  className={({ isActive }) =>
+                    `nav-item${isActive ? " active" : ""}`
+                  }
+                >
+                  {icons[item.icon]}
+                  {item.label}
+                </NavLink>
+              )
+            )}
           </div>
         ))}
       </nav>
