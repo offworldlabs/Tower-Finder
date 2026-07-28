@@ -564,6 +564,52 @@ _cached_gt_snapshot: dict = {}
 _cached_gt_meta: dict = {}
 _gt_last_ts: float = 0.0
 
+# Per-track single-node arc memo.  _build_single_node_arc is a pure function
+# of (delay_us, target position, node geometry); the flush loop rebuilds it
+# every cycle even when the detection is unchanged, which is the compute the
+# ~4s map pulse traces back to.  Key by (ac_hex, node_id) -- the identity the
+# rest of the pipeline and the frontend already use -- with a fingerprint of
+# the non-static inputs, so a miss happens exactly when a new detection changes
+# them (invalidate on arrival, no timer).  node_cfg is treated as static per
+# node_id.  The fingerprint is None-safe: latest_delay_us is None for ADS-B-only
+# tracks and rounding None would raise.
+_single_node_arc_cache: dict[tuple[str, str | None], tuple[tuple, list | None]] = {}
+
+
+def _cached_single_node_arc(ac_hex, track, node_cfg, touched_keys):
+    """Memoised _build_single_node_arc for the per-geolocated-track arc.
+
+    Returns exactly what
+        _build_single_node_arc(track, node_cfg,
+                               target_lat=track.lat, target_lon=track.lon)
+    returns, but recomputes only when the detection's inputs change.  The arc is
+    a pure function of those inputs, so this is transparent to callers and the
+    wire format.  ``touched_keys`` accumulates the keys visited this build so the
+    caller can evict everything else, bounding the cache to the live fleet.
+    """
+    node_id = node_cfg.get("node_id")
+    key = (ac_hex, node_id)
+    touched_keys.add(key)
+
+    delay_us = getattr(track, "latest_delay_us", None)
+    fingerprint = (
+        None if delay_us is None else round(delay_us, 3),
+        round(track.lat, 6),
+        round(track.lon, 6),
+    )
+    cached = _single_node_arc_cache.get(key)
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
+
+    arc = _build_single_node_arc(
+        track,
+        node_cfg,
+        target_lat=track.lat,
+        target_lon=track.lon,
+    )
+    _single_node_arc_cache[key] = (fingerprint, arc)
+    return arc
+
 
 def _record_accuracy_sample(ac_hex: str, error_km: float, position_source: str, ts: float):
     """Append a solver-vs-ADS-B accuracy sample for the rolling accuracy API."""
@@ -579,6 +625,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     """Merge per-node pipelines, default pipeline, multinode, ADS-B into one feed."""
     now = time.time()
     seen_hex: set[str] = set()
+    _touched_arc_keys: set[tuple[str, str | None]] = set()
     aircraft: list[dict] = []
 
     def _fresh_adsb(ac_hex: str):
@@ -659,8 +706,8 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         # arc points, and the position falls back to an unstable raw solver
         # output that jumps tens of km between frames.  track.lat/lon is
         # always the bistatic-constrained estimate — correct sector, stable arc.
-        ambiguity_arc = _build_single_node_arc(
-            track, node_cfg, target_lat=track.lat, target_lon=track.lon,
+        ambiguity_arc = _cached_single_node_arc(
+            ac_hex, track, node_cfg, _touched_arc_keys,
         )
         # raw_midpoint_lat/lon: the bistatic arc midpoint *before* any gates
         # or smoothing.  Captured for the arc-motion log so velocity
@@ -1036,6 +1083,12 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             if trail
         }
         _cached_gt_meta = dict(state.ground_truth_meta)
+
+    # Evict arc-cache entries for tracks not present this build, bounding the
+    # cache to the live fleet with no timer: a plane is either in this snapshot
+    # or it is not.  An empty touched set (no arc tracks this build) prunes all.
+    for _stale_key in [k for k in _single_node_arc_cache if k not in _touched_arc_keys]:
+        del _single_node_arc_cache[_stale_key]
 
     return {
         "now": now,

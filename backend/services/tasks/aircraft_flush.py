@@ -1,4 +1,4 @@
-"""Aircraft JSON flush + WebSocket broadcast — runs at ~2 Hz."""
+"""Aircraft JSON flush + WebSocket broadcast — runs at ~1 Hz."""
 
 import asyncio
 import concurrent.futures
@@ -8,6 +8,7 @@ import time
 
 import orjson
 
+from config.constants import AIRCRAFT_FLUSH_INTERVAL_S
 from core import state
 from services.frame_processor import build_combined_aircraft_json
 
@@ -118,10 +119,10 @@ async def broadcast_aircraft(aircraft_data: dict, aircraft_bytes: bytes):
 
 
 async def aircraft_flush_task(default_pipeline):
-    """Write aircraft.json to disk and broadcast via WS at ~2 Hz."""
+    """Write aircraft.json to disk and broadcast via WS at ~1 Hz."""
     loop = asyncio.get_event_loop()
     while True:
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(AIRCRAFT_FLUSH_INTERVAL_S)
         if not state.aircraft_dirty:
             continue
         state.aircraft_dirty = False
