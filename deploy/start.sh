@@ -43,9 +43,20 @@ fi
 : "${APP_ROOT:=/app}"
 : "${NGINX_TARGET:=/etc/nginx/sites-available/default}"
 NGINX_PROFILE="${NGINX_PROFILE:-${RETINA_ENV:-}}"
-if [ -n "${NGINX_PROFILE}" ] && [ -f "${APP_ROOT}/deploy/nginx-${NGINX_PROFILE}.conf" ]; then
-    echo "[start.sh] Using nginx-${NGINX_PROFILE}.conf (profile=${NGINX_PROFILE})"
-    cp "${APP_ROOT}/deploy/nginx-${NGINX_PROFILE}.conf" "${NGINX_TARGET}"
+if [ -n "${NGINX_PROFILE}" ]; then
+    if [ -f "${APP_ROOT}/deploy/nginx-${NGINX_PROFILE}.conf" ]; then
+        echo "[start.sh] Using nginx-${NGINX_PROFILE}.conf (profile=${NGINX_PROFILE})"
+        cp "${APP_ROOT}/deploy/nginx-${NGINX_PROFILE}.conf" "${NGINX_TARGET}"
+    else
+        # A named profile with no matching config is a misconfiguration. Fail
+        # closed rather than silently falling through to the baked default,
+        # which is the PRODUCTION config (nginx.conf). We must never serve a
+        # non-prod environment with prod server_names, TLS and security headers
+        # just because its profile file is absent. An empty profile (production
+        # itself) never reaches this branch and keeps the baked default.
+        echo "[start.sh] ERROR: NGINX_PROFILE=${NGINX_PROFILE} but ${APP_ROOT}/deploy/nginx-${NGINX_PROFILE}.conf is missing; refusing to fall back to the baked production config" >&2
+        exit 1
+    fi
 fi
 # <<< nginx-profile-select <<<
 
