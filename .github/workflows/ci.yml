@@ -76,8 +76,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Fetch tar1090 static assets
-        run: git clone --depth 1 https://github.com/wiedehopf/tar1090.git tar1090
       - run: docker build -t tower-finder:ci .
 
   e2e-staging:
@@ -181,9 +179,7 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
             git submodule update --init --recursive
-            # Ensure tar1090 static assets are present
-            [ -d tar1090/html ] || git clone --depth 1 https://github.com/wiedehopf/tar1090.git tar1090
-            docker compose -f docker-compose.staging.yml down --timeout 30
+            docker compose -f docker-compose.yml -f docker-compose.staging.yml down --timeout 30
             # Cap build cache at ~10GB (LRU eviction) rather than wiping it all:
             # keeps recent layers so incremental builds stay fast, and bounds
             # total size so cache growth can't trip the disk pre-flight above.
@@ -195,10 +191,10 @@ jobs:
             # Deploy the app FIRST, on its own — building only `tower-finder`
             # means a broken Dockerfile.fleet can't abort the staging app deploy
             # (which would block the whole pipeline). Fleet is a separate step below.
-            docker compose -f docker-compose.staging.yml up -d --build tower-finder
+            docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d --build tower-finder
             # Wait for server to become healthy (up to 90s)
             for i in $(seq 1 18); do
-              if docker compose -f docker-compose.staging.yml exec -T tower-finder \
+              if docker compose -f docker-compose.yml -f docker-compose.staging.yml exec -T tower-finder \
                 python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
                 echo "Staging server healthy after ~$((i*5))s"
                 break
@@ -207,13 +203,13 @@ jobs:
               sleep 5
               if [ "$i" = "18" ]; then
                 echo "Staging health check failed after 90s"
-                docker compose -f docker-compose.staging.yml logs --tail=50
+                docker compose -f docker-compose.yml -f docker-compose.staging.yml logs --tail=50
                 exit 1
               fi
             done
             # Now the fleet, separately — a fleet build/start failure surfaces
             # loudly here without taking the already-healthy app down with it.
-            docker compose -f docker-compose.staging.yml up -d --build --no-deps fleet
+            docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d --build --no-deps fleet
 
   staging-smoke-tests:
     name: Staging smoke tests

@@ -1,49 +1,41 @@
-# ── Staging Environment ──────────────────────────────────────────────────────
-# Deploys server + fleet simulator with synthetic data.
-# Used by CI to validate changes before production promotion.
-#
-# Usage:
-#   docker compose -f docker-compose.staging.yml up -d --build
-#   docker compose -f docker-compose.staging.yml logs -f
-#   docker compose -f docker-compose.staging.yml down
+# ── Staging override on the prod base ────────────────────────────────────────
+# Deltas over docker-compose.yml for the CI staging gate. Deployed as:
+#   docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d --build
+# Most of the base is inherited so staging cannot drift from production; the
+# !override / !reset / external:false blocks below strip prod-only base
+# attributes staging never had (data volumes, the retina-edge edge network,
+# the fleet's .env, the pinned rollback image names), keeping staging's
+# resolved config equivalent to its former standalone form.
 
 services:
-  # ── Main server: API + TCP + nginx ────────────────────────────────────────
   tower-finder:
-    build: .
     container_name: retina-staging-server
-    ports:
-      - "80:80"
-      - "443:443"
-      - "3012:3012"
-    volumes:
-      - /etc/ssl/cloudflare:/etc/ssl/cloudflare:ro
-    env_file:
-      - backend/.env
+    # The base pins an explicit image name for the rollback tooling (see
+    # docker-compose.yml); standalone staging never set one and relied on
+    # Compose's implicit per-project auto-naming. Reset it so staging keeps
+    # that implicit name rather than colliding with prod's `tower-finder:latest`.
+    image: !reset null
     environment:
       - RETINA_ENV=staging
       - CORS_ORIGINS=https://staging.retina.fm,https://staging-api.retina.fm,https://staging-dash.retina.fm,https://staging-map.retina.fm
       - RADAR_TCP_PORT=3012
       - FRAME_WORKERS=6
       - FRAME_QUEUE_SIZE=10000
-      # Bind the API on the compose network (port 8000 is NOT published in
-      # `ports:`, so it stays off-host) so the fleet can POST ADS-B/ground-truth.
-      - UVICORN_HOST=0.0.0.0
-    # bash, not sh: start.sh's supervisor uses `wait -n`, a bash builtin that
-    # dash rejects ("Illegal option -n"), which crash-loops the server.
     command: ["/bin/bash", "/app/deploy/start.sh"]
-    restart: unless-stopped
+    # Standalone staging mounted only the cert; the base additionally mounts
+    # backend-data / backend-coverage-data. Replace the list so staging keeps
+    # just the cert mount it had.
+    volumes: !override
+      - /etc/ssl/cloudflare:/etc/ssl/cloudflare:ro
+    # Standalone staging published ports directly and never joined retina-edge
+    # (the base does). Keep the server on the compose default network only.
+    networks: !override
+      - default
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 15s
       timeout: 5s
       retries: 5
-      # Grace window for a cold boot (state/coverage warmup): failing checks
-      # here don't count toward `retries` or flip the container `unhealthy`, so
-      # a slow-but-fine boot isn't branded unhealthy and doesn't abort the
-      # fleet's `depends_on: service_healthy`. Matches prod (docker-compose.yml)
-      # and composes safely with start.sh's fast-failure supervisor, whose T
-      # (60s) sits below this so a slow-but-running boot never counts as a crash.
       start_period: 90s
     deploy:
       resources:
@@ -56,15 +48,16 @@ services:
         max-size: "20m"
         max-file: "3"
 
-  # ── Fleet simulator: synthetic radar nodes ────────────────────────────────
   fleet:
-    build:
-      context: .
-      dockerfile: Dockerfile.fleet
     container_name: retina-staging-fleet
-    depends_on:
-      tower-finder:
-        condition: service_healthy
+    # As above: drop the base's pinned image name so staging's fleet keeps its
+    # former implicit auto-named image rather than sharing prod's tag.
+    image: !reset null
+    # The base's fleet loads backend/.env (for RADAR_API_KEY); standalone
+    # staging's fleet did not. Drop the inherited env_file so staging's fleet
+    # runtime environment matches its former self. (If Compose rejects an empty
+    # !override list, use `env_file: !reset null` instead.)
+    env_file: !override []
     environment:
       - FLEET_NODES=50
       - FLEET_REGIONS=us
@@ -80,12 +73,8 @@ services:
       - FLEET_HOST=tower-finder
       - FLEET_PORT=3012
       - FLEET_VALIDATE=false
-      # HTTP base URL for live ADS-B / ground-truth pushes (the moving "truth"
-      # tracks). Must point at the server over the compose network, not the
-      # fleet's own localhost. Reaches uvicorn directly (UVICORN_HOST=0.0.0.0).
       - FLEET_VALIDATION_URL=http://tower-finder:8000
       - FLEET_SEED=42
-    restart: unless-stopped
     deploy:
       resources:
         limits:
@@ -96,3 +85,14 @@ services:
       options:
         max-size: "20m"
         max-file: "3"
+
+# Neutralise the inherited external retina-edge declaration to a plain local
+# network so a staging deploy does not fail looking for an edge network that is
+# not present (no service attaches to it: the server is overridden to `default`
+# above). Compose's rendered config drops top-level networks/volumes that no
+# service references, so this declaration (and the base's backend-data /
+# backend-coverage-data volumes) doesn't appear in the resolved staging config
+# at all.
+networks:
+  retina-edge:
+    external: false
