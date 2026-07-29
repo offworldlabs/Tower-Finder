@@ -3,9 +3,12 @@
 #   docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d --build
 # Most of the base is inherited so staging cannot drift from production; the
 # !override / !reset / external:false blocks below strip prod-only base
-# attributes staging never had (data volumes, the retina-edge edge network,
-# the fleet's .env, the pinned rollback image names), keeping staging's
-# resolved config equivalent to its former standalone form.
+# attributes staging never had (data volumes, the retina-edge network, the
+# fleet's .env, the pinned rollback image names), keeping staging's resolved
+# config equivalent to its former standalone form.
+#
+# Requires Docker Compose >= 2.24 for the !reset / !override merge tags below
+# (the staging droplet runs 2.40). Prod is unaffected: it runs the base alone.
 
 services:
   tower-finder:
@@ -86,13 +89,12 @@ services:
         max-size: "20m"
         max-file: "3"
 
-# Neutralise the inherited external retina-edge declaration to a plain local
-# network so a staging deploy does not fail looking for an edge network that is
-# not present (no service attaches to it: the server is overridden to `default`
-# above). Compose's rendered config drops top-level networks/volumes that no
-# service references, so this declaration (and the base's backend-data /
-# backend-coverage-data volumes) doesn't appear in the resolved staging config
-# at all.
+# Neutralise the inherited external retina-edge declaration so a staging deploy
+# does not fail looking for an edge network that is not present (no service
+# attaches to it: the server is overridden to `default` above). Compose drops
+# top-level networks/volumes no service references, so neither this declaration
+# nor the base's data volumes appear in the resolved staging config. Kept in
+# step with the identical block in docker-compose.test.yml.
 networks:
   retina-edge:
     external: false

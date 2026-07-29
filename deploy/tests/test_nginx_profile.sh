@@ -18,10 +18,9 @@ run_case() {
   #      default untouched.
   local tmp; tmp="$(mktemp -d)"
   mkdir -p "${tmp}/app/deploy" "${tmp}/etc/nginx/sites-available"
-  # Only staging and local ship real configs. nginx-test.conf no longer
-  # exists in the repo, so a "test" profile must hit the fail-closed path
-  # below rather than find a stub here.
-  for p in staging local; do echo "marker-${p}" > "${tmp}/app/deploy/nginx-${p}.conf"; done
+  # Stub the configs that ship in the repo. A profile with no matching stub
+  # (e.g. "bogus" below) must hit the fail-closed path rather than find one.
+  for p in staging test; do echo "marker-${p}" > "${tmp}/app/deploy/nginx-${p}.conf"; done
   echo "marker-baked" > "${tmp}/etc/nginx/sites-available/default"
 
   # `bash -c` already runs the block in a child process, so its `exit 1`
@@ -54,7 +53,8 @@ run_case() {
 }
 
 run_case "staging" ""      "staging"   # staging via RETINA_ENV default
-run_case ""        "local" "local"     # laptop override
+run_case "test"    ""      "test"      # test via RETINA_ENV default
+run_case "staging" "test"  "test"      # NGINX_PROFILE overrides RETINA_ENV (nginx selectable independently)
 run_case ""        ""      ""          # prod: nothing selected, baked default kept
-run_case "test"    ""      "FAIL"      # fail closed: named profile with no matching config, exit 1, baked default untouched
+run_case "bogus"   ""      "FAIL"      # fail closed: named profile with no matching config, exit 1, baked default untouched
 echo "PASS: nginx-profile selection"

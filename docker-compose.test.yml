@@ -1,17 +1,16 @@
-# ── Laptop override (RETINA_ENV=test) on the prod base ───────────────────────
-# Runs the production stack (docker-compose.yml) on a laptop: same image, fleet
-# shape, resource limits and start.sh entrypoint, overriding only what a laptop
-# cannot provide (Cloudflare certs, 443/3012, the external edge network). This
-# is the faithful pre-deploy mirror; it is not a second config to maintain, it
-# is a thin delta over prod.
+# ── Test override (RETINA_ENV=test) on the prod base ─────────────────────────
+# Runs the production stack (docker-compose.yml) locally: same image, fleet
+# shape, resource limits and start.sh entrypoint, overriding only what a local
+# run cannot provide (Cloudflare certs, 443/3012, the external edge network). A
+# thin delta over prod rather than a config maintained separately.
 #
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --build
 #   docker compose -f docker-compose.yml -f docker-compose.test.yml logs -f
 #   docker compose -f docker-compose.yml -f docker-compose.test.yml down
 #
-# Endpoints (nginx routing in deploy/nginx-local.conf, selected via
-# NGINX_PROFILE=local; *.localhost resolves to 127.0.0.1):
+# Endpoints (nginx routing in deploy/nginx-test.conf, selected by the "test"
+# profile; *.localhost resolves to 127.0.0.1):
 #   http://testmap.localhost:8080  → React live-radar frontend (also localhost:8080)
 #   http://testapi.localhost:8080  → API reverse proxy
 
@@ -21,8 +20,8 @@ services:
     # (the fleet reaches the server over the compose network).
     ports: !override
       - "8080:80"
-    # Drop the /etc/ssl/cloudflare bind mount (absent on a laptop); keep the
-    # prod data volumes so behaviour matches.
+    # Drop the /etc/ssl/cloudflare bind mount (absent locally); keep the prod
+    # data volumes so behaviour matches.
     volumes: !override
       - backend-data:/app/backend/data
       - backend-coverage-data:/app/backend/coverage_data
@@ -33,38 +32,37 @@ services:
         required: false
     environment:
       # RETINA_ENV=test keeps the backend in the dev/test auth allowlist (JWT
-      # secret optional, auth bypass permitted) rather than tripping the
-      # production-only guards. NGINX_PROFILE=local selects the cert-free React
-      # nginx on a separate axis (see start.sh).
+      # secret optional, auth bypass permitted) and also selects nginx-test.conf
+      # via start.sh's profile default, so no separate NGINX_PROFILE is needed.
       - RETINA_ENV=test
-      - NGINX_PROFILE=local
+      # The base leaves RADAR_TCP_PORT to the app default (3012); pin it here so
+      # the ingest port always matches the fleet's FLEET_PORT=3012 even on a
+      # fresh clone with no backend/.env.
+      - RADAR_TCP_PORT=3012
     # bash, not sh: start.sh's supervisor uses `wait -n`, a bash builtin dash
     # rejects. Mirrors docker-compose.staging.yml.
     command: ["/bin/bash", "/app/deploy/start.sh"]
     # Don't resurrect the stack on every Docker Desktop start.
     restart: "no"
-    # The prod base attaches this service to the external `retina-edge` network
-    # (the droplet's Cloudflare edge), which does not exist on a laptop. Replace
-    # the network list with just the compose default so bring-up does not fail.
+    # The prod base attaches this service to the external `retina-edge` network,
+    # absent locally. Replace the list with just the compose default.
     networks: !override
       - default
 
   fleet:
     container_name: retina-test-fleet
-    # The base's fleet loads backend/.env (for RADAR_API_KEY) as a required
-    # file; make it optional here so a fresh clone without backend/.env can run
-    # the laptop stack, mirroring the tower-finder override above. When the file
-    # is present (a configured checkout) the fleet and server stay in step on the
-    # key; when it is absent neither has it (the test server does not enforce the
-    # key it never received).
+    # As the tower-finder override above: make backend/.env optional so a fresh
+    # clone without it can still run. When present, fleet and server stay in step
+    # on RADAR_API_KEY; when absent neither has it (the test server does not
+    # enforce a key it never received).
     env_file: !override
       - path: backend/.env
         required: false
     restart: "no"
 
-# Neutralise the external edge network the prod base declares, so `docker
-# compose config`/`up` on a laptop does not fail looking for it. No service
-# attaches to it here (tower-finder's list is overridden above).
+# Neutralise the external edge network the prod base declares so `docker compose
+# config`/`up` does not fail looking for it (no service attaches to it here).
+# Kept in step with the identical block in docker-compose.staging.yml.
 networks:
   retina-edge:
     external: false

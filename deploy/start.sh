@@ -33,13 +33,11 @@ if [ -f /app/deploy/config-image/config/constants.py ]; then
 fi
 
 # >>> nginx-profile-select >>>
-# Select the nginx config for the active profile. NGINX_PROFILE defaults to
-# RETINA_ENV (so staging -> nginx-staging.conf as before), but the laptop stack
-# sets NGINX_PROFILE=local to pick the cert-free nginx-local.conf WITHOUT
-# pretending the backend runs in a different environment (RETINA_ENV drives the
-# app's own auth gating; overloading it for nginx broke the dev/test allowlists).
-# Paths are parameterised (APP_ROOT / NGINX_TARGET) so the block is unit-testable
-# outside the container; both default to the in-container locations.
+# Copy in the nginx config for the active profile. NGINX_PROFILE defaults to
+# RETINA_ENV (staging -> nginx-staging.conf, test -> nginx-test.conf) but stays a
+# separate knob, so nginx can be swapped without changing RETINA_ENV, which
+# drives the app's own auth gating. Paths are parameterised (APP_ROOT /
+# NGINX_TARGET) so the block is unit-testable outside the container.
 : "${APP_ROOT:=/app}"
 : "${NGINX_TARGET:=/etc/nginx/sites-available/default}"
 NGINX_PROFILE="${NGINX_PROFILE:-${RETINA_ENV:-}}"
@@ -49,11 +47,10 @@ if [ -n "${NGINX_PROFILE}" ]; then
         cp "${APP_ROOT}/deploy/nginx-${NGINX_PROFILE}.conf" "${NGINX_TARGET}"
     else
         # A named profile with no matching config is a misconfiguration. Fail
-        # closed rather than silently falling through to the baked default,
-        # which is the PRODUCTION config (nginx.conf). We must never serve a
-        # non-prod environment with prod server_names, TLS and security headers
-        # just because its profile file is absent. An empty profile (production
-        # itself) never reaches this branch and keeps the baked default.
+        # closed rather than fall through to the baked default (the production
+        # nginx.conf): a non-prod environment must never be served with prod
+        # server_names, TLS and security headers. An empty profile (production)
+        # skips this block and keeps the baked default.
         echo "[start.sh] ERROR: NGINX_PROFILE=${NGINX_PROFILE} but ${APP_ROOT}/deploy/nginx-${NGINX_PROFILE}.conf is missing; refusing to fall back to the baked production config" >&2
         exit 1
     fi
