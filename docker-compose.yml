@@ -25,6 +25,10 @@ services:
       # (Detections themselves flow over the published TCP port 3012.) Mirrors
       # docker-compose.staging.yml.
       - UVICORN_HOST=0.0.0.0
+      # Frame-processing thread pool. Production runs 8 (was previously set only
+      # in backend/.env, invisible to git and to the compose overrides); surfaced
+      # here so it is visible and inheritable. Staging overrides this to 6.
+      - FRAME_WORKERS=8
     restart: unless-stopped
     deploy:
       resources:
