@@ -38,7 +38,7 @@ setup:
     echo "✓ setup complete — now: just up"
 
 # Bring up backend + synthetic fleet + frontend (background). Open http://testmap.localhost:5173/
-# Fleet profile: `just up` (local, dense) · `just up testmap` (8s) · `just up prod` (40s).
+# Fleet profile: `just up` (local, dense) · `just up prod` (40s, from docker-compose.yml).
 # testmap/prod read their fleet params LIVE from the real deploy configs so they can't drift.
 up profile="local":
     #!/usr/bin/env bash
@@ -47,22 +47,18 @@ up profile="local":
     [ -d "{{fe}}/node_modules" ] || { echo "no frontend deps — run: just setup"; exit 1; }
     # ── Resolve fleet params by profile ────────────────────────────────────────
     #  local   — dev-only dense stream (~1 ellipse/s); no deployed equivalent.
-    #  testmap — sourced from docker-compose.test.yml   (the testmap.retina.fm test stack).
     #  prod    — sourced from docker-compose.yml's `fleet` service (the Compose
     #            service that actually serves the live testmap.retina.fm + map.retina.fm).
     case "{{profile}}" in
       local)
         FLEET_NODES=200; FLEET_MODE=detection; FLEET_INTERVAL=0.5
         FLEET_TIME_SCALE=1.0; FLEET_MIN_AIRCRAFT=40; FLEET_MAX_AIRCRAFT=60 ;;
-      testmap)
-        # every FLEET_* value comes straight from the compose file's fleet-simulator block
-        eval "$(grep -oE 'FLEET_[A-Z_]+=[^[:space:]]+' "{{root}}/docker-compose.test.yml")" ;;
       prod)
         # every FLEET_* value comes straight from docker-compose.yml's `fleet`
         # service block (same extraction the testmap profile uses on test.yml)
         eval "$(grep -oE 'FLEET_[A-Z_]+=[^[:space:]]+' "{{root}}/docker-compose.yml")" ;;
       *)
-        echo "✗ unknown profile '{{profile}}' — use: local | testmap | prod"; exit 1 ;;
+        echo "✗ unknown profile '{{profile}}' — use: local | prod"; exit 1 ;;
     esac
     # fail loudly if extraction ever silently breaks, rather than launch a wrong fleet
     : "${FLEET_INTERVAL:?could not resolve fleet params for profile '{{profile}}'}"
