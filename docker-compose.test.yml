@@ -50,6 +50,16 @@ services:
       - default
 
   fleet:
+    container_name: retina-test-fleet
+    # The base's fleet loads backend/.env (for RADAR_API_KEY) as a required
+    # file; make it optional here so a fresh clone without backend/.env can run
+    # the laptop stack, mirroring the tower-finder override above. When the file
+    # is present (a configured checkout) the fleet and server stay in step on the
+    # key; when it is absent neither has it (the test server does not enforce the
+    # key it never received).
+    env_file: !override
+      - path: backend/.env
+        required: false
     restart: "no"
 
 # Neutralise the external edge network the prod base declares, so `docker
