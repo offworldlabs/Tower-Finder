@@ -76,6 +76,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      # Guards start.sh's nginx-profile selection, including the fail-closed
+      # branch that refuses to serve the baked prod config for an unknown profile.
+      - name: nginx-profile selection unit test
+        run: bash deploy/tests/test_nginx_profile.sh
       - run: docker build -t tower-finder:ci .
 
   e2e-staging:

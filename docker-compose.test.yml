@@ -16,6 +16,7 @@
 
 services:
   tower-finder:
+    container_name: retina-test-server
     # Only 8080 on the host; no 443 (no certs) and 3012 is not needed off-host
     # (the fleet reaches the server over the compose network).
     ports: !override

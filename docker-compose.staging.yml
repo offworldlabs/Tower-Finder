@@ -58,8 +58,7 @@ services:
     image: !reset null
     # The base's fleet loads backend/.env (for RADAR_API_KEY); standalone
     # staging's fleet did not. Drop the inherited env_file so staging's fleet
-    # runtime environment matches its former self. (If Compose rejects an empty
-    # !override list, use `env_file: !reset null` instead.)
+    # runtime environment matches its former self.
     env_file: !override []
     environment:
       - FLEET_NODES=50
