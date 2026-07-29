@@ -32,11 +32,22 @@ if [ -f /app/deploy/config-image/config/constants.py ]; then
         || echo "[start.sh] Info: could not refresh volume constants.py (volume may be root-owned); PYTHONPATH override is active"
 fi
 
-# Swap nginx config based on environment
-if [ "${RETINA_ENV}" = "staging" ] && [ -f /app/deploy/nginx-staging.conf ]; then
-    echo "[start.sh] Using staging nginx config for staging.retina.fm domains"
-    cp /app/deploy/nginx-staging.conf /etc/nginx/sites-available/default
+# >>> nginx-profile-select >>>
+# Select the nginx config for the active profile. NGINX_PROFILE defaults to
+# RETINA_ENV (so staging -> nginx-staging.conf as before), but the laptop stack
+# sets NGINX_PROFILE=local to pick the cert-free nginx-local.conf WITHOUT
+# pretending the backend runs in a different environment (RETINA_ENV drives the
+# app's own auth gating; overloading it for nginx broke the dev/test allowlists).
+# Paths are parameterised (APP_ROOT / NGINX_TARGET) so the block is unit-testable
+# outside the container; both default to the in-container locations.
+: "${APP_ROOT:=/app}"
+: "${NGINX_TARGET:=/etc/nginx/sites-available/default}"
+NGINX_PROFILE="${NGINX_PROFILE:-${RETINA_ENV:-}}"
+if [ -n "${NGINX_PROFILE}" ] && [ -f "${APP_ROOT}/deploy/nginx-${NGINX_PROFILE}.conf" ]; then
+    echo "[start.sh] Using nginx-${NGINX_PROFILE}.conf (profile=${NGINX_PROFILE})"
+    cp "${APP_ROOT}/deploy/nginx-${NGINX_PROFILE}.conf" "${NGINX_TARGET}"
 fi
+# <<< nginx-profile-select <<<
 
 # ── uvicorn supervision: exit on a persistent fast crash-loop ────────────────
 # The fast in-process restart below absorbs *transient* uvicorn crashes without
