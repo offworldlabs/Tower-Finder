@@ -39,7 +39,7 @@ setup:
 
 # Bring up backend + synthetic fleet + frontend (background). Open http://testmap.localhost:5173/
 # Fleet profile: `just up` (local, dense) · `just up prod` (40s, from docker-compose.yml).
-# testmap/prod read their fleet params LIVE from the real deploy configs so they can't drift.
+# prod reads its fleet params LIVE from docker-compose.yml so it can't drift from the deploy.
 up profile="local":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -55,7 +55,7 @@ up profile="local":
         FLEET_TIME_SCALE=1.0; FLEET_MIN_AIRCRAFT=40; FLEET_MAX_AIRCRAFT=60 ;;
       prod)
         # every FLEET_* value comes straight from docker-compose.yml's `fleet`
-        # service block (same extraction the testmap profile uses on test.yml)
+        # service block (the Compose service that serves the live deploy)
         eval "$(grep -oE 'FLEET_[A-Z_]+=[^[:space:]]+' "{{root}}/docker-compose.yml")" ;;
       *)
         echo "✗ unknown profile '{{profile}}' — use: local | prod"; exit 1 ;;
@@ -96,7 +96,7 @@ up profile="local":
     echo
     echo "✓ up [{{profile}}].  Open →  http://testmap.localhost:5173/"
     echo "  (plain localhost shows tower search — the testmap.* host selects the live map)"
-    echo "  fleet [{{profile}}]: ${FLEET_NODES} nodes @ ${FLEET_INTERVAL}s.  Profiles: local | testmap (8s) | prod (40s)"
+    echo "  fleet [{{profile}}]: ${FLEET_NODES} nodes @ ${FLEET_INTERVAL}s.  Profiles: local (dense dev stream) | prod (40s)"
     echo "  logs: just logs    status: just status    stop: just down"
 
 # Stop everything (by port for the servers, by pattern for the portless fleet client)
