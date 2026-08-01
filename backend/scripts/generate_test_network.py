@@ -1,15 +1,21 @@
 """
-Generate a multi-region synthetic node network configuration.
+Generate a synthetic node network configuration.
 
-Produces nodes_config_test.json (or a custom path) with N nodes spread
-across major US metro regions, each with a realistic FM broadcast tower
-as the transmit reference and RX nodes scattered in the surrounding area.
+Produces nodes_config_test.json (or a custom path) with N nodes spread across
+one or more US metro regions, each with a realistic FM/VHF broadcast tower as
+the transmit reference and RX nodes scattered in the surrounding area.
+
+Defaults to Greenville, SC ("gvl") only, matching the metro-scoped fleet the
+deployment runs. Pass --regions to widen it; --regions all restores the
+original spread across every metro in REGIONS.
 
 Usage:
-    python generate_test_network.py                  # 100 nodes → nodes_config_test.json
+    python generate_test_network.py                  # 100 nodes in Greenville
     python generate_test_network.py --nodes 1000     # 1000 nodes
+    python generate_test_network.py --regions all    # spread across all metros
+    python generate_test_network.py --regions gvl,clt
     python generate_test_network.py --nodes 50 --out custom.json
-    python generate_test_network.py --nodes 100 --list-regions
+    python generate_test_network.py --list-regions
 """
 
 import argparse
@@ -37,6 +43,7 @@ REGIONS = [
     ("msp",  44.88480, -93.22230,  1200, 44.90, -93.20,   106_100_000),
     ("pdx",  45.58980, -122.59510, 1300, 45.60, -122.60,  103_300_000),
     ("clt",  35.21440, -80.94730,   900, 35.20, -80.95,    97_500_000),
+    ("gvl",  35.17019, -82.29050,  2212, 34.85, -82.39,   201_000_000),
     ("dtw",  42.21250, -83.35340,  1050, 42.25, -83.35,   102_700_000),
     ("slc",  40.78840, -111.97790, 2200, 40.80, -111.98,   99_300_000),
     ("mco",  28.43120, -81.30810,   450, 28.45, -81.30,   101_300_000),
@@ -60,15 +67,38 @@ def _gen_rx(center_lat: float, center_lon: float,
     )
 
 
-def generate(n_nodes: int, seed: int = 42) -> dict:
-    """Return a nodes config dict with n_nodes entries spread across REGIONS."""
+DEFAULT_REGIONS = "gvl"
+
+
+def select_regions(regions: str = DEFAULT_REGIONS) -> list[tuple]:
+    """Resolve a comma-separated region spec to REGIONS entries.
+
+    "all" selects every region; anything else is a comma-separated list of
+    region names. Order follows REGIONS so output is stable regardless of how
+    the caller ordered the spec.
+    """
+    if regions.strip().lower() == "all":
+        return list(REGIONS)
+    wanted = {r.strip().lower() for r in regions.split(",") if r.strip()}
+    unknown = wanted - {r[0] for r in REGIONS}
+    if unknown:
+        raise ValueError(
+            f"Unknown region(s): {', '.join(sorted(unknown))} "
+            f"(available: {', '.join(r[0] for r in REGIONS)}, or 'all')"
+        )
+    return [r for r in REGIONS if r[0] in wanted]
+
+
+def generate(n_nodes: int, seed: int = 42, regions: str = DEFAULT_REGIONS) -> dict:
+    """Return a nodes config dict with n_nodes entries spread across regions."""
     random.seed(seed)
     nodes = []
-    n_regions = len(REGIONS)
+    selected = select_regions(regions)
+    n_regions = len(selected)
     base = n_nodes // n_regions
     extra = n_nodes - base * n_regions
 
-    for i, (rname, tx_lat, tx_lon, tx_alt_ft, cx, cy, fc_hz) in enumerate(REGIONS):
+    for i, (rname, tx_lat, tx_lon, tx_alt_ft, cx, cy, fc_hz) in enumerate(selected):
         count = base + (1 if i < extra else 0)
         for j in range(count):
             rx_lat, rx_lon, rx_alt_ft = _gen_rx(cx, cy)
@@ -94,6 +124,8 @@ def main():
     ap.add_argument("--nodes", type=int, default=100, help="Number of nodes (default: 100)")
     ap.add_argument("--out", default="nodes_config_test.json", help="Output JSON file")
     ap.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
+    ap.add_argument("--regions", default=DEFAULT_REGIONS,
+                    help=f"Comma-separated regions, or 'all' (default: {DEFAULT_REGIONS})")
     ap.add_argument("--list-regions", action="store_true", help="Print available regions and exit")
     args = ap.parse_args()
 
@@ -104,15 +136,16 @@ def main():
             print(f"{name:<8} {tx_lat:>10.5f} {tx_lon:>11.5f} {fc_hz/1e6:>10.1f}")
         return
 
-    config = generate(args.nodes, args.seed)
+    config = generate(args.nodes, args.seed, args.regions)
     out_path = args.out
     with open(out_path, "w") as f:
         json.dump(config, f, indent=2)
 
     n = len(config["nodes"])
-    regions_used = len(REGIONS)
-    print(f"Generated {n} nodes across {regions_used} regions → {out_path}")
-    print(f"  ~{n // regions_used} nodes per region ({regions_used} regions)")
+    selected = select_regions(args.regions)
+    names = ", ".join(r[0] for r in selected)
+    print(f"Generated {n} nodes across {len(selected)} region(s) → {out_path}")
+    print(f"  ~{n // len(selected)} nodes per region ({names})")
 
 
 if __name__ == "__main__":

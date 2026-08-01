@@ -83,13 +83,23 @@ services:
     env_file:
       - backend/.env
     environment:
-      - FLEET_NODES=200
+      # Fleet is scoped to one metro (Greenville, SC), so counts are sized for a
+      # single terminal area rather than a continent. Set FLEET_METRO="" to go
+      # back to the nationwide fleet — then restore the old 200/40.0/60-100.
+      - FLEET_NODES=25
       - FLEET_REGIONS=us
+      - FLEET_METRO=gvl
+      - FLEET_N_CLUSTER=16
+      - FLEET_N_CLUSTERS=1
+      - FLEET_METRO_TRAFFIC_FRAC=0.85
       - FLEET_MODE=adsb
-      - FLEET_INTERVAL=40.0
+      # 25 nodes / 2.0s = 12.5 fps — half the Kalman tracker's ~25 fps ceiling.
+      # The old 200-node fleet needed 40.0s here; the smaller fleet buys a 20x
+      # faster frame rate at the same CPU cost.
+      - FLEET_INTERVAL=2.0
       - FLEET_TIME_SCALE=1.0
-      - FLEET_MIN_AIRCRAFT=60
-      - FLEET_MAX_AIRCRAFT=100
+      - FLEET_MIN_AIRCRAFT=15
+      - FLEET_MAX_AIRCRAFT=30
       - FLEET_BEAM_WIDTH_DEG=0
       - FLEET_MAX_RANGE_KM=0
       - FLEET_CONCURRENCY=20

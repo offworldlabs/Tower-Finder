@@ -6,6 +6,11 @@ cd /app/backend
 # Generate fleet config from env
 NODES="${FLEET_NODES:-200}"
 REGIONS="${FLEET_REGIONS:-us}"
+# Metro scoping: generate the whole fleet inside one metro area, and keep the
+# simulated aircraft on that metro's regional waypoint net. Set FLEET_METRO=""
+# to restore the continent-wide fleet that REGIONS alone produces.
+METRO="${FLEET_METRO:-gvl}"
+METRO_TRAFFIC_FRAC="${FLEET_METRO_TRAFFIC_FRAC:-0.85}"
 SEED="${FLEET_SEED:-42}"
 HOST="${FLEET_HOST:-localhost}"
 PORT="${FLEET_PORT:-3012}"
@@ -19,7 +24,7 @@ MAX_RANGE_KM="${FLEET_MAX_RANGE_KM:-0}"
 CONCURRENCY="${FLEET_CONCURRENCY:-50}"
 CONNECT_RETRIES="${FLEET_CONNECT_RETRIES:-3}"
 VALIDATE="${FLEET_VALIDATE:-false}"
-N_CLUSTER="${FLEET_N_CLUSTER:-8}"
+N_CLUSTER="${FLEET_N_CLUSTER:-16}"
 N_CLUSTERS="${FLEET_N_CLUSTERS:-1}"
 VALIDATION_URL="${FLEET_VALIDATION_URL:-http://localhost:8000}"
 
@@ -28,6 +33,7 @@ echo "  Retina Fleet Simulator"
 echo "═══════════════════════════════════════════════════"
 echo "  Nodes:      ${NODES}"
 echo "  Regions:    ${REGIONS}"
+echo "  Metro:      ${METRO:-nationwide}"
 echo "  Mode:       ${MODE}"
 echo "  Server:     ${HOST}:${PORT}"
 echo "  Interval:   ${INTERVAL}s"
@@ -60,11 +66,24 @@ except:
 done
 
 # Generate fleet config
-echo "Generating fleet config (${NODES} nodes, regions=${REGIONS})..."
-python3 -m retina_simulation.generator --nodes "${NODES}" --regions "${REGIONS}" --seed "${SEED}" --n-cluster "${N_CLUSTER}" --n-clusters "${N_CLUSTERS}" --output /app/data/fleet_config.json
+echo "Generating fleet config (${NODES} nodes, regions=${REGIONS}, metro=${METRO:-nationwide})..."
+if [ -n "${METRO}" ]; then
+    GEN_METRO_ARGS="--metro ${METRO}"
+else
+    GEN_METRO_ARGS=""
+fi
+# shellcheck disable=SC2086  # GEN_METRO_ARGS is intentionally word-split
+python3 -m retina_simulation.generator --nodes "${NODES}" --regions "${REGIONS}" ${GEN_METRO_ARGS} --seed "${SEED}" --n-cluster "${N_CLUSTER}" --n-clusters "${N_CLUSTERS}" --output /app/data/fleet_config.json
 
 # Build orchestrator args
 ARGS="--config /app/data/fleet_config.json"
+# --metro is passed to the orchestrator too: with --config it no longer affects
+# generation, but it still selects the regional waypoint net for aircraft spawn
+# and the metro area used for real ADS-B injection.
+if [ -n "${METRO}" ]; then
+    ARGS="${ARGS} --metro ${METRO}"
+fi
+ARGS="${ARGS} --metro-traffic-frac ${METRO_TRAFFIC_FRAC}"
 ARGS="${ARGS} --host ${HOST} --port ${PORT}"
 ARGS="${ARGS} --mode ${MODE} --interval ${INTERVAL}"
 ARGS="${ARGS} --time-scale ${TIME_SCALE}"

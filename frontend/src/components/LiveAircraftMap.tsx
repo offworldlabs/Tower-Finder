@@ -1586,8 +1586,8 @@ export default function LiveAircraftMap() {
             </div>
           )}
           <MapContainer
-            center={[initialHash.lat ?? 34.0, initialHash.lon ?? -84.5]}
-            zoom={initialHash.z ?? 8}
+            center={[initialHash.lat ?? 34.85, initialHash.lon ?? -82.39]}
+            zoom={initialHash.z ?? 9}
             style={{ height: "100%", width: "100%" }}
             attributionControl={false}
           >

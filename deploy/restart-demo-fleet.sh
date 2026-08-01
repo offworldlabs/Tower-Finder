@@ -82,6 +82,16 @@ case "$PROFILE" in
     ;;
 esac
 
+# Metro scoping. The whole fleet is generated inside one metro, so the profiles
+# above are pure throughput ladders (NODES/INTERVAL ≤ 25 fps still governs) —
+# the higher ones now stack every node into one metro, which is what a stress
+# test wants. METRO= (empty) restores the continent-wide fleet.
+METRO="${METRO:-gvl}"
+# Only one ring exists per metro, so the budget goes into a single ring.
+N_CLUSTER="${N_CLUSTER:-16}"
+N_CLUSTERS="${N_CLUSTERS:-1}"
+METRO_TRAFFIC_FRAC="${METRO_TRAFFIC_FRAC:-0.85}"
+
 MODE="${MODE:-adsb}"
 BEAM_WIDTH_DEG="${BEAM_WIDTH_DEG:-0}"
 MAX_RANGE_KM="${MAX_RANGE_KM:-0}"
@@ -96,10 +106,21 @@ cd "$APP_DIR"
 pkill -f "simulation/orchestrator.py" 2>/dev/null || true
 sleep 2
 
-echo "Starting fleet: PROFILE=$PROFILE  NODES=$NODES  INTERVAL=$INTERVAL  fps=$(echo "$NODES / $INTERVAL" | bc -l | head -c5)"
+echo "Starting fleet: PROFILE=$PROFILE  NODES=$NODES  INTERVAL=$INTERVAL  METRO=${METRO:-nationwide}  fps=$(echo "$NODES / $INTERVAL" | bc -l | head -c5)"
 
+if [ -n "$METRO" ]; then
+  METRO_ARGS="--metro $METRO"
+else
+  METRO_ARGS=""
+fi
+
+# shellcheck disable=SC2086  # METRO_ARGS is intentionally word-split
 nohup python3 -m retina_simulation.orchestrator \
   --nodes "$NODES" \
+  $METRO_ARGS \
+  --n-cluster "$N_CLUSTER" \
+  --n-clusters "$N_CLUSTERS" \
+  --metro-traffic-frac "$METRO_TRAFFIC_FRAC" \
   --mode "$MODE" \
   --validate \
   --validation-url "$VALIDATION_URL" \

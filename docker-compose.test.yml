@@ -66,14 +66,20 @@ services:
       tower-finder-test:
         condition: service_healthy
     environment:
-      - FLEET_NODES=200
+      # Scoped to the Greenville, SC metro — see docker-compose.yml for why the
+      # counts are this much smaller than the old nationwide fleet.
+      - FLEET_NODES=25
       - FLEET_REGIONS=us
+      - FLEET_METRO=gvl
+      - FLEET_N_CLUSTER=16
+      - FLEET_N_CLUSTERS=1
+      - FLEET_METRO_TRAFFIC_FRAC=0.85
       - FLEET_MODE=adsb
-      # 200 nodes / 8.0s = 25 fps — matches the Kalman tracker ceiling
-      - FLEET_INTERVAL=8.0
+      # 25 nodes / 1.0s = 25 fps — matches the Kalman tracker ceiling
+      - FLEET_INTERVAL=1.0
       - FLEET_TIME_SCALE=4.0
-      - FLEET_MIN_AIRCRAFT=30
-      - FLEET_MAX_AIRCRAFT=50
+      - FLEET_MIN_AIRCRAFT=15
+      - FLEET_MAX_AIRCRAFT=30
       - FLEET_BEAM_WIDTH_DEG=0
       - FLEET_MAX_RANGE_KM=0
       - FLEET_CONCURRENCY=20
