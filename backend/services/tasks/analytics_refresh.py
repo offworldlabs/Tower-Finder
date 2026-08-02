@@ -165,11 +165,32 @@ def _aircraft_in_beam(
     beam_azimuth_deg: float,
     beam_width_deg: float,
     max_range_km: float,
+    tx_lat: float | None = None,
+    tx_lon: float | None = None,
+    max_bistatic_range_km: float | None = None,
 ) -> bool:
-    """Return True if an aircraft at (ac_lat, ac_lon) is inside the node beam."""
-    dist_km = haversine_km(rx_lat, rx_lon, ac_lat, ac_lon)
-    if dist_km > max_range_km:
-        return False
+    """Return True if an aircraft at (ac_lat, ac_lon) is inside the node beam.
+
+    The range rule must match the one the node actually detects under, or the
+    missed-detection statistic measures the mismatch instead of the node.  A
+    node limited on bistatic range but scored against a monostatic circle
+    counts every aircraft that is near the RX but far from the TX as "missed",
+    which pushed the fleet-wide miss rate past the 70 % health threshold.
+    """
+    if (
+        max_bistatic_range_km is not None
+        and tx_lat is not None
+        and tx_lon is not None
+    ):
+        r_rx = haversine_km(rx_lat, rx_lon, ac_lat, ac_lon)
+        r_tx = haversine_km(tx_lat, tx_lon, ac_lat, ac_lon)
+        baseline = haversine_km(rx_lat, rx_lon, tx_lat, tx_lon)
+        if (r_rx + r_tx - baseline) > max_bistatic_range_km:
+            return False
+    else:
+        dist_km = haversine_km(rx_lat, rx_lon, ac_lat, ac_lon)
+        if dist_km > max_range_km:
+            return False
     bearing = _bearing_deg(rx_lat, rx_lon, ac_lat, ac_lon)
     # Angular difference, wrapped to [-180, 180]
     diff = (bearing - beam_azimuth_deg + 180) % 360 - 180
@@ -232,10 +253,18 @@ def _refresh_missed_detections(nodes_snapshot: list):
             # explicitly in their config to avoid incorrect missed-detection counts.
             beam_azimuth = (_bearing_deg(rx_lat, rx_lon, tx_lat, tx_lon) + 90.0) % 360.0
 
+        # Score against the same range rule the node detects under; see
+        # _aircraft_in_beam. Absent key → monostatic, unchanged for hardware.
+        max_bistatic = cfg.get("max_bistatic_range_km")
+        max_bistatic = float(max_bistatic) if max_bistatic is not None else None
+
         # Aircraft within this node's beam
         in_range: list[str] = []
         for hex_code, ac_lat, ac_lon in adsb_snapshot:
-            if _aircraft_in_beam(ac_lat, ac_lon, rx_lat, rx_lon, beam_azimuth, beam_width, max_range):
+            if _aircraft_in_beam(
+                ac_lat, ac_lon, rx_lat, rx_lon, beam_azimuth, beam_width, max_range,
+                tx_lat=tx_lat, tx_lon=tx_lon, max_bistatic_range_km=max_bistatic,
+            ):
                 in_range.append(hex_code)
 
         if not in_range:
