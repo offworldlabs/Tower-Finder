@@ -34,7 +34,7 @@ import math
 import os
 import statistics
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -86,6 +86,7 @@ class Result:
     matched_tracks: set = None
     ghost_tracks: set = None
     speed_err_ms: list = None
+    err_by_n: dict = None
 
     def __post_init__(self):
         self.errors_km = []
@@ -96,6 +97,7 @@ class Result:
         self.matched_tracks = set()
         self.ghost_tracks = set()
         self.speed_err_ms = []
+        self.err_by_n = defaultdict(list)
         self._ghost_tracks = {}
 
     @property
@@ -113,7 +115,9 @@ class Result:
 
 
 def build_scene(seed: int, n_nodes: int, n_cluster: int, metro: str,
-                min_aircraft: int, max_aircraft: int, metro_traffic_frac: float):
+                min_aircraft: int, max_aircraft: int, metro_traffic_frac: float,
+                layout: str = "ring", illuminator_band: str = "any",
+                dual_aim: str = "core"):
     """Fleet + world, wired exactly as FleetOrchestrator._build_world does.
 
     The hub-radial routing is not a detail.  With metro_cells set,
@@ -127,6 +131,8 @@ def build_scene(seed: int, n_nodes: int, n_cluster: int, metro: str,
     fleet = generate_fleet(
         n_nodes=n_nodes, metro=metro, n_cluster=n_cluster, n_clusters=1,
         use_tower_api=False, seed=seed,
+        layout=layout, illuminator_band=illuminator_band,
+        dual_aim=dual_aim,
     )
     cells = coverage_cells(
         n_cluster=n_cluster, n_clusters=1, metro=metro,
@@ -159,12 +165,14 @@ def build_scene(seed: int, n_nodes: int, n_cluster: int, metro: str,
 
 def run(seed, seconds, dt, frame_interval, assoc_interval,
         n_nodes, n_cluster, metro, min_aircraft, max_aircraft,
-        metro_traffic_frac) -> Result:
+        metro_traffic_frac, layout="ring", illuminator_band="any",
+        dual_aim="core") -> Result:
     import random
 
     random.seed(seed)
     fleet, world = build_scene(seed, n_nodes, n_cluster, metro,
-                               min_aircraft, max_aircraft, metro_traffic_frac)
+                               min_aircraft, max_aircraft, metro_traffic_frac,
+                               layout, illuminator_band, dual_aim)
     node_cfgs = {nd["node_id"]: nd for nd in fleet}
 
     assoc = InterNodeAssociator(grid_step_km=3.0)
@@ -244,6 +252,11 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                     res.matched += 1
                     res.errors_km.append(d)
                     res.n_nodes_matched[nn] += 1
+                    # Broken out because the whole dual-site hypothesis is
+                    # about the n=2 case specifically: whether two illuminators
+                    # sharing one receiver confine the fix better than two
+                    # receivers far apart do.  An aggregate over all n hides it.
+                    res.err_by_n[nn].append(d)
                     # Track identity, mirroring solver._multinode_track_key:
                     # a solve with a known transponder collapses onto that
                     # aircraft, so a real target is one track however many
@@ -291,6 +304,12 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
               f"  max {max(g):.1f}")
     print(f"  matched n_nodes {dict(sorted(r.n_nodes_matched.items()))}")
     print(f"  ghost   n_nodes {dict(sorted(r.n_nodes_ghost.items()))}")
+    if r.err_by_n:
+        print("  position error by contributing-node count:")
+        for nn in sorted(r.err_by_n):
+            v = sorted(r.err_by_n[nn])
+            print(f"      n={nn}: {len(v):>4} solves   median {statistics.median(v):5.2f} km"
+                  f"   p90 {v[int(0.9 * (len(v) - 1))]:5.2f}")
     if r.speed_err_ms:
         e = sorted(r.speed_err_ms)
         print(f"  matched SPEED error: median {statistics.median(e):6.1f} m/s"
@@ -316,6 +335,9 @@ def main():
     p.add_argument("--nodes", type=int, default=15)
     p.add_argument("--n-cluster", type=int, default=10)
     p.add_argument("--metro", default="gvl")
+    p.add_argument("--layout", choices=("ring", "dual"), default="ring")
+    p.add_argument("--illuminator-band", choices=("any", "vhf"), default="any")
+    p.add_argument("--dual-aim", choices=("core", "random"), default="core")
     p.add_argument("--min-aircraft", type=int, default=10,
                    help="matches FLEET_AIRCRAFT lower bound")
     p.add_argument("--max-aircraft", type=int, default=20)
@@ -325,7 +347,8 @@ def main():
                    help="repeat each config with different seeds and report the spread")
     args = p.parse_args()
 
-    print(f"scene: metro={args.metro} nodes={args.nodes} ring={args.n_cluster} "
+    print(f"scene: metro={args.metro} layout={args.layout}/{args.illuminator_band} "
+          f"nodes={args.nodes} budget={args.n_cluster} "
           f"{args.seconds:.0f}s @ {args.frame_interval:.0f}s frames, seed {args.seed}")
 
     for interval in args.assoc_interval:
@@ -335,7 +358,8 @@ def main():
             last = run(args.seed + k, args.seconds, args.dt, args.frame_interval,
                        interval, args.nodes, args.n_cluster, args.metro,
                        args.min_aircraft, args.max_aircraft,
-                       args.metro_traffic_frac)
+                       args.metro_traffic_frac, args.layout,
+                       args.illuminator_band, args.dual_aim)
             # Track-level is the comparable metric — solve-level and
             # track-level differ by ~20x on the same data, so mixing them is
             # how two staging conclusions went wrong.
