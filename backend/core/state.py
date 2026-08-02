@@ -17,6 +17,7 @@ from retina_custody.models import NodeIdentity
 from config.constants import (
     ANOMALY_LOG_MAX,  # noqa: F401 — re-exported, used via state.ANOMALY_LOG_MAX
     ASSOC_GRID_STEP_KM,
+    ASSOC_MIN_INTERVAL_S,
     GROUND_TRUTH_MAX,  # noqa: F401 — re-exported, used via state.GROUND_TRUTH_MAX
     TRACK_HISTORY_MAX,  # noqa: F401 — re-exported, used via state.TRACK_HISTORY_MAX
 )
@@ -29,7 +30,14 @@ connected_nodes: dict[str, dict] = {}
 # node_id → {config_hash, config, status, last_heartbeat, peer, is_synthetic, capabilities}
 
 node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR)
-node_associator = InterNodeAssociator(grid_step_km=ASSOC_GRID_STEP_KM)
+node_associator = InterNodeAssociator(
+    grid_step_km=ASSOC_GRID_STEP_KM,
+    # Ceiling only — the associator scales the actual interval down with fleet
+    # size.  Passed explicitly because ASSOC_MIN_INTERVAL_S was previously dead
+    # config: it was defined here but never reached the associator, which used
+    # its own hardcoded copy, so tuning it did nothing.
+    max_assoc_interval_s=ASSOC_MIN_INTERVAL_S,
+)
 
 # ── Per-node tracker pipelines (lazy-created per connecting node) ─────────────
 node_pipelines: dict = {}  # node_id → PassiveRadarPipeline
@@ -60,6 +68,23 @@ track_histories: dict[str, deque] = {}
 # a 20 km mis-association comes out under the 800 m/s threshold.
 # Value: [lat, lon, ts]
 track_last_emit: dict[str, list] = {}
+
+# ── Gate hold start per hex ───────────────────────────────────────────────────
+# The speed / RMS gates suppress a bad arc midpoint by reverting the emitted
+# position to track_last_emit.  That reverted value is then written back into
+# track_last_emit with a fresh timestamp, which makes both gates *absorbing*:
+# once engaged they compare every future midpoint against a frozen reference
+# and never release.  Observed on staging: arc tracks pinned for up to 141 s
+# while their aircraft flew on, then a 19.6 km teleport on release.
+# This records when a hold first engaged so it can be bounded in time — still
+# absorbing the single mis-associated frame the gates exist for, without
+# turning that into a permanent freeze.
+# Value: (ts, lat, lon) captured when the hold engaged — the anchor the held
+# position is dead-reckoned from.  Anchoring rather than extrapolating from
+# track_last_emit matters: last_emit is rewritten with the dead-reckoned value
+# every frame, so coasting off it would compound the offset.
+# Key absent when not held.
+track_gate_hold: dict[str, tuple[float, float, float]] = {}
 
 # ── Distinct-position log per track, for gs/heading fallback ──────────────────
 # Each entry is appended only when the emitted position moves > ARC_MOTION_MIN_M

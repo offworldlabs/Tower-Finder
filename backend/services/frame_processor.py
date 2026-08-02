@@ -16,6 +16,8 @@ from config.constants import (
     ARC_REFRESH_S,
     ARCHIVE_BATCH_MAX,
     ARCHIVE_FLUSH_INTERVAL_S,
+    DISPLAY_STALE_TRACK_S,
+    GATE_MAX_HOLD_S,
     GT_REFRESH_S,
     STALE_TRACK_S,
 )
@@ -503,7 +505,11 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
         "track": round(heading, 1),
         "lat": round(r["lat"], 5),
         "lon": round(r["lon"], 5),
-        "seen": 0,
+        # Real age of the solve, not 0 — see the matching note on the tracker
+        # path.  Guarded because timestamp_ms is absent in some fixtures.
+        "seen": round(max(0.0, time.time() - r["timestamp_ms"] / 1000.0), 1)
+        if r.get("timestamp_ms")
+        else 0,
         "messages": r["n_measurements"],
         "rssi": -round(1.0 / max(r.get("rms_delay", 1), 0.01), 1),
         "multinode": True,
@@ -753,6 +759,24 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         return None
 
     def _track_entry(ac_hex, track, node_cfg):
+        # Display staleness.  STALE_TRACK_S (120 s) governs when the *tracker*
+        # forgets a track; it was also, implicitly, how long a track with no
+        # fresh detections kept being painted on the map.  Because arc tracks
+        # are not dead-reckoned, that meant a stationary icon for two minutes
+        # while the real aircraft flew ~17 km on — measured on staging as every
+        # arc track frozen for up to 141 s.  Stop rendering well before the
+        # tracker forgets it, so the track survives for re-acquisition but is
+        # not presented as a current fix.
+        # Keyed on wall_clock_ts (when data last arrived), not pos_fix_ts (when
+        # the position last moved).  passive_radar.py:529 advances pos_fix_ts
+        # only when lat/lon actually changes, so a genuinely hovering drone —
+        # still being detected every frame — would look stale and get dropped.
+        # wall_clock_ts is also what "seen" means in the tar1090 schema.
+        _track_ts = getattr(track, "wall_clock_ts", 0.0) or 0.0
+        _track_age = (now - _track_ts) if _track_ts else 0.0
+        if _track_age > DISPLAY_STALE_TRACK_S:
+            return None
+
         # The solver output is always the primary position.  ADS-B data
         # enriches callsign / altitude / velocity but never overrides the
         # radar-derived position — that's the whole point of the system.
@@ -824,6 +848,36 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             # which the user reads as "radar saw something along this curve".
             # Nulling it left the testmap looking like every node was idle
             # whenever a single noisy frame came through.
+            #
+            # Both gates below are bounded by GATE_MAX_HOLD_S.  Reverting sets
+            # track_last_emit to the reverted value with a fresh timestamp (see
+            # the refresh below), so an unbounded gate compares every future
+            # midpoint against a frozen reference and never releases — an
+            # absorbing state.  Measured on staging before this bound: every
+            # arc track pinned in place for up to 141 s while its aircraft flew
+            # on, then a 19.6 km teleport when the gate finally cleared.  Once
+            # the hold exceeds the bound we accept the measurement: a noisy
+            # position is more honest than a confidently wrong stationary one.
+            _hold = state.track_gate_hold.get(ac_hex)
+            _hold_since = _hold[0] if _hold else None
+            _hold_expired = (
+                _hold_since is not None and (now - _hold_since) > GATE_MAX_HOLD_S
+            )
+            _gate_fired = False
+
+            # Speed gate: if the new arc midpoint moved faster than 800 m/s
+            # (~1560 kt) from the last EMITTED position, the tracker has likely
+            # mis-associated this frame's measurement to a different target.
+            # We compare against ``track_last_emit`` (refreshed every emit)
+            # rather than ``track_histories`` (deduped at ~5 m), because dedup
+            # can age the history timestamp 20-60 s for slow tracks and let a
+            # 20 km mis-association come out under 800 m/s.
+            # We revert the icon's lat/lon to the previous emit so a single
+            # mis-associated frame doesn't yank the marker.  The arc itself is
+            # still emitted: it represents this frame's bistatic measurement,
+            # which the user reads as "radar saw something along this curve".
+            # Nulling it left the testmap looking like every node was idle
+            # whenever a single noisy frame came through.
             _last_emit = state.track_last_emit.get(ac_hex)
             if _last_emit:
                 _prev_lat, _prev_lon, _prev_ts = _last_emit
@@ -833,8 +887,10 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
                     _dlon = (lon - _prev_lon) * 111_320 * math.cos(math.radians(lat))
                     _speed_ms = math.hypot(_dlat, _dlon) / _dt
                     if _speed_ms > 800:
-                        lat = _prev_lat
-                        lon = _prev_lon
+                        _gate_fired = True
+                        if not _hold_expired:
+                            lat = _prev_lat
+                            lon = _prev_lon
 
             # RMS gate: persistently high rms_delay means the Kalman filter
             # cannot fit the current measurement — the track is in a
@@ -848,8 +904,43 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             # needs checking.
             _rms = getattr(track, "rms_delay", 0.0) or 0.0
             if _rms > 7.0 and _last_emit:
-                lat = _last_emit[0]
-                lon = _last_emit[1]
+                _gate_fired = True
+                if not _hold_expired:
+                    lat = _last_emit[0]
+                    lon = _last_emit[1]
+
+            # Maintain the hold window, and dead-reckon while held.  A held
+            # position is otherwise *stationary* while the aircraft flies, which
+            # is what turns a short suppression into an error that grows at the
+            # target's own ground speed.  The blanket exclusion of arc tracks
+            # from dead-reckoning (see the DR block below) is about the normal
+            # path, where a fresh measurement lands every frame and competing
+            # per-node updates made extrapolation oscillate.  While held we are
+            # rejecting the measurement by definition, so the only alternative
+            # to coasting is freezing.
+            # The hold stores its own anchor (ts, lat, lon) rather than
+            # extrapolating from track_last_emit: last_emit is rewritten with
+            # the dead-reckoned value each frame, so coasting off it would
+            # compound — advancing by the full elapsed hold every frame instead
+            # of once.  Anchoring makes the offset a pure function of elapsed
+            # hold time.
+            if _gate_fired and not _hold_expired:
+                if _hold is None:
+                    _hold = (now, lat, lon)
+                    state.track_gate_hold[ac_hex] = _hold
+                _anchor_ts, _anchor_lat, _anchor_lon = _hold
+                _vel_e = getattr(track, "vel_east", 0.0) or 0.0
+                _vel_n = getattr(track, "vel_north", 0.0) or 0.0
+                _hold_dt = min(now - _anchor_ts, GATE_MAX_HOLD_S)
+                lat, lon = _anchor_lat, _anchor_lon
+                if _hold_dt > 0.5 and (_vel_e != 0.0 or _vel_n != 0.0):
+                    _cos_lat = math.cos(math.radians(lat)) or 1e-9
+                    lat = round(_anchor_lat + (_vel_n / 111_320.0) * _hold_dt, 6)
+                    lon = round(
+                        _anchor_lon + (_vel_e / (111_320.0 * _cos_lat)) * _hold_dt, 6
+                    )
+            else:
+                state.track_gate_hold.pop(ac_hex, None)
         elif not ambiguity_arc:
             # Arc is None.  Only suppress the track if there was a valid delay
             # measurement (delay > 0) but the arc still failed — which means
@@ -982,7 +1073,11 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             "track": heading,
             "lat": lat,
             "lon": lon,
-            "seen": 0,
+            # Real age of the underlying fix, not 0.  Hardcoding 0 made a
+            # frozen track claim to be fresh, so the frontend's
+            # STALE_AIRCRAFT_MS and the health checks could never see it —
+            # which is how a 120 s stationary icon went unnoticed.
+            "seen": round(_track_age, 1),
             "messages": track.n_detections,
             "rssi": -10.0,
             "category": "A3",
@@ -1027,6 +1122,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         for k in stale_geo:
             state.active_geo_aircraft.pop(k, None)
             state.track_last_emit.pop(k, None)
+            state.track_gate_hold.pop(k, None)
         with state.anomaly_lock:
             for k in stale_geo:
                 state.anomaly_hexes.discard(k)

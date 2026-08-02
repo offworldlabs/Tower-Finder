@@ -67,6 +67,23 @@ GEO_INTERVAL_S = 10.0                 # Per-track solver rate limit (seconds)
 PRUNE_INTERVAL_S = 60.0               # Stale-entry pruning interval (seconds)
 STALE_TRACK_S = 120.0                 # Remove tracks not updated in this window
 
+# How long a track with no fresh detections keeps appearing in aircraft.json.
+# Distinct from STALE_TRACK_S, which controls when the tracker *forgets* the
+# track entirely.  Single-node detections are intermittent, so dropping a track
+# the instant detections pause makes aircraft flicker; but STALE_TRACK_S=120 s
+# meant a stationary icon was painted for two minutes while the real aircraft
+# flew ~17 km away.  Within this window the position is dead-reckoned from the
+# track's own velocity so it keeps pace instead of freezing; past it the entry
+# stops rendering while the tracker keeps its state for re-acquisition.
+DISPLAY_STALE_TRACK_S = 15.0
+
+# Maximum time the arc speed/RMS gates may hold a track at its last emitted
+# position.  The gates exist to absorb a single mis-associated frame; without a
+# bound they latch (the reverted position becomes the next frame's reference)
+# and freeze the icon indefinitely.  ~3-5 frames: long enough for the intended
+# job, short enough to cap the resulting error at speed x 10 s (~1.5 km).
+GATE_MAX_HOLD_S = 10.0
+
 # ── Target classification (drone detection) ──────────────────────────────────
 DRONE_ALTITUDE_BOUNDS = [0, 500]       # metres ASL
 DRONE_VELOCITY_BOUNDS = [-60, 60]      # m/s per component

@@ -646,6 +646,73 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraft,
   return null;
 });
 
+/* ── BasemapLayer: TileLayer with bounded retry on tile load failure.
+
+      Leaflet does not retry a failed tile.  A single 429 or timeout from the
+      basemap CDN (Carto's free tier is rate-limited) leaves that square blank
+      *permanently* — until something else forces a redraw — which is what
+      "sections of the map don't render" looks like.  Retrying with backoff
+      recovers the transient case, which is nearly all of it.
+
+      TILE_MAX_RETRIES is deliberately small: if the CDN is genuinely down,
+      hammering it makes the rate limiting worse, not better. ── */
+const TILE_MAX_RETRIES = 3;
+const TILE_RETRY_BASE_MS = 400;
+
+const BasemapLayer = memo(function BasemapLayer({ url }) {
+  const retriesRef = useRef(new Map()); // tile src → attempts so far
+
+  const handlers = useMemo(
+    () => ({
+      tileerror: (e) => {
+        const tile = e.tile;
+        if (!tile) return;
+        // Strip any cache-buster we added so the retry count keys off the
+        // real tile identity rather than growing a new entry per attempt.
+        const baseSrc = (tile.src || "").split("#tfretry=")[0];
+        if (!baseSrc) return;
+        const attempts = retriesRef.current.get(baseSrc) ?? 0;
+        if (attempts >= TILE_MAX_RETRIES) return;
+        retriesRef.current.set(baseSrc, attempts + 1);
+        // Exponential backoff. The fragment forces the browser to re-request
+        // rather than serve the cached failure, without altering the path the
+        // CDN sees.
+        setTimeout(() => {
+          tile.src = `${baseSrc}#tfretry=${attempts + 1}`;
+        }, TILE_RETRY_BASE_MS * 2 ** attempts);
+      },
+      // Bound the map: without this, a long session panning a large area
+      // accumulates one entry per tile ever loaded.
+      tileload: (e) => {
+        const baseSrc = (e.tile?.src || "").split("#tfretry=")[0];
+        if (baseSrc) retriesRef.current.delete(baseSrc);
+      },
+    }),
+    [],
+  );
+
+  // Both Carto and OSM require attribution under their terms of use; the map
+  // previously suppressed the control entirely.
+  const attribution = url.includes("openstreetmap.org")
+    ? '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+    : '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>';
+
+  return (
+    <TileLayer
+      url={url}
+      attribution={attribution}
+      eventHandlers={handlers}
+      // keepBuffer 4 (default 2): a fast pan otherwise evicts tiles just
+      // outside the viewport that are about to be needed again, so they have
+      // to be re-fetched — visible as a band of missing map behind the drag.
+      keepBuffer={4}
+      // Don't request intermediate zoom levels mid-pinch; they are discarded
+      // on arrival and only compete for the CDN's rate limit.
+      updateWhenZooming={false}
+    />
+  );
+});
+
 /* ── NodeMarkersLayer: SVG CircleMarkers for synthetic nodes + divIcon for the
       real radar node.
       Background reason: 914 DOM divs with drop-shadow filters caused severe
@@ -1596,9 +1663,8 @@ export default function LiveAircraftMap() {
             center={[initialHash.lat ?? 34.85, initialHash.lon ?? -82.39]}
             zoom={initialHash.z ?? 9}
             style={{ height: "100%", width: "100%" }}
-            attributionControl={false}
           >
-            <TileLayer
+            <BasemapLayer
               key={tileTheme}
               url={
                 tileTheme === "positron"
