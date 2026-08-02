@@ -241,6 +241,27 @@ def _record_arc_motion(ac_hex: str, lat: float, lon: float, ts: float) -> None:
         log.pop(0)
 
 
+# Per-track throttle for the implausible-velocity warning.  The feed rebuilds
+# several times a second, so an unthrottled warning emits the same line dozens
+# of times for one aircraft and buries the very signal it exists to surface.
+# One line per track per interval keeps each distinct offender visible.
+_IMPLAUSIBLE_LOG_INTERVAL_S = 30.0
+_implausible_last_log: dict[str, float] = {}
+
+
+def _should_log_implausible(ac_hex: str, now: float) -> bool:
+    last = _implausible_last_log.get(ac_hex, 0.0)
+    if now - last < _IMPLAUSIBLE_LOG_INTERVAL_S:
+        return False
+    _implausible_last_log[ac_hex] = now
+    # Bound the dict to the live fleet; entries outlive their tracks otherwise.
+    if len(_implausible_last_log) > 512:
+        cutoff = now - _IMPLAUSIBLE_LOG_INTERVAL_S * 10
+        for k in [k for k, v in _implausible_last_log.items() if v < cutoff]:
+            del _implausible_last_log[k]
+    return True
+
+
 def _estimate_velocity_ms_from_motion(
     ac_hex: str, lat: float, lon: float, now: float,
 ) -> tuple[float, float] | None:
@@ -505,16 +526,19 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
         # Log the geometry needed to tell weak Doppler observability from a
         # mis-association.  Without contributing_node_ids and rms_doppler
         # there is nothing to troubleshoot from.
-        logging.warning(
-            "Implausible velocity: %.0f m/s (%.0f kt) n_nodes=%d "
-            "rms_doppler=%.1f Hz rms_delay=%.1f µs vel_e=%.1f vel_n=%.1f "
-            "lat=%.3f lon=%.3f nodes=%s",
-            speed_ms, speed_ms * 1.94384, r.get("n_nodes", 0),
-            r.get("rms_doppler", 0) or 0, r.get("rms_delay", 0) or 0,
-            r.get("vel_east", 0), r.get("vel_north", 0),
-            r.get("lat", 0), r.get("lon", 0),
-            ",".join(r.get("contributing_node_ids", [])) or "?",
-        )
+        # Keyed on `key` rather than _mn_hex, which is not computed until below;
+        # both are stable per-track identities so the throttle is equivalent.
+        if _should_log_implausible(key, time.time()):
+            logging.warning(
+                "Implausible velocity: %.0f m/s (%.0f kt) n_nodes=%d "
+                "rms_doppler=%.1f Hz rms_delay=%.1f µs vel_e=%.1f vel_n=%.1f "
+                "lat=%.3f lon=%.3f nodes=%s",
+                speed_ms, speed_ms * 1.94384, r.get("n_nodes", 0),
+                r.get("rms_doppler", 0) or 0, r.get("rms_delay", 0) or 0,
+                r.get("vel_east", 0), r.get("vel_north", 0),
+                r.get("lat", 0), r.get("lon", 0),
+                ",".join(r.get("contributing_node_ids", [])) or "?",
+            )
     _mn_is_anom = bool(_mn_anomaly_types)
     _mn_hex = multinode_hex_from_key(key)
     with state.anomaly_lock:
@@ -1108,12 +1132,13 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         if _implausible_v:
             _anom_types.add("implausible_velocity")
             state.implausible_velocity_count += 1
-            logging.warning(
-                "Implausible velocity: %.0f kt on %s hex=%s node=%s "
-                "rms_delay=%.1f µs adsb=%s lat=%.3f lon=%.3f",
-                gs, position_source, ac_hex, node_cfg.get("node_id"),
-                rms_delay or 0, bool(has_adsb), lat, lon,
-            )
+            if _should_log_implausible(ac_hex, now):
+                logging.warning(
+                    "Implausible velocity: %.0f kt on %s hex=%s node=%s "
+                    "rms_delay=%.1f µs adsb=%s lat=%.3f lon=%.3f",
+                    gs, position_source, ac_hex, node_cfg.get("node_id"),
+                    rms_delay or 0, bool(has_adsb), lat, lon,
+                )
         _is_anom = (
             bool(getattr(track, "is_anomalous", False))
             or _position_jump
