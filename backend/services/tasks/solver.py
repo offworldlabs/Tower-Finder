@@ -45,9 +45,24 @@ def _in_node_beam(lat: float, lon: float, node_cfg: dict) -> bool:
     """
     rx_lat = float(node_cfg.get("rx_lat") or node_cfg.get("lat") or 0)
     rx_lon = float(node_cfg.get("rx_lon") or node_cfg.get("lon") or 0)
-    max_range = float(node_cfg.get("max_range_km") or 50)
-    if _haversine_km(rx_lat, rx_lon, lat, lon) > max_range:
-        return False
+    # Bound on the same range rule the node actually detects under.  A
+    # monostatic circle is a *looser* region than a bistatic footprint on the
+    # far side of the transmitter, so scoring a bistatically-limited node
+    # against it lets ghost intersections through the very check that exists
+    # to reject them.
+    _max_bistatic = node_cfg.get("max_bistatic_range_km")
+    _tx_lat = node_cfg.get("tx_lat")
+    _tx_lon = node_cfg.get("tx_lon")
+    if _max_bistatic is not None and _tx_lat and _tx_lon:
+        _r_rx = _haversine_km(rx_lat, rx_lon, lat, lon)
+        _r_tx = _haversine_km(float(_tx_lat), float(_tx_lon), lat, lon)
+        _baseline = _haversine_km(rx_lat, rx_lon, float(_tx_lat), float(_tx_lon))
+        if (_r_rx + _r_tx - _baseline) > float(_max_bistatic):
+            return False
+    else:
+        max_range = float(node_cfg.get("max_range_km") or 50)
+        if _haversine_km(rx_lat, rx_lon, lat, lon) > max_range:
+            return False
     # Determine beam azimuth.
     if "beam_azimuth_deg" in node_cfg:
         beam_az: float | None = float(node_cfg["beam_azimuth_deg"])
