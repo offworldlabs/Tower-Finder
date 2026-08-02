@@ -32,11 +32,10 @@ connected_nodes: dict[str, dict] = {}
 node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR)
 node_associator = InterNodeAssociator(
     grid_step_km=ASSOC_GRID_STEP_KM,
-    # Ceiling only — the associator scales the actual interval down with fleet
-    # size.  Passed explicitly because ASSOC_MIN_INTERVAL_S was previously dead
-    # config: it was defined here but never reached the associator, which used
-    # its own hardcoded copy, so tuning it did nothing.
-    max_assoc_interval_s=ASSOC_MIN_INTERVAL_S,
+    # Passed explicitly because ASSOC_MIN_INTERVAL_S was dead config: defined
+    # here but never reaching the associator, which used its own hardcoded
+    # copy, so tuning it did nothing.
+    assoc_interval_s=ASSOC_MIN_INTERVAL_S,
 )
 
 # ── Per-node tracker pipelines (lazy-created per connecting node) ─────────────

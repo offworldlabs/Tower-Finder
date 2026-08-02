@@ -41,7 +41,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from retina_analytics.association import InterNodeAssociator  # noqa: E402
 from retina_geolocator.multinode_solver import solve_multinode  # noqa: E402
-from retina_simulation.generator import generate_fleet  # noqa: E402
+from retina_simulation.generator import coverage_cells, generate_fleet  # noqa: E402
+from retina_simulation.orchestrator import _cells_to_metrocells  # noqa: E402
 from retina_simulation.world import (  # noqa: E402
     NodeConfig,
     SimulationWorld,
@@ -52,6 +53,15 @@ from retina_simulation.world import (  # noqa: E402
 # resolve_ground_truth_hex's display radius so results line up with the staging
 # numbers; a solve further out than this is not a fix of that aircraft.
 MATCH_KM = 8.0
+
+# Track-identity constants, mirroring solver.py's _MN_ASSOC_* so the harness
+# counts *tracks* the way production does.  This matters more than it sounds:
+# a real aircraft's many solves collapse onto one transponder identity while
+# phantoms mint separate ids, so the same pipeline reads ~3% ghosts by solve
+# and ~68% by track.  Comparing one against the other is what made the staging
+# numbers look irreconcilable with the offline ones.
+GHOST_ASSOC_MAX_DIST_KM = 6.0
+GHOST_ASSOC_MAX_AGE_S = 60.0
 
 
 def _haversine_km(lat1, lon1, lat2, lon2):
@@ -73,6 +83,8 @@ class Result:
     n_nodes_ghost: Counter = None
     speeds_kt: list = None
     solver_rejects: int = 0
+    matched_tracks: set = None
+    ghost_tracks: set = None
 
     def __post_init__(self):
         self.errors_km = []
@@ -80,6 +92,14 @@ class Result:
         self.n_nodes_matched = Counter()
         self.n_nodes_ghost = Counter()
         self.speeds_kt = []
+        self.matched_tracks = set()
+        self.ghost_tracks = set()
+        self._ghost_tracks = {}
+
+    @property
+    def track_ghost_pct(self):
+        n = len(self.matched_tracks) + len(self.ghost_tracks)
+        return 100.0 * len(self.ghost_tracks) / n if n else 0.0
 
     @property
     def total(self):
@@ -90,13 +110,33 @@ class Result:
         return 100.0 * self.ghosts / self.total if self.total else 0.0
 
 
-def build_scene(seed: int, n_nodes: int, n_cluster: int, metro: str):
-    """Fleet + world, wired exactly as the orchestrator wires them."""
+def build_scene(seed: int, n_nodes: int, n_cluster: int, metro: str,
+                min_aircraft: int, max_aircraft: int, metro_traffic_frac: float):
+    """Fleet + world, wired exactly as FleetOrchestrator._build_world does.
+
+    The hub-radial routing is not a detail.  With metro_cells set,
+    metro_traffic_frac of all spawns are funnelled through the ring core --
+    the one patch of sky every ring beam overlaps.  Leave it unset (the
+    SimulationWorld default is an empty cell list) and traffic disperses along
+    the en-route waypoint net instead, so aircraft rarely share an overlap
+    zone.  Since a false pairing requires two aircraft in one overlap zone,
+    that single omission removes the mechanism under study.
+    """
     fleet = generate_fleet(
         n_nodes=n_nodes, metro=metro, n_cluster=n_cluster, n_clusters=1,
         use_tower_api=False, seed=seed,
     )
-    world = SimulationWorld(waypoints=waypoints_for_metro(metro))
+    cells = coverage_cells(
+        n_cluster=n_cluster, n_clusters=1, metro=metro,
+    )
+    center_lat = sum(c["rx_lat"] for c in fleet) / len(fleet)
+    center_lon = sum(c["rx_lon"] for c in fleet) / len(fleet)
+    world = SimulationWorld(
+        center_lat=center_lat, center_lon=center_lon,
+        waypoints=waypoints_for_metro(metro),
+    )
+    world.metro_cells = _cells_to_metrocells(cells)
+    world.frac_metro_traffic = metro_traffic_frac
     for nd in fleet:
         world.add_node(NodeConfig(
             node_id=nd["node_id"],
@@ -108,22 +148,21 @@ def build_scene(seed: int, n_nodes: int, n_cluster: int, metro: str):
             max_range_km=nd["max_range_km"],
             max_bistatic_range_km=nd.get("max_bistatic_range_km"),
         ))
-    world.center_lat = sum(n.rx_lat for n in world.nodes.values()) / len(world.nodes)
-    world.center_lon = sum(n.rx_lon for n in world.nodes.values()) / len(world.nodes)
-    # Match the deployed fleet's traffic density (FLEET_AIRCRAFT=10-20).  Ghost
-    # rate depends on how many aircraft share an overlap zone, so this is not a
-    # cosmetic setting — it is the independent variable the effect scales with.
-    world.min_aircraft = 10
-    world.max_aircraft = 20
+    # Traffic density is the independent variable the ghost rate scales with:
+    # a false pairing needs two aircraft inside one overlap zone.
+    world.min_aircraft = min_aircraft
+    world.max_aircraft = max_aircraft
     return fleet, world
 
 
 def run(seed, seconds, dt, frame_interval, assoc_interval,
-        n_nodes, n_cluster, metro) -> Result:
+        n_nodes, n_cluster, metro, min_aircraft, max_aircraft,
+        metro_traffic_frac) -> Result:
     import random
 
     random.seed(seed)
-    fleet, world = build_scene(seed, n_nodes, n_cluster, metro)
+    fleet, world = build_scene(seed, n_nodes, n_cluster, metro,
+                               min_aircraft, max_aircraft, metro_traffic_frac)
     node_cfgs = {nd["node_id"]: nd for nd in fleet}
 
     assoc = InterNodeAssociator(grid_step_km=3.0)
@@ -164,7 +203,9 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
         due_nodes = [nid for nid in node_ids if next_send[nid] <= t]
         if not due_nodes:
             continue
-        truth = [(ac.lat, ac.lon) for ac in world.aircraft]
+        # Carry the object id so a real target keeps one identity across
+        # solves — keying on a position would mint a new track per epoch.
+        truth = [(ac.lat, ac.lon, ac.object_id) for ac in world.aircraft]
         for nid in due_nodes:
             next_send[nid] += frame_interval
             frame = world.generate_detections_for_node(nid, ts_ms)
@@ -189,8 +230,10 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                 if not out or not out.get("success"):
                     res.solver_rejects += 1
                     continue
-                d = min((_haversine_km(out["lat"], out["lon"], a, b)
-                         for a, b in truth), default=float("inf"))
+                d, best_id = min(
+                    ((_haversine_km(out["lat"], out["lon"], a, b), oid)
+                     for a, b, oid in truth),
+                    default=(float("inf"), None))
                 nn = out.get("n_nodes", s_in.get("n_nodes", 0))
                 speed = math.hypot(out.get("vel_east", 0.0), out.get("vel_north", 0.0))
                 res.speeds_kt.append(speed * 1.94384)
@@ -198,17 +241,39 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                     res.matched += 1
                     res.errors_km.append(d)
                     res.n_nodes_matched[nn] += 1
+                    # Track identity, mirroring solver._multinode_track_key:
+                    # a solve with a known transponder collapses onto that
+                    # aircraft, so a real target is one track however many
+                    # times it is solved.
+                    res.matched_tracks.add(best_id)
                 else:
                     res.ghosts += 1
                     res.ghost_dist_km.append(d)
                     res.n_nodes_ghost[nn] += 1
+                    # A phantom has no transponder, so it falls to the
+                    # proximity/dead-reckon branch: successive solves within
+                    # _MN_ASSOC_MAX_DIST_KM and _MN_ASSOC_MAX_AGE_S join one
+                    # track, otherwise a new id is minted.
+                    hit = None
+                    for gk, (glat, glon, gts) in res._ghost_tracks.items():
+                        if (t - gts) <= GHOST_ASSOC_MAX_AGE_S and \
+                                _haversine_km(out["lat"], out["lon"], glat, glon) \
+                                <= GHOST_ASSOC_MAX_DIST_KM:
+                            hit = gk
+                            break
+                    if hit is None:
+                        hit = f"gh-{len(res._ghost_tracks)}"
+                    res._ghost_tracks[hit] = (out["lat"], out["lon"], t)
+                    res.ghost_tracks.add(hit)
     return res
 
 
 def report(label: str, r: Result, truth_max_kt: float | None = None):
     print(f"\n=== {label} ===")
     print(f"  solves {r.total:>5}   matched {r.matched:>5}   ghosts {r.ghosts:>5}"
-          f"   -> {r.ghost_pct:>5.1f}% ghosts")
+          f"   -> {r.ghost_pct:>5.1f}% ghosts (by solve)")
+    print(f"  tracks: real {len(r.matched_tracks):>3}   false {len(r.ghost_tracks):>3}"
+          f"   -> {r.track_ghost_pct:>5.1f}% ghosts (by track — comparable to staging)")
     if r.errors_km:
         e = sorted(r.errors_km)
         print(f"  matched position error: median {statistics.median(e):.2f} km"
@@ -240,6 +305,11 @@ def main():
     p.add_argument("--nodes", type=int, default=15)
     p.add_argument("--n-cluster", type=int, default=10)
     p.add_argument("--metro", default="gvl")
+    p.add_argument("--min-aircraft", type=int, default=10,
+                   help="matches FLEET_AIRCRAFT lower bound")
+    p.add_argument("--max-aircraft", type=int, default=20)
+    p.add_argument("--metro-traffic-frac", type=float, default=0.85,
+                   help="matches FLEET_METRO_TRAFFIC_FRAC")
     p.add_argument("--repeat", type=int, default=1,
                    help="repeat each config with different seeds and report the spread")
     args = p.parse_args()
@@ -248,17 +318,30 @@ def main():
           f"{args.seconds:.0f}s @ {args.frame_interval:.0f}s frames, seed {args.seed}")
 
     for interval in args.assoc_interval:
-        rates = []
+        rates, solve_rates, reals, fakes = [], [], [], []
         last = None
         for k in range(args.repeat):
             last = run(args.seed + k, args.seconds, args.dt, args.frame_interval,
-                       interval, args.nodes, args.n_cluster, args.metro)
-            rates.append(last.ghost_pct)
+                       interval, args.nodes, args.n_cluster, args.metro,
+                       args.min_aircraft, args.max_aircraft,
+                       args.metro_traffic_frac)
+            # Track-level is the comparable metric — solve-level and
+            # track-level differ by ~20x on the same data, so mixing them is
+            # how two staging conclusions went wrong.
+            rates.append(last.track_ghost_pct)
+            solve_rates.append(last.ghost_pct)
+            reals.append(len(last.matched_tracks))
+            fakes.append(len(last.ghost_tracks))
         report(f"assoc_interval={interval:g}s", last)
         if args.repeat > 1:
-            print(f"  across {args.repeat} seeds: "
-                  f"{', '.join(f'{x:.1f}%' for x in rates)}"
-                  f"   spread {max(rates) - min(rates):.1f} pts")
+            mean = statistics.mean(rates)
+            sd = statistics.pstdev(rates)
+            print(f"  across {args.repeat} seeds (by track): "
+                  f"{', '.join(f'{x:.0f}%' for x in rates)}")
+            print(f"    mean {mean:.0f}%   sd {sd:.0f}   "
+                  f"range {min(rates):.0f}-{max(rates):.0f}%   "
+                  f"real {min(reals)}-{max(reals)}  false {min(fakes)}-{max(fakes)}")
+            print(f"    by solve: {', '.join(f'{x:.1f}%' for x in solve_rates)}")
 
 
 if __name__ == "__main__":
