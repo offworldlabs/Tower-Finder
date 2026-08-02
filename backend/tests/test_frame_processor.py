@@ -8,6 +8,7 @@ import time
 
 import pytest
 
+from config.constants import GT_DISPLAY_STALE_S
 from core import state
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from services.frame_processor import (
@@ -230,17 +231,38 @@ class TestMultinodeToAircraft:
         assert ac["lon"] == -84.6
         assert ac["alt_baro"] == 10000  # 3048m / 0.3048
 
-    def test_supersonic_flagged(self):
+    def test_impossible_speed_flagged_as_implausible_not_supersonic(self):
+        """400 m/s is faster than any aircraft this fleet flies (max 268 m/s),
+        so the honest statement is that the *estimate* is untrustworthy — not
+        that the aircraft broke the sound barrier.  Every "supersonic" flag
+        raised in production has been this case."""
         r = {
             "lat": 33.9, "lon": -84.6, "alt_m": 10000.0,
-            "vel_east": 400.0, "vel_north": 0.0,  # > 343 m/s
+            "vel_east": 400.0, "vel_north": 0.0,  # > IMPLAUSIBLE_SPEED_MS
             "n_nodes": 2, "n_measurements": 10,
             "rms_delay": 0.3, "rms_doppler": 0.8,
         }
         ac = multinode_to_aircraft("mn-key-2", r)
         assert ac["is_anomalous"] is True
-        assert "supersonic" in ac["anomaly_types"]
+        assert "implausible_velocity" in ac["anomaly_types"]
+        assert "supersonic" not in ac["anomaly_types"]
         # Cleanup
+        state.anomaly_hexes.discard(ac["hex"])
+
+    def test_implausible_velocity_is_counted(self):
+        """The count is what makes the rate trackable while the underlying
+        cause is chased; the speed itself is deliberately left on the wire."""
+        before = state.implausible_velocity_count
+        r = {
+            "lat": 33.9, "lon": -84.6, "alt_m": 10000.0,
+            "vel_east": 420.0, "vel_north": 0.0,
+            "n_nodes": 2, "n_measurements": 10,
+            "rms_delay": 0.3, "rms_doppler": 0.8,
+        }
+        ac = multinode_to_aircraft("mn-key-2b", r)
+        assert state.implausible_velocity_count == before + 1
+        # Not clamped — the reported speed still reflects what was solved.
+        assert ac["gs"] > 420.0 * 1.94384 - 1
         state.anomaly_hexes.discard(ac["hex"])
 
     def test_subsonic_not_flagged(self):
@@ -436,3 +458,73 @@ class TestDedupAircraft:
         assert dedup_aircraft([]) == []
         one = [self._entry("abcdef", "multinode_solve", 34.9, -82.0)]
         assert dedup_aircraft(one) == one
+
+
+# ─── Regression: despawned simulated aircraft must not linger ────────────────
+
+class TestGroundTruthGhostPruning:
+    """A ground-truth entry is a *current* position, not a trail tail.
+
+    The orchestrator pushes ground truth every 2 s, so a live aircraft's trail
+    tip is never more than ~4 s old.  Ground-truth and track-history pruning
+    used to share one 300 s constant, which meant an aircraft that despawned
+    (lifetime expiry in world.step) kept being served — and rendered as a
+    stationary blue dot — for five minutes.  Measured on staging: 3 of 16
+    dots were such ghosts, with trail tips 243-284 s old and exactly 0.00 km
+    of movement.
+
+    Track histories keep the longer window on purpose: they draw the path
+    *behind* an aircraft, where a generous tail is the wanted behaviour.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        for d in (state.ground_truth_trails, state.ground_truth_meta,
+                  state.track_histories):
+            for k in [x for x in d if str(x).startswith("ghost")]:
+                d.pop(k, None)
+        yield
+        for d in (state.ground_truth_trails, state.ground_truth_meta,
+                  state.track_histories):
+            for k in [x for x in d if str(x).startswith("ghost")]:
+                d.pop(k, None)
+
+    def _build(self):
+        import types
+
+        from services.frame_processor import build_combined_aircraft_json
+
+        pipeline = types.SimpleNamespace(geolocated_tracks={}, config={})
+        build_combined_aircraft_json(pipeline)
+
+    def test_despawned_aircraft_is_pruned(self):
+        from collections import deque
+        stale = time.time() - (GT_DISPLAY_STALE_S + 5.0)
+        state.ground_truth_trails["ghostgone"] = deque([[34.9, -82.4, 30000, stale]])
+        state.ground_truth_meta["ghostgone"] = {"object_type": "aircraft"}
+        self._build()
+        assert "ghostgone" not in state.ground_truth_trails
+        # Metadata must go with it, or the map keeps a label for a dead entry.
+        assert "ghostgone" not in state.ground_truth_meta
+
+    def test_live_aircraft_survives(self):
+        from collections import deque
+        state.ground_truth_trails["ghostlive"] = deque([[34.9, -82.4, 30000, time.time()]])
+        self._build()
+        assert "ghostlive" in state.ground_truth_trails
+
+    def test_aircraft_between_pushes_survives(self):
+        """A dropped push or two must not blink the aircraft off the map."""
+        from collections import deque
+        recent = time.time() - 6.0  # 3 missed 2 s pushes, still inside the window
+        state.ground_truth_trails["ghostgap"] = deque([[34.9, -82.4, 30000, recent]])
+        self._build()
+        assert "ghostgap" in state.ground_truth_trails
+
+    def test_track_history_keeps_the_longer_window(self):
+        """Render trails are not ground truth — they keep the 300 s tail."""
+        from collections import deque
+        old = time.time() - (GT_DISPLAY_STALE_S + 60.0)
+        state.track_histories["ghosttrail"] = deque([[34.9, -82.4, 30000, old]])
+        self._build()
+        assert "ghosttrail" in state.track_histories

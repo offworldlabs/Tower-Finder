@@ -48,8 +48,11 @@ up profile="local":
     # ── Resolve fleet params by profile ────────────────────────────────────────
     #  local   — dev-only dense stream (~1 ellipse/s); no deployed equivalent.
     #  testmap — sourced from docker-compose.test.yml   (the testmap.retina.fm test stack).
-    #  prod    — sourced from docker-compose.yml's `fleet` service (the Compose
-    #            service that actually serves the live testmap.retina.fm + map.retina.fm).
+    #  prod    — sourced from docker-compose.prod.yml's `fleet` service (the
+    #            Compose service that actually serves the live
+    #            testmap.retina.fm + map.retina.fm). The FLEET_* sizing lives in
+    #            the prod overlay rather than the shared base: fleet scale is the
+    #            one thing staging is meant to differ on.
     case "{{profile}}" in
       local)
         FLEET_NODES=200; FLEET_MODE=detection; FLEET_INTERVAL=0.5
@@ -59,9 +62,10 @@ up profile="local":
         # every FLEET_* value comes straight from the compose file's fleet-simulator block
         eval "$(grep -oE 'FLEET_[A-Z_]+=[^[:space:]]+' "{{root}}/docker-compose.test.yml")" ;;
       prod)
-        # every FLEET_* value comes straight from docker-compose.yml's `fleet`
-        # service block (same extraction the testmap profile uses on test.yml)
-        eval "$(grep -oE 'FLEET_[A-Z_]+=[^[:space:]]+' "{{root}}/docker-compose.yml")" ;;
+        # every FLEET_* value comes straight from docker-compose.prod.yml's
+        # `fleet` block, plus the connection settings it shares with staging in
+        # docker-compose.yml (same extraction the testmap profile uses)
+        eval "$(grep -hoE 'FLEET_[A-Z_]+=[^[:space:]]+' "{{root}}/docker-compose.yml" "{{root}}/docker-compose.prod.yml")" ;;
       *)
         echo "✗ unknown profile '{{profile}}' — use: local | testmap | prod"; exit 1 ;;
     esac

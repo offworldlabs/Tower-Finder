@@ -47,11 +47,16 @@ COPY --from=dashboard-build /app/dashboard/dist /app/dashboard/dist
 # tar1090 static files
 COPY tar1090/html /app/tar1090/html
 
-# Nginx config (default: production domains)
-COPY deploy/nginx.conf /etc/nginx/sites-available/default
+# Rate-limit zones — http{} context, identical in every environment.
 COPY deploy/nginx-security.conf /etc/nginx/conf.d/security.conf
 
-# Deploy scripts + test nginx config (used when RETINA_ENV=test)
+# The vhosts themselves are NOT baked in: at boot start.sh runs
+# deploy/render-nginx-config.py over deploy/nginx/nginx.conf.template, so one
+# template serves staging and production and they cannot drift apart. A
+# placeholder is installed here only so the file exists to be chowned below.
+RUN echo "# replaced at boot by deploy/start.sh" > /etc/nginx/sites-available/default
+
+# Deploy scripts + nginx template/snippets + test nginx config
 COPY deploy/ /app/deploy/
 RUN chmod +x /app/deploy/start.sh /app/deploy/start-test.sh
 

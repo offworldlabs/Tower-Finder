@@ -1,0 +1,78 @@
+# ── Production overlay ───────────────────────────────────────────────────────
+# Combined with docker-compose.yml (the shared base). Everything that is not
+# inherently per-environment lives in the base; this file carries only the
+# production values for the four things that legitimately differ:
+#   hostnames/CORS · droplet capacity · fleet scale · the external edge network
+#
+# Usage (the host's ./.env sets COMPOSE_FILE, so this is normally implicit):
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Adding anything else here will fail deploy/check-env-parity.sh in CI. If a new
+# setting really is per-environment, add its key to that script's allowlist in
+# the same commit, so the divergence is a recorded decision rather than drift.
+
+services:
+  tower-finder:
+    container_name: retina-prod-server
+    environment:
+      - RETINA_ENV=production
+      - CORS_ORIGINS=https://towers.retina.fm,https://api.retina.fm,https://map.retina.fm,https://dash.retina.fm,https://admin.retina.fm
+      # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
+      # at boot to render deploy/nginx/nginx.conf.template. One template serves
+      # both environments; only these values change.
+      - HOST_MAIN=towers.retina.fm
+      - HOST_API=api.retina.fm
+      - HOST_MAP=map.retina.fm
+      - HOST_DASH=dash.retina.fm
+      - HOST_ADMIN=admin.retina.fm
+      - HOST_TESTAPI=testapi.retina.fm
+      - HOST_TESTMAP=testmap.retina.fm
+      - HOST_LEGACY_REDIRECT=tower-finder.retina.fm
+      # The only host-naming part of the CSP. wss://*.retina.fm already covers
+      # both environments, so only the two explicit origins vary.
+      - CSP_CONNECT_SRC=https://api.retina.fm https://admin.retina.fm wss://*.retina.fm
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+    networks:
+      - default
+      - retina-edge
+
+  fleet:
+    container_name: retina-prod-fleet
+    environment:
+      # Fleet is scoped to one metro (Greenville, SC), so counts are sized for a
+      # single terminal area rather than a continent. Set FLEET_METRO="" to go
+      # back to the nationwide fleet — then restore the old 200/40.0/60-100.
+      - FLEET_NODES=25
+      - FLEET_REGIONS=us
+      - FLEET_METRO=gvl
+      - FLEET_N_CLUSTER=16
+      - FLEET_N_CLUSTERS=1
+      - FLEET_METRO_TRAFFIC_FRAC=0.85
+      - FLEET_MODE=adsb
+      # 25 nodes / 2.0s = 12.5 fps — half the Kalman tracker's ~25 fps ceiling.
+      # The old 200-node fleet needed 40.0s here; the smaller fleet buys a 20x
+      # faster frame rate at the same CPU cost.
+      - FLEET_INTERVAL=2.0
+      - FLEET_TIME_SCALE=1.0
+      - FLEET_MIN_AIRCRAFT=15
+      - FLEET_MAX_AIRCRAFT=30
+      - FLEET_BEAM_WIDTH_DEG=0
+      - FLEET_MAX_RANGE_KM=0
+      - FLEET_CONCURRENCY=20
+      # `restart: unless-stopped` recovers the fleet if the app restarts, so we
+      # no longer need the script's 999-retry hack — but keep a healthy margin
+      # so a slow app health-up can't drop the fleet mid-deploy.
+      - FLEET_CONNECT_RETRIES=30
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+
+networks:
+  retina-edge:
+    external: true

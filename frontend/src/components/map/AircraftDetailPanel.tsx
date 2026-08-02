@@ -206,6 +206,10 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
                 <span style={{ color: "#f43f5e", fontWeight: 600 }}>
                   {(ac.anomaly_types || []).map(t => ({
                     supersonic: "Supersonic",
+                    // Not a claim about the aircraft — a claim about our own
+                    // estimate.  Labelled distinctly so a weakly-observable
+                    // Doppler geometry is not read as a Mach-1 target.
+                    implausible_velocity: "Implausible velocity (estimate unreliable)",
                     instant_acceleration: "Instant Acceleration",
                     instant_direction_change: "Instant Direction Change",
                     sustained_orbit: "Sustained Orbit",

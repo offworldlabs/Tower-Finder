@@ -1,3 +1,21 @@
+# ── Shared base: everything staging and production have in common ────────────
+# This file alone is NOT runnable — it deliberately carries no RETINA_ENV, no
+# hostnames and no CORS origins, so booting it bare fails fast in start.sh
+# rather than silently serving an unconfigured stack. Always combine it with
+# exactly one environment overlay:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml    up -d
+#
+# In practice neither the deploy workflow nor a human types those flags: each
+# host has a gitignored ./.env holding COMPOSE_FILE (see deploy/env.*.example),
+# so plain `docker compose up -d --build` / `logs` / `ps` resolve to the right
+# pair on that host and every command is identical across environments.
+#
+# The rule for this file: if a setting is not *inherently* per-environment
+# (hostname, fleet size, droplet capacity), it belongs here — not in an
+# overlay. deploy/check-env-parity.sh enforces that in CI.
+
 services:
   tower-finder:
     build: .
@@ -6,6 +24,7 @@ services:
     # rollback on `tower-finder:latest`; without this, Compose builds an
     # auto-named `<dir>-tower-finder` image and the rollback tag is never the one
     # Compose actually runs, so `rollback.sh` silently restarts the bad build.
+    # In the base so staging is rollback-capable on the same terms as prod.
     image: tower-finder:latest
     ports:
       - "80:80"
@@ -13,6 +32,10 @@ services:
       - "3012:3012"
     volumes:
       - /etc/ssl/cloudflare:/etc/ssl/cloudflare:ro
+      # users.db and the Parquet detection archive. Without these the data lives
+      # in the container's writable layer and every `up -d --build` destroys it —
+      # which is exactly how staging's Data Explorer (dash /data) came to be
+      # permanently empty: the archive never survived to its first hourly flush.
       - backend-data:/app/backend/data
       - backend-coverage-data:/app/backend/coverage_data
     env_file:
@@ -22,15 +45,20 @@ services:
       # ADS-B / ground-truth to the API over the compose network. Port 8000 is
       # NOT in `ports:`, so it stays off-host — only reachable inside compose.
       # Without this uvicorn binds 127.0.0.1 and the fleet's pushes are refused.
-      # (Detections themselves flow over the published TCP port 3012.) Mirrors
-      # docker-compose.staging.yml.
+      # (Detections themselves flow over the published TCP port 3012.)
       - UVICORN_HOST=0.0.0.0
+      - RADAR_TCP_PORT=3012
+      # Frame pipeline sizing. Set here rather than left to each host's
+      # backend/.env so the two environments cannot silently drift apart on the
+      # knob that most directly shapes throughput behaviour.
+      - FRAME_WORKERS=6
+      - FRAME_QUEUE_SIZE=10000
+    # bash, not sh: start.sh's supervisor uses `wait -n`, a bash builtin that
+    # dash rejects ("Illegal option -n"), which crash-loops the server. The
+    # script's shebang already says bash; naming it here keeps that true even if
+    # the Dockerfile CMD changes.
+    command: ["/bin/bash", "/app/deploy/start.sh"]
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "2"
-          memory: 4G
     logging:
       driver: json-file
       options:
@@ -47,11 +75,10 @@ services:
       # `docker compose up` (local/manual bring-up). The CI deploy starts the
       # fleet with --no-deps and reboots ignore depends_on, so this doesn't
       # affect those paths — it just prevents a slow-but-fine boot from being
-      # branded `unhealthy` and aborting a plain `up`.
+      # branded `unhealthy` and aborting a plain `up`. Sits above start.sh's
+      # fast-failure supervisor threshold (60s), so a slow-but-running boot is
+      # never counted as a crash.
       start_period: 90s
-    networks:
-      - default
-      - retina-edge
 
   # ── Fleet simulator: synthetic radar nodes + ground-truth aircraft ─────────
   # This is what makes testmap.retina.fm differ from map.retina.fm. It was
@@ -59,8 +86,10 @@ services:
   # transient `systemd-run` unit that did NOT survive reboots — that is how the
   # fleet silently vanished after the RAM-expansion reboot. As a Compose service
   # it now restarts exactly like the app: on boot (docker is enabled) and via
-  # the CI `docker compose up -d --build` step. Modeled on the proven `fleet`
-  # service in docker-compose.staging.yml, with production params.
+  # the CI `docker compose up -d --build` step.
+  #
+  # Fleet *scale* is the one thing staging is meant to differ on, so every
+  # FLEET_* sizing value lives in the overlays.
   fleet:
     build:
       context: .
@@ -70,63 +99,34 @@ services:
     # Compose auto-names it `<dir>-fleet` and a rollback would leave the fleet on
     # the bad deploy's build while only the app reverted.
     image: tower-finder-fleet:latest
-    container_name: retina-prod-fleet
     depends_on:
       tower-finder:
         condition: service_healthy
-    # RADAR_API_KEY comes from backend/.env (same file the app loads). The prod
+    # RADAR_API_KEY comes from backend/.env (the same file the app loads). The
     # backend enforces X-API-Key on its ingest whenever it has the key set
-    # (radar.py), so the fleet MUST present the matching key or its ground-truth
-    # / ADS-B pushes 401. This replaces the `-E RADAR_API_KEY` that the old
-    # restart-fleet-prod.sh passed to the transient unit. FLEET_* below override
-    # anything in .env (Compose: `environment` wins over `env_file`).
+    # (routes/radar.py), so the fleet MUST present the matching key or its
+    # ground-truth / ADS-B pushes 401. This replaces the `-E RADAR_API_KEY` that
+    # the old restart-fleet-prod.sh passed to the transient unit. In the base
+    # because staging previously omitted it and so never exercised the
+    # authenticated ingest path production runs. FLEET_* in the overlays
+    # override anything in .env (Compose: `environment` wins over `env_file`).
     env_file:
       - backend/.env
     environment:
-      # Fleet is scoped to one metro (Greenville, SC), so counts are sized for a
-      # single terminal area rather than a continent. Set FLEET_METRO="" to go
-      # back to the nationwide fleet — then restore the old 200/40.0/60-100.
-      - FLEET_NODES=25
-      - FLEET_REGIONS=us
-      - FLEET_METRO=gvl
-      - FLEET_N_CLUSTER=16
-      - FLEET_N_CLUSTERS=1
-      - FLEET_METRO_TRAFFIC_FRAC=0.85
-      - FLEET_MODE=adsb
-      # 25 nodes / 2.0s = 12.5 fps — half the Kalman tracker's ~25 fps ceiling.
-      # The old 200-node fleet needed 40.0s here; the smaller fleet buys a 20x
-      # faster frame rate at the same CPU cost.
-      - FLEET_INTERVAL=2.0
-      - FLEET_TIME_SCALE=1.0
-      - FLEET_MIN_AIRCRAFT=15
-      - FLEET_MAX_AIRCRAFT=30
-      - FLEET_BEAM_WIDTH_DEG=0
-      - FLEET_MAX_RANGE_KM=0
-      - FLEET_CONCURRENCY=20
-      # `restart: unless-stopped` recovers the fleet if the app restarts, so we
-      # no longer need the script's 999-retry hack — but keep a healthy margin
-      # so a slow app health-up can't drop the fleet mid-deploy.
-      - FLEET_CONNECT_RETRIES=30
       - FLEET_HOST=tower-finder
       - FLEET_PORT=3012
       - FLEET_VALIDATE=false
+      # HTTP base URL for live ADS-B / ground-truth pushes (the moving "truth"
+      # tracks). Must point at the server over the compose network, not the
+      # fleet's own localhost. Reaches uvicorn directly (UVICORN_HOST=0.0.0.0).
       - FLEET_VALIDATION_URL=http://tower-finder:8000
       - FLEET_SEED=42
     restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: "2"
-          memory: 2G
     logging:
       driver: json-file
       options:
         max-size: "50m"
         max-file: "5"
-
-networks:
-  retina-edge:
-    external: true
 
 volumes:
   backend-data:

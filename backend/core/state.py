@@ -156,6 +156,14 @@ solver_successes: int = 0
 solver_failures: int = 0
 solver_queue_drops: int = 0
 
+# Velocity-plausibility counters.  The solver has RMS gates on delay and
+# Doppler but none on the resulting velocity, and staging showed 11 of 42
+# tracks reporting above the simulator's fastest aircraft (522 kt), peaking at
+# 824 kt.  These count rather than correct: the speeds stay on the wire, and
+# these make the rate measurable while the cause is tracked down.
+implausible_velocity_count: int = 0   # solves whose speed exceeded the bound
+arc_velocity_rejects: int = 0         # arc-motion estimates rejected as absurd
+
 # Solver end-to-end latency (seconds from queue submission to solve completion)
 solver_last_latency_s: float = 0.0
 solver_total_latency_s: float = 0.0

@@ -328,8 +328,83 @@ def _refresh_accuracy_stats():
         "p95_km": round(_percentile(errors, 95), 4),
         "max_km": round(errors[-1], 4),
         "by_source": source_stats,
+        "velocity": _velocity_accuracy(),
     }
     state.latest_accuracy_bytes = orjson.dumps(result)
+
+
+# Matching radius for pairing a solve to a ground-truth aircraft when comparing
+# speed.  Deliberately tighter than resolve_ground_truth_hex's 8 km display
+# radius: a loose match here would blame one aircraft's speed on another's
+# solve and make the statistic meaningless.
+_VELOCITY_MATCH_KM = 3.0
+
+
+def _velocity_accuracy() -> dict:
+    """Compare solved ground speed against simulated truth.
+
+    Position accuracy has been measured for a long time; velocity has not, and
+    velocity is where the errors are.  Staging showed 11 of 42 tracks reporting
+    above the simulator's fastest aircraft (522 kt), peaking at 824 kt, while
+    the *median* was accurate — a heavy tail rather than a bias, which is
+    exactly the shape a spot-check hides and a percentile makes obvious.
+
+    Returns {} when no ground truth exists (real deployments), so this costs
+    nothing outside simulation.
+    """
+    truth = []
+    for gt_hex, trail in list(state.ground_truth_trails.items()):
+        if not trail:
+            continue
+        meta = state.ground_truth_meta.get(gt_hex) or {}
+        speed = meta.get("speed_ms")
+        if not speed:
+            continue
+        last = trail[-1]
+        truth.append((last[0], last[1], float(speed)))
+    if not truth:
+        return {}
+
+    truth_max = max(t[2] for t in truth)
+    ratios: list[float] = []
+    over = 0
+    for r in list(state.multinode_tracks.values()):
+        lat, lon = r.get("lat"), r.get("lon")
+        if lat is None or lon is None:
+            continue
+        solved = math.hypot(r.get("vel_east", 0.0), r.get("vel_north", 0.0))
+        best, best_d = None, _VELOCITY_MATCH_KM
+        cos_lat = math.cos(math.radians(lat))
+        for t_lat, t_lon, t_speed in truth:
+            d = math.hypot((lat - t_lat) * 111.32, (lon - t_lon) * 111.32 * cos_lat)
+            if d < best_d:
+                best, best_d = t_speed, d
+        if not best:
+            continue
+        ratios.append(solved / best)
+        if solved > truth_max:
+            over += 1
+
+    out = {
+        "n_matched": len(ratios),
+        "truth_max_ms": round(truth_max, 1),
+        # Counters are cumulative since boot; they flag rate, not instant state.
+        "implausible_velocity_count": state.implausible_velocity_count,
+        "arc_velocity_rejects": state.arc_velocity_rejects,
+    }
+    if ratios:
+        ratios.sort()
+        out.update({
+            # Solved speed / truth speed. 1.0 is perfect; p95 is the number
+            # that moves when velocity observability degrades.
+            "ratio_median": round(_percentile(ratios, 50), 3),
+            "ratio_p95": round(_percentile(ratios, 95), 3),
+            "ratio_max": round(ratios[-1], 3),
+            # Solves faster than any aircraft the simulator actually flies.
+            # Should be 0; currently is not.
+            "n_faster_than_any_truth": over,
+        })
+    return out
 
 
 def _refresh_radar3_verification():

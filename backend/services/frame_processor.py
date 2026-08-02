@@ -13,13 +13,17 @@ from collections import defaultdict, deque
 from retina_tracker.track import TrackState
 
 from config.constants import (
+    ARC_MOTION_MAX_SPEED_MS,
     ARC_REFRESH_S,
     ARCHIVE_BATCH_MAX,
     ARCHIVE_FLUSH_INTERVAL_S,
     DISPLAY_STALE_TRACK_S,
     GATE_MAX_HOLD_S,
+    GT_DISPLAY_STALE_S,
     GT_REFRESH_S,
+    IMPLAUSIBLE_SPEED_MS,
     STALE_TRACK_S,
+    TRAIL_STALE_S,
 )
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
@@ -263,9 +267,12 @@ def _estimate_velocity_ms_from_motion(
         dist_m = math.hypot(dlat_m, dlon_m)
         if dist_m < 200:
             continue  # essentially still — can't infer velocity
-        # Clamp: real cruise tops at ~600 kt, cap at 800 kt (~411 m/s) to
-        # leave headroom for headwind combinations and military traffic.
-        if dist_m / dt > 411.0:
+        # Sanity bound.  This was 411 m/s (799 kt), which accepted a few km of
+        # arc-midpoint jitter over 15 s as a legitimate 500-800 kt reading —
+        # not a sanity bound so much as a formality.  Rejections are counted
+        # rather than silently absorbed so the rate stays visible.
+        if dist_m / dt > ARC_MOTION_MAX_SPEED_MS:
+            state.arc_velocity_rejects += 1
             continue
         return dlon_m / dt, dlat_m / dt
     return None
@@ -484,10 +491,30 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
 def multinode_to_aircraft(key: str, r: dict) -> dict:
     speed_ms = math.sqrt(r["vel_east"] ** 2 + r["vel_north"] ** 2)
     heading = math.degrees(math.atan2(r["vel_east"], r["vel_north"])) % 360
-    _MACH_1 = 343.0
+    # "supersonic" claims the *aircraft* is going Mach 1.  On this fleet that
+    # claim has never once been true — the simulator's fastest aircraft is
+    # 268 m/s — so every one of these has really been a bad velocity estimate,
+    # which is a different fact about a different thing.  Report it as one:
+    # `implausible_velocity` marks the estimate as untrustworthy, and only
+    # genuinely supersonic *and* plausible motion keeps the old label.
     _mn_anomaly_types = []
-    if speed_ms > _MACH_1:
-        _mn_anomaly_types.append("supersonic")
+    _mn_implausible = speed_ms > IMPLAUSIBLE_SPEED_MS
+    if _mn_implausible:
+        _mn_anomaly_types.append("implausible_velocity")
+        state.implausible_velocity_count += 1
+        # Log the geometry needed to tell weak Doppler observability from a
+        # mis-association.  Without contributing_node_ids and rms_doppler
+        # there is nothing to troubleshoot from.
+        logging.warning(
+            "Implausible velocity: %.0f m/s (%.0f kt) n_nodes=%d "
+            "rms_doppler=%.1f Hz rms_delay=%.1f µs vel_e=%.1f vel_n=%.1f "
+            "lat=%.3f lon=%.3f nodes=%s",
+            speed_ms, speed_ms * 1.94384, r.get("n_nodes", 0),
+            r.get("rms_doppler", 0) or 0, r.get("rms_delay", 0) or 0,
+            r.get("vel_east", 0), r.get("vel_north", 0),
+            r.get("lat", 0), r.get("lon", 0),
+            ",".join(r.get("contributing_node_ids", [])) or "?",
+        )
     _mn_is_anom = bool(_mn_anomaly_types)
     _mn_hex = multinode_hex_from_key(key)
     with state.anomaly_lock:
@@ -593,6 +620,25 @@ def _build_single_node_arc(
         tx_dist_km = math.hypot(east_km - tx_east_km, north_km - tx_north_km)
         return tx_dist_km + range_km - baseline_km
 
+    # Ceiling for the per-bearing binary search below.  Note this is a
+    # *monostatic* RX-range bound, so a node's bistatic limit cannot be
+    # substituted for it directly — doing so would silently truncate every arc.
+    #
+    # Derive it instead.  Writing D(r) for the differential range along a
+    # bearing, the triangle inequality gives D(r) >= 2r - 2*baseline, so the
+    # range satisfying a measured differential D is at most D/2 + baseline.
+    # That is a tight ceiling that provably never clips the locus.
+    max_bistatic_km = node_cfg.get("max_bistatic_range_km")
+    if max_bistatic_km is not None:
+        max_bistatic_km = float(max_bistatic_km)
+        if differential_range_km > max_bistatic_km:
+            # The measured delay puts the target beyond what this node can
+            # physically detect — there is no arc to draw.
+            return None
+        search_max_km = differential_range_km / 2.0 + baseline_km
+    else:
+        search_max_km = max_range_km
+
     # When we have a known target position, centre the sweep on the bearing
     # from RX to that position and aim for an arc whose ground length is
     # roughly the same regardless of range — short enough to look like a
@@ -623,7 +669,7 @@ def _build_single_node_arc(
         if delta_from_axis > beam_width_deg / 2.0:
             continue
         lo = 0.0
-        hi = max_range_km
+        hi = search_max_km
         if _differential_at(hi, bearing_deg) < differential_range_km:
             continue
         for _ in range(32):
@@ -1053,7 +1099,26 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         _anom_types = set(getattr(track, "anomaly_types", set()))
         if _position_jump:
             _anom_types.add("position_jump")
-        _is_anom = bool(getattr(track, "is_anomalous", False)) or _position_jump
+        # Same velocity-plausibility marker as the multinode path.  Arc tracks
+        # reach it by a different route — the LM solver's own speed_knots, or
+        # velocity inferred from arc-midpoint displacement — but the statement
+        # is identical: this speed is not one an aircraft produces, so the
+        # estimate is untrustworthy.
+        _implausible_v = (gs / 1.94384) > IMPLAUSIBLE_SPEED_MS if gs else False
+        if _implausible_v:
+            _anom_types.add("implausible_velocity")
+            state.implausible_velocity_count += 1
+            logging.warning(
+                "Implausible velocity: %.0f kt on %s hex=%s node=%s "
+                "rms_delay=%.1f µs adsb=%s lat=%.3f lon=%.3f",
+                gs, position_source, ac_hex, node_cfg.get("node_id"),
+                rms_delay or 0, bool(has_adsb), lat, lon,
+            )
+        _is_anom = (
+            bool(getattr(track, "is_anomalous", False))
+            or _position_jump
+            or _implausible_v
+        )
         _max_vel = getattr(track, "max_velocity_ms", 0.0)
         _flag_hex = ac_hex
         with state.anomaly_lock:
@@ -1187,10 +1252,15 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
 
     # 4b. Prune stale ground-truth trails and track histories to bound
     # memory and keep resolve_ground_truth_hex O(N) scans cheap.
-    _GT_STALE_S = 300.0
+    #
+    # These two used to share one 300 s constant, but they want opposite
+    # things.  A ground-truth entry is a *current position* pushed every 2 s;
+    # once the pushes stop the aircraft has despawned, and holding it for
+    # 300 s paints a stationary blue dot on the map for five minutes.  A track
+    # history is the *trail behind* an aircraft, where a long tail is wanted.
     stale_gt = [
         h for h, trail in list(state.ground_truth_trails.items())
-        if not trail or (now - trail[-1][3]) > _GT_STALE_S
+        if not trail or (now - trail[-1][3]) > GT_DISPLAY_STALE_S
     ]
     for h in stale_gt:
         state.ground_truth_trails.pop(h, None)
@@ -1200,7 +1270,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
 
     stale_th = [
         h for h, trail in list(state.track_histories.items())
-        if not trail or (now - trail[-1][3]) > _GT_STALE_S
+        if not trail or (now - trail[-1][3]) > TRAIL_STALE_S
     ]
     for h in stale_th:
         state.track_histories.pop(h, None)
