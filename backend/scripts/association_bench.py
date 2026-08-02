@@ -85,6 +85,7 @@ class Result:
     solver_rejects: int = 0
     matched_tracks: set = None
     ghost_tracks: set = None
+    speed_err_ms: list = None
 
     def __post_init__(self):
         self.errors_km = []
@@ -94,6 +95,7 @@ class Result:
         self.speeds_kt = []
         self.matched_tracks = set()
         self.ghost_tracks = set()
+        self.speed_err_ms = []
         self._ghost_tracks = {}
 
     @property
@@ -205,7 +207,8 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
             continue
         # Carry the object id so a real target keeps one identity across
         # solves — keying on a position would mint a new track per epoch.
-        truth = [(ac.lat, ac.lon, ac.object_id) for ac in world.aircraft]
+        truth = [(ac.lat, ac.lon, ac.object_id, ac.speed_km_s * 1000.0)
+                 for ac in world.aircraft]
         for nid in due_nodes:
             next_send[nid] += frame_interval
             frame = world.generate_detections_for_node(nid, ts_ms)
@@ -230,10 +233,10 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                 if not out or not out.get("success"):
                     res.solver_rejects += 1
                     continue
-                d, best_id = min(
-                    ((_haversine_km(out["lat"], out["lon"], a, b), oid)
-                     for a, b, oid in truth),
-                    default=(float("inf"), None))
+                d, best_id, best_speed = min(
+                    ((_haversine_km(out["lat"], out["lon"], a, b), oid, sp)
+                     for a, b, oid, sp in truth),
+                    default=(float("inf"), None, 0.0))
                 nn = out.get("n_nodes", s_in.get("n_nodes", 0))
                 speed = math.hypot(out.get("vel_east", 0.0), out.get("vel_north", 0.0))
                 res.speeds_kt.append(speed * 1.94384)
@@ -246,6 +249,10 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                     # aircraft, so a real target is one track however many
                     # times it is solved.
                     res.matched_tracks.add(best_id)
+                    # Velocity error is the quantity the Doppler rework
+                    # targets; ghost rate is not.
+                    if best_speed > 0:
+                        res.speed_err_ms.append(abs(speed - best_speed))
                 else:
                     res.ghosts += 1
                     res.ghost_dist_km.append(d)
@@ -284,6 +291,10 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
               f"  max {max(g):.1f}")
     print(f"  matched n_nodes {dict(sorted(r.n_nodes_matched.items()))}")
     print(f"  ghost   n_nodes {dict(sorted(r.n_nodes_ghost.items()))}")
+    if r.speed_err_ms:
+        e = sorted(r.speed_err_ms)
+        print(f"  matched SPEED error: median {statistics.median(e):6.1f} m/s"
+              f"  p90 {e[int(0.9 * (len(e) - 1))]:6.1f}  max {max(e):6.1f}")
     if r.speeds_kt and truth_max_kt:
         over = sum(1 for s in r.speeds_kt if s > truth_max_kt)
         print(f"  solves faster than any real aircraft ({truth_max_kt:.0f} kt): "
@@ -318,7 +329,7 @@ def main():
           f"{args.seconds:.0f}s @ {args.frame_interval:.0f}s frames, seed {args.seed}")
 
     for interval in args.assoc_interval:
-        rates, solve_rates, reals, fakes = [], [], [], []
+        rates, solve_rates, reals, fakes, speed_errs = [], [], [], [], []
         last = None
         for k in range(args.repeat):
             last = run(args.seed + k, args.seconds, args.dt, args.frame_interval,
@@ -332,6 +343,8 @@ def main():
             solve_rates.append(last.ghost_pct)
             reals.append(len(last.matched_tracks))
             fakes.append(len(last.ghost_tracks))
+            if last.speed_err_ms:
+                speed_errs.append(statistics.median(last.speed_err_ms))
         report(f"assoc_interval={interval:g}s", last)
         if args.repeat > 1:
             mean = statistics.mean(rates)
@@ -342,6 +355,10 @@ def main():
                   f"range {min(rates):.0f}-{max(rates):.0f}%   "
                   f"real {min(reals)}-{max(reals)}  false {min(fakes)}-{max(fakes)}")
             print(f"    by solve: {', '.join(f'{x:.1f}%' for x in solve_rates)}")
+            if speed_errs:
+                print(f"    median speed error per seed: "
+                      f"{', '.join(f'{x:.0f}' for x in speed_errs)} m/s"
+                      f"   mean {statistics.mean(speed_errs):.0f}")
 
 
 if __name__ == "__main__":
