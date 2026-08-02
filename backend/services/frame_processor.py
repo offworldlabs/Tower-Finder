@@ -101,6 +101,94 @@ def position_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> 
     return math.sqrt(dlat ** 2 + dlon ** 2)
 
 
+# ── Aircraft de-duplication ───────────────────────────────────────────────────
+# Preference when several entries describe one aircraft. A multinode fix is
+# constrained by >=2 receivers; a single-node ellipse arc is only an ambiguity
+# locus, so it loses.
+_DEDUP_SOURCE_RANK = {
+    "multinode_solve": 0,
+    "solver_adsb_seed": 1,
+    "solver_single_node": 2,
+    "single_node_ellipse_arc": 3,
+}
+# Deliberately tighter than the 6 km solver association gate. Observed duplicate
+# spread is ~1 km, while real IFR separation is 5 nm (~9.3 km) laterally or
+# 1000 ft vertically — so this collapses duplicates with margin to spare while
+# staying well clear of merging two genuinely separate aircraft. Under-merging
+# leaves a cosmetic double; over-merging would hide real traffic.
+_DEDUP_PROXIMITY_KM = 3.0
+_DEDUP_ALT_GATE_FT = 2000.0
+
+
+def _looks_like_same_aircraft(a: dict, b: dict) -> bool:
+    """Proximity + altitude test for entries with no shared identity."""
+    for k in ("lat", "lon"):
+        if not isinstance(a.get(k), (int, float)) or not isinstance(b.get(k), (int, float)):
+            return False
+    if position_distance_km(a["lat"], a["lon"], b["lat"], b["lon"]) > _DEDUP_PROXIMITY_KM:
+        return False
+    alt_a, alt_b = a.get("alt_baro"), b.get("alt_baro")
+    if isinstance(alt_a, (int, float)) and isinstance(alt_b, (int, float)):
+        if abs(alt_a - alt_b) > _DEDUP_ALT_GATE_FT:
+            return False
+    return True
+
+
+def dedup_aircraft(aircraft: list[dict]) -> list[dict]:
+    """Collapse entries that describe the same physical aircraft.
+
+    Two entries can describe one aircraft and never share a `hex`: a multinode
+    solve is named mn<sha>, a single-node arc by ICAO or pr<id>. The `seen_hex`
+    set in the builder is exact string equality, so it can never merge them —
+    which is why one target could render as several icons.
+
+    Grouped by ground_truth_hex where available, else by proximity. The
+    ground-truth path is simulation-only (resolve_ground_truth_hex reads
+    state.ground_truth_trails), so the proximity fallback is what carries real
+    hardware.
+    """
+    groups: list[list[dict]] = []
+    by_truth: dict[str, int] = {}
+
+    for ac in aircraft:
+        gt = ac.get("ground_truth_hex")
+        if gt:
+            idx = by_truth.get(gt)
+            if idx is None:
+                by_truth[gt] = len(groups)
+                groups.append([ac])
+            else:
+                groups[idx].append(ac)
+            continue
+        for g in groups:
+            if _looks_like_same_aircraft(ac, g[0]):
+                g.append(ac)
+                break
+        else:
+            groups.append([ac])
+
+    out: list[dict] = []
+    for g in groups:
+        if len(g) == 1:
+            out.append(g[0])
+            continue
+        g.sort(key=lambda x: _DEDUP_SOURCE_RANK.get(x.get("position_source"), 99))
+        winner = g[0]
+        # Carry every contributing node onto the survivor so node filtering
+        # (aircraft_flush.filter_payload_to_nodes) and the frontend's
+        # node-highlight still see this aircraft under each node that saw it.
+        nodes: list[str] = []
+        for m in g:
+            for nid in [m.get("node_id"), *(m.get("contributing_node_ids") or [])]:
+                if nid and nid not in nodes:
+                    nodes.append(nid)
+        if nodes:
+            winner["contributing_node_ids"] = nodes
+        out.append(winner)
+
+    return out
+
+
 def append_track_history(hex_code: str, lat: float, lon: float, alt_ft: float, ts: float):
     """Append a position to the rolling track history for a hex."""
     if hex_code not in state.track_histories:
@@ -979,9 +1067,13 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             ac["ground_truth_hex"] = resolve_ground_truth_hex(ac["hex"], ac["lat"], ac["lon"])
             aircraft.append(ac)
     for k in stale_mn:
-        _mn_hex = f"mn{abs(hash(k)) % 0xFFFF:04x}"
+        # Must use the same derivation as insertion (multinode_to_aircraft →
+        # multinode_hex_from_key). This previously used an obsolete 4-char
+        # format that never matched the mn<sha256[:10]> actually inserted, so
+        # no multinode anomaly hex was ever evicted and anomaly_hexes grew
+        # without bound — enough to trip the anomaly_flood health check.
         with state.anomaly_lock:
-            state.anomaly_hexes.discard(_mn_hex)
+            state.anomaly_hexes.discard(multinode_hex_from_key(k))
         state.multinode_tracks.pop(k, None)
 
     # 4. ADS-B only — excluded from map per design.
@@ -1089,6 +1181,11 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     # or it is not.  An empty touched set (no arc tracks this build) prunes all.
     for _stale_key in [k for k in _single_node_arc_cache if k not in _touched_arc_keys]:
         del _single_node_arc_cache[_stale_key]
+
+    # Collapse multiple entries describing one aircraft. Runs last, after all
+    # three sections have appended, so a multinode solve can displace a
+    # single-node arc that was appended before it.
+    aircraft = dedup_aircraft(aircraft)
 
     return {
         "now": now,

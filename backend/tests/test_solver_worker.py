@@ -61,7 +61,7 @@ class TestProcessSolverItem:
         assert state.solver_total_solved == 1
         assert state.solver_last_latency_s >= 0
         assert "solver" in state.task_last_success
-        assert any(k.startswith("mn-1000-") for k in state.multinode_tracks)
+        assert any(k.startswith("mn-dark-1000-") for k in state.multinode_tracks)
         assert len(stub.calibration_calls) == 2
 
     def test_exception_increments_failures(self, monkeypatch):
@@ -192,7 +192,7 @@ class TestRmsDelayFilter:
         item = ({"n_nodes": 2}, {}, time.time())
         solver_mod._process_solver_item(item, solve_fn)
 
-        assert any(k.startswith("mn-6000-") for k in state.multinode_tracks)
+        assert any(k.startswith("mn-dark-6000-") for k in state.multinode_tracks)
         assert state.solver_successes == 1
 
     def test_high_rms_doppler_rejected(self, monkeypatch):
@@ -248,7 +248,7 @@ class TestRmsDelayFilter:
         item = ({"n_nodes": 3}, {}, time.time())
         solver_mod._process_solver_item(item, solve_fn)
 
-        assert any(k.startswith("mn-8000-") for k in state.multinode_tracks)
+        assert any(k.startswith("mn-dark-8000-") for k in state.multinode_tracks)
         assert state.solver_successes == 1
 
 
@@ -466,7 +466,7 @@ class TestBeamCoverageFilter:
         result = solver_mod._process_solver_item(item, solve_fn)
 
         assert result is not None
-        assert any(k.startswith("mn-9002-") for k in state.multinode_tracks)
+        assert any(k.startswith("mn-dark-9002-") for k in state.multinode_tracks)
         assert state.solver_successes == 1
         assert state.solver_failures == 0
 

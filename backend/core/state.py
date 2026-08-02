@@ -186,7 +186,10 @@ rate_buckets: dict[str, list] = defaultdict(list)
 
 # ── Simulation physics config (read by fleet orchestrator, written by UI) ─────
 simulation_config: dict = {
-    "frac_anomalous": 0.05,
+    # Anomalies off by default. Raise via PUT /api/simulation/config (or the
+    # Physics tab) to turn them back on; note this dict is not persisted in the
+    # state snapshot, so a backend restart returns it to these defaults.
+    "frac_anomalous": 0.0,
     "frac_drone": 0.10,
     "frac_dark": 0.15,
     # aircraft (commercial) fraction = 1 - sum of above

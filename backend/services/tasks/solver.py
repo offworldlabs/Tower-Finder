@@ -306,6 +306,78 @@ def _ewma_smooth_track(result: dict, adsb_hex: str | None) -> dict:
     return smoothed
 
 
+# ── Multinode track identity ─────────────────────────────────────────────────
+# An entry in state.multinode_tracks is ONE AIRCRAFT, not one solve.  Every node
+# runs its own association round (ASSOC_MIN_INTERVAL_S), so the same aircraft is
+# re-solved repeatedly from different nodes' frames; those solves must update a
+# single entry.  Keying on the solve timestamp and latitude — the original
+# behaviour — made every solve a distinct "aircraft": one target rendered as 4-6
+# overlapping icons that drifted apart and then tripped the position-mismatch
+# and supersonic anomaly detectors.
+
+# Dark-target association gate.  retina_analytics.association uses the same 6 km
+# (_MERGE_DIST_KM) for within-round clustering, so this keeps the cross-round
+# gate no tighter than the one already applied per round.
+_MN_ASSOC_MAX_DIST_KM = 6.0
+# Never associate to an entry the map has already dropped (the 60 s expiry in
+# frame_processor.build_combined_aircraft_json).
+_MN_ASSOC_MAX_AGE_S = 60.0
+# Guards the read-modify-write in _process_solver_item.  Solver workers run
+# _N_SOLVER_WORKERS-way concurrently, and two threads associating the same
+# aircraft at once would each miss the other's entry and mint two tracks — the
+# very duplication this exists to prevent.
+_MN_TRACKS_LOCK = threading.Lock()
+
+
+def _multinode_track_key(result: dict, adsb_hex: str | None) -> str:
+    """Return a stable per-aircraft key for state.multinode_tracks.
+
+    Call under _MN_TRACKS_LOCK — it scans state.multinode_tracks and the caller
+    writes back into it.
+
+    ADS-B-tagged solves key on the transponder hex, the same identity
+    _ewma_smooth_track already uses to accumulate cross-solve history, so the
+    smoother and the track store finally agree.
+
+    Dark targets have no such identity and are associated to the nearest recent
+    dark track, dead-reckoned forward to this solve's timestamp.  This is the
+    path real (non-simulated) hardware depends on: ground_truth_hex is not
+    usable here because it only exists for simulated traffic.
+    """
+    if adsb_hex:
+        return f"mn-adsb-{adsb_hex}"
+
+    lat, lon = result["lat"], result["lon"]
+    ts_s = result.get("timestamp_ms", 0) / 1000.0
+    best_key, best_dist = None, _MN_ASSOC_MAX_DIST_KM
+
+    for key, prev in state.multinode_tracks.items():
+        # Only dark tracks are claimable; an untagged solve must never steal the
+        # identity of an ADS-B-tagged aircraft that happens to be nearby.
+        if not key.startswith("mn-dark-"):
+            continue
+        dt = ts_s - prev.get("timestamp_ms", 0) / 1000.0
+        if not (0.0 <= dt <= _MN_ASSOC_MAX_AGE_S):
+            continue
+        p_lat, p_lon = prev.get("lat"), prev.get("lon")
+        if p_lat is None or p_lon is None:
+            continue
+        # Dead-reckon the existing track forward before measuring, so a fast
+        # target is not rejected purely for having moved since its last solve.
+        cos_lat = math.cos(math.radians(p_lat)) or 1e-9
+        p_lat += (prev.get("vel_north", 0.0) / 111_320.0) * dt
+        p_lon += (prev.get("vel_east", 0.0) / (111_320.0 * cos_lat)) * dt
+        d = _haversine_km(lat, lon, p_lat, p_lon)
+        if d < best_dist:
+            best_key, best_dist = key, d
+
+    if best_key is not None:
+        return best_key
+    # No claimant — a genuinely new target.  This key only needs to be unique at
+    # birth; every later solve associates to it above, so it stays stable.
+    return f"mn-dark-{result.get('timestamp_ms', 0)}-{lat:.3f}-{lon:.3f}"
+
+
 # Maximum age (seconds) of a solver queue item before it is discarded without
 # solving.  Items older than this are already stale — the multinode_tracks
 # expiry is 60 s, and a solve itself can take a few seconds — so spending CPU
@@ -452,8 +524,9 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             state.node_analytics.record_calibration_point(
                 nid, result["lat"], result["lon"]
             )
-        key = f"mn-{result['timestamp_ms']}-{result['lat']:.3f}"
-        state.multinode_tracks[key] = result
+        with _MN_TRACKS_LOCK:
+            key = _multinode_track_key(result, _adsb_hex)
+            state.multinode_tracks[key] = result
         # Append a snapshot to the track-archive buffer for Parquet persistence.
         # solve_ts_ms records when the solve completed (server wallclock) so
         # analysts can measure end-to-end latency vs. result["timestamp_ms"].

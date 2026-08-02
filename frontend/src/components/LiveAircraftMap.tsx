@@ -902,7 +902,14 @@ export default function LiveAircraftMap() {
   const [showFilters, setShowFilters] = useState(false);
   const [showStats, setShowStats] = usePersistedState("tf.layer.stats", initialLayers?.stats ?? true);
   const [showRangeRings, setShowRangeRings] = usePersistedState("tf.layer.rangeRings", initialLayers?.rangeRings ?? false);
-  const [showInBeamDiag, setShowInBeamDiag] = usePersistedState("tf.layer.inBeamDiag", initialLayers?.inBeamDiag ?? true);
+  // Beam-gap diagnostic defaults OFF: it draws one line per (aircraft, node)
+  // pair, so a metro-scoped fleet whose nodes all cover the same airspace turns
+  // the map into a thicket. Still available from the "Beam gaps" toolbar button
+  // and the `b` URL-hash layer.
+  // Storage key is versioned (.v2) so the new default reaches anyone who
+  // already has the old `tf.layer.inBeamDiag: true` persisted in localStorage —
+  // without it, every existing user keeps seeing the lines.
+  const [showInBeamDiag, setShowInBeamDiag] = usePersistedState("tf.layer.inBeamDiag.v2", initialLayers?.inBeamDiag ?? false);
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   // Enthusiast filters: altitude band (FL, hundreds of ft), speed floor, type.
   const [filters, setFilters] = usePersistedState("tf.filters", { minFl: "", maxFl: "", minGs: "", type: "all" });

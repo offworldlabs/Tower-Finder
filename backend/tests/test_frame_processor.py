@@ -13,6 +13,7 @@ from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from services.frame_processor import (
     append_track_history,
     build_combined_aircraft_json,
+    dedup_aircraft,
     flush_all_archive_buffers,
     get_node_configs,
     get_or_create_node_pipeline,
@@ -344,3 +345,94 @@ class TestArchiveBuffering:
         finally:
             with fp._archive_buffer_lock:
                 fp._archive_buffer.pop(node_id, None)
+
+
+# ── De-duplication ───────────────────────────────────────────────────────────
+# Nothing previously asserted "one aircraft => one entry", which is how a single
+# target came to render as 4-6 overlapping icons in production: a multinode
+# solve is named mn<sha> and a single-node arc by ICAO, so the builder's
+# exact-string `seen_hex` set could never collapse them.
+
+class TestDedupAircraft:
+    def _entry(self, hex_code, src, lat, lon, alt=30000, gt=None, node=None):
+        e = {
+            "hex": hex_code, "position_source": src,
+            "lat": lat, "lon": lon, "alt_baro": alt,
+        }
+        if gt is not None:
+            e["ground_truth_hex"] = gt
+        if node is not None:
+            e["node_id"] = node
+        return e
+
+    def test_one_aircraft_one_entry_via_ground_truth(self):
+        """The production failure: 1 arc + 5 multinode solves for one target."""
+        entries = [
+            self._entry("abf380", "single_node_ellipse_arc", 34.895, -81.805,
+                        gt="abf380", node="synth-RING-0007"),
+            *[
+                self._entry(f"mn{i:010x}", "multinode_solve", 34.984 + i * 1e-4,
+                            -81.97 + i * 1e-4, gt="abf380")
+                for i in range(5)
+            ],
+        ]
+        out = dedup_aircraft(entries)
+        assert len(out) == 1, f"expected 1 aircraft, got {len(out)}"
+
+    def test_multinode_wins_over_single_node_arc(self):
+        out = dedup_aircraft([
+            self._entry("abcdef", "single_node_ellipse_arc", 34.9, -82.0, gt="t1"),
+            self._entry("mn0000000001", "multinode_solve", 34.9, -82.0, gt="t1"),
+        ])
+        assert len(out) == 1
+        assert out[0]["position_source"] == "multinode_solve"
+
+    def test_contributing_nodes_merged_onto_survivor(self):
+        """Node filtering and the frontend highlight must still find the plane
+        under every node that saw it."""
+        out = dedup_aircraft([
+            self._entry("abcdef", "single_node_ellipse_arc", 34.9, -82.0,
+                        gt="t1", node="node-a"),
+            {**self._entry("mn0000000001", "multinode_solve", 34.9, -82.0, gt="t1"),
+             "contributing_node_ids": ["node-b", "node-c"]},
+        ])
+        assert len(out) == 1
+        assert set(out[0]["contributing_node_ids"]) == {"node-a", "node-b", "node-c"}
+
+    def test_proximity_fallback_without_ground_truth(self):
+        """Real hardware has no ground_truth_hex — proximity must carry it."""
+        out = dedup_aircraft([
+            self._entry("pr0001", "single_node_ellipse_arc", 34.900, -82.000),
+            self._entry("mn0000000001", "multinode_solve", 34.902, -82.001),
+        ])
+        assert len(out) == 1
+        assert out[0]["position_source"] == "multinode_solve"
+
+    def test_distinct_aircraft_are_not_merged(self):
+        """Over-merging would hide real traffic — worse than a cosmetic double."""
+        out = dedup_aircraft([
+            self._entry("aaa111", "multinode_solve", 34.90, -82.00),
+            self._entry("bbb222", "multinode_solve", 35.30, -82.00),  # ~44 km
+        ])
+        assert len(out) == 2
+
+    def test_vertically_separated_aircraft_not_merged(self):
+        """Same lat/lon, 10000 ft apart — two aircraft, not one."""
+        out = dedup_aircraft([
+            self._entry("aaa111", "multinode_solve", 34.90, -82.00, alt=20000),
+            self._entry("bbb222", "multinode_solve", 34.90, -82.00, alt=30000),
+        ])
+        assert len(out) == 2
+
+    def test_distinct_ground_truth_never_merged_despite_proximity(self):
+        """Identity beats proximity: two known-distinct targets stay distinct."""
+        out = dedup_aircraft([
+            self._entry("mn0000000001", "multinode_solve", 34.900, -82.000, gt="t1"),
+            self._entry("mn0000000002", "multinode_solve", 34.901, -82.000, gt="t2"),
+        ])
+        assert len(out) == 2
+
+    def test_empty_and_singleton_are_passthrough(self):
+        assert dedup_aircraft([]) == []
+        one = [self._entry("abcdef", "multinode_solve", 34.9, -82.0)]
+        assert dedup_aircraft(one) == one
