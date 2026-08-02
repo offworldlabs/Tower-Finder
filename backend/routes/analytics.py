@@ -75,11 +75,31 @@ async def radar_accuracy():
 
 @router.get("/api/radar/association/status")
 async def association_status():
+    _a = state.node_associator
+    _n = max(getattr(_a, "frame_skew_samples", 0), 1)
+    now_ms = int(time.time() * 1000)
     return {
-        "registered_nodes": len(state.node_associator.node_geometries),
-        "overlap_zones": len(state.node_associator.overlap_zones),
-        "pending_frames": list(state.node_associator._pending_frames.keys()),
-        "overlaps": state.node_associator.get_overlap_summary(),
+        "registered_nodes": len(_a.node_geometries),
+        "overlap_zones": len(_a.overlap_zones),
+        "pending_frames": list(_a._pending_frames.keys()),
+        # Age of each node's latest pending frame.  Association pairs a node's
+        # new frame against whatever its neighbours last sent, so this skew is
+        # position error injected straight into the geometry — roughly 250 m of
+        # aircraft motion per second of it.
+        "pending_frame_age_ms": {
+            nid: now_ms - int(f.get("timestamp", 0) or 0)
+            for nid, f in list(_a._pending_frames.items())
+            if f.get("timestamp")
+        },
+        "frame_skew": {
+            "samples": getattr(_a, "frame_skew_samples", 0),
+            "mean_ms": round(getattr(_a, "frame_skew_ms_total", 0) / _n, 1),
+            "max_ms": getattr(_a, "frame_skew_ms_max", 0),
+            "sync_rejects": getattr(_a, "frame_sync_rejects", 0),
+            "gate_ms": getattr(_a, "_FRAME_SYNC_MAX_AGE_MS", None),
+            "hist_500ms_buckets": getattr(_a, "frame_skew_hist", []),
+        },
+        "overlaps": _a.get_overlap_summary(),
     }
 
 
