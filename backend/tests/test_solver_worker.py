@@ -18,7 +18,6 @@ os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 from core import state  # noqa: E402
 from services.tasks import solver as solver_mod  # noqa: E402
 
-
 # An n=2 solver input whose track pairing has already passed the
 # constant-velocity fit.  At n=2 a solve is published only once the pairing has
 # justified itself — the residual gates cannot discriminate there, the solver

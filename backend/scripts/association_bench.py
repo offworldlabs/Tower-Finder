@@ -51,8 +51,6 @@ from retina_geolocator.multinode_solver import (  # noqa: E402
     fit_constant_velocity,
     solve_multinode,
 )
-from retina_tracker.track import TrackState  # noqa: E402
-from retina_tracker.tracker import Tracker  # noqa: E402
 from retina_simulation.generator import coverage_cells, generate_fleet  # noqa: E402
 from retina_simulation.orchestrator import _cells_to_metrocells  # noqa: E402
 from retina_simulation.world import (  # noqa: E402
@@ -60,6 +58,8 @@ from retina_simulation.world import (  # noqa: E402
     SimulationWorld,
     waypoints_for_metro,
 )
+from retina_tracker.track import TrackState  # noqa: E402
+from retina_tracker.tracker import Tracker  # noqa: E402
 
 # A solve is credited to an aircraft if it lands within this radius.  Matches
 # resolve_ground_truth_hex's display radius so results line up with the staging
