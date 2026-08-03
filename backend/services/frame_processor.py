@@ -1138,15 +1138,23 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         # Record ADS-B-verified positions as calibration points for empirical coverage.
         if has_adsb:
             nid = node_cfg.get("node_id")
+            adsb_lat = adsb.get("lat", 0)
+            adsb_lon = adsb.get("lon", 0)
+            # The *reported* position, not the solver's estimate.  This is a
+            # characterisation of where the node can see, so it has to be built
+            # from positions that are known independently of the thing being
+            # characterised — the solve is what the coverage polygon is
+            # eventually used to judge.  The previous code was gated on
+            # has_adsb but stored solver_lat/solver_lon, so it inherited every
+            # solver error while looking like ground truth.
+            if nid and adsb_lat and adsb_lon:
+                state.node_analytics.record_calibration_point(nid, adsb_lat, adsb_lon)
             if nid:
-                state.node_analytics.record_calibration_point(nid, solver_lat, solver_lon)
                 # Track furthest verified detections per node (for detection range)
                 area = state.node_analytics.detection_areas.get(nid)
                 if area:
-                    area.record_verified_detection(adsb.get("lat", 0), adsb.get("lon", 0), ac_hex)
+                    area.record_verified_detection(adsb_lat, adsb_lon, ac_hex)
             # Track accuracy: haversine(solver, adsb) per aircraft per update
-            adsb_lat = adsb.get("lat", 0)
-            adsb_lon = adsb.get("lon", 0)
             if adsb_lat and adsb_lon:
                 err_km = position_distance_km(solver_lat, solver_lon, adsb_lat, adsb_lon)
                 _record_accuracy_sample(ac_hex, err_km, position_source, now)

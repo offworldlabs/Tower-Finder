@@ -71,7 +71,8 @@ class TestProcessSolverItem:
         assert state.solver_last_latency_s >= 0
         assert "solver" in state.task_last_success
         assert any(k.startswith("mn-dark-1000-") for k in state.multinode_tracks)
-        assert len(stub.calibration_calls) == 2
+        # A dark solve contributes no coverage — see TestCoverageCalibration.
+        assert stub.calibration_calls == []
 
     def test_exception_increments_failures(self, monkeypatch):
         _reset_state()
@@ -671,3 +672,62 @@ class TestN2ConfirmationGate:
         assert any(k.startswith("mn-dark-7100-") for k in state.multinode_tracks)
         assert state.solver_successes == 1
         assert state.n2_unconfirmed == 0
+
+
+class TestCoverageCalibration:
+    """Empirical coverage is fed only from independently-known positions.
+
+    The polygon characterises where a node can see, and it is on its way to
+    constraining association — so feeding it the solver's own output would let a
+    phantom widen the very region that produced it.  Measured blind, 55-85% of
+    n=2 tracks are ghosts a median 20+ km from any aircraft.
+    """
+
+    @staticmethod
+    def _solve_fn(s_in, cfgs):
+        return {
+            "success": True,
+            "lat": 37.5, "lon": -122.1,          # deliberately far from the ADS-B fix
+            "rms_delay": 0.4, "rms_doppler": 3.0,
+            "timestamp_ms": 8000,
+            "contributing_node_ids": ["n1", "n2"],
+            "n_nodes": 2,
+        }
+
+    def _run(self, monkeypatch, adsb_entry, hex_id="abc123"):
+        _reset_state()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+        state.adsb_aircraft.clear()
+        if adsb_entry is not None:
+            state.adsb_aircraft[hex_id] = adsb_entry
+        s_in = {**_CONFIRMED_N2, "adsb_hex": hex_id if adsb_entry else None}
+        solver_mod._process_solver_item((s_in, {}, time.time()), self._solve_fn)
+        return stub
+
+    def test_records_the_adsb_position_not_the_solve(self, monkeypatch):
+        stub = self._run(monkeypatch, {
+            "lat": 34.88, "lon": -82.35,
+            "last_seen_ms": time.time() * 1000,
+        })
+        assert len(stub.calibration_calls) == 2          # one per contributing node
+        assert {c[0] for c in stub.calibration_calls} == {"n1", "n2"}
+        for _nid, lat, lon in stub.calibration_calls:
+            assert (lat, lon) == (34.88, -82.35)          # not (37.5, -122.1)
+
+    def test_dark_solve_records_nothing(self, monkeypatch):
+        assert self._run(monkeypatch, None).calibration_calls == []
+
+    def test_stale_adsb_fix_is_refused(self, monkeypatch):
+        """At 250 m/s a stale fix no longer says where the target was."""
+        stub = self._run(monkeypatch, {
+            "lat": 34.88, "lon": -82.35,
+            "last_seen_ms": (time.time() - 60.0) * 1000,
+        })
+        assert stub.calibration_calls == []
+
+    def test_missing_position_is_refused(self, monkeypatch):
+        stub = self._run(monkeypatch, {
+            "lat": 0, "lon": 0, "last_seen_ms": time.time() * 1000,
+        })
+        assert stub.calibration_calls == []

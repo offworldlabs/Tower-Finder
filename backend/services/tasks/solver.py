@@ -167,6 +167,12 @@ _MAX_DISPLACEMENT_KM = 2.0
 _N2_REQUIRE_CONFIRMED = True
 _N2_CONFIRM_CHI2_MAX = N2_CONFIRM_CHI2_MAX
 
+# Oldest ADS-B fix still usable as a coverage calibration point.  At 250 m/s a
+# 10 s fix is 2.5 km stale, which is already coarse against a 5°/72-bin polar
+# grid; beyond that the point stops describing where the target was when the
+# node detected it.
+_CAL_MAX_ADSB_AGE_S = 10.0
+
 
 def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn,
                      layers_km: list[float], metric: str) -> dict | None:
@@ -571,10 +577,26 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
         # the wrong hex's is_anomalous=False — pollutting the normal_only stats.
         if _adsb_hex:
             result["adsb_hex"] = _adsb_hex
-        for nid in result.get("contributing_node_ids", []):
-            state.node_analytics.record_calibration_point(
-                nid, result["lat"], result["lon"]
-            )
+        # Empirical coverage characterises where a node can see, so it is built
+        # only from positions known independently of the solve.  This loop used
+        # to record result["lat"]/["lon"] for every multinode solve — measured
+        # blind, 55-85% of n=2 tracks are ghosts a median 20+ km from any
+        # aircraft, and those were shaping the polygon.  Worse, that polygon is
+        # on its way to constraining association, so a phantom would have
+        # widened the very region that produced it.
+        #
+        # The ADS-B fix is the honest input, and contributing_node_ids remains
+        # the right attribution: one calibration point per node that actually
+        # saw the target.  A dark solve now records nothing.
+        _cal = state.adsb_aircraft.get(_adsb_hex) if _adsb_hex else None
+        if _cal:
+            _cal_lat, _cal_lon = _cal.get("lat"), _cal.get("lon")
+            _cal_age_s = time.time() - _cal.get("last_seen_ms", 0) / 1000.0
+            if _cal_lat and _cal_lon and _cal_age_s <= _CAL_MAX_ADSB_AGE_S:
+                for nid in result.get("contributing_node_ids", []):
+                    state.node_analytics.record_calibration_point(
+                        nid, _cal_lat, _cal_lon
+                    )
         with _MN_TRACKS_LOCK:
             key = _multinode_track_key(result, _adsb_hex)
             state.multinode_tracks[key] = result
