@@ -19,6 +19,15 @@ from core import state  # noqa: E402
 from services.tasks import solver as solver_mod  # noqa: E402
 
 
+# An n=2 solver input whose track pairing has already passed the
+# constant-velocity fit.  At n=2 a solve is published only once the pairing has
+# justified itself — the residual gates cannot discriminate there, the solver
+# having 5 unknowns against 4 residuals — so a bare {"n_nodes": 2} is now
+# withheld and every test expecting publication has to say which case it is
+# exercising.  TestN2ConfirmationGate covers the unconfirmed side.
+_CONFIRMED_N2 = {"n_nodes": 2, "chi2_per_dof": 0.5, "n_epochs": 8}
+
+
 def _reset_state():
     state.task_error_counts.clear()
     state.solver_failures = 0
@@ -26,6 +35,7 @@ def _reset_state():
     state.solver_total_solved = 0
     state.solver_total_latency_s = 0.0
     state.solver_last_latency_s = 0.0
+    state.n2_unconfirmed = 0
     state.multinode_tracks.clear()
     state.task_last_success.clear()
 
@@ -53,7 +63,7 @@ class TestProcessSolverItem:
                 "contributing_node_ids": ["n1", "n2"],
             }
 
-        item = ({"n_nodes": 2}, {}, time.time())
+        item = (_CONFIRMED_N2, {}, time.time())
         result = solver_mod._process_solver_item(item, solve_fn)
 
         assert result is not None
@@ -85,7 +95,7 @@ class TestProcessSolverItem:
         def solve_fn(s_in, cfgs):
             return {"success": False}
 
-        item = ({"n_nodes": 2}, {}, time.time())
+        item = (_CONFIRMED_N2, {}, time.time())
         solver_mod._process_solver_item(item, solve_fn)
 
         assert state.solver_successes == 0
@@ -138,7 +148,7 @@ class TestProcessSolverItem:
             }
 
         # 2-tuple item (legacy shape without enqueued_at)
-        item = ({"n_nodes": 2}, {})
+        item = (_CONFIRMED_N2, {})
         solver_mod._process_solver_item(item, solve_fn)
 
         assert state.solver_successes == 1
@@ -164,7 +174,7 @@ class TestRmsDelayFilter:
                 "n_nodes": 2,
             }
 
-        item = ({"n_nodes": 2}, {}, time.time())
+        item = (_CONFIRMED_N2, {}, time.time())
         solver_mod._process_solver_item(item, solve_fn)
 
         assert not state.multinode_tracks, "false solve must not be stored"
@@ -189,7 +199,7 @@ class TestRmsDelayFilter:
                 "n_nodes": 2,
             }
 
-        item = ({"n_nodes": 2}, {}, time.time())
+        item = (_CONFIRMED_N2, {}, time.time())
         solver_mod._process_solver_item(item, solve_fn)
 
         assert any(k.startswith("mn-dark-6000-") for k in state.multinode_tracks)
@@ -273,7 +283,7 @@ class TestStaleItemSkip:
             }
 
         old_enqueued_at = time.time() - (solver_mod._SOLVER_MAX_QUEUE_AGE_S + 1.0)
-        item = ({"n_nodes": 2}, {}, old_enqueued_at)
+        item = (_CONFIRMED_N2, {}, old_enqueued_at)
         result = solver_mod._process_solver_item(item, solve_fn)
 
         assert result is None
@@ -299,7 +309,7 @@ class TestStaleItemSkip:
                 "n_nodes": 2,
             }
 
-        item = ({"n_nodes": 2}, {}, time.time())
+        item = (_CONFIRMED_N2, {}, time.time())
         result = solver_mod._process_solver_item(item, solve_fn)
 
         assert result is not None and result.get("success")
@@ -380,7 +390,7 @@ class TestSolveBestAltitude:
             }
 
         s_in = {
-            "n_nodes": 2,
+            **_CONFIRMED_N2,
             "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 7.5},
             "measurements": [],
         }
@@ -461,7 +471,8 @@ class TestBeamCoverageFilter:
                 "n_nodes": 2,
             }
 
-        s_in = {"n_nodes": 2, "initial_guess": {"lat": 40.3, "lon": -74.0, "alt_km": 9.0}}
+        s_in = {**_CONFIRMED_N2,
+                "initial_guess": {"lat": 40.3, "lon": -74.0, "alt_km": 9.0}}
         item = (s_in, node_cfgs, time.time())
         result = solver_mod._process_solver_item(item, solve_fn)
 
@@ -583,3 +594,81 @@ class TestSolveBestAltitudeDirect:
         assert tried.count(existing_alt) == 1  # not duplicated
         assert len(tried) == len(solver_mod._SOLVER_ALT_LAYERS_KM)
 
+
+
+class TestN2ConfirmationGate:
+    """n=2 is published only once its track pairing has justified itself.
+
+    This is the one place a false n=2 pairing can be stopped.  The residual
+    gates above cannot: the solver fits [x, y, vx, vy, vz] with altitude pinned,
+    5 unknowns against 4 residuals, so a cross pairing between two real aircraft
+    drives rms_delay and rms_doppler to ~0 exactly as a real target does.
+    """
+
+    @staticmethod
+    def _solve_fn(s_in, cfgs):
+        return {
+            "success": True,
+            "lat": 37.5,
+            "lon": -122.1,
+            "alt_m": 8000.0,
+            "rms_delay": 0.4,
+            "rms_doppler": 3.0,
+            "timestamp_ms": 7100,
+            "contributing_node_ids": ["n1", "n2"],
+            "n_nodes": 2,
+        }
+
+    def test_confirmed_pairing_is_published(self, monkeypatch):
+        _reset_state()
+        monkeypatch.setattr(state, "node_analytics", _StubAnalytics())
+        solver_mod._process_solver_item((_CONFIRMED_N2, {}, time.time()), self._solve_fn)
+
+        assert any(k.startswith("mn-dark-7100-") for k in state.multinode_tracks)
+        assert state.solver_successes == 1
+        assert state.n2_unconfirmed == 0
+
+    def test_failing_chi2_is_withheld(self, monkeypatch):
+        _reset_state()
+        monkeypatch.setattr(state, "node_analytics", _StubAnalytics())
+        s_in = {"n_nodes": 2, "chi2_per_dof": 40.0, "n_epochs": 8}
+        result = solver_mod._process_solver_item((s_in, {}, time.time()), self._solve_fn)
+
+        assert not state.multinode_tracks
+        assert state.n2_unconfirmed == 1
+        # Not a failure — the solve worked, it just has not earned publication.
+        assert state.solver_failures == 0
+        # The fix itself is still returned, so the display keeps its position.
+        assert result is not None and result["lat"] == 37.5
+
+    def test_unfitted_pairing_is_withheld(self, monkeypatch):
+        """A pairing with too short an observation span is not yet evidence.
+
+        Association re-tests it every round, so a real target is published as
+        soon as it has the history to justify itself rather than being dropped.
+        """
+        _reset_state()
+        monkeypatch.setattr(state, "node_analytics", _StubAnalytics())
+        s_in = {"n_nodes": 2, "chi2_per_dof": None, "n_epochs": 2}
+        solver_mod._process_solver_item((s_in, {}, time.time()), self._solve_fn)
+
+        assert not state.multinode_tracks
+        assert state.n2_unconfirmed == 1
+
+    def test_n3_is_unaffected(self, monkeypatch):
+        """n>=3 is overdetermined, so its residual gates already work."""
+        _reset_state()
+        monkeypatch.setattr(state, "node_analytics", _StubAnalytics())
+
+        def solve_fn(s_in, cfgs):
+            out = self._solve_fn(s_in, cfgs)
+            out["n_nodes"] = 3
+            out["contributing_node_ids"] = ["n1", "n2", "n3"]
+            return out
+
+        # No chi2 at all — an n=3 pairing must not need one.
+        solver_mod._process_solver_item(({"n_nodes": 3}, {}, time.time()), solve_fn)
+
+        assert any(k.startswith("mn-dark-7100-") for k in state.multinode_tracks)
+        assert state.solver_successes == 1
+        assert state.n2_unconfirmed == 0

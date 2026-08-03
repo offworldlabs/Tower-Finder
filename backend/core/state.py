@@ -19,6 +19,9 @@ from config.constants import (
     ASSOC_GRID_STEP_KM,
     ASSOC_MIN_INTERVAL_S,
     GROUND_TRUTH_MAX,  # noqa: F401 — re-exported, used via state.GROUND_TRUTH_MAX
+    N2_CONFIRM_CHI2_MAX,
+    N2_CONFIRM_MIN_EPOCHS,
+    N2_CONFIRM_MIN_SPAN_S,
     TRACK_HISTORY_MAX,  # noqa: F401 — re-exported, used via state.TRACK_HISTORY_MAX
 )
 
@@ -30,12 +33,28 @@ connected_nodes: dict[str, dict] = {}
 # node_id → {config_hash, config, status, last_heartbeat, peer, is_synthetic, capabilities}
 
 node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR)
+
+def _cv_fit(fit_input, node_configs):
+    """Constant-velocity batch fit, imported lazily.
+
+    retina-analytics depends only on numpy; the fit lives in retina-geolocator.
+    Injecting it keeps the two siblings uncoupled, and importing inside the call
+    keeps the geolocator (and scipy) off state.py's import path.
+    """
+    from retina_geolocator.multinode_solver import fit_constant_velocity
+    return fit_constant_velocity(fit_input, node_configs)
+
+
 node_associator = InterNodeAssociator(
     grid_step_km=ASSOC_GRID_STEP_KM,
     # Passed explicitly because ASSOC_MIN_INTERVAL_S was dead config: defined
     # here but never reaching the associator, which used its own hardcoded
     # copy, so tuning it did nothing.
     assoc_interval_s=ASSOC_MIN_INTERVAL_S,
+    cv_fit=_cv_fit,
+    cv_chi2_max=N2_CONFIRM_CHI2_MAX,
+    cv_min_epochs=N2_CONFIRM_MIN_EPOCHS,
+    cv_min_span_s=N2_CONFIRM_MIN_SPAN_S,
 )
 
 # ── Per-node tracker pipelines (lazy-created per connecting node) ─────────────
@@ -153,6 +172,11 @@ frames_dropped: int = 0
 frames_processed: int = 0
 solver_successes: int = 0
 solver_failures: int = 0
+# n=2 solves withheld from the map because their track pairing has not (yet)
+# passed the constant-velocity fit.  Counted separately from solver_failures:
+# the solve succeeded, it simply has not earned publication, and a real target
+# is published as soon as it accumulates the observation span to justify itself.
+n2_unconfirmed: int = 0
 solver_queue_drops: int = 0
 
 # Velocity-plausibility counters.  The solver has RMS gates on delay and

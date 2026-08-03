@@ -8,6 +8,7 @@ import threading
 import time
 from collections import deque
 
+from config.constants import N2_CONFIRM_CHI2_MAX
 from core import state
 
 # ── Beam-coverage geometry helpers ────────────────────────────────────────────
@@ -147,6 +148,24 @@ _SOLVER_RMS_DOPPLER_MAX_HZ = 200.0
 # pre-filtered. Generalising the gate to every N puts the comparison on the
 # same footing — bad N≥3 solves are now rejected on the same criterion.
 _MAX_DISPLACEMENT_KM = 2.0
+
+# An n=2 solve is published only once its track pairing has justified itself.
+#
+# The residual gates above are structurally blind here: the solver fits
+# [x, y, vx, vy, vz] with altitude pinned, 5 unknowns against 4 residuals, so
+# rms_delay and rms_doppler go to ~0 for a cross pairing exactly as they do for
+# a real target — which _SOLVER_RMS_DELAY_MAX_US already documents ("letting all
+# n=2 results through").  Watching the phantom does not help either: its own
+# motion is identically its Doppler-implied velocity, so it stays self-consistent
+# for as long as both aircraft are tracked.
+#
+# What does discriminate is fitting one constant-velocity trajectory to the whole
+# observation window of both single-node tracks — 4K measurements against 6
+# unknowns instead of 4 against 6.  The associator does that and attaches
+# chi2_per_dof; this gate reads it.  Solving still happens either way, so the
+# position fix stays available to the display; only the *track* is withheld.
+_N2_REQUIRE_CONFIRMED = True
+_N2_CONFIRM_CHI2_MAX = N2_CONFIRM_CHI2_MAX
 
 
 def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn,
@@ -500,6 +519,23 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                     )
                     state.solver_failures += 1
                     return None
+        # n=2 publication gate.  The pairing must have been fitted and passed;
+        # an unfitted one (chi2_per_dof None — too short an observation span so
+        # far) is not yet evidence of anything.  Association re-tests it every
+        # round, so a real target is published as soon as it has the history to
+        # earn it rather than being discarded.
+        if _N2_REQUIRE_CONFIRMED and n_nodes == 2 and isinstance(s_in, dict):
+            _chi2 = s_in.get("chi2_per_dof")
+            if _chi2 is None or _chi2 > _N2_CONFIRM_CHI2_MAX:
+                logging.debug(
+                    "n=2 solve withheld: chi2/dof=%s (limit %.1f, span %s epochs) "
+                    "— lat=%.3f lon=%.3f",
+                    "unfitted" if _chi2 is None else f"{_chi2:.2f}",
+                    _N2_CONFIRM_CHI2_MAX, s_in.get("n_epochs"),
+                    result.get("lat", 0), result.get("lon", 0),
+                )
+                state.n2_unconfirmed += 1
+                return result
         state.solver_successes += 1
         with state.solver_latency_lock:
             state.solver_total_solved += 1

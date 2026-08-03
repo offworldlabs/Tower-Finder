@@ -47,7 +47,12 @@ from dataclasses import dataclass
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from retina_analytics.association import InterNodeAssociator  # noqa: E402
-from retina_geolocator.multinode_solver import solve_multinode  # noqa: E402
+from retina_geolocator.multinode_solver import (  # noqa: E402
+    fit_constant_velocity,
+    solve_multinode,
+)
+from retina_tracker.track import TrackState  # noqa: E402
+from retina_tracker.tracker import Tracker  # noqa: E402
 from retina_simulation.generator import coverage_cells, generate_fleet  # noqa: E402
 from retina_simulation.orchestrator import _cells_to_metrocells  # noqa: E402
 from retina_simulation.world import (  # noqa: E402
@@ -69,6 +74,49 @@ MATCH_KM = 8.0
 # numbers look irreconcilable with the offline ones.
 GHOST_ASSOC_MAX_DIST_KM = 6.0
 GHOST_ASSOC_MAX_AGE_S = 60.0
+
+
+def _frame_to_detections(frame: dict) -> list[dict]:
+    """Parallel arrays → the per-detection dicts retina-tracker takes.
+
+    Same conversion PassiveRadarPipeline.process_frame does, so the bench feeds
+    the tracker exactly what production does.
+    """
+    adsb_list = frame.get("adsb")
+    dets = []
+    for i, (d, f, s) in enumerate(zip(frame.get("delay", []),
+                                      frame.get("doppler", []),
+                                      frame.get("snr", []))):
+        det = {"delay": d, "doppler": f, "snr": s}
+        if adsb_list and i < len(adsb_list) and adsb_list[i] is not None:
+            det["adsb"] = adsb_list[i]
+        dets.append(det)
+    return dets
+
+
+def _confirmed_tracks(tracker: Tracker, history_n: int) -> list[dict]:
+    """Confirmed single-node tracks, in the shape submit_tracks wants.
+
+    TENTATIVE tracks are excluded — the same filter the arc builder applies in
+    frame_processor.  They have too little history to fit and may yet be
+    deleted, so admitting them would put the M-of-N clutter rejection back on
+    the association layer, which is most of what track-level association buys.
+    """
+    out = []
+    for tr in tracker.tracks:
+        if tr.state_status == TrackState.TENTATIVE:
+            continue
+        hist = tr.get_recent_detections(history_n)
+        if len(hist) < 2:
+            continue
+        out.append({
+            "track_id": tr.id or f"tmp-{id(tr)}",
+            "history": [{"t_s": h["timestamp"] / 1000.0,
+                         "delay_us": h["delay"],
+                         "doppler_hz": h["doppler"],
+                         "snr": h["snr"]} for h in hist],
+        })
+    return out
 
 
 def _strip_adsb(frame: dict) -> dict:
@@ -118,6 +166,12 @@ class Result:
     ghost_tracks: set = None
     speed_err_ms: list = None
     err_by_n: dict = None
+    # What the constant-velocity gate did, straight off the associator, so its
+    # effect is observable rather than inferred from the ghost rate moving.
+    gate_gated: int = 0
+    gate_rejected: int = 0
+    gate_accepted: int = 0
+    gate_unfitted: int = 0
     # Per track, the contributing-node counts its solves were made from.  A
     # track-level ghost rate split by n needs this because one track can be
     # solved at n=2 on one round and n=3 on the next; "an n=2 track" means
@@ -220,7 +274,8 @@ def build_scene(seed: int, n_nodes: int, n_cluster: int, metro: str,
 def run(seed, seconds, dt, frame_interval, assoc_interval,
         n_nodes, n_cluster, metro, min_aircraft, max_aircraft,
         metro_traffic_frac, layout="ring", illuminator_band="any",
-        dual_aim="core", blind=True) -> Result:
+        dual_aim="core", blind=True, mode="detection",
+        chi2_max=2.0, min_span_s=12.0, history_n=20) -> Result:
     import random
 
     random.seed(seed)
@@ -229,7 +284,18 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                                layout, illuminator_band, dual_aim)
     node_cfgs = {nd["node_id"]: nd for nd in fleet}
 
-    assoc = InterNodeAssociator(grid_step_km=3.0)
+    assoc = InterNodeAssociator(
+        grid_step_km=3.0,
+        cv_fit=fit_constant_velocity if mode == "track" else None,
+        cv_chi2_max=chi2_max,
+        cv_min_span_s=min_span_s,
+    )
+    # One tracker per node, driven by every frame — mirrors
+    # frame_processor.py:476-477.  The bench previously fed raw detections
+    # straight to the associator, skipping the stage production runs first, so
+    # it could not evaluate anything track-level and its clutter numbers were
+    # pessimistic by whatever M-of-N would have removed.
+    trackers = {nd["node_id"]: Tracker() for nd in fleet}
     for nd in fleet:
         assoc.register_node(nd["node_id"], nd)
     # The library rate-limits on time.monotonic(), i.e. wall-clock.  A replay
@@ -276,17 +342,29 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
             frame = world.generate_detections_for_node(nid, ts_ms)
             if blind:
                 frame = _strip_adsb(frame)
+            # Every frame drives the node's own tracker, whether or not this
+            # node triggers an association round — the tracker's job is
+            # continuity and it must not be starved by the association cadence.
+            trackers[nid].process_frame(_frame_to_detections(frame), ts_ms)
             # Keep every node's pending frame current — a neighbour's latest
             # frame is what association pairs against — but only let a node
             # *trigger* a round on its own cadence.
-            if (t - last_assoc.get(nid, -1e9)) < assoc_interval:
+            if mode == "track":
+                assoc._pending_tracks[nid] = _confirmed_tracks(trackers[nid], history_n)
+            else:
                 assoc._pending_frames[nid] = frame
+            if (t - last_assoc.get(nid, -1e9)) < assoc_interval:
                 continue
             last_assoc[nid] = t
-            cands = assoc.submit_frame(nid, frame, ts_ms)
-            if not cands:
-                continue
-            for s_in in assoc.format_candidates_for_solver(cands):
+            if mode == "track":
+                pairs = assoc.submit_tracks(
+                    nid, assoc._pending_tracks.get(nid, []), ts_ms)
+                solver_inputs = assoc.format_track_pairs_for_solver(pairs)
+            else:
+                cands = assoc.submit_frame(nid, frame, ts_ms)
+                solver_inputs = (assoc.format_candidates_for_solver(cands)
+                                 if cands else [])
+            for s_in in solver_inputs:
                 if s_in.get("n_nodes", 0) < 2:
                     continue
                 try:
@@ -343,6 +421,11 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                     res._ghost_tracks[hit] = (out["lat"], out["lon"], t)
                     res.ghost_tracks.add(hit)
                     res.track_n[hit][nn] += 1
+
+    res.gate_gated = assoc.track_pairs_gated
+    res.gate_rejected = assoc.track_pairs_rejected
+    res.gate_accepted = assoc.track_pairs_accepted
+    res.gate_unfitted = assoc.track_pairs_unfitted
     return res
 
 
@@ -379,6 +462,10 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
         over = sum(1 for s in r.speeds_kt if s > truth_max_kt)
         print(f"  solves faster than any real aircraft ({truth_max_kt:.0f} kt): "
               f"{over} ({100 * over / len(r.speeds_kt):.0f}%)")
+    if r.gate_gated:
+        print(f"  CV gate: {r.gate_gated} pairings past the delay grid  "
+              f"-> {r.gate_accepted} fitted+kept, {r.gate_rejected} rejected on χ², "
+              f"{r.gate_unfitted} not yet fittable")
     print(f"  solver rejects/failures: {r.solver_rejects}")
 
 
@@ -402,6 +489,15 @@ def main():
     p.add_argument("--tagged", dest="blind", action="store_false", default=True,
                    help="feed the per-detection ADS-B tags to association "
                         "(reproduces pre-blind numbers; see _strip_adsb)")
+    p.add_argument("--mode", choices=("detection", "track"), default="detection",
+                   help="pair raw detections (as shipped) or confirmed "
+                        "single-node tracks with a constant-velocity fit")
+    p.add_argument("--chi2-max", type=float, nargs="+", default=[2.0],
+                   help="track mode: chi2/dof ceiling(s) to sweep")
+    p.add_argument("--min-span-s", type=float, default=12.0,
+                   help="track mode: observation span before a pairing is fitted")
+    p.add_argument("--history-n", type=int, default=20,
+                   help="track mode: samples of per-node track history to fit")
     p.add_argument("--min-aircraft", type=int, default=10,
                    help="matches FLEET_AIRCRAFT lower bound")
     p.add_argument("--max-aircraft", type=int, default=20)
@@ -414,9 +510,13 @@ def main():
     print(f"scene: metro={args.metro} layout={args.layout}/{args.illuminator_band} "
           f"nodes={args.nodes} budget={args.n_cluster} "
           f"{args.seconds:.0f}s @ {args.frame_interval:.0f}s frames, seed {args.seed}, "
-          f"{'BLIND' if args.blind else 'ADS-B-tagged'}")
+          f"{'BLIND' if args.blind else 'ADS-B-tagged'}, mode={args.mode}"
+          + (f", span>={args.min_span_s:.0f}s" if args.mode == "track" else ""))
 
+    # chi2 only means anything in track mode; keep one pass otherwise.
+    chi2_values = args.chi2_max if args.mode == "track" else [None]
     for interval in args.assoc_interval:
+      for chi2_max in chi2_values:
         rates, solve_rates, reals, fakes, speed_errs = [], [], [], [], []
         n2_rates = []
         last = None
@@ -425,7 +525,9 @@ def main():
                        interval, args.nodes, args.n_cluster, args.metro,
                        args.min_aircraft, args.max_aircraft,
                        args.metro_traffic_frac, args.layout,
-                       args.illuminator_band, args.dual_aim, args.blind)
+                       args.illuminator_band, args.dual_aim, args.blind,
+                       args.mode, chi2_max if chi2_max is not None else 2.0,
+                       args.min_span_s, args.history_n)
             # Track-level is the comparable metric — solve-level and
             # track-level differ by ~20x on the same data, so mixing them is
             # how two staging conclusions went wrong.
@@ -436,7 +538,10 @@ def main():
             fakes.append(len(last.ghost_tracks))
             if last.speed_err_ms:
                 speed_errs.append(statistics.median(last.speed_err_ms))
-        report(f"assoc_interval={interval:g}s", last)
+        label = f"assoc_interval={interval:g}s"
+        if chi2_max is not None:
+            label += f"  chi2/dof<={chi2_max:g}"
+        report(label, last)
         if args.repeat > 1:
             mean = statistics.mean(rates)
             sd = statistics.pstdev(rates)

@@ -22,6 +22,7 @@ from config.constants import (
     GT_DISPLAY_STALE_S,
     GT_REFRESH_S,
     IMPLAUSIBLE_SPEED_MS,
+    N2_TRACK_HISTORY_MAX,
     STALE_TRACK_S,
     TRAIL_STALE_S,
 )
@@ -394,6 +395,33 @@ _prof_pipeline = 0.0
 _prof_save = 0.0
 
 
+def _node_track_views(pipeline: PassiveRadarPipeline) -> list[dict]:
+    """This node's confirmed tracks, in the shape submit_tracks takes.
+
+    TENTATIVE tracks are excluded, the same filter the arc builder applies: they
+    have too little history to fit and may yet be deleted, and admitting them
+    would put the clutter rejection back onto the association layer, which is
+    most of what track-level association buys.  COASTING is kept for the same
+    reason arcs keep it — at 22 fps a single missed frame flips ACTIVE →
+    COASTING and the next flips it back.
+    """
+    views = []
+    for tr in pipeline.tracker.tracks:
+        if tr.state_status == TrackState.TENTATIVE:
+            continue
+        hist = tr.get_recent_detections(N2_TRACK_HISTORY_MAX)
+        if len(hist) < 2:
+            continue
+        views.append({
+            "track_id": tr.id or f"tmp-{id(tr)}",
+            "history": [{"t_s": h["timestamp"] / 1000.0,
+                         "delay_us": h["delay"],
+                         "doppler_hz": h["doppler"],
+                         "snr": h["snr"]} for h in hist],
+        })
+    return views
+
+
 def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarPipeline):
     """CPU-heavy frame processing — never runs on the event loop."""
     global _prof_cpu, _prof_wall, _prof_n
@@ -418,10 +446,25 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     state.node_analytics.record_detection_frame(node_id, frame)
     _prof_analytics += time.thread_time() - _t1
 
+    # The node's own tracker runs first now.  Association used to see the raw
+    # detection frame, which at n=2 is untestable — two nodes give 4
+    # measurements against 6 unknowns, so a cross pairing between two real
+    # aircraft leaves the same zero residual a real target does.  Pairing
+    # *confirmed tracks* instead removes clutter before association (M-of-N),
+    # collapses the candidate count from Na x Nb detections to Ta x Tb tracks,
+    # and supplies the time history the constant-velocity fit needs.
+    _t3 = time.thread_time()
+    pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
+    pipeline.process_frame(frame)
+    _prof_pipeline += time.thread_time() - _t3
+
     _t2 = time.thread_time()
-    assoc = state.node_associator.submit_frame(node_id, frame, frame.get("timestamp", 0))
-    if assoc:
-        solver_inputs = state.node_associator.format_candidates_for_solver(assoc)
+    _ts_ms_assoc = frame.get("timestamp", 0)
+    pairs = state.node_associator.submit_tracks(
+        node_id, _node_track_views(pipeline), _ts_ms_assoc,
+    )
+    if pairs:
+        solver_inputs = state.node_associator.format_track_pairs_for_solver(pairs)
         node_cfgs = get_node_configs()
         for s_in in solver_inputs:
             if s_in["n_nodes"] < 2:
@@ -471,11 +514,6 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
                 "last_seen_ms": _ts_ms,
             }
         state.aircraft_dirty = True
-
-    _t3 = time.thread_time()
-    pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
-    pipeline.process_frame(frame)
-    _prof_pipeline += time.thread_time() - _t3
 
     _t4 = time.thread_time()
     # maybe_auto_save moved to analytics_refresh_task to avoid blocking

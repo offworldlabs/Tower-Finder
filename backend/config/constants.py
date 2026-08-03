@@ -21,6 +21,17 @@ ASSOC_GRID_STEP_KM = 3.0              # Overlap zone grid resolution (km)
 ASSOC_MIN_INTERVAL_S = 30.0           # Per-node association rate limit (s)
 ASSOC_MAX_NEIGHBORS = 50              # CPU budget cap for neighbor checks
 
+# ── n=2 confirmation (track-to-track association) ────────────────────────────
+# At n=2 a single-epoch solve has 5 unknowns against 4 residuals, so rms_delay
+# and rms_doppler go to zero for a cross pairing exactly as for a real target
+# and neither can gate it.  A pairing of two *confirmed single-node tracks*
+# supplies 4K measurements against 6 unknowns instead, and the constant-velocity
+# fit over them produces a real chi2.  See retina_analytics.association.
+N2_CONFIRM_CHI2_MAX = 2.0             # chi2/dof ceiling for an n=2 track pairing
+N2_CONFIRM_MIN_SPAN_S = 12.0          # Observation span before a pairing is fitted
+N2_CONFIRM_MIN_EPOCHS = 4             # Floor on samples; span is the real gate
+N2_TRACK_HISTORY_MAX = 20             # Per-node track samples fed to the fit
+
 # ── Default antenna parameters ───────────────────────────────────────────────
 YAGI_BEAM_WIDTH_DEG = 41.0            # Default half-power beamwidth (°)
 YAGI_MAX_RANGE_KM = 50.0             # Default Yagi max range (km)
