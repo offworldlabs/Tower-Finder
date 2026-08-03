@@ -8,7 +8,7 @@ import threading
 import time
 from collections import deque
 
-from config.constants import N2_CONFIRM_CHI2_MAX
+from config.constants import N2_CONFIRM_CHI2_MAX, N2_TRACK_ASSOCIATION
 from core import state
 
 # ── Beam-coverage geometry helpers ────────────────────────────────────────────
@@ -164,7 +164,9 @@ _MAX_DISPLACEMENT_KM = 2.0
 # unknowns instead of 4 against 6.  The associator does that and attaches
 # chi2_per_dof; this gate reads it.  Solving still happens either way, so the
 # position fix stays available to the display; only the *track* is withheld.
-_N2_REQUIRE_CONFIRMED = True
+# Only meaningful when association is producing chi2 values at all; with
+# the track path parked, requiring one would withhold every n=2 track.
+_N2_REQUIRE_CONFIRMED = N2_TRACK_ASSOCIATION
 _N2_CONFIRM_CHI2_MAX = N2_CONFIRM_CHI2_MAX
 
 # Oldest ADS-B fix still usable as a coverage calibration point.  At 250 m/s a

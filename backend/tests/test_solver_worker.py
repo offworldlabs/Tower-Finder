@@ -599,11 +599,20 @@ class TestSolveBestAltitudeDirect:
 class TestN2ConfirmationGate:
     """n=2 is published only once its track pairing has justified itself.
 
+    Exercised with the gate forced on.  It ships disabled — see
+    N2_TRACK_ASSOCIATION — because the fit it depends on cannot yet run on the
+    frame path, and with no chi2 being produced a live gate would withhold
+    every n=2 track rather than the false ones.
+
     This is the one place a false n=2 pairing can be stopped.  The residual
     gates above cannot: the solver fits [x, y, vx, vy, vz] with altitude pinned,
     5 unknowns against 4 residuals, so a cross pairing between two real aircraft
     drives rms_delay and rms_doppler to ~0 exactly as a real target does.
     """
+
+    @pytest.fixture(autouse=True)
+    def _gate_on(self, monkeypatch):
+        monkeypatch.setattr(solver_mod, "_N2_REQUIRE_CONFIRMED", True)
 
     @staticmethod
     def _solve_fn(s_in, cfgs):
@@ -731,3 +740,34 @@ class TestCoverageCalibration:
             "lat": 0, "lon": 0, "last_seen_ms": time.time() * 1000,
         })
         assert stub.calibration_calls == []
+
+
+class TestN2GateShipsDisabled:
+    """With the track path parked, an n=2 solve must still publish.
+
+    The gate reads chi2_per_dof off the solver input, and the detection-level
+    association path does not produce one.  Leaving the gate live while that
+    path is in use would withhold every n=2 track — silently, since the solve
+    itself succeeds — so the two have to move together.
+    """
+
+    def test_flag_is_off_by_default(self):
+        from config.constants import N2_TRACK_ASSOCIATION
+        assert solver_mod._N2_REQUIRE_CONFIRMED is N2_TRACK_ASSOCIATION
+
+    def test_unfitted_n2_publishes_when_the_gate_is_off(self, monkeypatch):
+        _reset_state()
+        monkeypatch.setattr(state, "node_analytics", _StubAnalytics())
+        monkeypatch.setattr(solver_mod, "_N2_REQUIRE_CONFIRMED", False)
+
+        def solve_fn(s_in, cfgs):
+            return {
+                "success": True, "lat": 37.5, "lon": -122.1, "alt_m": 8000.0,
+                "rms_delay": 0.4, "rms_doppler": 3.0, "timestamp_ms": 7300,
+                "contributing_node_ids": ["n1", "n2"], "n_nodes": 2,
+            }
+
+        # No chi2 at all — the shape the detection path emits.
+        solver_mod._process_solver_item(({"n_nodes": 2}, {}, time.time()), solve_fn)
+        assert any(k.startswith("mn-dark-7300-") for k in state.multinode_tracks)
+        assert state.n2_unconfirmed == 0
