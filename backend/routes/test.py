@@ -171,6 +171,13 @@ def _build_dashboard_data() -> bytes:
             "solver": {
                 "successes": state.solver_successes,
                 "failures": state.solver_failures,
+                # n=2 solves that succeeded but were withheld from the map
+                # because their track pairing did not clear the chi2 gate (or
+                # was outbid for a shared single-node track).  Distinct from
+                # failures: the solve worked, it just did not earn publication.
+                # Only observable here — the per-solve reason is logged at DEBUG,
+                # which staging does not emit.
+                "n2_unconfirmed": state.n2_unconfirmed,
                 "queue_drops": state.solver_queue_drops,
                 "last_latency_s": round(state.solver_last_latency_s, 3),
                 "avg_latency_s": round(state.solver_total_latency_s / max(state.solver_total_solved, 1), 3),
