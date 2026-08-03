@@ -389,6 +389,9 @@ export function useNodes() {
               beam_azimuth_deg: da.beam_azimuth_deg,
               beam_width_deg: da.beam_width_deg,
               max_range_km: da.max_range_km,
+              // Null for a node that declares no differential limit, which
+              // keeps the legacy circular sector.
+              max_bistatic_range_km: da.max_bistatic_range_km ?? null,
               empirical_polygon: ec?.polygon ?? null,
               empirical_n_points: ec?.n_points ?? 0,
             });

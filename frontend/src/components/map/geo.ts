@@ -98,7 +98,35 @@ function _geoOffset(lat, lon, bearingDeg, distKm) {
   return [lat2 * 180 / Math.PI, lon2 * 180 / Math.PI];
 }
 
-export function yagiSectorPositions(rxLat, rxLon, txLat, txLon, beamAzimuthDeg, beamWidthDeg, maxRangeKm) {
+/**
+ * How far a bistatic node sees at `psiDeg` off its RX→TX baseline.
+ *
+ * A node is bounded by a *differential* range — R_tx + R_rx − L — so its
+ * footprint is an ellipse with foci at TX and RX, whose polar radius from the
+ * RX focus is
+ *
+ *     r(ψ) = Δ(Δ + 2L) / (2·[(L + Δ) − L·cos ψ])
+ *
+ *     ψ = 0    (toward TX)     r = Δ/2 + L
+ *     ψ = 180° (away from TX)  r = Δ/2      — independent of the baseline
+ *
+ * Mirrors bistatic_range_limit_km in retina_analytics/constants.py, which is
+ * what the association gate uses.  Drawing a circle of radius Δ instead
+ * overstates coverage by 2× behind the receiver and understates it toward a
+ * distant tower, so the map would disagree with the gate in both directions.
+ */
+export function bistaticRangeLimitKm(psiDeg, baselineKm, maxBistaticKm) {
+  const d = maxBistaticKm;
+  const L = Math.max(baselineKm, 0);
+  const denom = 2 * ((L + d) - L * Math.cos(psiDeg * Math.PI / 180));
+  if (denom <= 0) return 0;
+  return d * (d + 2 * L) / denom;
+}
+
+export function yagiSectorPositions(
+  rxLat, rxLon, txLat, txLon, beamAzimuthDeg, beamWidthDeg, maxRangeKm,
+  maxBistaticRangeKm = null,
+) {
   // Fallback: if beam azimuth is not provided, compute perpendicular to the
   // RX→TX baseline (same convention used by the backend).
   let azimuth = beamAzimuthDeg;
@@ -108,16 +136,43 @@ export function yagiSectorPositions(rxLat, rxLon, txLat, txLon, beamAzimuthDeg, 
     const dy = txLat - rxLat;
     azimuth = (Math.atan2(dx, dy) * 180 / Math.PI + 90 + 360) % 360;
   }
-  const halfWidth = (beamWidthDeg ?? 42) / 2;
+  const width = beamWidthDeg ?? 42;
+  const halfWidth = width / 2;
   const range = maxRangeKm ?? 50;
-  const steps = 32;
+
+  // With a declared differential limit the outer boundary is an elliptical arc,
+  // so the radius is recomputed per step instead of held constant.
+  const useBistatic = maxBistaticRangeKm != null && Number.isFinite(maxBistaticRangeKm);
+  const baselineKm = useBistatic
+    ? haversineDistanceKm(rxLat, rxLon, txLat, txLon)
+    : 0;
+  const bearingToTx = useBistatic ? _bearingDeg(rxLat, rxLon, txLat, txLon) : 0;
+
+  // The elliptical edge curves faster than a circular one, so it needs more
+  // vertices to stay smooth over a wide sector.
+  const steps = useBistatic ? 64 : 32;
   const points = [[rxLat, rxLon]];
   for (let i = 0; i <= steps; i++) {
-    const bearing = azimuth - halfWidth + (beamWidthDeg ?? 42) * (i / steps);
-    points.push(_geoOffset(rxLat, rxLon, bearing, range));
+    const bearing = azimuth - halfWidth + width * (i / steps);
+    let r = range;
+    if (useBistatic) {
+      const psi = Math.abs(((bearing - bearingToTx + 180) % 360 + 360) % 360 - 180);
+      r = bistaticRangeLimitKm(psi, baselineKm, maxBistaticRangeKm);
+    }
+    points.push(_geoOffset(rxLat, rxLon, bearing, r));
   }
   points.push([rxLat, rxLon]);
   return points;
+}
+
+function _bearingDeg(lat1, lon1, lat2, lon2) {
+  const lat1r = lat1 * Math.PI / 180;
+  const lat2r = lat2 * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const x = Math.sin(dLon) * Math.cos(lat2r);
+  const y = Math.cos(lat1r) * Math.sin(lat2r)
+    - Math.sin(lat1r) * Math.cos(lat2r) * Math.cos(dLon);
+  return ((Math.atan2(x, y) * 180 / Math.PI) % 360 + 360) % 360;
 }
 
 const EARTH_RADIUS_KM = 6371;

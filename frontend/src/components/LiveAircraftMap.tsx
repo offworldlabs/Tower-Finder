@@ -735,7 +735,9 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
           <Popup>
             <strong>{n.node_id}</strong><br />
             Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
-            Range: {n.max_range_km} km
+            {n.max_bistatic_range_km != null
+              ? <>Bistatic range: {n.max_bistatic_range_km} km<br /></>
+              : <>Range: {n.max_range_km} km</>}
           </Popup>
         </CircleMarker>
       );
@@ -751,7 +753,9 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
         <Popup>
           <strong>{n.node_id}</strong><br />
           Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
-          Range: {n.max_range_km} km
+          {n.max_bistatic_range_km != null
+            ? <>Bistatic range: {n.max_bistatic_range_km} km<br /></>
+            : <>Range: {n.max_range_km} km</>}
         </Popup>
       </Marker>
     );
@@ -780,6 +784,7 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
           n.beam_azimuth_deg,
           n.beam_width_deg ?? 42,
           n.max_range_km ?? 50,
+          n.max_bistatic_range_km,
         )}
         pathOptions={{ color: "#facc15", fillColor: "#facc15", fillOpacity: 0.1, weight: 1.5, dashArray: "4 4" }}
       />
@@ -1716,6 +1721,7 @@ export default function LiveAircraftMap() {
                 sn.beam_azimuth_deg,
                 sn.beam_width_deg ?? 42,
                 sn.max_range_km ?? 50,
+                sn.max_bistatic_range_km,
               );
               // Find aircraft detected by this node (those whose node_id matches)
               const nodeAircraft = radarAircraft.filter((ac) => ac.node_id === selectedNodeId);
@@ -1803,6 +1809,7 @@ export default function LiveAircraftMap() {
                           cn.beam_azimuth_deg,
                           cn.beam_width_deg ?? 40,
                           cn.max_range_km ?? 50,
+                          cn.max_bistatic_range_km,
                         )}
                         pathOptions={{ color: "#a78bfa", fillColor: "#a78bfa", fillOpacity: 0.08, weight: 1.5, dashArray: "5 3" }}
                       />
