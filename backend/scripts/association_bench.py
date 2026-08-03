@@ -172,6 +172,7 @@ class Result:
     gate_rejected: int = 0
     gate_accepted: int = 0
     gate_unfitted: int = 0
+    gate_superseded: int = 0
     # Per track, the contributing-node counts its solves were made from.  A
     # track-level ghost rate split by n needs this because one track can be
     # solved at n=2 on one round and n=3 on the next; "an n=2 track" means
@@ -275,7 +276,7 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
         n_nodes, n_cluster, metro, min_aircraft, max_aircraft,
         metro_traffic_frac, layout="ring", illuminator_band="any",
         dual_aim="core", blind=True, mode="detection",
-        chi2_max=2.0, min_span_s=12.0, history_n=20) -> Result:
+        chi2_max=2.0, min_span_s=12.0, history_n=20, exclusive=True) -> Result:
     import random
 
     random.seed(seed)
@@ -289,6 +290,7 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
         cv_fit=fit_constant_velocity if mode == "track" else None,
         cv_chi2_max=chi2_max,
         cv_min_span_s=min_span_s,
+        cv_exclusive=exclusive,
     )
     # One tracker per node, driven by every frame — mirrors
     # frame_processor.py:476-477.  The bench previously fed raw detections
@@ -426,6 +428,7 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
     res.gate_rejected = assoc.track_pairs_rejected
     res.gate_accepted = assoc.track_pairs_accepted
     res.gate_unfitted = assoc.track_pairs_unfitted
+    res.gate_superseded = assoc.track_pairs_superseded
     return res
 
 
@@ -465,6 +468,7 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
     if r.gate_gated:
         print(f"  CV gate: {r.gate_gated} pairings past the delay grid  "
               f"-> {r.gate_accepted} fitted+kept, {r.gate_rejected} rejected on χ², "
+              f"{r.gate_superseded} superseded by a better fit, "
               f"{r.gate_unfitted} not yet fittable")
     print(f"  solver rejects/failures: {r.solver_rejects}")
 
@@ -498,6 +502,10 @@ def main():
                    help="track mode: observation span before a pairing is fitted")
     p.add_argument("--history-n", type=int, default=20,
                    help="track mode: samples of per-node track history to fit")
+    p.add_argument("--no-select", dest="exclusive", action="store_false",
+                   default=True,
+                   help="track mode: disable one-to-one hypothesis selection "
+                        "(each pairing then answers only to the chi2 threshold)")
     p.add_argument("--min-aircraft", type=int, default=10,
                    help="matches FLEET_AIRCRAFT lower bound")
     p.add_argument("--max-aircraft", type=int, default=20)
@@ -527,7 +535,7 @@ def main():
                        args.metro_traffic_frac, args.layout,
                        args.illuminator_band, args.dual_aim, args.blind,
                        args.mode, chi2_max if chi2_max is not None else 2.0,
-                       args.min_span_s, args.history_n)
+                       args.min_span_s, args.history_n, args.exclusive)
             # Track-level is the comparable metric — solve-level and
             # track-level differ by ~20x on the same data, so mixing them is
             # how two staging conclusions went wrong.
