@@ -20,11 +20,18 @@ A "ghost" here is a solve with no true aircraft within MATCH_KM.  That is the
 same criterion used against staging, so numbers are comparable to the
 measurements already taken.
 
+Runs blind by default: the per-detection ADS-B tags the simulator attaches are
+stripped before association, because no receiver gets them and using them
+amounts to reading the answer off the simulator.  See _strip_adsb -- it is the
+difference between a 14% and a 79% ghost rate on identical scenes.  --tagged
+restores the old behaviour for comparison.
+
 Usage
 -----
     python backend/scripts/association_bench.py
     python backend/scripts/association_bench.py --assoc-interval 2 10 30
     python backend/scripts/association_bench.py --seconds 300 --seed 7
+    python backend/scripts/association_bench.py --tagged     # pre-blind numbers
 """
 
 from __future__ import annotations
@@ -64,6 +71,30 @@ GHOST_ASSOC_MAX_DIST_KM = 6.0
 GHOST_ASSOC_MAX_AGE_S = 60.0
 
 
+def _strip_adsb(frame: dict) -> dict:
+    """Return the frame as a real receiver would see it.
+
+    find_associations uses the per-detection ``adsb`` list three ways that no
+    hardware can reproduce: it drops any pairing whose detections lack an entry
+    (clutter filter), drops any whose two ``hex`` codes differ (same-aircraft
+    filter), and overwrites the grid position with the reported lat/lon, which
+    then feeds solver.py's 2 km displacement gate.  A deployment gets an ADS-B
+    *feed* listing aircraft; it does not get a truth label stapled to each radar
+    detection, so those three amount to reading the answer off the simulator.
+
+    Measured on the same scenes, the difference is not a detail:
+
+        ring/any   tagged 13.9% ghost tracks   blind 79.0%
+        dual/vhf   tagged 21.8% ghost tracks   blind 85.0%
+
+    and by candidate, ring/any produces *zero* cross-aircraft pairings tagged
+    against 68% false blind.  Every ghost number taken before this flag was
+    measuring truth injection, so blind is the default and the tagged path is
+    kept only to reproduce the old figures.
+    """
+    return {k: v for k, v in frame.items() if k != "adsb"}
+
+
 def _haversine_km(lat1, lon1, lat2, lon2):
     r = 6371.0
     p1, p2 = math.radians(lat1), math.radians(lat2)
@@ -87,6 +118,11 @@ class Result:
     ghost_tracks: set = None
     speed_err_ms: list = None
     err_by_n: dict = None
+    # Per track, the contributing-node counts its solves were made from.  A
+    # track-level ghost rate split by n needs this because one track can be
+    # solved at n=2 on one round and n=3 on the next; "an n=2 track" means
+    # every solve behind it was n=2.
+    track_n: dict = None
 
     def __post_init__(self):
         self.errors_km = []
@@ -98,12 +134,30 @@ class Result:
         self.ghost_tracks = set()
         self.speed_err_ms = []
         self.err_by_n = defaultdict(list)
+        self.track_n = defaultdict(Counter)
         self._ghost_tracks = {}
 
     @property
     def track_ghost_pct(self):
         n = len(self.matched_tracks) + len(self.ghost_tracks)
         return 100.0 * len(self.ghost_tracks) / n if n else 0.0
+
+    def n2_only(self, keys) -> int:
+        """How many of these tracks were solved only ever from two nodes."""
+        return sum(1 for k in keys if set(self.track_n.get(k, {})) == {2})
+
+    @property
+    def track_ghost_pct_n2(self):
+        """Ghost rate restricted to tracks that never got beyond two nodes.
+
+        This is the population the whole exercise is about: at n=2 the solver
+        has 5 unknowns against 4 residuals, so its residual gates cannot tell a
+        cross pairing from a real one.  Mixing in the n>=3 tracks, which those
+        gates do filter, dilutes exactly the signal being measured.
+        """
+        g = self.n2_only(self.ghost_tracks)
+        m = self.n2_only(self.matched_tracks)
+        return 100.0 * g / (g + m) if (g + m) else 0.0
 
     @property
     def total(self):
@@ -166,7 +220,7 @@ def build_scene(seed: int, n_nodes: int, n_cluster: int, metro: str,
 def run(seed, seconds, dt, frame_interval, assoc_interval,
         n_nodes, n_cluster, metro, min_aircraft, max_aircraft,
         metro_traffic_frac, layout="ring", illuminator_band="any",
-        dual_aim="core") -> Result:
+        dual_aim="core", blind=True) -> Result:
     import random
 
     random.seed(seed)
@@ -220,6 +274,8 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
         for nid in due_nodes:
             next_send[nid] += frame_interval
             frame = world.generate_detections_for_node(nid, ts_ms)
+            if blind:
+                frame = _strip_adsb(frame)
             # Keep every node's pending frame current — a neighbour's latest
             # frame is what association pairs against — but only let a node
             # *trigger* a round on its own cadence.
@@ -262,6 +318,7 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                     # aircraft, so a real target is one track however many
                     # times it is solved.
                     res.matched_tracks.add(best_id)
+                    res.track_n[best_id][nn] += 1
                     # Velocity error is the quantity the Doppler rework
                     # targets; ghost rate is not.
                     if best_speed > 0:
@@ -285,6 +342,7 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                         hit = f"gh-{len(res._ghost_tracks)}"
                     res._ghost_tracks[hit] = (out["lat"], out["lon"], t)
                     res.ghost_tracks.add(hit)
+                    res.track_n[hit][nn] += 1
     return res
 
 
@@ -294,6 +352,9 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
           f"   -> {r.ghost_pct:>5.1f}% ghosts (by solve)")
     print(f"  tracks: real {len(r.matched_tracks):>3}   false {len(r.ghost_tracks):>3}"
           f"   -> {r.track_ghost_pct:>5.1f}% ghosts (by track — comparable to staging)")
+    _g2, _m2 = r.n2_only(r.ghost_tracks), r.n2_only(r.matched_tracks)
+    print(f"  n=2-only tracks: real {_m2:>3}   false {_g2:>3}"
+          f"   -> {r.track_ghost_pct_n2:>5.1f}% ghosts (the population under study)")
     if r.errors_km:
         e = sorted(r.errors_km)
         print(f"  matched position error: median {statistics.median(e):.2f} km"
@@ -338,6 +399,9 @@ def main():
     p.add_argument("--layout", choices=("ring", "dual"), default="ring")
     p.add_argument("--illuminator-band", choices=("any", "vhf"), default="any")
     p.add_argument("--dual-aim", choices=("core", "random"), default="core")
+    p.add_argument("--tagged", dest="blind", action="store_false", default=True,
+                   help="feed the per-detection ADS-B tags to association "
+                        "(reproduces pre-blind numbers; see _strip_adsb)")
     p.add_argument("--min-aircraft", type=int, default=10,
                    help="matches FLEET_AIRCRAFT lower bound")
     p.add_argument("--max-aircraft", type=int, default=20)
@@ -349,21 +413,24 @@ def main():
 
     print(f"scene: metro={args.metro} layout={args.layout}/{args.illuminator_band} "
           f"nodes={args.nodes} budget={args.n_cluster} "
-          f"{args.seconds:.0f}s @ {args.frame_interval:.0f}s frames, seed {args.seed}")
+          f"{args.seconds:.0f}s @ {args.frame_interval:.0f}s frames, seed {args.seed}, "
+          f"{'BLIND' if args.blind else 'ADS-B-tagged'}")
 
     for interval in args.assoc_interval:
         rates, solve_rates, reals, fakes, speed_errs = [], [], [], [], []
+        n2_rates = []
         last = None
         for k in range(args.repeat):
             last = run(args.seed + k, args.seconds, args.dt, args.frame_interval,
                        interval, args.nodes, args.n_cluster, args.metro,
                        args.min_aircraft, args.max_aircraft,
                        args.metro_traffic_frac, args.layout,
-                       args.illuminator_band, args.dual_aim)
+                       args.illuminator_band, args.dual_aim, args.blind)
             # Track-level is the comparable metric — solve-level and
             # track-level differ by ~20x on the same data, so mixing them is
             # how two staging conclusions went wrong.
             rates.append(last.track_ghost_pct)
+            n2_rates.append(last.track_ghost_pct_n2)
             solve_rates.append(last.ghost_pct)
             reals.append(len(last.matched_tracks))
             fakes.append(len(last.ghost_tracks))
@@ -378,6 +445,9 @@ def main():
             print(f"    mean {mean:.0f}%   sd {sd:.0f}   "
                   f"range {min(rates):.0f}-{max(rates):.0f}%   "
                   f"real {min(reals)}-{max(reals)}  false {min(fakes)}-{max(fakes)}")
+            print(f"    n=2-only tracks: mean {statistics.mean(n2_rates):.0f}%   "
+                  f"sd {statistics.pstdev(n2_rates):.0f}   "
+                  f"({', '.join(f'{x:.0f}%' for x in n2_rates)})")
             print(f"    by solve: {', '.join(f'{x:.1f}%' for x in solve_rates)}")
             if speed_errs:
                 print(f"    median speed error per seed: "
