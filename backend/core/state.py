@@ -34,24 +34,16 @@ connected_nodes: dict[str, dict] = {}
 
 node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR)
 
-def _cv_fit(fit_input, node_configs):
-    """Constant-velocity batch fit, imported lazily.
-
-    retina-analytics depends only on numpy; the fit lives in retina-geolocator.
-    Injecting it keeps the two siblings uncoupled, and importing inside the call
-    keeps the geolocator (and scipy) off state.py's import path.
-    """
-    from retina_geolocator.multinode_solver import fit_constant_velocity
-    return fit_constant_velocity(fit_input, node_configs)
-
-
 node_associator = InterNodeAssociator(
     grid_step_km=ASSOC_GRID_STEP_KM,
     # Passed explicitly because ASSOC_MIN_INTERVAL_S was dead config: defined
     # here but never reaching the associator, which used its own hardcoded
     # copy, so tuning it did nothing.
     assoc_interval_s=ASSOC_MIN_INTERVAL_S,
-    cv_fit=_cv_fit,
+    # No inline fit: the epochs travel with the candidate and the solver
+    # worker runs the fit on its own threads.  An 86 ms LM solve on the
+    # frame path is frame latency.
+    cv_fit=None,
     cv_chi2_max=N2_CONFIRM_CHI2_MAX,
     cv_min_epochs=N2_CONFIRM_MIN_EPOCHS,
     cv_min_span_s=N2_CONFIRM_MIN_SPAN_S,

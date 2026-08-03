@@ -22,26 +22,21 @@ ASSOC_MIN_INTERVAL_S = 30.0           # Per-node association rate limit (s)
 ASSOC_MAX_NEIGHBORS = 50              # CPU budget cap for neighbor checks
 
 # ── n=2 confirmation (track-to-track association) ────────────────────────────
-# OFF on the frame path until the constant-velocity fit moves to a worker queue.
+# The frame path pairs confirmed single-node tracks; the solver worker runs the
+# constant-velocity fit.
 #
-# Track association is the right mechanism — measured blind, it takes the
-# n=2-only ghost rate from 92.9% to 55.4% at no cost in real tracks — but the
-# fit is an ~86 ms LM solve and submit_tracks runs inside the frame worker.  On
-# staging that took the frame queue to 92% depth with the processor 21 s behind
-# a 6 frame/s feed and the map went empty.  Bounding the fits per round brought
-# a round to ~470 ms, which drained the queue but is still too much for a
-# 2-core box at fleet scale.
+# Measured blind, track association takes the n=2-only ghost rate from 92.9% to
+# 55.4% at no cost in real tracks.  The fit that makes that work is an ~86 ms LM
+# solve, and running it inside the frame worker took staging to 92% frame-queue
+# depth with the processor 21 s behind a 6 frame/s feed.  It now runs on the
+# solver's own threads, behind its own queue and staleness drop, so the frame
+# path keeps only the coarse delay gate — one BLAS contraction per node pair.
 #
-# With this False the associator runs the detection-level path (submit_frame),
-# which is cheap and known-good, and solver.py stops requiring a chi2 before
-# publishing an n=2 track.  Everything else from the track-association work —
-# the bistatic gate, the ellipse rendering, the ADS-B calibration feed — is
-# independent of this switch and stays on.
-#
-# The repair is to hand the fit to the solver's worker queue, which already has
-# threads draining it, and flip this back.  The offline bench exercises the
-# track path regardless of this flag.
-N2_TRACK_ASSOCIATION = False
+# Turning this off falls back to detection-level association and disables the
+# n=2 chi2 requirement in solver.py; the two must move together, since the gate
+# reads a chi2 the detection path never produces and would otherwise withhold
+# every n=2 track.
+N2_TRACK_ASSOCIATION = True
 
 # At n=2 a single-epoch solve has 5 unknowns against 4 residuals, so rms_delay
 # and rms_doppler go to zero for a cross pairing exactly as for a real target

@@ -771,3 +771,100 @@ class TestN2GateShipsDisabled:
         solver_mod._process_solver_item(({"n_nodes": 2}, {}, time.time()), solve_fn)
         assert any(k.startswith("mn-dark-7300-") for k in state.multinode_tracks)
         assert state.n2_unconfirmed == 0
+
+
+class TestFitRunsOnThisSideOfTheQueue:
+    """Association hands over the epochs; the fit happens on the solver worker.
+
+    An ~86 ms LM solve on the frame path is frame latency — measured on staging
+    at 92% frame-queue depth with the processor 21 s behind a 6 frame/s feed.
+    This worker already has threads and a queue with a staleness drop, which is
+    where that cost belongs.
+    """
+
+    @staticmethod
+    def _solve_fn(s_in, cfgs):
+        return {
+            "success": True, "lat": 34.88, "lon": -82.35, "alt_m": 7000.0,
+            "rms_delay": 0.4, "rms_doppler": 3.0, "timestamp_ms": 9100,
+            "contributing_node_ids": ["n1", "n2"], "n_nodes": 2,
+        }
+
+    def test_deferred_fit_is_run_here(self, monkeypatch):
+        called = {}
+
+        def fake_fit(fit_input, cfgs):
+            called["epochs"] = len(fit_input["epochs"])
+            return {"success": True, "chi2_per_dof": 0.4, "n_epochs": 6,
+                    "dof": 18, "lat": 34.88, "lon": -82.35, "alt_m": 7000.0,
+                    "vel_east": 180.0, "vel_north": -90.0}
+
+        import retina_geolocator.multinode_solver as mns
+        monkeypatch.setattr(mns, "fit_constant_velocity", fake_fit)
+
+        s_in = {"n_nodes": 2, "chi2_per_dof": None,
+                "cv_epochs": [{"t_s": float(i), "measurements": []} for i in range(6)],
+                "initial_guess": {"lat": 34.88, "lon": -82.35, "alt_km": 7.0}}
+        assert solver_mod._resolve_n2_chi2(s_in, {"n1": {}, "n2": {}}) == 0.4
+        assert called["epochs"] == 6
+        # Cached, so a retry of the same item does not refit.
+        assert s_in["chi2_per_dof"] == 0.4
+
+    def test_an_already_fitted_input_is_not_refitted(self, monkeypatch):
+        import retina_geolocator.multinode_solver as mns
+
+        def boom(*a, **kw):
+            raise AssertionError("must not refit")
+
+        monkeypatch.setattr(mns, "fit_constant_velocity", boom)
+        assert solver_mod._resolve_n2_chi2({"chi2_per_dof": 1.2}, {}) == 1.2
+
+    def test_no_epochs_means_no_confirmation(self):
+        """The detection-level path supplies neither, and must not be confirmed."""
+        assert solver_mod._resolve_n2_chi2({"n_nodes": 2}, {}) is None
+
+
+class TestTrackPairExclusivity:
+    """Two pairings sharing a single-node track are mutually exclusive.
+
+    One track is one aircraft.  The chi2 gate alone cannot separate them when
+    both clear it — which is precisely the case that produces a ghost beside a
+    real target — so the better fit takes the tracks and the loser is withheld.
+    """
+
+    def setup_method(self):
+        solver_mod._TRACK_CLAIMS.clear()
+
+    def test_better_fit_wins_a_shared_track(self):
+        good = {"track_pair_ids": [("a1", "b1")]}
+        worse = {"track_pair_ids": [("a1", "b2")]}   # shares a1
+        assert solver_mod._claim_track_pair(good, 0.4) is True
+        assert solver_mod._claim_track_pair(worse, 3.0) is False
+
+    def test_a_worse_incumbent_is_displaced(self):
+        assert solver_mod._claim_track_pair({"track_pair_ids": [("a1", "b2")]}, 3.0) is True
+        assert solver_mod._claim_track_pair({"track_pair_ids": [("a1", "b1")]}, 0.4) is True
+
+    def test_a_pairing_keeps_its_own_claim_when_re_solved(self):
+        """Re-solving must not lock a track out with its own previous score."""
+        s_in = {"track_pair_ids": [("a1", "b1")]}
+        assert solver_mod._claim_track_pair(s_in, 0.4) is True
+        assert solver_mod._claim_track_pair(s_in, 0.4) is True
+
+    def test_disjoint_pairings_both_claim(self):
+        assert solver_mod._claim_track_pair({"track_pair_ids": [("a1", "b1")]}, 0.4) is True
+        assert solver_mod._claim_track_pair({"track_pair_ids": [("a2", "b2")]}, 0.5) is True
+
+    def test_claims_expire(self, monkeypatch):
+        """A claim must not outlive the track it was made for."""
+        assert solver_mod._claim_track_pair({"track_pair_ids": [("a1", "b1")]}, 0.4) is True
+        real_time = time.time
+        monkeypatch.setattr(
+            solver_mod.time, "time",
+            lambda: real_time() + solver_mod._TRACK_CLAIM_TTL_S + 1,
+        )
+        assert solver_mod._claim_track_pair({"track_pair_ids": [("a1", "b9")]}, 5.0) is True
+
+    def test_detection_level_input_is_unaffected(self):
+        """No track ids means nothing to arbitrate."""
+        assert solver_mod._claim_track_pair({"n_nodes": 2}, 9.9) is True

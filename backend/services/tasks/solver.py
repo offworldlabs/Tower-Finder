@@ -428,6 +428,83 @@ def _multinode_track_key(result: dict, adsb_hex: str | None) -> str:
 _SOLVER_MAX_QUEUE_AGE_S = 45.0
 
 
+# Which single-node track pair currently owns a published n=2 track, and how
+# well it fitted.  One track is one aircraft, so two pairings sharing a track
+# are mutually exclusive; the better chi2 wins and the loser is withheld.
+#
+# On the frame path this was a sort within one association round.  Here the
+# pairings arrive as separate queue items, possibly on different worker
+# threads, so ownership is a claim against shared state instead — same rule,
+# different shape.  Entries expire on the same window the map does, so a claim
+# cannot outlive the track it was made for.
+_TRACK_CLAIMS: dict[str, tuple[float, float]] = {}   # track_id → (chi2, claimed_at)
+_TRACK_CLAIMS_LOCK = threading.Lock()
+_TRACK_CLAIM_TTL_S = 60.0
+
+
+def _claim_track_pair(s_in: dict, chi2: float) -> bool:
+    """Take ownership of both single-node tracks, or refuse if outbid."""
+    pairs = s_in.get("track_pair_ids") or []
+    if not pairs:
+        return True          # detection-level input: nothing to arbitrate
+    track_ids = [tid for pair in pairs for tid in pair]
+    now = time.time()
+    with _TRACK_CLAIMS_LOCK:
+        for tid, (_held_chi2, held_at) in list(_TRACK_CLAIMS.items()):
+            if now - held_at > _TRACK_CLAIM_TTL_S:
+                del _TRACK_CLAIMS[tid]
+        for tid in track_ids:
+            held = _TRACK_CLAIMS.get(tid)
+            # Strictly better, so a pairing re-solving itself keeps its own
+            # claim rather than losing to its previous, identical score.
+            if held is not None and held[0] < chi2:
+                return False
+        for tid in track_ids:
+            _TRACK_CLAIMS[tid] = (chi2, now)
+    return True
+
+
+def _resolve_n2_chi2(s_in: dict, node_cfgs) -> float | None:
+    """chi2/dof for an n=2 pairing, fitting here if association deferred it.
+
+    The constant-velocity fit is an ~86 ms LM solve.  Association runs inside
+    the frame worker, so doing it there is frame latency: measured on staging
+    at 92% frame-queue depth with the processor 21 s behind a 6 frame/s feed.
+    This worker already has its own threads and a queue with a staleness drop,
+    which is exactly the place for it — so association hands over the epochs
+    and the fit happens on this side.
+
+    Association may still fit inline (the offline bench does, having no queue),
+    in which case chi2_per_dof arrives already set and this is a no-op.
+    """
+    chi2 = s_in.get("chi2_per_dof")
+    if chi2 is not None:
+        return chi2
+    epochs = s_in.get("cv_epochs")
+    if not epochs or not isinstance(node_cfgs, dict):
+        return None
+    try:
+        from retina_geolocator.multinode_solver import fit_constant_velocity
+        fit = fit_constant_velocity(
+            {
+                "initial_guess": s_in.get("initial_guess"),
+                "initial_velocity": s_in.get("initial_velocity"),
+                "epochs": epochs,
+                "timestamp_ms": s_in.get("timestamp_ms", 0),
+            },
+            node_cfgs,
+        )
+    except Exception:
+        logging.exception("constant-velocity fit failed")
+        return None
+    if not fit or not fit.get("success"):
+        return None
+    # Cache it so a retry of the same input does not refit.
+    s_in["chi2_per_dof"] = fit["chi2_per_dof"]
+    s_in["n_epochs"] = fit["n_epochs"]
+    return fit["chi2_per_dof"]
+
+
 def _process_solver_item(item: tuple, solve_fn) -> dict | None:
     """Process a single solver queue entry. Returns the solver result (or None).
 
@@ -533,7 +610,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
         # round, so a real target is published as soon as it has the history to
         # earn it rather than being discarded.
         if _N2_REQUIRE_CONFIRMED and n_nodes == 2 and isinstance(s_in, dict):
-            _chi2 = s_in.get("chi2_per_dof")
+            _chi2 = _resolve_n2_chi2(s_in, node_cfgs)
             if _chi2 is None or _chi2 > _N2_CONFIRM_CHI2_MAX:
                 logging.debug(
                     "n=2 solve withheld: chi2/dof=%s (limit %.1f, span %s epochs) "
@@ -542,6 +619,15 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                     _N2_CONFIRM_CHI2_MAX, s_in.get("n_epochs"),
                     result.get("lat", 0), result.get("lon", 0),
                 )
+                state.n2_unconfirmed += 1
+                return result
+            if not _claim_track_pair(s_in, _chi2):
+                # A better-fitting pairing already owns one of these two
+                # single-node tracks.  One track is one aircraft, so the two are
+                # mutually exclusive hypotheses — and the chi2 gate alone cannot
+                # separate them when both clear it, which is exactly the case
+                # this catches.  Measured offline, competition of this kind is
+                # worth ~9 points of n=2 ghost rate at no cost in real tracks.
                 state.n2_unconfirmed += 1
                 return result
         state.solver_successes += 1
