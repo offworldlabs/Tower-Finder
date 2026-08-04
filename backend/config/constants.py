@@ -20,6 +20,14 @@ DELAY_MATCH_THRESHOLD_US = 15.0        # Bistatic delay tolerance for matching
 ASSOC_GRID_STEP_KM = 3.0              # Overlap zone grid resolution (km)
 ASSOC_MIN_INTERVAL_S = 30.0           # Per-node association rate limit (s)
 ASSOC_MAX_NEIGHBORS = 50              # CPU budget cap for neighbor checks
+# Track pairings emitted per association round when the constant-velocity fit
+# is deferred to the solver worker, which is the production configuration.
+# Distinct from the associator's inline-fit budget (8): that one bounds ~86 ms
+# LM solves, this one bounds queue pressure — a _merge_epochs, a candidate
+# carrying those epochs, and a solver-queue slot each.  They were the same
+# number by accident, and since the fit budget only decrements when a fit runs,
+# on the deferred path it silently capped pairings at 8 per node pair.
+ASSOC_MAX_PAIRS_PER_ROUND = 64
 
 # ── n=2 confirmation (track-to-track association) ────────────────────────────
 # The frame path pairs confirmed single-node tracks; the solver worker runs the
@@ -48,6 +56,14 @@ N2_CONFIRM_CHI2_MAX = 2.0             # chi2/dof ceiling for an n=2 track pairin
 N2_CONFIRM_MIN_SPAN_S = 12.0          # Observation span before a pairing is fitted
 N2_CONFIRM_MIN_EPOCHS = 4             # Floor on samples; span is the real gate
 N2_TRACK_HISTORY_MAX = 20             # Per-node track samples fed to the fit
+
+# Oldest ADS-B fix still usable as a coverage calibration point.  At 250 m/s a
+# 10 s fix is 2.5 km stale, which is already coarse against a 5°/72-bin polar
+# grid; beyond that the point stops describing where the target was when the
+# node detected it.  The frame path used to apply no age gate at all and took
+# whatever _fresh_adsb returned — up to 60 s, i.e. 15 km.  See
+# services/calibration.py, which both recording sites now go through.
+CAL_MAX_ADSB_AGE_S = 10.0
 
 # ── Default antenna parameters ───────────────────────────────────────────────
 YAGI_BEAM_WIDTH_DEG = 41.0            # Default half-power beamwidth (°)

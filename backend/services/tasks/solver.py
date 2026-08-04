@@ -15,6 +15,7 @@ from core import state
 # outside a contributing node's detection beam (ghost disambiguation at n=2).
 # This module carried its own haversine, bearing and in-beam rule until those
 # were consolidated into services.geo.
+from services.calibration import record_adsb_calibration
 from services.geo import haversine_km as _haversine_km
 from services.geo import in_node_beam as _in_node_beam
 from services.geo import offset_latlon_m
@@ -107,11 +108,9 @@ _MAX_DISPLACEMENT_KM = 2.0
 _N2_REQUIRE_CONFIRMED = N2_TRACK_ASSOCIATION
 _N2_CONFIRM_CHI2_MAX = N2_CONFIRM_CHI2_MAX
 
-# Oldest ADS-B fix still usable as a coverage calibration point.  At 250 m/s a
-# 10 s fix is 2.5 km stale, which is already coarse against a 5°/72-bin polar
-# grid; beyond that the point stops describing where the target was when the
-# node detected it.
-_CAL_MAX_ADSB_AGE_S = 10.0
+# The calibration age rule moved to config.constants.CAL_MAX_ADSB_AGE_S and is
+# applied by services.calibration, which both recording sites now go through.
+# It lived here while the frame path had its own, looser, unstated one.
 
 
 def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn,
@@ -618,13 +617,11 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
         # saw the target.  A dark solve now records nothing.
         _cal = state.adsb_aircraft.get(_adsb_hex) if _adsb_hex else None
         if _cal:
-            _cal_lat, _cal_lon = _cal.get("lat"), _cal.get("lon")
-            _cal_age_s = time.time() - _cal.get("last_seen_ms", 0) / 1000.0
-            if _cal_lat and _cal_lon and _cal_age_s <= _CAL_MAX_ADSB_AGE_S:
-                for nid in result.get("contributing_node_ids", []):
-                    state.node_analytics.record_calibration_point(
-                        nid, _cal_lat, _cal_lon
-                    )
+            record_adsb_calibration(
+                result.get("contributing_node_ids", []),
+                _cal.get("lat"), _cal.get("lon"),
+                age_s=time.time() - _cal.get("last_seen_ms", 0) / 1000.0,
+            )
         with _MN_TRACKS_LOCK:
             key = _multinode_track_key(result, _adsb_hex)
             state.multinode_tracks[key] = result

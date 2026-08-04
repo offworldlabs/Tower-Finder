@@ -17,6 +17,8 @@ from retina_custody.models import NodeIdentity
 from config.constants import (
     ANOMALY_LOG_MAX,  # noqa: F401 — re-exported, used via state.ANOMALY_LOG_MAX
     ASSOC_GRID_STEP_KM,
+    ASSOC_MAX_NEIGHBORS,
+    ASSOC_MAX_PAIRS_PER_ROUND,
     ASSOC_MIN_INTERVAL_S,
     GROUND_TRUTH_MAX,  # noqa: F401 — re-exported, used via state.GROUND_TRUTH_MAX
     N2_CONFIRM_CHI2_MAX,
@@ -57,6 +59,12 @@ node_associator = InterNodeAssociator(
     cv_chi2_max=N2_CONFIRM_CHI2_MAX,
     cv_min_epochs=N2_CONFIRM_MIN_EPOCHS,
     cv_min_span_s=N2_CONFIRM_MIN_SPAN_S,
+    # Both were dead config in the same way assoc_interval_s had been: defined
+    # here, never passed, with the library falling back to its own value.  The
+    # neighbour cap in particular only ever applied on the detection path, so
+    # the live one was uncapped.
+    max_neighbors=ASSOC_MAX_NEIGHBORS,
+    max_pairs_per_round=ASSOC_MAX_PAIRS_PER_ROUND,
 )
 
 # ── Per-node tracker pipelines (lazy-created per connecting node) ─────────────

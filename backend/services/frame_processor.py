@@ -28,6 +28,7 @@ from config.constants import (
 )
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
+from services.calibration import record_adsb_calibration
 from services.geo import (
     C_KM_US,
     bearing_deg,
@@ -1145,8 +1146,15 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             # eventually used to judge.  The previous code was gated on
             # has_adsb but stored solver_lat/solver_lon, so it inherited every
             # solver error while looking like ground truth.
-            if nid and adsb_lat and adsb_lon:
-                state.node_analytics.record_calibration_point(nid, adsb_lat, adsb_lon)
+            #
+            # Age matters as much as provenance, and this path used to have no
+            # age gate at all: _fresh_adsb admits a 60 s fix, which is 15 km of
+            # travel.  services.calibration holds the one rule now.
+            if nid:
+                record_adsb_calibration(
+                    [nid], adsb_lat, adsb_lon,
+                    age_s=now - (adsb.get("last_seen_ms", 0) or 0) / 1000.0,
+                )
             if nid:
                 # Track furthest verified detections per node (for detection range)
                 area = state.node_analytics.detection_areas.get(nid)
