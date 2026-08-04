@@ -291,6 +291,10 @@ class Result:
     claim_refused_self: int = 0
     claim_refused_other: int = 0
     claim_chi2_drift: list = None
+    # How many single-node tracks each solver input spans.  The claim reads
+    # track_pair_ids, which format_track_pairs_for_solver truncates to [:1],
+    # so anything above 2 here is a track the claim cannot reach.
+    cluster_sizes: Counter = None
     # Per track, the contributing-node counts its solves were made from.  A
     # track-level ghost rate split by n needs this because one track can be
     # solved at n=2 on one round and n=3 on the next; "an n=2 track" means
@@ -308,6 +312,7 @@ class Result:
         self.speed_err_ms = []
         self.err_by_n = defaultdict(list)
         self.claim_chi2_drift = []
+        self.cluster_sizes = Counter()
         self.track_n = defaultdict(Counter)
         self._ghost_tracks = {}
 
@@ -498,6 +503,11 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                 solver_inputs = (assoc.format_candidates_for_solver(cands)
                                  if cands else [])
             for s_in in solver_inputs:
+                # Split by n_nodes: the claim only arbitrates n=2 solves
+                # (solver.py gates on n_nodes == 2), so cluster width only
+                # matters for those.
+                _k = "n2" if s_in.get("n_nodes", 0) == 2 else "n3+"
+                res.cluster_sizes[(_k, len(s_in.get("track_ids") or []))] += 1
                 if s_in.get("n_nodes", 0) < 2:
                     continue
                 try:
@@ -631,6 +641,18 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
             print(f"    claim refusals: {r.claim_refused_self} by the pairing's "
                   f"OWN earlier claim, {r.claim_refused_other} by a competitor"
                   + (f"  (median chi2 drift +{_med:.3f})" if _drift else ""))
+    if r.cluster_sizes:
+        _tot = sum(r.cluster_sizes.values())
+        for grp in ("n2", "n3+"):
+            sizes = {k[1]: n for k, n in r.cluster_sizes.items() if k[0] == grp}
+            if not sizes:
+                continue
+            tot = sum(sizes.values())
+            wide = sum(n for k, n in sizes.items() if k > 2)
+            note = ("arbitrated by the claim" if grp == "n2"
+                    else "never reaches the claim — solver gates it on n_nodes==2")
+            print(f"  cluster sizes {grp:4s} {dict(sorted(sizes.items()))}  "
+                  f"-> {100 * wide / max(tot, 1):.1f}% span >2 tracks  ({note})")
     print(f"  solver rejects/failures: {r.solver_rejects}")
 
 
