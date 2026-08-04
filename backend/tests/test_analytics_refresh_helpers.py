@@ -8,6 +8,7 @@ Tests the pure helper functions:
 
 import pytest
 
+from services.tasks import analytics_refresh
 from services.tasks._helpers import haversine_km
 from services.tasks.analytics_refresh import _aircraft_in_beam, _bearing_deg, _bistatic_angle_deg
 
@@ -376,3 +377,61 @@ class TestInBeamRespectsBistaticRule:
             tx_lat=self.RX_LAT, tx_lon=self.tx_lon,
             max_bistatic_range_km=60.0,
         ) is False
+
+
+class TestCoverageConstraintRefresh:
+    """Overlap grids follow a coverage polygon that tightens after registration.
+
+    Grids are built once at registration, so without this the empirical
+    constraint would only ever take effect on a restart.  It runs on the
+    analytics cadence rather than the frame path because each rebuild costs one
+    grid computation per neighbour.
+    """
+
+    def setup_method(self):
+        analytics_refresh._COVERAGE_DIGESTS.clear()
+
+    def _stub(self, monkeypatch, digests, rebuilt_calls):
+        class _Assoc:
+            node_geometries = {"n1": object(), "n2": object()}
+
+            def rebuild_zones_for(self, node_id):
+                rebuilt_calls.append(node_id)
+                return 3
+
+        class _Analytics:
+            def coverage_digest(self, node_id):
+                return digests.get(node_id)
+
+        monkeypatch.setattr(analytics_refresh.state, "node_associator", _Assoc())
+        monkeypatch.setattr(analytics_refresh.state, "node_analytics", _Analytics())
+
+    def test_a_changed_digest_triggers_a_rebuild(self, monkeypatch):
+        calls = []
+        self._stub(monkeypatch, {"n1": (1.0, None), "n2": None}, calls)
+        assert analytics_refresh._refresh_coverage_constraints() == 1
+        assert calls == ["n1"]
+
+    def test_an_unchanged_digest_costs_nothing(self, monkeypatch):
+        calls = []
+        self._stub(monkeypatch, {"n1": (1.0, None), "n2": None}, calls)
+        analytics_refresh._refresh_coverage_constraints()
+        calls.clear()
+        assert analytics_refresh._refresh_coverage_constraints() == 0
+        assert calls == []
+
+    def test_a_node_without_a_polygon_is_skipped(self, monkeypatch):
+        calls = []
+        self._stub(monkeypatch, {"n1": None, "n2": None}, calls)
+        assert analytics_refresh._refresh_coverage_constraints() == 0
+        assert calls == []
+
+    def test_a_later_change_triggers_another_rebuild(self, monkeypatch):
+        calls = []
+        digests = {"n1": (1.0, None), "n2": None}
+        self._stub(monkeypatch, digests, calls)
+        analytics_refresh._refresh_coverage_constraints()
+        digests["n1"] = (0.5, None)          # polygon tightened further
+        calls.clear()
+        assert analytics_refresh._refresh_coverage_constraints() == 1
+        assert calls == ["n1"]

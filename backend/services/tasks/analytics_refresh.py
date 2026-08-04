@@ -34,6 +34,38 @@ def _percentile(vals: list, pct: float) -> float:
     return float(np.percentile(vals, pct))
 
 
+# Coverage digest each node's overlap grids were last built under.  A polygon
+# that tightens after registration does not retroactively tighten the grids, so
+# without this the constraint would only ever take effect on a restart.
+_COVERAGE_DIGESTS: dict[str, tuple] = {}
+
+
+def _refresh_coverage_constraints() -> int:
+    """Rebuild overlap grids for nodes whose observed coverage has changed.
+
+    Runs on the analytics cadence, not the frame path: each rebuild costs one
+    grid computation per neighbour.  Only acts when a node's constraint digest
+    actually moves, so a settled fleet pays nothing.
+    """
+    rebuilt = 0
+    for node_id in list(state.node_associator.node_geometries):
+        digest = state.node_analytics.coverage_digest(node_id)
+        if digest is None:
+            continue
+        if _COVERAGE_DIGESTS.get(node_id) == digest:
+            continue
+        # Record before rebuilding: a failure mid-rebuild should not spin.
+        _COVERAGE_DIGESTS[node_id] = digest
+        pairs = state.node_associator.rebuild_zones_for(node_id)
+        if pairs:
+            rebuilt += 1
+            logging.info(
+                "coverage constraint changed for %s — rebuilt %d overlap zones",
+                node_id, pairs,
+            )
+    return rebuilt
+
+
 def _refresh_analytics_and_nodes():
     """Heavy work: recompute analytics, nodes, and overlaps → store as bytes."""
     from services.tcp_handler import is_synthetic_node
@@ -117,6 +149,12 @@ def _refresh_analytics_and_nodes():
         _refresh_mlat_verification()
     except Exception:
         logging.exception("_refresh_mlat_verification failed")
+
+    # Overlap grids follow a coverage polygon that has tightened
+    try:
+        _refresh_coverage_constraints()
+    except Exception:
+        logging.exception("_refresh_coverage_constraints failed")
 
     # Synthetic chain-of-custody entries for connected nodes that lack them
     _ensure_custody_data()

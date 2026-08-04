@@ -34,8 +34,18 @@ connected_nodes: dict[str, dict] = {}
 
 node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR)
 
+def _coverage_limit_for(node_id: str):
+    """Shrink-only empirical prior for one node, from accumulated ADS-B fixes.
+
+    Injected rather than imported so retina-analytics keeps knowing nothing
+    about NodeAnalyticsManager, the same shape cv_fit used.
+    """
+    return node_analytics.coverage_limit_for(node_id)
+
+
 node_associator = InterNodeAssociator(
     grid_step_km=ASSOC_GRID_STEP_KM,
+    coverage_provider=_coverage_limit_for,
     # Passed explicitly because ASSOC_MIN_INTERVAL_S was dead config: defined
     # here but never reaching the associator, which used its own hardcoded
     # copy, so tuning it did nothing.
