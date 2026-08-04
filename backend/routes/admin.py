@@ -264,6 +264,52 @@ async def admin_set_node_owner(
     return {"ok": True, "node_id": node_id, "user_id": body.user_id}
 
 
+# ── Node retirement ───────────────────────────────────────────────────────────
+
+@router.get("/nodes/stale")
+async def admin_list_stale_nodes(_admin=Depends(require_admin)):
+    """Per-node state held for nodes that are no longer in the fleet.
+
+    Nothing removes a node automatically, so decommissioned, renamed, or
+    superseded receivers accumulate here and are paid for on every analytics
+    pass and snapshot write.  See services.node_retirement.
+    """
+    from services import node_retirement
+    stale = node_retirement.stale_node_ids()
+    return {"stale_nodes": stale, "count": len(stale),
+            "live_nodes": len(node_retirement.live_node_ids())}
+
+
+@router.delete("/nodes/{node_id}/state")
+async def admin_retire_node(node_id: str, force: bool = False, admin=Depends(require_admin)):
+    """Forget a node: analytics, coverage files, custody chain, reputation.
+
+    Irreversible — the coverage polygon represents observation time that cannot
+    be recreated.  Refuses a currently-connected node unless force=true, since
+    the next registration would undo it anyway.
+    """
+    from services import node_retirement
+    try:
+        report = node_retirement.retire_node(node_id, force=force)
+    except node_retirement.NodeStillConnected as exc:
+        raise HTTPException(
+            409, f"Node {node_id} is connected; pass force=true to retire it anyway"
+        ) from exc
+    log_event("node", f"Retired node state for {node_id}", "warning",
+              {"node_id": node_id, "by": admin["email"], "report": report})
+    return report
+
+
+@router.post("/nodes/retire-stale")
+async def admin_retire_stale_nodes(admin=Depends(require_admin)):
+    """Retire every node held in state but absent from the fleet."""
+    from services import node_retirement
+    result = node_retirement.retire_stale_nodes()
+    log_event("node", f"Retired {result['count']} stale node(s)", "warning",
+              {"by": admin["email"], "nodes": [r["node_id"] for r in result["retired"]]})
+    return result
+
+
 # ── Events ────────────────────────────────────────────────────────────────────
 
 @router.get("/events")
