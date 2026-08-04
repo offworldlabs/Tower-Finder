@@ -12,9 +12,10 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from fastapi.responses import Response
 
 from core import state
-from core.task_registry import TASK_EXPECTED_INTERVAL_S
+from core.task_registry import get_stale_tasks
 from core.users import require_admin
 from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex
+from services.geo import haversine_km
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -50,17 +51,9 @@ def _verify_sim_key(x_api_key: str = Header(default="", alias="X-API-Key")):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
 
-def _get_stale_tasks() -> list[str]:
-    """Return names of tasks that haven't reported success within their expected interval."""
-    now = time.time()
-    stale = []
-    for task_name, expected_s in TASK_EXPECTED_INTERVAL_S.items():
-        last = state.task_last_success.get(task_name)
-        if last is None:
-            continue  # task hasn't started yet — not stale
-        if (now - last) > expected_s * 2:
-            stale.append(task_name)
-    return stale
+# Was a byte-identical copy of routes/admin.py's; the rule now lives beside the
+# interval table it reads.
+_get_stale_tasks = get_stale_tasks
 
 
 # Module-level reference set from main.py at startup
@@ -221,9 +214,7 @@ async def validate_ground_truth(body: dict = Body(...)):
             sa_lat, sa_lon = sa.get("lat", 0), sa.get("lon", 0)
             if sa_lat == 0 and sa_lon == 0:
                 continue
-            dlat = (gt_lat - sa_lat) * 111.0
-            dlon = (gt_lon - sa_lon) * 111.0 * math.cos(math.radians(gt_lat))
-            dist_km = math.sqrt(dlat**2 + dlon**2)
+            dist_km = haversine_km(gt_lat, gt_lon, sa_lat, sa_lon)
             if dist_km < best_dist and dist_km < 50:
                 best_dist = dist_km
                 best_match = (i, sa)
@@ -422,9 +413,8 @@ async def get_ground_truth_trail(hex_code: str):
     if gt_trail and solved_trail:
         gt_last = gt_trail[-1]
         sol_last = solved_trail[-1]
-        dlat = (sol_last[0] - gt_last[0]) * 111.0
-        dlon = (sol_last[1] - gt_last[1]) * 111.0 * math.cos(math.radians(gt_last[0]))
-        position_error_km = round(math.sqrt(dlat**2 + dlon**2), 3)
+        position_error_km = round(
+            haversine_km(sol_last[0], sol_last[1], gt_last[0], gt_last[1]), 3)
 
     return {
         "hex": hex_code,
@@ -586,9 +576,8 @@ async def get_simulation_ground_truth():
             if trail:
                 gt_last = list(trail)[-1]
                 sol = solved_by_hex[hx]
-                dlat = (sol[0] - gt_last[0]) * 111.0
-                dlon = (sol[1] - gt_last[1]) * 111.0 * math.cos(math.radians(gt_last[0]))
-                pos_errors.append(math.sqrt(dlat**2 + dlon**2))
+                pos_errors.append(
+                    haversine_km(sol[0], sol[1], gt_last[0], gt_last[1]))
             if len(pos_errors) >= 200:
                 break
 

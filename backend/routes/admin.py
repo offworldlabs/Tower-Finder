@@ -37,7 +37,7 @@ from core.auth import (
     set_node_owner,
 )
 from core.runtime_config import runtime_path
-from core.task_registry import TASK_EXPECTED_INTERVAL_S
+from core.task_registry import get_stale_tasks
 from core.users import (
     User,
     get_async_session,
@@ -49,16 +49,10 @@ from core.users import (
 logger = logging.getLogger(__name__)
 
 
-def _get_stale_tasks() -> list[str]:
-    now = time.time()
-    stale = []
-    for task_name, expected_s in TASK_EXPECTED_INTERVAL_S.items():
-        last = state.task_last_success.get(task_name)
-        if last is None:
-            continue
-        if (now - last) > expected_s * 2:
-            stale.append(task_name)
-    return stale
+# Was a byte-identical copy of routes/test.py's; the rule now lives beside the
+# interval table it reads.
+_get_stale_tasks = get_stale_tasks
+
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 # ── Persistent event log ─────────────────────────────────────────────────────

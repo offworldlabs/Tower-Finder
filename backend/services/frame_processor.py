@@ -29,6 +29,14 @@ from config.constants import (
 )
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
+from services.geo import (
+    C_KM_US,
+    bearing_deg,
+    enu_km,
+    haversine_km,
+    offset_latlon,
+    offset_latlon_m,
+)
 from services.id_utils import multinode_hex_from_key
 from services.storage import archive_detections
 
@@ -103,10 +111,9 @@ def normalize_hex_key(hex_code: str) -> str:
     return str(hex_code or "").strip().lower()
 
 
-def position_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    dlat = (lat1 - lat2) * 111.0
-    dlon = (lon1 - lon2) * 111.0 * math.cos(math.radians((lat1 + lat2) / 2.0))
-    return math.sqrt(dlat ** 2 + dlon ** 2)
+# Was a flat-earth approximation at 111.0 km/deg — 0.175% short of the
+# spherical form used by every gate this feeds.
+position_distance_km = haversine_km
 
 
 # ── Aircraft de-duplication ───────────────────────────────────────────────────
@@ -230,10 +237,7 @@ def _record_arc_motion(ac_hex: str, lat: float, lon: float, ts: float) -> None:
     log = state.track_arc_motion.get(ac_hex)
     if log:
         plat, plon, _pts = log[-1]
-        cos_lat = math.cos(math.radians(lat)) or 1e-9
-        dlat_m = (lat - plat) * 111_320
-        dlon_m = (lon - plon) * 111_320 * cos_lat
-        if math.hypot(dlat_m, dlon_m) < _ARC_MOTION_MIN_M:
+        if haversine_km(lat, lon, plat, plon) * 1000.0 < _ARC_MOTION_MIN_M:
             return
     else:
         log = []
@@ -278,16 +282,14 @@ def _estimate_velocity_ms_from_motion(
     log = state.track_arc_motion.get(ac_hex)
     if not log:
         return None
-    cos_lat = math.cos(math.radians(lat)) or 1e-9
     for plat, plon, pts in log:
         dt = now - pts
         if dt < 15:
             continue  # too recent — noise dominates
         if dt > 120:
             continue  # too old — aircraft may have manoeuvred
-        dlat_m = (lat - plat) * 111_320
-        dlon_m = (lon - plon) * 111_320 * cos_lat
-        dist_m = math.hypot(dlat_m, dlon_m)
+        east_m, north_m = (c * 1000.0 for c in enu_km(plat, plon, lat, lon))
+        dist_m = math.hypot(east_m, north_m)
         if dist_m < 200:
             continue  # essentially still — can't infer velocity
         # Sanity bound.  This was 411 m/s (799 kt), which accepted a few km of
@@ -297,7 +299,7 @@ def _estimate_velocity_ms_from_motion(
         if dist_m / dt > ARC_MOTION_MAX_SPEED_MS:
             state.arc_velocity_rejects += 1
             continue
-        return dlon_m / dt, dlat_m / dt
+        return east_m / dt, north_m / dt
     return None
 
 
@@ -622,19 +624,16 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
     }
 
 
-def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    lat1r = math.radians(lat1)
-    lat2r = math.radians(lat2)
-    dlonr = math.radians(lon2 - lon1)
-    y = math.sin(dlonr) * math.cos(lat2r)
-    x = math.cos(lat1r) * math.sin(lat2r) - math.sin(lat1r) * math.cos(lat2r) * math.cos(dlonr)
-    return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+# Aliases: tests import both names from this module, and the arc builder below
+# reads more clearly with the short ones.  The bodies were duplicates of
+# services.geo's — _enu_to_lla additionally used 111.32 and a cos_lat clamp of
+# 0.1, which only differs above 84.3° latitude and would have misplaced a target
+# there rather than admit the projection had run out.
+_bearing_deg = bearing_deg
 
 
 def _enu_to_lla(rx_lat: float, rx_lon: float, east_km: float, north_km: float) -> list[float]:
-    cos_lat = max(0.1, math.cos(math.radians(rx_lat)))
-    lat = rx_lat + north_km / 111.32
-    lon = rx_lon + east_km / (111.32 * cos_lat)
+    lat, lon = offset_latlon(rx_lat, rx_lon, east_km, north_km)
     return [float(lat), float(lon)]
 
 
@@ -678,11 +677,9 @@ def _build_single_node_arc(
     if beam_azimuth_deg is None:
         beam_azimuth_deg = (_bearing_deg(rx_lat, rx_lon, tx_lat, tx_lon) + 90.0) % 360.0
 
-    cos_lat = max(0.1, math.cos(math.radians((rx_lat + tx_lat) / 2.0)))
-    tx_east_km = (tx_lon - rx_lon) * 111.32 * cos_lat
-    tx_north_km = (tx_lat - rx_lat) * 111.32
+    tx_east_km, tx_north_km = enu_km(rx_lat, rx_lon, tx_lat, tx_lon)
     baseline_km = math.hypot(tx_east_km, tx_north_km)
-    differential_range_km = delay_us * 0.299792458
+    differential_range_km = delay_us * C_KM_US
 
     def _differential_at(range_km: float, bearing_deg: float) -> float:
         bearing_rad = math.radians(bearing_deg)
@@ -718,9 +715,8 @@ def _build_single_node_arc(
     # below 1 pixel at low zooms; targeting an arc length in km solves it.
     if target_lat is not None and target_lon is not None:
         centre_bearing = _bearing_deg(rx_lat, rx_lon, target_lat, target_lon)
-        target_east_km = (target_lon - rx_lon) * 111.32 * cos_lat
-        target_north_km = (target_lat - rx_lat) * 111.32
-        target_range_km = max(math.hypot(target_east_km, target_north_km), 5.0)
+        target_range_km = max(
+            haversine_km(rx_lat, rx_lon, target_lat, target_lon), 5.0)
         # ~25 km arc length keeps the blip visible at zoom ≥4 and short
         # enough to read as a chain at zoom ≥7 — verified on staging.
         BLIP_ARC_LENGTH_KM = 25.0
@@ -1000,9 +996,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
                 _prev_lat, _prev_lon, _prev_ts = _last_emit
                 _dt = now - _prev_ts
                 if 0 < _dt < 60:
-                    _dlat = (lat - _prev_lat) * 111_320
-                    _dlon = (lon - _prev_lon) * 111_320 * math.cos(math.radians(lat))
-                    _speed_ms = math.hypot(_dlat, _dlon) / _dt
+                    _speed_ms = haversine_km(lat, lon, _prev_lat, _prev_lon) * 1000.0 / _dt
                     if _speed_ms > 800:
                         _gate_fired = True
                         if not _hold_expired:
@@ -1051,11 +1045,11 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
                 _hold_dt = min(now - _anchor_ts, GATE_MAX_HOLD_S)
                 lat, lon = _anchor_lat, _anchor_lon
                 if _hold_dt > 0.5 and (_vel_e != 0.0 or _vel_n != 0.0):
-                    _cos_lat = math.cos(math.radians(lat)) or 1e-9
-                    lat = round(_anchor_lat + (_vel_n / 111_320.0) * _hold_dt, 6)
-                    lon = round(
-                        _anchor_lon + (_vel_e / (111_320.0 * _cos_lat)) * _hold_dt, 6
+                    _dr_lat, _dr_lon = offset_latlon_m(
+                        _anchor_lat, _anchor_lon,
+                        east_m=_vel_e * _hold_dt, north_m=_vel_n * _hold_dt,
                     )
+                    lat, lon = round(_dr_lat, 6), round(_dr_lon, 6)
             else:
                 state.track_gate_hold.pop(ac_hex, None)
         elif not ambiguity_arc:
@@ -1083,9 +1077,11 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             _pft = getattr(track, 'pos_fix_ts', 0.0) or getattr(track, 'wall_clock_ts', 0.0) or 0.0
             _dr_elapsed = min(now - _pft, 60.0)
             if _dr_elapsed > 0.5 and (_vel_e != 0.0 or _vel_n != 0.0):
-                _cos_lat = math.cos(math.radians(lat)) or 1e-9
-                lat = round(lat + (_vel_n / 111_320.0) * _dr_elapsed, 6)
-                lon = round(lon + (_vel_e / (111_320.0 * _cos_lat)) * _dr_elapsed, 6)
+                _dr_lat, _dr_lon = offset_latlon_m(
+                    lat, lon,
+                    east_m=_vel_e * _dr_elapsed, north_m=_vel_n * _dr_elapsed,
+                )
+                lat, lon = round(_dr_lat, 6), round(_dr_lon, 6)
 
         # Record arc-motion samples from the raw bistatic midpoint (kept
         # for the gs/heading estimator that drives the frontend's icon
@@ -1115,9 +1111,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         if _prev_emit:
             _pe_lat, _pe_lon, _pe_ts = _prev_emit
             _jdt = now - _pe_ts
-            _jdlat = (lat - _pe_lat) * 111_320
-            _jdlon = (lon - _pe_lon) * 111_320 * math.cos(math.radians(lat))
-            _jdist_m = math.hypot(_jdlat, _jdlon)
+            _jdist_m = haversine_km(lat, lon, _pe_lat, _pe_lon) * 1000.0
             # Trigger on either: a sustained-interval speed above Mach 3
             # (~1029 m/s — well past any real aircraft, so no false positives
             # on legitimate military supersonic traffic), or an absolute
@@ -1298,9 +1292,11 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         vel_east_m_s = r.get("vel_east", 0.0)
         vel_north_m_s = r.get("vel_north", 0.0)
         if elapsed > 0.0 and (vel_east_m_s != 0.0 or vel_north_m_s != 0.0):
-            cos_lat = math.cos(math.radians(ac["lat"])) or 1e-9
-            ac["lat"] = round(ac["lat"] + (vel_north_m_s / 111_320.0) * elapsed, 5)
-            ac["lon"] = round(ac["lon"] + (vel_east_m_s / (111_320.0 * cos_lat)) * elapsed, 5)
+            _dr_lat, _dr_lon = offset_latlon_m(
+                ac["lat"], ac["lon"],
+                east_m=vel_east_m_s * elapsed, north_m=vel_north_m_s * elapsed,
+            )
+            ac["lat"], ac["lon"] = round(_dr_lat, 5), round(_dr_lon, 5)
         if ac["hex"] not in seen_hex:
             seen_hex.add(ac["hex"])
             append_track_history(ac["hex"], ac["lat"], ac["lon"], ac["alt_baro"], now)

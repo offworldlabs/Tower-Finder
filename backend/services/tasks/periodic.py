@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import math
 import time
 
 import httpx
@@ -17,6 +16,7 @@ from config.constants import (
 )
 from core import state
 from services.frame_processor import flush_all_archive_buffers
+from services.geo import haversine_km
 
 _opensky_client: httpx.AsyncClient | None = None
 _adsb_lol_client: object | None = None
@@ -248,9 +248,8 @@ def _cross_validate_adsb_reports():
             ext = state.external_adsb_cache.get(sample.adsb_hex.lower())
             if ext is None:
                 continue
-            dlat = sample.adsb_lat - ext["lat"]
-            dlon = sample.adsb_lon - ext["lon"]
-            dist_km = math.sqrt(dlat ** 2 + dlon ** 2) * 111.0
+            dist_km = haversine_km(sample.adsb_lat, sample.adsb_lon,
+                                   ext["lat"], ext["lon"])
             if dist_km > 10.0:
                 rep = state.node_analytics.reputations.get(node_id)
                 if rep:

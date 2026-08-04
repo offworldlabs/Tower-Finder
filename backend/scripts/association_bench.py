@@ -152,6 +152,66 @@ def _haversine_km(lat1, lon1, lat2, lon2):
     return 2 * r * math.asin(math.sqrt(a))
 
 
+class DeferredN2Gate:
+    """The solver-side n=2 gate, replayed against simulated time.
+
+    Production does not run the associator's own chi2 gate: state.py builds the
+    associator with cv_fit=None, so chi2_per_dof is never set inside
+    _pair_tracks, `fitted` stays empty and stage-2 selection never executes.
+    The pairings travel to the solver worker carrying cv_epochs, and *this* is
+    the gate that decides publication — see solver.py:607-632.
+
+    The bench measured the inline path instead, which is why its numbers
+    described a configuration that does not ship.  This mirrors the shipped one:
+    fit here, apply the same threshold, and arbitrate the same claim.  The
+    claims dict is keyed and expired exactly as _TRACK_CLAIMS is, on simulated
+    time rather than wall-clock since a replay compresses both.
+    """
+
+    def __init__(self, chi2_max: float, claim_ttl_s: float = 60.0):
+        self.chi2_max = chi2_max
+        self.claim_ttl_s = claim_ttl_s
+        self._claims: dict[str, tuple[float, float]] = {}   # track_id → (chi2, at)
+
+    def resolve_chi2(self, s_in: dict, node_cfgs: dict) -> float | None:
+        chi2 = s_in.get("chi2_per_dof")
+        if chi2 is not None:
+            return chi2
+        epochs = s_in.get("cv_epochs")
+        if not epochs:
+            return None
+        fit = fit_constant_velocity(
+            {
+                "initial_guess": s_in.get("initial_guess"),
+                "initial_velocity": s_in.get("initial_velocity"),
+                "epochs": epochs,
+                "timestamp_ms": s_in.get("timestamp_ms", 0),
+            },
+            node_cfgs,
+        )
+        if not fit or not fit.get("success"):
+            return None
+        s_in["chi2_per_dof"] = fit["chi2_per_dof"]
+        s_in["n_epochs"] = fit["n_epochs"]
+        return fit["chi2_per_dof"]
+
+    def claim(self, s_in: dict, chi2: float, now_s: float) -> bool:
+        pairs = s_in.get("track_pair_ids") or []
+        if not pairs:
+            return True
+        track_ids = [tid for pair in pairs for tid in pair]
+        for tid, (_held_chi2, held_at) in list(self._claims.items()):
+            if now_s - held_at > self.claim_ttl_s:
+                del self._claims[tid]
+        for tid in track_ids:
+            held = self._claims.get(tid)
+            if held is not None and held[0] < chi2:
+                return False
+        for tid in track_ids:
+            self._claims[tid] = (chi2, now_s)
+        return True
+
+
 @dataclass
 class Result:
     matched: int = 0
@@ -173,6 +233,12 @@ class Result:
     gate_accepted: int = 0
     gate_unfitted: int = 0
     gate_superseded: int = 0
+    # Deferred mode only: what the *solver-side* n=2 gate did.  In production the
+    # associator emits unscored pairings and this gate is the one that runs, so
+    # without these the shipped configuration's selection is invisible.
+    n2_withheld_unfitted: int = 0
+    n2_withheld_chi2: int = 0
+    n2_withheld_claimed: int = 0
     # Per track, the contributing-node counts its solves were made from.  A
     # track-level ghost rate split by n needs this because one track can be
     # solved at n=2 on one round and n=3 on the next; "an n=2 track" means
@@ -276,7 +342,8 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
         n_nodes, n_cluster, metro, min_aircraft, max_aircraft,
         metro_traffic_frac, layout="ring", illuminator_band="any",
         dual_aim="core", blind=True, mode="detection",
-        chi2_max=2.0, min_span_s=12.0, history_n=20, exclusive=True) -> Result:
+        chi2_max=2.0, min_span_s=12.0, history_n=20, exclusive=True,
+        cv_fit_mode="inline") -> Result:
     import random
 
     random.seed(seed)
@@ -285,13 +352,21 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                                layout, illuminator_band, dual_aim)
     node_cfgs = {nd["node_id"]: nd for nd in fleet}
 
+    # "inline" fits inside the associator, which is what the bench has always
+    # done and what every published figure was measured on.  "deferred" is what
+    # production runs (core/state.py:56 passes cv_fit=None): the associator
+    # emits unscored pairings and the solver worker fits and arbitrates.  The
+    # two are different code paths, so they need separate baselines.
+    deferred = (mode == "track" and cv_fit_mode == "deferred")
     assoc = InterNodeAssociator(
         grid_step_km=3.0,
-        cv_fit=fit_constant_velocity if mode == "track" else None,
+        cv_fit=(fit_constant_velocity
+                if (mode == "track" and not deferred) else None),
         cv_chi2_max=chi2_max,
         cv_min_span_s=min_span_s,
         cv_exclusive=exclusive,
     )
+    n2_gate = DeferredN2Gate(chi2_max) if deferred else None
     # One tracker per node, driven by every frame — mirrors
     # frame_processor.py:476-477.  The bench previously fed raw detections
     # straight to the associator, skipping the stage production runs first, so
@@ -377,6 +452,20 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                 if not out or not out.get("success"):
                     res.solver_rejects += 1
                     continue
+                # The shipped n=2 gate.  Mirrors solver.py:607-632, including
+                # that a withheld solve never reaches state.multinode_tracks —
+                # so it must not be counted here as matched or ghost either.
+                if n2_gate is not None and out.get("n_nodes", 0) == 2:
+                    _chi2 = n2_gate.resolve_chi2(s_in, node_cfgs)
+                    if _chi2 is None:
+                        res.n2_withheld_unfitted += 1
+                        continue
+                    if _chi2 > n2_gate.chi2_max:
+                        res.n2_withheld_chi2 += 1
+                        continue
+                    if not n2_gate.claim(s_in, _chi2, t):
+                        res.n2_withheld_claimed += 1
+                        continue
                 d, best_id, best_speed = min(
                     ((_haversine_km(out["lat"], out["lon"], a, b), oid, sp)
                      for a, b, oid, sp in truth),
@@ -470,6 +559,12 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
               f"-> {r.gate_accepted} fitted+kept, {r.gate_rejected} rejected on χ², "
               f"{r.gate_superseded} superseded by a better fit, "
               f"{r.gate_unfitted} not yet fittable")
+    _n2w = r.n2_withheld_unfitted + r.n2_withheld_chi2 + r.n2_withheld_claimed
+    if _n2w:
+        print(f"  solver n=2 gate: {_n2w} solves withheld  "
+              f"-> {r.n2_withheld_unfitted} unfitted, "
+              f"{r.n2_withheld_chi2} over χ², "
+              f"{r.n2_withheld_claimed} outbid on a track claim")
     print(f"  solver rejects/failures: {r.solver_rejects}")
 
 
@@ -487,7 +582,7 @@ def main():
     p.add_argument("--nodes", type=int, default=15)
     p.add_argument("--n-cluster", type=int, default=10)
     p.add_argument("--metro", default="gvl")
-    p.add_argument("--layout", choices=("ring", "dual"), default="ring")
+    p.add_argument("--layout", choices=("ring", "dual", "scatter"), default="ring")
     p.add_argument("--illuminator-band", choices=("any", "vhf"), default="any")
     p.add_argument("--dual-aim", choices=("core", "random"), default="core")
     p.add_argument("--tagged", dest="blind", action="store_false", default=True,
@@ -502,6 +597,13 @@ def main():
                    help="track mode: observation span before a pairing is fitted")
     p.add_argument("--history-n", type=int, default=20,
                    help="track mode: samples of per-node track history to fit")
+    p.add_argument("--cv-fit", dest="cv_fit_mode", choices=("inline", "deferred"),
+                   default="inline",
+                   help="track mode: where the constant-velocity fit runs. "
+                        "'inline' fits inside the associator — what every "
+                        "published bench figure was measured on. 'deferred' is "
+                        "what production runs: the associator emits unscored "
+                        "pairings and the solver fits and arbitrates them.")
     p.add_argument("--no-select", dest="exclusive", action="store_false",
                    default=True,
                    help="track mode: disable one-to-one hypothesis selection "
@@ -519,7 +621,8 @@ def main():
           f"nodes={args.nodes} budget={args.n_cluster} "
           f"{args.seconds:.0f}s @ {args.frame_interval:.0f}s frames, seed {args.seed}, "
           f"{'BLIND' if args.blind else 'ADS-B-tagged'}, mode={args.mode}"
-          + (f", span>={args.min_span_s:.0f}s" if args.mode == "track" else ""))
+          + (f", span>={args.min_span_s:.0f}s, cv-fit={args.cv_fit_mode}"
+             if args.mode == "track" else ""))
 
     # chi2 only means anything in track mode; keep one pass otherwise.
     chi2_values = args.chi2_max if args.mode == "track" else [None]
@@ -535,7 +638,8 @@ def main():
                        args.metro_traffic_frac, args.layout,
                        args.illuminator_band, args.dual_aim, args.blind,
                        args.mode, chi2_max if chi2_max is not None else 2.0,
-                       args.min_span_s, args.history_n, args.exclusive)
+                       args.min_span_s, args.history_n, args.exclusive,
+                       args.cv_fit_mode)
             # Track-level is the comparable metric — solve-level and
             # track-level differ by ~20x on the same data, so mixing them is
             # how two staging conclusions went wrong.

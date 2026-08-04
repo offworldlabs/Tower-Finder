@@ -11,75 +11,13 @@ from collections import deque
 from config.constants import N2_CONFIRM_CHI2_MAX, N2_TRACK_ASSOCIATION
 from core import state
 
-# ── Beam-coverage geometry helpers ────────────────────────────────────────────
-# Used to reject solver results whose position falls outside the detection beam
-# of a contributing node (ghost-solution disambiguation for n=2 bistatic pairs).
-
-_R_EARTH_KM = 6371.0
-
-
-def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = (math.sin(dlat / 2) ** 2
-         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
-         * math.sin(dlon / 2) ** 2)
-    return _R_EARTH_KM * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
-def _bearing_deg_geo(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    dlon = math.radians(lon2 - lon1)
-    lat1r, lat2r = math.radians(lat1), math.radians(lat2)
-    x = math.sin(dlon) * math.cos(lat2r)
-    y = math.cos(lat1r) * math.sin(lat2r) - math.sin(lat1r) * math.cos(lat2r) * math.cos(dlon)
-    return math.degrees(math.atan2(x, y)) % 360
-
-
-def _in_node_beam(lat: float, lon: float, node_cfg: dict) -> bool:
-    """Return True iff (lat, lon) is within the node's detection beam.
-
-    Beam azimuth priority:
-      1. Explicit ``beam_azimuth_deg`` in the config.
-      2. Derived as (bearing from RX to TX) + 90° — the broadside direction for
-         a Yagi antenna, matching the formula used in InterNodeAssociator.register_node.
-      3. Skip the bearing check entirely if TX position is also missing.
-    """
-    rx_lat = float(node_cfg.get("rx_lat") or node_cfg.get("lat") or 0)
-    rx_lon = float(node_cfg.get("rx_lon") or node_cfg.get("lon") or 0)
-    # Bound on the same range rule the node actually detects under.  A
-    # monostatic circle is a *looser* region than a bistatic footprint on the
-    # far side of the transmitter, so scoring a bistatically-limited node
-    # against it lets ghost intersections through the very check that exists
-    # to reject them.
-    _max_bistatic = node_cfg.get("max_bistatic_range_km")
-    _tx_lat = node_cfg.get("tx_lat")
-    _tx_lon = node_cfg.get("tx_lon")
-    if _max_bistatic is not None and _tx_lat and _tx_lon:
-        _r_rx = _haversine_km(rx_lat, rx_lon, lat, lon)
-        _r_tx = _haversine_km(float(_tx_lat), float(_tx_lon), lat, lon)
-        _baseline = _haversine_km(rx_lat, rx_lon, float(_tx_lat), float(_tx_lon))
-        if (_r_rx + _r_tx - _baseline) > float(_max_bistatic):
-            return False
-    else:
-        max_range = float(node_cfg.get("max_range_km") or 50)
-        if _haversine_km(rx_lat, rx_lon, lat, lon) > max_range:
-            return False
-    # Determine beam azimuth.
-    if "beam_azimuth_deg" in node_cfg:
-        beam_az: float | None = float(node_cfg["beam_azimuth_deg"])
-    elif node_cfg.get("tx_lat") and node_cfg.get("tx_lon"):
-        tx_lat = float(node_cfg["tx_lat"])
-        tx_lon = float(node_cfg["tx_lon"])
-        beam_az = (_bearing_deg_geo(rx_lat, rx_lon, tx_lat, tx_lon) + 90.0) % 360.0
-    else:
-        beam_az = None  # unknown beam direction — skip bearing check
-    if beam_az is None:
-        return True
-    beam_w = float(node_cfg.get("beam_width_deg") or 41)
-    bearing = _bearing_deg_geo(rx_lat, rx_lon, lat, lon)
-    angle_diff = abs((bearing - beam_az + 180) % 360 - 180)
-    return angle_diff <= beam_w / 2
-
+# Beam-coverage geometry, used to reject solver results whose position falls
+# outside a contributing node's detection beam (ghost disambiguation at n=2).
+# This module carried its own haversine, bearing and in-beam rule until those
+# were consolidated into services.geo.
+from services.geo import haversine_km as _haversine_km
+from services.geo import in_node_beam as _in_node_beam
+from services.geo import offset_latlon_m
 
 _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 
@@ -316,17 +254,17 @@ def _ewma_smooth_track(result: dict, adsb_hex: str | None) -> dict:
 
         # Dead-reckon each past position forward to the current solve time
         # and collect valid points (not too stale, not too far after dr).
-        cos_lat = math.cos(math.radians(r_lat)) or 1e-9
-        km_per_deg_lat = 111.32
-        km_per_deg_lon = 111.32 * cos_lat
         positions: list[tuple[float, float]] = [(r_lat, r_lon)]
 
         for prev_lat, prev_lon, prev_ts in hist:
             dt = r_ts - prev_ts
             if dt <= 0 or dt > _MN_DR_MAX_AGE_S:
                 continue  # skip future or stale entries
-            dr_lat = prev_lat + vel_north_kms * dt / km_per_deg_lat
-            dr_lon = prev_lon + vel_east_kms  * dt / km_per_deg_lon
+            dr_lat, dr_lon = offset_latlon_m(
+                prev_lat, prev_lon,
+                east_m=vel_east_kms * 1000.0 * dt,
+                north_m=vel_north_kms * 1000.0 * dt,
+            )
             positions.append((dr_lat, dr_lon))
 
         # Push current position before averaging (so it is included next time).
@@ -406,9 +344,11 @@ def _multinode_track_key(result: dict, adsb_hex: str | None) -> str:
             continue
         # Dead-reckon the existing track forward before measuring, so a fast
         # target is not rejected purely for having moved since its last solve.
-        cos_lat = math.cos(math.radians(p_lat)) or 1e-9
-        p_lat += (prev.get("vel_north", 0.0) / 111_320.0) * dt
-        p_lon += (prev.get("vel_east", 0.0) / (111_320.0 * cos_lat)) * dt
+        p_lat, p_lon = offset_latlon_m(
+            p_lat, p_lon,
+            east_m=prev.get("vel_east", 0.0) * dt,
+            north_m=prev.get("vel_north", 0.0) * dt,
+        )
         d = _haversine_km(lat, lon, p_lat, p_lon)
         if d < best_dist:
             best_key, best_dist = key, d

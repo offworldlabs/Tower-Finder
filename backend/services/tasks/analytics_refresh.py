@@ -12,11 +12,11 @@ import orjson
 
 from config.constants import YAGI_BEAM_WIDTH_DEG, YAGI_MAX_RANGE_KM
 from core import state
+from services.geo import bearing_deg, haversine_km, point_in_beam
 from services.id_utils import multinode_hex_from_key
 from services.tasks._helpers import (
     _DELAY_MATCH_THRESHOLD_US,
     bistatic_delay_us,
-    haversine_km,
 )
 
 _analytics_executor = concurrent.futures.ThreadPoolExecutor(
@@ -183,14 +183,10 @@ def _bistatic_angle_deg(
     return math.degrees(math.acos(cos_beta))
 
 
-def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Bearing from (lat1, lon1) to (lat2, lon2) in degrees [0, 360)."""
-    lat1r = math.radians(lat1)
-    lat2r = math.radians(lat2)
-    dlonr = math.radians(lon2 - lon1)
-    y = math.sin(dlonr) * math.cos(lat2r)
-    x = math.cos(lat1r) * math.sin(lat2r) - math.sin(lat1r) * math.cos(lat2r) * math.cos(dlonr)
-    return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+# Was a byte-for-byte duplicate of frame_processor's, which was itself a copy
+# of the library's.  Aliased rather than renamed at the ~12 call sites below
+# because tests import it from this module by name.
+_bearing_deg = bearing_deg
 
 
 def _aircraft_in_beam(
@@ -207,30 +203,22 @@ def _aircraft_in_beam(
 ) -> bool:
     """Return True if an aircraft at (ac_lat, ac_lon) is inside the node beam.
 
-    The range rule must match the one the node actually detects under, or the
-    missed-detection statistic measures the mismatch instead of the node.  A
-    node limited on bistatic range but scored against a monostatic circle
-    counts every aircraft that is near the RX but far from the TX as "missed",
-    which pushed the fleet-wide miss rate past the 70 % health threshold.
+    Delegates to the shared gate.  The range rule must match the one the node
+    actually detects under, or the missed-detection statistic measures the
+    mismatch instead of the node: a node limited on bistatic range but scored
+    against a monostatic circle counts every aircraft near the RX but far from
+    the TX as "missed", which pushed the fleet-wide miss rate past the 70 %
+    health threshold.  One implementation is how that stays matched.
     """
-    if (
-        max_bistatic_range_km is not None
-        and tx_lat is not None
-        and tx_lon is not None
-    ):
-        r_rx = haversine_km(rx_lat, rx_lon, ac_lat, ac_lon)
-        r_tx = haversine_km(tx_lat, tx_lon, ac_lat, ac_lon)
-        baseline = haversine_km(rx_lat, rx_lon, tx_lat, tx_lon)
-        if (r_rx + r_tx - baseline) > max_bistatic_range_km:
-            return False
-    else:
-        dist_km = haversine_km(rx_lat, rx_lon, ac_lat, ac_lon)
-        if dist_km > max_range_km:
-            return False
-    bearing = _bearing_deg(rx_lat, rx_lon, ac_lat, ac_lon)
-    # Angular difference, wrapped to [-180, 180]
-    diff = (bearing - beam_azimuth_deg + 180) % 360 - 180
-    return abs(diff) <= beam_width_deg / 2.0
+    return point_in_beam(
+        ac_lat, ac_lon,
+        rx_lat=rx_lat, rx_lon=rx_lon,
+        tx_lat=tx_lat, tx_lon=tx_lon,
+        beam_azimuth_deg=beam_azimuth_deg,
+        beam_width_deg=beam_width_deg,
+        max_range_km=max_range_km,
+        max_bistatic_range_km=max_bistatic_range_km,
+    )
 
 
 def _refresh_missed_detections(nodes_snapshot: list):
@@ -439,9 +427,8 @@ def _velocity_accuracy() -> dict:
             continue
         solved = math.hypot(r.get("vel_east", 0.0), r.get("vel_north", 0.0))
         best, best_d = None, _VELOCITY_MATCH_KM
-        cos_lat = math.cos(math.radians(lat))
         for t_lat, t_lon, t_speed in truth:
-            d = math.hypot((lat - t_lat) * 111.32, (lon - t_lon) * 111.32 * cos_lat)
+            d = haversine_km(lat, lon, t_lat, t_lon)
             if d < best_d:
                 best, best_d = t_speed, d
         if not best:
@@ -601,9 +588,7 @@ def _refresh_radar3_verification():
             (best_adsb.get("gs", 0) or 0) * 0.514444 if best_adsb.get("gs") else (best_adsb.get("velocity") or 0)
         )
 
-        dlat = (solver_lat - truth_lat) * 111.0
-        dlon = (solver_lon - truth_lon) * 111.0 * math.cos(math.radians((solver_lat + truth_lat) / 2.0 or 1.0))
-        err_km = math.sqrt(dlat**2 + dlon**2)
+        err_km = haversine_km(solver_lat, solver_lon, truth_lat, truth_lon)
 
         vel_err = abs(solver_speed - truth_gs_ms)
         alt_err = abs(solver_alt_m - truth_alt_m)

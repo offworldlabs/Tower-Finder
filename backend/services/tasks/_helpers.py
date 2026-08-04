@@ -1,26 +1,17 @@
-"""Shared helper functions for background tasks."""
+"""Shared helper functions for background tasks.
 
-import math
+The geometry now lives in ``services.geo`` (and, under that, in
+``retina_analytics.constants``).  This module keeps the names it has always
+exported so its callers and their tests do not have to move, but they are
+aliases: there is one haversine and one bistatic delay in the backend.
 
-from config.constants import C_KM_US as _C_KM_US
+The two implementations that used to be here were an ``asin``-form haversine
+and a delay built on it.  They agreed with the ``atan2`` form elsewhere to
+2.8e-14 km, so the collapse is arithmetically a no-op — but it was one of six
+copies, two of which were flat-earth and did *not* agree.
+"""
+
 from config.constants import DELAY_MATCH_THRESHOLD_US as _DELAY_MATCH_THRESHOLD_US  # noqa: F401 — re-exported
-from config.constants import R_EARTH_KM
+from services.geo import bistatic_delay_us, haversine_km  # noqa: F401 — re-exported
 
-
-def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Haversine great-circle distance in km."""
-    R = R_EARTH_KM
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = (math.sin(dlat / 2) ** 2
-         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
-         * math.sin(dlon / 2) ** 2)
-    return R * 2 * math.asin(min(1.0, math.sqrt(a)))
-
-
-def bistatic_delay_us(tx_lat, tx_lon, rx_lat, rx_lon, ac_lat, ac_lon) -> float:
-    """Compute bistatic excess delay in µs: (d_ta + d_ar - d_tr) / c."""
-    d_ta = haversine_km(tx_lat, tx_lon, ac_lat, ac_lon)
-    d_ar = haversine_km(ac_lat, ac_lon, rx_lat, rx_lon)
-    d_tr = haversine_km(tx_lat, tx_lon, rx_lat, rx_lon)
-    return (d_ta + d_ar - d_tr) / _C_KM_US
+__all__ = ["_DELAY_MATCH_THRESHOLD_US", "bistatic_delay_us", "haversine_km"]

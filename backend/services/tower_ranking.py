@@ -3,8 +3,8 @@ import math
 import re
 
 from core.runtime_config import migrate_defaults_into_runtime, runtime_path
+from services.geo import bearing_deg, haversine_km
 
-EARTH_RADIUS_KM = 6371.0
 FREQUENCY_MATCH_TOLERANCE_MHZ = 5.0  # ±5 MHz for user-measured frequency matching
 
 # ── Load configurable settings from tower_config.json ────────────────────
@@ -63,24 +63,9 @@ def reload_config():
 reload_config()
 
 
-def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Great-circle distance in km between two points."""
-    rlat1, rlon1 = math.radians(lat1), math.radians(lon1)
-    rlat2, rlon2 = math.radians(lat2), math.radians(lon2)
-    dlat = rlat2 - rlat1
-    dlon = rlon2 - rlon1
-    a = math.sin(dlat / 2) ** 2 + math.cos(rlat1) * math.cos(rlat2) * math.sin(dlon / 2) ** 2
-    return EARTH_RADIUS_KM * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
-def initial_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Bearing in degrees (0-360) from point 1 to point 2."""
-    rlat1 = math.radians(lat1)
-    rlat2 = math.radians(lat2)
-    dlon = math.radians(lon2 - lon1)
-    x = math.sin(dlon) * math.cos(rlat2)
-    y = math.cos(rlat1) * math.sin(rlat2) - math.sin(rlat1) * math.cos(rlat2) * math.cos(dlon)
-    return (math.degrees(math.atan2(x, y)) + 360) % 360
+# Public names kept — the tower routes and their tests import both from here.
+haversine = haversine_km
+initial_bearing = bearing_deg
 
 
 def bearing_to_cardinal(deg: float) -> str:
