@@ -26,6 +26,9 @@ CONNECT_RETRIES="${FLEET_CONNECT_RETRIES:-3}"
 VALIDATE="${FLEET_VALIDATE:-false}"
 N_CLUSTER="${FLEET_N_CLUSTER:-16}"
 N_CLUSTERS="${FLEET_N_CLUSTERS:-1}"
+# ring | dual | scatter — see generator.py --layout.  The orchestrator reads the
+# generated config file, so this only has to reach the generator call below.
+LAYOUT="${FLEET_LAYOUT:-ring}"
 VALIDATION_URL="${FLEET_VALIDATION_URL:-http://localhost:8000}"
 
 echo "═══════════════════════════════════════════════════"
@@ -34,6 +37,7 @@ echo "════════════════════════�
 echo "  Nodes:      ${NODES}"
 echo "  Regions:    ${REGIONS}"
 echo "  Metro:      ${METRO:-nationwide}"
+echo "  Layout:     ${LAYOUT}"
 echo "  Mode:       ${MODE}"
 echo "  Server:     ${HOST}:${PORT}"
 echo "  Interval:   ${INTERVAL}s"
@@ -73,7 +77,7 @@ else
     GEN_METRO_ARGS=""
 fi
 # shellcheck disable=SC2086  # GEN_METRO_ARGS is intentionally word-split
-python3 -m retina_simulation.generator --nodes "${NODES}" --regions "${REGIONS}" ${GEN_METRO_ARGS} --seed "${SEED}" --n-cluster "${N_CLUSTER}" --n-clusters "${N_CLUSTERS}" --output /app/data/fleet_config.json
+python3 -m retina_simulation.generator --nodes "${NODES}" --regions "${REGIONS}" ${GEN_METRO_ARGS} --seed "${SEED}" --layout "${LAYOUT}" --n-cluster "${N_CLUSTER}" --n-clusters "${N_CLUSTERS}" --output /app/data/fleet_config.json
 
 # Build orchestrator args
 ARGS="--config /app/data/fleet_config.json"

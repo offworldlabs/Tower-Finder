@@ -58,6 +58,13 @@ services:
       - FLEET_METRO=gvl
       - FLEET_N_CLUSTER=10
       - FLEET_N_CLUSTERS=1
+      # Undesigned community layout rather than the ring.  The ring surrounds
+      # the core with receivers that all share one illuminator and all aim
+      # inward — geometry a real fleet will not have, so staging was measuring
+      # the solver under conditions it will not meet.  Scatter clumps sites
+      # where people live, gives each its own nearby illuminator, aims by hand
+      # and varies the hardware.  Prod keeps the ring for the demo.
+      - FLEET_LAYOUT=scatter
       - FLEET_METRO_TRAFFIC_FRAC=0.85
       - FLEET_MODE=adsb
       # 15 nodes / 2.0s = 7.5 fps
