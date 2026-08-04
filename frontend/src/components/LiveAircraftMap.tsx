@@ -53,6 +53,7 @@ import { trailToCsv, trailsToBulkCsv, downloadCsv } from "./map/trailExport";
 import { toast, copyToClipboard } from "./map/toast";
 import { checkEmergencySquawks, resetEmergencyAlertCache } from "./map/emergencyAudio";
 import { distanceKm } from "./map/distance";
+import { validLatLon } from "./map/geo";
 import StatsOverlay from "./map/StatsOverlay";
 import ShortcutHelp from "./map/ShortcutHelp";
 
@@ -167,7 +168,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
         const rLat = radarSmooth ? radarSmooth.lat : ac.lat;
         const rLon = radarSmooth ? radarSmooth.lon : ac.lon;
 
-        if (!gtLat || !gtLon || !rLat || !rLon) continue;
+        if (!validLatLon(gtLat, gtLon) || !validLatLon(rLat, rLon)) continue;
 
         seen.add(gtHex);
         let entry = markers.get(gtHex);
@@ -255,7 +256,7 @@ const Radar3VerificationLayer = memo(function Radar3VerificationLayer({ visible 
         const seen = new Set();
 
         for (const t of data.tracks || []) {
-          if (!t.truth_lat || !t.truth_lon || !t.solver_lat || !t.solver_lon) continue;
+          if (!validLatLon(t.truth_lat, t.truth_lon) || !validLatLon(t.solver_lat, t.solver_lon)) continue;
           seen.add(t.hex);
 
           let entry = markers.get(t.hex);
@@ -463,7 +464,7 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
       const tracks = tracksRef.current;
 
       for (const t of tracks) {
-        if (!t.truth_lat || !t.truth_lon || !t.solver_lat || !t.solver_lon) continue;
+        if (!validLatLon(t.truth_lat, t.truth_lon) || !validLatLon(t.solver_lat, t.solver_lon)) continue;
         const hex = t.truth_hex;
         if (!hex) continue;
 
@@ -835,7 +836,10 @@ const FollowController = memo(function FollowController({ followSelected, select
   useEffect(() => {
     if (!followSelected || !selectedHex) return;
     const id = setInterval(() => {
-      const sm = smoothRef.current?.[selectedHex];
+      // Truth-only objects live under the namespaced key — without the
+      // fallback, Follow silently did nothing for them.
+      const sm = smoothRef.current?.[selectedHex]
+        ?? smoothRef.current?.[groundTruthKey(selectedHex)];
       if (sm) map.panTo([sm.lat, sm.lon], { animate: false });
     }, 100);
     // A manual drag means the user wants to look elsewhere — disengage follow.
@@ -872,7 +876,8 @@ const HashSync = memo(function HashSync({ onMove, showRangeRings, selectedHex, s
   }, []);
 
   if (!showRangeRings || !selectedHex) return null;
-  const sm = smoothRef.current?.[selectedHex];
+  const sm = smoothRef.current?.[selectedHex]
+    ?? smoothRef.current?.[groundTruthKey(selectedHex)];
   if (!sm) return null;
   // Three rings at 5/10/20 km — useful for judging "how far away" without
   // dropping into the detail panel.  Light, dashed strokes keep the rings
@@ -968,6 +973,11 @@ export default function LiveAircraftMap() {
   const [focusNonce, setFocusNonce] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [paused, setPaused] = useState(false);
+  // Read by the 60 fps loop (which has [] deps and can't see state) so pause
+  // actually freezes the display instead of racing the playback slider.
+  const pausedLoopRef = useRef(false);
+  // Controlled slider position for the playback bar; null = live end.
+  const [seekIndex, setSeekIndex] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = usePersistedState("tf.sidebar.collapsed", false);
   const [viewport, setViewport] = useState(null);
   const [showAnomaliesOnly, setShowAnomaliesOnly] = useState(false);
@@ -1039,7 +1049,7 @@ export default function LiveAircraftMap() {
       return Math.hypot(dx, dy);
     };
     for (const ac of aircraft) {
-      if (!ac.lat || !ac.lon) continue;
+      if (!validLatLon(ac.lat, ac.lon)) continue;
       const prev = fixesRef.current[ac.hex];
       const posChanged = !prev || prev._fixLat !== ac.lat || prev._fixLon !== ac.lon;
 
@@ -1118,6 +1128,15 @@ export default function LiveAircraftMap() {
     const TAU = 0.55;
 
     const tick = (ts) => {
+      // Paused: freeze everything.  The loop used to keep dead-reckoning and
+      // pushing setDisplayAircraft at 2 Hz regardless, so a frame chosen on
+      // the playback slider was clobbered by live data within ~500 ms —
+      // playback was effectively non-functional.
+      if (pausedLoopRef.current) {
+        prevTsRef.current = ts;
+        animationFrameRef.current = requestAnimationFrame(tick);
+        return;
+      }
       const dt = prevTsRef.current !== null ? Math.min((ts - prevTsRef.current) / 1000, 0.1) : 0;
       prevTsRef.current = ts;
       const alpha = dt > 0 ? 1 - Math.exp(-dt / TAU) : 1;
@@ -1374,10 +1393,13 @@ export default function LiveAircraftMap() {
     const next = !paused;
     setPaused(next);
     setFeedPaused(next);
+    pausedLoopRef.current = next;
+    setSeekIndex(next ? historyRef.current.length - 1 : null);
   }
 
   function handleHistorySeek(index) {
     if (index >= 0 && index < historyRef.current.length) {
+      setSeekIndex(index);
       setDisplayAircraft(historyRef.current[index].aircraft);
     }
   }
@@ -1444,7 +1466,16 @@ export default function LiveAircraftMap() {
   const exportSelectedTrail = useCallback(() => {
     if (!selectedHex) { toast("Select an aircraft first", { tone: "warn" }); return; }
     const ac = (radarAircraft || []).find((a) => a.hex === selectedHex);
-    if (!ac) return;
+    if (!ac) {
+      // Truth-only selection: no radar track, but the ground-truth trail is
+      // still exportable.  This used to return silently — a dead keystroke.
+      const gtRows = groundTruthRef.current?.[selectedHex] || [];
+      if (!gtRows.length) { toast("No trail data for this object", { tone: "warn" }); return; }
+      const gtCsv = trailToCsv(selectedHex, "", gtRows);
+      downloadCsv(`trail-${selectedHex}-${Date.now()}.csv`, gtCsv);
+      toast(`Exported ${gtRows.length} ground-truth points`, { tone: "success" });
+      return;
+    }
     // Prefer the backend-fed trail (alt + ms timestamps); fall back to the
     // frontend smoothed trail (no altitude) when no backend points exist.
     const rows =
@@ -1524,12 +1555,17 @@ export default function LiveAircraftMap() {
 
   function computeError(hex, ac) {
     const gtHex = ac.ground_truth_hex || hex;
+    // Compare against the SMOOTHED ground-truth position — the same one the
+    // yellow error line on the map is drawn from — so the panel number and
+    // the drawn line agree.  Comparing dead-reckoned radar against the raw
+    // last GT point added up to ~0.25 km of pure timing skew at 480 kt, and
+    // used a third flat-earth constant (111.0) 0.3% off the shared helper.
+    const sm = smoothRef.current?.[groundTruthKey(gtHex)];
+    if (sm) return distanceKm(ac.lat, ac.lon, sm.lat, sm.lon);
     const gtTrail = groundTruthRef.current[gtHex];
     if (!gtTrail || !gtTrail.length) return null;
     const last = gtTrail[gtTrail.length - 1];
-    const dlat = (ac.lat - last[0]) * 111.0;
-    const dlon = (ac.lon - last[1]) * 111.0 * Math.cos((ac.lat * Math.PI) / 180);
-    return Math.sqrt(dlat * dlat + dlon * dlon);
+    return distanceKm(ac.lat, ac.lon, last[0], last[1]);
   }
 
   function formatSecondsAgo(ts) {
@@ -1885,7 +1921,7 @@ export default function LiveAircraftMap() {
                  communicate that their position is approximate (the aircraft is somewhere along
                  the visible arc, not exactly at the midpoint). */}
             {visibleAircraft.map((ac) => {
-              if (!ac.lat || !ac.lon) return null;
+              if (!validLatLon(ac.lat, ac.lon)) return null;
               const isSelected = ac.hex === selectedHex;
               return (
                 <AircraftMarker
@@ -1945,10 +1981,16 @@ export default function LiveAircraftMap() {
             <Radar3RangeLayer visible={selectedNodeId === "radar3-retnode"} />
 
             {/* MLAT (multinode) solver verification — magenta truth dots + pink error lines */}
-            <MlatVerificationLayer
-              groundTruthRef={groundTruthRef}
-              smoothRef={smoothRef}
-            />
+            {/* Gated like the Radar3 layers: this polls /api/test/
+                mlat-verification and draws truth-vs-solver error lines, which
+                is meaningless (and a wasted poll) when ground truth is off —
+                as it is by default on the production map domains. */}
+            {showGroundTruth && (
+              <MlatVerificationLayer
+                groundTruthRef={groundTruthRef}
+                smoothRef={smoothRef}
+              />
+            )}
           </MapContainer>
 
           <StatsOverlay
@@ -1973,6 +2015,7 @@ export default function LiveAircraftMap() {
           {paused && historyRef.current.length > 0 && (
             <PlaybackBar
               history={historyRef.current}
+              value={seekIndex ?? historyRef.current.length - 1}
               onSeek={handleHistorySeek}
               formatSecondsAgo={formatSecondsAgo}
             />

@@ -60,7 +60,10 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
             ? "ADS-B"
             : ac.type || "Unknown";
   const sourceBadge = isMultinode ? "multinode" : isSolverAdsbSeed ? "adsb" : hasAdsb ? "adsb" : "other";
-  const isTruthOnly = !ac.type && !ac.flight;
+  // Authoritative flag set by applyGroundTruthFixes — the old
+  // `!ac.type && !ac.flight` heuristic classified ordinary radar tracks
+  // (which usually have neither) as "Ground truth only".
+  const isTruthOnly = Boolean(ac._isTruth);
 
   return (
     <div className="detail-panel">

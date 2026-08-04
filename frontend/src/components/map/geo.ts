@@ -242,3 +242,11 @@ export function bistaticOvalPositions(rxLat, rxLon, txLat, txLon, maxRangeKm) {
   }
   return points;
 }
+
+/** True when both coordinates are usable.  null/undefined and the (0, 0)
+ *  broken-config sentinel are invalid, but a legitimate 0 on a single axis
+ *  (equator / prime meridian) is not — the widespread `!lat || !lon` form
+ *  silently dropped those. */
+export function validLatLon(lat: number | null | undefined, lon: number | null | undefined): boolean {
+  return lat != null && lon != null && !(lat === 0 && lon === 0);
+}

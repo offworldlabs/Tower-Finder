@@ -190,13 +190,15 @@ export default function AircraftListPanel({
                   const color = !isSolved ? "#2dd4bf" : getAircraftColor(ac);
                   const callsign =
                     ac.flight?.trim() || ac.hex?.slice(-6).toUpperCase() || ac.hex;
-                  const alt = ac.alt_baro
+                  // Nullish checks: 0 ft, 0 kt and 0° (due north) are real
+                  // values, not absences.
+                  const alt = ac.alt_baro != null
                     ? `FL${Math.round(ac.alt_baro / 100)}`
-                    : ac.alt_m
+                    : ac.alt_m != null
                       ? `FL${Math.round(ac.alt_m / 0.3048 / 100)}`
                       : "—";
-                  const spd = ac.gs ? `${Math.round(ac.gs)}kt` : "—";
-                  const hdg = ac.track ? `${Math.round(ac.track)}°` : "";
+                  const spd = ac.gs != null ? `${Math.round(ac.gs)}kt` : "—";
+                  const hdg = ac.track != null ? `${Math.round(ac.track)}°` : "";
                   const isSelected = ac.hex === selectedHex;
                   const sourceLabel = !isSolved
                     ? "Truth"

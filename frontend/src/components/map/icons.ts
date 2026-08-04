@@ -52,7 +52,8 @@ export function makeAircraftIcon(ac, showLabel, isSelected, colorByAlt = false) 
   const track = ac.track ?? 0;
   const color = getAircraftColor(ac, colorByAlt);
   const label = ac.flight?.trim() || ac.hex?.slice(-6)?.toUpperCase() || "";
-  const alt = ac.alt_baro ? `FL${Math.round(ac.alt_baro / 100)}` : "";
+  // Nullish: FL0 (on the ground) is a value, not an absence.
+  const alt = ac.alt_baro != null ? `FL${Math.round(ac.alt_baro / 100)}` : "";
 
   // Arc-only tracks: lat/lon is the arc-midpoint estimate — the aircraft is
   // actually somewhere along the arc, not exactly at this point.  Render the
