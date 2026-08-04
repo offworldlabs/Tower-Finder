@@ -390,27 +390,36 @@ def _claim_track_pair(s_in: dict, chi2: float) -> bool:
 
     1. A pairing can be refused by its *own* earlier claim.  chi2 is refitted
        every association round over a growing epoch set, so a stable winning
-       pairing's score wanders — a median +0.09 to +0.18 between rounds — and
+       pairing's score wanders — median drift +0.11 between rounds — and
        upward drift loses to its own high-water mark until the TTL expires.
-       This reads as a logic error and the earlier comment here described only
-       the exactly-equal case, as though the drift case were an oversight.
+       Self-lockouts are roughly 30% of all refusals (707 of 2,403 pooled
+       over 6 seeds); the rest are genuine competitor losses.
 
     2. It is nonetheless the better behaviour.  Letting a pairing renew its own
        claim at a worse score raises the bar competitors must beat, so tracks
        change hands more often and every hand-over publishes another track.
-       Measured offline, blind, dual/vhf, 6 seeds, paired by seed
+       Measured offline, blind, dual/vhf, 6 seeds, pooled AND paired by seed
        (association_bench.py --claim-policy self-refresh): never better on any
-       seed, worse on 3 of 6, +2.7 points of track ghost rate and +4.2 points
-       at n=2-only, at no gain in real tracks.  Competitor refusals went 1 -> 21
-       on the same scenes, which is the churn showing up directly.
+       seed, worse on 5 of 6, +3.2 pooled points of track ghost rate
+       (73.4% -> 76.6%) and +9.5 at n=2-only (76.2% -> 85.7%; false n=2
+       tracks 16 -> 30), at no gain in real tracks (29 both ways).
+       Competitor refusals rose 1,696 -> 1,854 — the churn showing up
+       directly.
 
     So the high-water mark is hysteresis: a pairing must keep fitting at least
     as well as its own best to stay published, and a pairing whose fit is
     degrading is one whose accumulated evidence is turning against it.  Keep it,
     and do not "fix" the self-refusal without re-running that sweep.
 
-    Against no arbitration at all (--claim-policy off) the claim is worth 3.7
-    points of track ghost rate, better on 4 of 6 seeds.
+    Against no arbitration at all (--claim-policy off) the claim is worth
+    8.7 pooled points of track ghost rate (82.1% -> 73.4%), better or tied
+    on every seed, and cuts false n=2-only tracks 63 -> 16.
+
+    (Earlier revisions of this docstring quoted "refusals 1 -> 21" and
+    "worth 3.7 points": both were read off a --repeat run that printed only
+    the LAST seed's counters — see Result.merge in association_bench.py.
+    The numbers above are pooled across all six seeds, measured after the
+    stage-1 simulation fixes changed the scenes.)
     """
     pairs = s_in.get("track_pair_ids") or []
     if not pairs:

@@ -11,11 +11,12 @@ pairing drifts.  The held score is a best-ever high-water mark, so upward drift
 loses to the pairing's own earlier claim.
 
 That reads as a bug and was investigated as one.  It is not: measured blind on
-6 paired seeds, letting a pairing renew its own claim is never better and worse
-on 3 of 6, costing 2.7 points of track ghost rate and 4.2 at n=2-only for no
-gain in real tracks — the renewal raises the bar competitors must beat, tracks
-change hands more, and each hand-over publishes another track.  These tests
-pin the hysteresis deliberately.  See _claim_track_pair's docstring.
+6 seeds, pooled and paired by seed, letting a pairing renew its own claim is
+never better and worse on 5 of 6, costing 3.2 pooled points of track ghost
+rate and 9.5 at n=2-only for no gain in real tracks — the renewal raises the
+bar competitors must beat, tracks change hands more, and each hand-over
+publishes another track.  These tests pin the hysteresis deliberately.  See
+_claim_track_pair's docstring for the pooled numbers.
 """
 
 import os
