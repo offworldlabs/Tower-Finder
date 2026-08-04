@@ -382,10 +382,43 @@ _TRACK_CLAIM_TTL_S = 60.0
 
 
 def _claim_track_pair(s_in: dict, chi2: float) -> bool:
-    """Take ownership of both single-node tracks, or refuse if outbid."""
+    """Take ownership of both single-node tracks, or refuse if outbid.
+
+    The held score is a **best-ever high-water mark**, not the holder's current
+    score, and a refusal deliberately does not refresh it.  Two consequences,
+    both measured rather than assumed:
+
+    1. A pairing can be refused by its *own* earlier claim.  chi2 is refitted
+       every association round over a growing epoch set, so a stable winning
+       pairing's score wanders — a median +0.09 to +0.18 between rounds — and
+       upward drift loses to its own high-water mark until the TTL expires.
+       This reads as a logic error and the earlier comment here described only
+       the exactly-equal case, as though the drift case were an oversight.
+
+    2. It is nonetheless the better behaviour.  Letting a pairing renew its own
+       claim at a worse score raises the bar competitors must beat, so tracks
+       change hands more often and every hand-over publishes another track.
+       Measured offline, blind, dual/vhf, 6 seeds, paired by seed
+       (association_bench.py --claim-policy self-refresh): never better on any
+       seed, worse on 3 of 6, +2.7 points of track ghost rate and +4.2 points
+       at n=2-only, at no gain in real tracks.  Competitor refusals went 1 -> 21
+       on the same scenes, which is the churn showing up directly.
+
+    So the high-water mark is hysteresis: a pairing must keep fitting at least
+    as well as its own best to stay published, and a pairing whose fit is
+    degrading is one whose accumulated evidence is turning against it.  Keep it,
+    and do not "fix" the self-refusal without re-running that sweep.
+
+    Against no arbitration at all (--claim-policy off) the claim is worth 3.7
+    points of track ghost rate, better on 4 of 6 seeds.
+    """
     pairs = s_in.get("track_pair_ids") or []
     if not pairs:
         return True          # detection-level input: nothing to arbitrate
+    # Note this claims only the first pair of a cluster: format_track_pairs_for_solver
+    # truncates track_pair_ids to [:1], so a cluster spanning three tracks leaves
+    # the third unclaimed.  s_in["track_ids"] carries the full set if that is
+    # ever worth closing — see --claim-policy all-tracks.
     track_ids = [tid for pair in pairs for tid in pair]
     now = time.time()
     with _TRACK_CLAIMS_LOCK:
@@ -394,8 +427,6 @@ def _claim_track_pair(s_in: dict, chi2: float) -> bool:
                 del _TRACK_CLAIMS[tid]
         for tid in track_ids:
             held = _TRACK_CLAIMS.get(tid)
-            # Strictly better, so a pairing re-solving itself keeps its own
-            # claim rather than losing to its previous, identical score.
             if held is not None and held[0] < chi2:
                 return False
         for tid in track_ids:
