@@ -52,6 +52,13 @@ _ARCHIVE_BATCH_MAX = ARCHIVE_BATCH_MAX
 # Hard cap on buffer growth when writes fail repeatedly. Beyond this we drop
 # the oldest frames to bound memory; data loss is preferable to OOM.
 _ARCHIVE_BUFFER_HARD_CAP = ARCHIVE_BATCH_MAX * 2
+# One flush per node at a time.  The snapshot → write → truncate cycle is not
+# atomic under _archive_buffer_lock (the disk write must happen outside it),
+# so two concurrent flushers for the same node — a frame worker hitting the
+# batch-max trigger and the background flush task — would both write the same
+# N frames (duplicate Parquet rows) and then truncate twice, discarding up to
+# N frames that arrived during the first write.
+_archive_inflight: set[str] = set()
 
 
 def _flush_archive_node(node_id: str):
@@ -63,8 +70,16 @@ def _flush_archive_node(node_id: str):
     to prevent unbounded growth if the disk stays unhealthy.
     """
     with _archive_buffer_lock:
+        if node_id in _archive_inflight:
+            # Another thread is mid-cycle for this node; its truncation
+            # accounts exactly for the frames it wrote, and ours will be
+            # picked up by the next flush.
+            return
+        _archive_inflight.add(node_id)
         frames = list(_archive_buffer.get(node_id, []))
     if not frames:
+        with _archive_buffer_lock:
+            _archive_inflight.discard(node_id)
         return
     try:
         archive_detections(node_id, frames)
@@ -72,6 +87,7 @@ def _flush_archive_node(node_id: str):
         # Write failed — keep frames buffered for the next cycle, but enforce
         # a memory cap so a sustained outage can't OOM the process.
         with _archive_buffer_lock:
+            _archive_inflight.discard(node_id)
             buf = _archive_buffer.get(node_id, [])
             if len(buf) > _ARCHIVE_BUFFER_HARD_CAP:
                 dropped = len(buf) - _ARCHIVE_BUFFER_HARD_CAP
@@ -91,6 +107,7 @@ def _flush_archive_node(node_id: str):
     # that arrived during the write (which were appended after our snapshot).
     n_written = len(frames)
     with _archive_buffer_lock:
+        _archive_inflight.discard(node_id)
         buf = _archive_buffer.get(node_id, [])
         remaining = buf[n_written:]
         if remaining:
@@ -300,7 +317,7 @@ def _estimate_velocity_ms_from_motion(
         # not a sanity bound so much as a formality.  Rejections are counted
         # rather than silently absorbed so the rate stays visible.
         if dist_m / dt > ARC_MOTION_MAX_SPEED_MS:
-            state.arc_velocity_rejects += 1
+            state.bump_counter("arc_velocity_rejects")
             continue
         return east_m / dt, north_m / dt
     return None
@@ -348,7 +365,9 @@ def resolve_ground_truth_hex(
 
 def get_node_configs() -> dict[str, dict]:
     configs = {}
-    for nid, info in list(state.connected_nodes.items()):
+    with state.connected_nodes_lock:
+        snapshot = list(state.connected_nodes.items())
+    for nid, info in snapshot:
         cfg = info.get("config")
         if cfg:
             configs[nid] = cfg
@@ -391,6 +410,10 @@ def get_or_create_node_pipeline(
 
 # Lightweight profiling: track thread-CPU vs wall-clock to distinguish
 # actual work from GIL-wait.  Logs every 1000 frames (~45 s at 22 fps).
+# Guarded by _prof_lock: up to FRAME_WORKERS threads run process_one_frame
+# concurrently, and unlocked `+=` on these lost updates — _prof_n
+# undercounted, inflating every per-frame millisecond in the PERF line.
+_prof_lock = threading.Lock()
 _prof_cpu = 0.0
 _prof_wall = 0.0
 _prof_n = 0
@@ -450,7 +473,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
 
     _t1 = time.thread_time()
     state.node_analytics.record_detection_frame(node_id, frame)
-    _prof_analytics += time.thread_time() - _t1
+    _d_analytics = time.thread_time() - _t1
 
     # The node's own tracker runs first now.  Association used to see the raw
     # detection frame, which at n=2 is untestable — two nodes give 4
@@ -462,7 +485,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     _t3 = time.thread_time()
     pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
     pipeline.process_frame(frame)
-    _prof_pipeline += time.thread_time() - _t3
+    _d_pipeline = time.thread_time() - _t3
 
     _t2 = time.thread_time()
     _ts_ms_assoc = frame.get("timestamp", 0)
@@ -491,7 +514,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             try:
                 state.solver_queue.put_nowait((s_in, node_cfgs, time.time()))
             except Exception:
-                state.solver_queue_drops += 1
+                state.bump_counter("solver_queue_drops")
                 if state.solver_queue_drops % 100 == 1:
                     logging.warning(
                         "Solver queue full — dropped %d candidates total",
@@ -503,7 +526,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
                         f"Solver queue full — {state.solver_queue_drops} candidates dropped",
                         {"total_drops": state.solver_queue_drops},
                     )
-    _prof_assoc += time.thread_time() - _t2
+    _d_assoc = time.thread_time() - _t2
 
     # ADS-B extraction: TCP handler runs _apply_synthetic_adsb for synth nodes
     # before queuing.  For non-TCP sources (e.g. blah2_bridge) the adsb list
@@ -539,7 +562,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     _t4 = time.thread_time()
     # maybe_auto_save moved to analytics_refresh_task to avoid blocking
     # frame workers during 915-file coverage-map save.
-    _prof_save += time.thread_time() - _t4
+    _d_save = time.thread_time() - _t4
 
     with _archive_buffer_lock:
         _archive_buffer[node_id].append(frame)
@@ -549,21 +572,31 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
 
     _dt_cpu = time.thread_time() - _t0_cpu
     _dt_wall = time.monotonic() - _t0_wall
-    _prof_cpu += _dt_cpu
-    _prof_wall += _dt_wall
-    _prof_n += 1
-    if _prof_n % 1000 == 0:
-        _ac = _prof_cpu / _prof_n * 1000
-        _aw = _prof_wall / _prof_n * 1000
-        _idle = (1 - _ac / _aw) * 100 if _aw > 0 else 0
-        _a_an = _prof_analytics / _prof_n * 1000
-        _a_as = _prof_assoc / _prof_n * 1000
-        _a_pp = _prof_pipeline / _prof_n * 1000
-        _a_sv = _prof_save / _prof_n * 1000
+    # One locked update per frame; log fields are snapshotted under the same
+    # lock so the printed averages are self-consistent.
+    with _prof_lock:
+        _prof_cpu += _dt_cpu
+        _prof_wall += _dt_wall
+        _prof_analytics += _d_analytics
+        _prof_assoc += _d_assoc
+        _prof_pipeline += _d_pipeline
+        _prof_save += _d_save
+        _prof_n += 1
+        _log_now = _prof_n % 1000 == 0
+        if _log_now:
+            _ac = _prof_cpu / _prof_n * 1000
+            _aw = _prof_wall / _prof_n * 1000
+            _idle = (1 - _ac / _aw) * 100 if _aw > 0 else 0
+            _a_an = _prof_analytics / _prof_n * 1000
+            _a_as = _prof_assoc / _prof_n * 1000
+            _a_pp = _prof_pipeline / _prof_n * 1000
+            _a_sv = _prof_save / _prof_n * 1000
+            _n_snap = _prof_n
+    if _log_now:
         logging.warning(
             "PERF: %d frames  cpu=%.1f wall=%.1f idle%%=%.0f  "
             "[analytics=%.1f assoc=%.1f pipeline=%.1f save=%.1f]ms",
-            _prof_n, _ac, _aw, _idle, _a_an, _a_as, _a_pp, _a_sv,
+            _n_snap, _ac, _aw, _idle, _a_an, _a_as, _a_pp, _a_sv,
         )
 
 # ── Multi-node result → tar1090-compatible dict ──────────────────────────────
@@ -581,7 +614,7 @@ def _note_implausible(track_key: str, implausible: bool) -> bool:
     if implausible:
         if track_key not in _implausible_now:
             _implausible_now.add(track_key)
-            state.implausible_velocity_count += 1
+            state.bump_counter("implausible_velocity_count")
             return True
         return False
     _implausible_now.discard(track_key)
@@ -1299,6 +1332,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             state.active_geo_aircraft.pop(k, None)
             state.track_last_emit.pop(k, None)
             state.track_gate_hold.pop(k, None)
+            state.track_arc_motion.pop(k, None)
             _implausible_now.discard(k)
         with state.anomaly_lock:
             for k in stale_geo:
@@ -1395,6 +1429,17 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         # then let the next bad measurement leak through unchecked.
         # track_last_emit is pruned when the track itself goes stale
         # (see stale_geo cleanup above).
+
+    # Arc-motion logs: also swept by the stale_geo cleanup, but tracks that
+    # never enter active_geo_aircraft (default-pipeline path) would leak one
+    # capped list per hex for the process lifetime — the dict itself had no
+    # eviction anywhere.
+    stale_motion = [
+        h for h, log in list(state.track_arc_motion.items())
+        if not log or (now - log[-1][2]) > TRAIL_STALE_S
+    ]
+    for h in stale_motion:
+        state.track_arc_motion.pop(h, None)
 
     # 5. Pending detection arcs from tracker tracks not yet geolocated.
     # These arcs appear immediately on each detection without waiting for

@@ -53,6 +53,13 @@ logger = logging.getLogger(__name__)
 # interval table it reads.
 _get_stale_tasks = get_stale_tasks
 
+
+def _mn_pos_history_size() -> int:
+    """Size of the solver's per-hex smoothing buffer (soak observability)."""
+    from services.tasks import solver as _solver
+    with _solver._MN_POS_HISTORY_LOCK:
+        return len(_solver._MN_POS_HISTORY)
+
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 # ── Persistent event log ─────────────────────────────────────────────────────
@@ -547,6 +554,12 @@ async def system_metrics(_user=Depends(require_admin)):
         "active_geo_aircraft": len(state.active_geo_aircraft),
         "multinode_tracks": len(state.multinode_tracks),
         "adsb_aircraft": len(state.adsb_aircraft),
+        # Store sizes that used to grow without bound — exposed so a soak can
+        # watch them plateau instead of trusting the fix.
+        "track_arc_motion": len(state.track_arc_motion),
+        "mn_pos_history": _mn_pos_history_size(),
+        "track_histories": len(state.track_histories),
+        "ground_truth_trails": len(state.ground_truth_trails),
         "ws_clients": len(state.ws_clients),
         "ws_live_clients": len(state.ws_live_clients),
         "stale_tasks": _get_stale_tasks(),

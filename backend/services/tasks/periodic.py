@@ -22,6 +22,29 @@ _opensky_client: httpx.AsyncClient | None = None
 _adsb_lol_client: object | None = None
 
 
+async def close_http_clients() -> None:
+    """Shutdown hook: close the pooled clients (they had no close path)."""
+    global _opensky_client, _adsb_lol_client
+    if _opensky_client is not None:
+        try:
+            await _opensky_client.aclose()
+        except Exception:
+            pass
+        _opensky_client = None
+    if _adsb_lol_client is not None:
+        closer = getattr(_adsb_lol_client, "aclose", None) or getattr(
+            _adsb_lol_client, "close", None
+        )
+        if closer is not None:
+            try:
+                res = closer()
+                if asyncio.iscoroutine(res):
+                    await res
+            except Exception:
+                pass
+        _adsb_lol_client = None
+
+
 async def archive_flush_task():
     """Periodically flush batched detection archives to disk/B2."""
     while True:
@@ -193,7 +216,14 @@ async def _fetch_external_adsb() -> bool:
                 return False
             opensky_failed = True
     except Exception:
-        _opensky_client = None
+        # Close before dropping the reference: discarding the client leaked
+        # its connection pool once per poll for the whole of an outage.
+        _dead_client, _opensky_client = _opensky_client, None
+        if _dead_client is not None:
+            try:
+                await _dead_client.aclose()
+            except Exception:
+                pass
         opensky_failed = True
 
     # ── Fallback: adsb.lol ────────────────────────────────────────────────────

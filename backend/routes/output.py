@@ -24,11 +24,18 @@ router = APIRouter()
 
 
 def _real_node_ids() -> set:
-    """Return the set of node IDs that are NOT synthetic."""
-    return {
-        nid for nid, info in state.connected_nodes.items()
-        if not info.get("is_synthetic", True)
-    }
+    """Return the set of node IDs that are NOT synthetic.
+
+    Locked: this is a Python-level comprehension over a dict the TCP handler
+    and the pruner mutate from other threads — every other multi-key reader
+    takes the lock, and an unguarded resize mid-iteration is a 500 on
+    /api/v1/solver/aircraft.
+    """
+    with state.connected_nodes_lock:
+        return {
+            nid for nid, info in state.connected_nodes.items()
+            if not info.get("is_synthetic", True)
+        }
 
 
 def _format_aircraft(ac: dict) -> dict:

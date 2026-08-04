@@ -33,7 +33,8 @@ class NodeStillConnected(Exception):
 
 def live_node_ids() -> set[str]:
     """Node IDs the server currently considers part of the fleet."""
-    return set(state.connected_nodes)
+    with state.connected_nodes_lock:
+        return set(state.connected_nodes)
 
 
 def stale_node_ids() -> list[str]:

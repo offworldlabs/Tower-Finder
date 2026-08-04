@@ -104,7 +104,7 @@ class TestStateSnapshotR2(unittest.TestCase):
         from services.r2_client import download_bytes
         data = download_bytes("snapshots/state_snapshot.json")
         self.assertIsNotNone(data, "Snapshot should be in R2")
-        snap = json.loads(data)
+        snap = json.loads(json.loads(data)["payload"])  # schema-2 envelope
         self.assertIn("saved_at", snap)
         self.assertIn("trust_scores", snap)
 
@@ -148,7 +148,7 @@ class TestStateSnapshotR2(unittest.TestCase):
 
         self.assertTrue(os.path.exists(self._snapshot_path))
         with open(self._snapshot_path) as f:
-            snap = json.load(f)
+            snap = json.loads(json.load(f)["payload"])  # schema-2 envelope
         self.assertIn("trust_scores", snap)
 
     # ── restore_snapshot fallback to R2 ──────────────────────────────────────

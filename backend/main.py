@@ -170,6 +170,12 @@ async def lifespan(app: FastAPI):
         # Flush remaining buffered archives before exit
         from services.frame_processor import flush_all_archive_buffers
         flush_all_archive_buffers()
+        # Close pooled HTTP clients (they had no shutdown path at all)
+        from services.tasks.periodic import close_http_clients
+        try:
+            await close_http_clients()
+        except Exception:
+            logging.exception("HTTP client shutdown failed")
         state.node_analytics.save_coverage_maps()
         # Stop runtime coverage and flush report
         _stop_coverage()

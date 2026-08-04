@@ -980,9 +980,11 @@ def _refresh_mlat_verification():
     # Snapshot node configs (tx_lat/tx_lon/rx_lat/rx_lon) keyed by node_id so
     # we can compute the bistatic angle at each solver position without touching
     # state.connected_nodes inside the per-solve loop.
+    with state.connected_nodes_lock:
+        _cfg_items = list(state.connected_nodes.items())
     node_cfg_snap: dict[str, dict] = {
         nid: info.get("config", {})
-        for nid, info in list(state.connected_nodes.items())
+        for nid, info in _cfg_items
         if isinstance(info, dict)
     }
 

@@ -218,6 +218,15 @@ geo_aircraft_lock = threading.Lock()
 anomaly_lock = threading.Lock()
 # Guards solver_last_latency_s / solver_total_latency_s / solver_total_solved
 solver_latency_lock = threading.Lock()
+# Guards the plain int counters above.  `x += 1` on a module global is
+# LOAD/ADD/STORE — solver workers and frame workers were losing updates.
+counters_lock = threading.Lock()
+
+
+def bump_counter(name: str, n: int = 1) -> None:
+    """Thread-safe increment for a module-level int counter."""
+    with counters_lock:
+        globals()[name] += n
 
 # ── Task health tracking ─────────────────────────────────────────────────────
 task_last_success: dict[str, float] = {}  # task_name → last success epoch

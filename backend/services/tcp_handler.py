@@ -497,7 +497,7 @@ def _enqueue_detection(msg: dict, node_id: str | None):
     try:
         state.frame_queue.put_nowait((node_id or "tcp-unknown", frame))
     except asyncio.QueueFull:
-        state.frames_dropped += 1
+        state.bump_counter("frames_dropped")
         # Rate-limit drop warnings to once per 30 s so logging doesn't
         # block the event loop under heavy load (1000+ nodes).
         if now_m - _last_drop_log > 30:

@@ -212,6 +212,24 @@ _MN_POS_HISTORY: dict[str, deque] = {}
 _MN_POS_HISTORY_LOCK = threading.Lock()
 _MN_HISTORY_K = 3   # number of past frames to average (including current)
 _MN_DR_MAX_AGE_S = 160.0  # discard history entries older than 4 frame intervals
+# Dict-level TTL sweep (the deques cap per-hex growth, but the dict itself
+# grew one entry per distinct hex for the process lifetime — same shape as
+# _TRACK_CLAIMS, which already expires).  Swept opportunistically on insert.
+_MN_HISTORY_TTL_S = 600.0
+_mn_history_last_sweep = 0.0
+
+
+def _sweep_mn_history(now_s: float) -> None:
+    """Drop hexes whose newest sample is stale.  Caller holds the lock."""
+    global _mn_history_last_sweep
+    if now_s - _mn_history_last_sweep < _MN_HISTORY_TTL_S / 10:
+        return
+    _mn_history_last_sweep = now_s
+    for h in [
+        h for h, dq in _MN_POS_HISTORY.items()
+        if not dq or now_s - dq[-1][2] > _MN_HISTORY_TTL_S
+    ]:
+        del _MN_POS_HISTORY[h]
 
 
 def _ewma_smooth_track(result: dict, adsb_hex: str | None) -> dict:
@@ -236,6 +254,7 @@ def _ewma_smooth_track(result: dict, adsb_hex: str | None) -> dict:
     adsb = state.adsb_aircraft.get(adsb_hex)
     if not adsb:
         with _MN_POS_HISTORY_LOCK:
+            _sweep_mn_history(r_ts)
             _MN_POS_HISTORY.setdefault(adsb_hex, deque(maxlen=_MN_HISTORY_K)).append(
                 (r_lat, r_lon, r_ts)
             )
@@ -249,6 +268,7 @@ def _ewma_smooth_track(result: dict, adsb_hex: str | None) -> dict:
     vel_east_kms  = gs_kms * math.sin(math.radians(track_deg))
 
     with _MN_POS_HISTORY_LOCK:
+        _sweep_mn_history(r_ts)
         hist = _MN_POS_HISTORY.setdefault(adsb_hex, deque(maxlen=_MN_HISTORY_K))
 
         # Dead-reckon each past position forward to the current solve time
@@ -514,7 +534,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             result = _solve_best_altitude_n2(s_in, node_cfgs, solve_fn)
     except Exception:
         state.task_error_counts["solver"] += 1
-        state.solver_failures += 1
+        state.bump_counter("solver_failures")
         logging.exception("Multinode solver failed")
         result = None
     if result and result.get("success"):
@@ -526,7 +546,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                 rms_delay, _SOLVER_RMS_DELAY_MAX_US,
                 result.get("n_nodes", 0), result.get("lat", 0), result.get("lon", 0),
             )
-            state.solver_failures += 1
+            state.bump_counter("solver_failures")
             return result
         rms_doppler = result.get("rms_doppler", 0) or 0
         if rms_doppler > _SOLVER_RMS_DOPPLER_MAX_HZ:
@@ -536,7 +556,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                 rms_doppler, _SOLVER_RMS_DOPPLER_MAX_HZ,
                 result.get("n_nodes", 0), result.get("lat", 0), result.get("lon", 0),
             )
-            state.solver_failures += 1
+            state.bump_counter("solver_failures")
             return result
         # Reject solutions outside the beam coverage of contributing nodes.
         # For n=2 the solver has two geometric solutions (two bistatic ellipse
@@ -556,7 +576,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                         float(cfg.get("beam_width_deg") or 41),
                         float(cfg.get("max_range_km") or 50),
                     )
-                    state.solver_failures += 1
+                    state.bump_counter("solver_failures")
                     return None
         # Reject if the solution drifted more than _MAX_DISPLACEMENT_KM from
         # the ADS-B initial_guess. For N=2 this catches mirror-point ghosts
@@ -581,7 +601,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                         "convergence",
                         n_nodes, _disp_km, result["lat"], result["lon"],
                     )
-                    state.solver_failures += 1
+                    state.bump_counter("solver_failures")
                     return None
         # n=2 publication gate.  The pairing must have been fitted and passed;
         # an unfitted one (chi2_per_dof None — too short an observation span so
@@ -598,7 +618,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                     _N2_CONFIRM_CHI2_MAX, s_in.get("n_epochs"),
                     result.get("lat", 0), result.get("lon", 0),
                 )
-                state.n2_unconfirmed += 1
+                state.bump_counter("n2_unconfirmed")
                 return result
             if not _claim_track_pair(s_in, _chi2):
                 # A better-fitting pairing already owns one of these two
@@ -607,9 +627,9 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                 # separate them when both clear it, which is exactly the case
                 # this catches.  Measured offline, competition of this kind is
                 # worth ~9 points of n=2 ghost rate at no cost in real tracks.
-                state.n2_unconfirmed += 1
+                state.bump_counter("n2_unconfirmed")
                 return result
-        state.solver_successes += 1
+        state.bump_counter("solver_successes")
         with state.solver_latency_lock:
             state.solver_total_solved += 1
         if enqueued_at is not None:
