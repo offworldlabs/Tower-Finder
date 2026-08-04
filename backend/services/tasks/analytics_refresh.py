@@ -13,6 +13,7 @@ import orjson
 from config.constants import YAGI_BEAM_WIDTH_DEG, YAGI_MAX_RANGE_KM
 from core import state
 from services.geo import bearing_deg, haversine_km, point_in_beam
+from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
 from services.tasks._helpers import (
     _DELAY_MATCH_THRESHOLD_US,
@@ -489,7 +490,7 @@ def _refresh_radar3_verification():
     seen_adsb_hexes: set[str] = set()
 
     for adsb_hex, entry in list(state.adsb_aircraft.items()):
-        if not entry.get("lat") or not entry.get("lon"):
+        if not _valid_latlon(entry.get("lat"), entry.get("lon")):
             continue
         age_s = now - entry.get("last_seen_ms", 0) / 1000
         if age_s > 60:
@@ -498,7 +499,7 @@ def _refresh_radar3_verification():
         seen_adsb_hexes.add(adsb_hex)
 
     for adsb_hex, entry in list(state.external_adsb_cache.items()):
-        if not entry.get("lat") or not entry.get("lon"):
+        if not _valid_latlon(entry.get("lat"), entry.get("lon")):
             continue
         if adsb_hex not in seen_adsb_hexes:
             adsb_candidates.append((adsb_hex, entry))
@@ -511,17 +512,20 @@ def _refresh_radar3_verification():
             last = trail[-1]
             if len(last) < 4 or (now - last[3]) > 60:
                 continue
-            adsb_candidates.append(
-                (
-                    gt_hex,
-                    {
-                        "lat": last[0],
-                        "lon": last[1],
-                        "alt_baro": last[2],
-                        "gs": 0,
-                    },
-                )
-            )
+            # Trail index 2 is METRES (routes/test.py packs alt_m) — keep it
+            # under the metric key so the consumer below doesn't re-convert it
+            # as feet.  Speed comes from the push metadata when present; when
+            # it is absent there is no speed truth, and the match is excluded
+            # from velocity-error stats rather than compared against 0.
+            candidate = {
+                "lat": last[0],
+                "lon": last[1],
+                "alt_m": last[2],
+            }
+            meta = state.ground_truth_meta.get(gt_hex) or {}
+            if meta.get("speed_ms") is not None:
+                candidate["velocity"] = float(meta["speed_ms"])
+            adsb_candidates.append((gt_hex, candidate))
             seen_adsb_hexes.add(gt_hex)
         except Exception:
             continue
@@ -579,23 +583,36 @@ def _refresh_radar3_verification():
         matched_adsb_hexes.add(best_adsb_hex)
         truth_lat = best_adsb["lat"]
         truth_lon = best_adsb["lon"]
+        # Dual schema, keyed on which fields exist (not on truthiness — 0 ft
+        # and 0 kt are legitimate values): live ADS-B entries carry
+        # alt_baro (ft) / gs (kt); external-cache and ground-truth candidates
+        # carry alt_m / velocity (m/s).  A candidate with neither speed field
+        # has no speed truth and is excluded from velocity stats.
+        _alt_ft = best_adsb.get("alt_baro")
+        _alt_m = best_adsb.get("alt_m")
+        _gs_kt = best_adsb.get("gs")
+        _vel_ms = best_adsb.get("velocity")
         truth_alt_m = (
-            (best_adsb.get("alt_baro", 0) or 0) * 0.3048
-            if best_adsb.get("alt_baro")
-            else (best_adsb.get("alt_m", 0) or 0)
+            float(_alt_ft) * 0.3048
+            if _alt_ft is not None
+            else float(_alt_m) if _alt_m is not None else None
         )
         truth_gs_ms = (
-            (best_adsb.get("gs", 0) or 0) * 0.514444 if best_adsb.get("gs") else (best_adsb.get("velocity") or 0)
+            float(_gs_kt) * 0.514444
+            if _gs_kt is not None
+            else float(_vel_ms) if _vel_ms is not None else None
         )
 
         err_km = haversine_km(solver_lat, solver_lon, truth_lat, truth_lon)
 
-        vel_err = abs(solver_speed - truth_gs_ms)
-        alt_err = abs(solver_alt_m - truth_alt_m)
+        vel_err = abs(solver_speed - truth_gs_ms) if truth_gs_ms is not None else None
+        alt_err = abs(solver_alt_m - truth_alt_m) if truth_alt_m is not None else None
 
         pos_errors.append(err_km)
-        vel_errors.append(vel_err)
-        alt_errors.append(alt_err)
+        if vel_err is not None:
+            vel_errors.append(vel_err)
+        if alt_err is not None:
+            alt_errors.append(alt_err)
 
         matches.append(
             {
@@ -609,11 +626,11 @@ def _refresh_radar3_verification():
                 "truth_lon": round(truth_lon, 6),
                 "position_error_km": round(err_km, 3),
                 "solver_speed_ms": round(solver_speed, 1),
-                "truth_speed_ms": round(truth_gs_ms, 1),
-                "velocity_error_ms": round(vel_err, 1),
+                "truth_speed_ms": round(truth_gs_ms, 1) if truth_gs_ms is not None else None,
+                "velocity_error_ms": round(vel_err, 1) if vel_err is not None else None,
                 "solver_alt_m": round(solver_alt_m, 0),
-                "truth_alt_m": round(truth_alt_m, 0),
-                "altitude_error_m": round(alt_err, 0),
+                "truth_alt_m": round(truth_alt_m, 0) if truth_alt_m is not None else None,
+                "altitude_error_m": round(alt_err, 0) if alt_err is not None else None,
             }
         )
         matched_detections.append((truth_lat, truth_lon, best_adsb_hex))
@@ -639,12 +656,15 @@ def _refresh_radar3_verification():
             "max_km": round(pos_errors[-1], 3) if pos_errors else 0,
         },
         "velocity": {
-            "mean_ms": round(sum(vel_errors) / n, 1) if n else 0,
+            # Denominator is the matches that HAD speed truth, not all matches.
+            "n": len(vel_errors),
+            "mean_ms": round(sum(vel_errors) / len(vel_errors), 1) if vel_errors else 0,
             "median_ms": round(_percentile(vel_errors, 50), 1),
             "p95_ms": round(_percentile(vel_errors, 95), 1),
         },
         "altitude": {
-            "mean_m": round(sum(alt_errors) / n, 0) if n else 0,
+            "n": len(alt_errors),
+            "mean_m": round(sum(alt_errors) / len(alt_errors), 0) if alt_errors else 0,
             "median_m": round(_percentile(alt_errors, 50), 0),
             "p95_m": round(_percentile(alt_errors, 95), 0),
         },
@@ -730,7 +750,9 @@ def _refresh_mlat_accuracy_stats() -> None:
     """
     samples = list(state.mlat_samples)
     if not samples:
-        state.latest_mlat_accuracy_bytes = orjson.dumps({"n_samples": 0})
+        state.latest_mlat_accuracy_bytes = orjson.dumps(
+            {"n_samples": 0, "computed_at": round(time.time(), 1)}
+        )
         return
 
     errors = [s["error_km"] for s in samples]
@@ -829,6 +851,12 @@ def _refresh_mlat_accuracy_stats() -> None:
     state.latest_mlat_accuracy_bytes = orjson.dumps(
         {
             "n_samples": n,
+            # Staleness markers: computed_at says when this payload was built;
+            # newest_sample_ts_ms says how old the underlying evidence is.  A
+            # fresh computed_at with an old newest_sample_ts_ms means the
+            # pipeline is alive but no new solves are being verified.
+            "computed_at": round(time.time(), 1),
+            "newest_sample_ts_ms": max((s.get("ts") or 0) for s in samples),
             "mean_km": round(sum(errors) / n, 4),
             "median_km": round(_percentile(errors, 50), 4),
             "p95_km": round(_percentile(errors, 95), 4),
@@ -916,11 +944,22 @@ def _refresh_mlat_verification():
     # _refresh_radar3_verification().  Useful when the live ADS-B injector
     # is in its rate-limit backoff window (up to 300 s).
     for adsb_hex, entry in list(state.external_adsb_cache.items()):
-        if not entry.get("lat") or not entry.get("lon"):
+        if not _valid_latlon(entry.get("lat"), entry.get("lon")):
             continue
         if adsb_hex not in seen_truth_hexes:
-            gs_ms = (entry.get("gs", 0) or 0) * 0.514444
-            alt_m = (entry.get("alt_baro", 0) or 0) * 0.3048
+            # external_adsb_cache schema is {lat, lon, alt_m, velocity,
+            # heading} (periodic.py) — NOT the tar1090 gs/alt_baro schema.
+            # Reading gs/alt_baro here zeroed every external truth entry.
+            gs_ms = float(
+                entry["velocity"]
+                if entry.get("velocity") is not None
+                else (entry.get("gs") or 0) * 0.514444
+            )
+            alt_m = float(
+                entry["alt_m"]
+                if entry.get("alt_m") is not None
+                else (entry.get("alt_baro") or 0) * 0.3048
+            )
             adsb_truth_pool.append(
                 (
                     adsb_hex,
@@ -954,15 +993,21 @@ def _refresh_mlat_verification():
         age_s = now - ts_ms / 1000.0
         if age_s > _MLAT_SOLVE_MAX_AGE_S or age_s < 0:
             continue
-        if not r.get("lat") or not r.get("lon"):
+        if not _valid_latlon(r.get("lat"), r.get("lon")):
             continue
         fresh_solves.append((key, r))
 
     n_solver_cycles = len(fresh_solves)
 
     if not gt_trails_snapshot and not adsb_truth_pool:
+        # Still refresh the rolling accuracy payload — otherwise
+        # /api/test/mlat-accuracy silently serves numbers frozen at the moment
+        # the truth feed stopped, with nothing marking them stale.
+        _refresh_mlat_accuracy_stats()
         state.latest_mlat_verification_bytes = orjson.dumps(
             {
+                "computed_at": round(now, 1),
+                "skip_reason": "no_truth_candidates",
                 "n_solves": n_solver_cycles,
                 "n_solver_cycles": n_solver_cycles,
                 "n_unique_aircraft": n_solver_cycles,
@@ -1259,6 +1304,7 @@ def _refresh_mlat_verification():
     }
 
     result = {
+        "computed_at": round(now, 1),
         "n_solves": n_solves,
         "n_solver_cycles": n_solver_cycles,
         "n_unique_aircraft": n_unique_aircraft,

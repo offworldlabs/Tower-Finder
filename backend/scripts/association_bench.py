@@ -342,6 +342,46 @@ class Result:
     def total(self):
         return self.matched + self.ghosts
 
+    _SUM_FIELDS = (
+        "matched", "ghosts", "solver_rejects",
+        "gate_gated", "gate_rejected", "gate_accepted", "gate_unfitted",
+        "gate_superseded",
+        "n2_withheld_unfitted", "n2_withheld_chi2", "n2_withheld_claimed",
+        "claim_refused_self", "claim_refused_other",
+    )
+    _EXTEND_FIELDS = (
+        "errors_km", "ghost_dist_km", "speeds_kt", "speed_err_ms",
+        "claim_chi2_drift",
+    )
+    _COUNTER_FIELDS = ("n_nodes_matched", "n_nodes_ghost", "cluster_sizes")
+
+    def merge(self, other: Result, tag: str) -> None:
+        """Fold one seed's Result into this cross-seed aggregate.
+
+        This exists because a --repeat N run used to print the LAST seed's
+        diagnostics under an "across N seeds" heading: every counter and list
+        on Result was rebound per iteration, so the CV-gate, claim-refusal and
+        cluster-size lines described one seed while the ghost-rate spread
+        block above them described all N.  Only the six scalars fed into the
+        spread block were ever aggregated.
+
+        Track keys are namespaced with `tag`: track identities repeat across
+        seeds, so a plain set union would collide a seed-3 ghost with a
+        seed-5 real track and silently corrupt both counts.
+        """
+        for f in self._SUM_FIELDS:
+            setattr(self, f, getattr(self, f) + getattr(other, f))
+        for f in self._EXTEND_FIELDS:
+            getattr(self, f).extend(getattr(other, f))
+        for f in self._COUNTER_FIELDS:
+            getattr(self, f).update(getattr(other, f))
+        self.matched_tracks.update((tag, k) for k in other.matched_tracks)
+        self.ghost_tracks.update((tag, k) for k in other.ghost_tracks)
+        for k, counts in other.track_n.items():
+            self.track_n[(tag, k)].update(counts)
+        for nn, v in other.err_by_n.items():
+            self.err_by_n[nn].extend(v)
+
     @property
     def ghost_pct(self):
         return 100.0 * self.ghosts / self.total if self.total else 0.0
@@ -726,6 +766,7 @@ def main():
       for chi2_max in chi2_values:
         rates, solve_rates, reals, fakes, speed_errs = [], [], [], [], []
         n2_rates = []
+        agg = Result()
         last = None
         for k in range(args.repeat):
             last = run(args.seed + k, args.seconds, args.dt, args.frame_interval,
@@ -736,6 +777,7 @@ def main():
                        args.mode, chi2_max if chi2_max is not None else 2.0,
                        args.min_span_s, args.history_n, args.exclusive,
                        args.cv_fit_mode, args.claim_policy, args.claim_ttl_s)
+            agg.merge(last, tag=f"s{args.seed + k}")
             # Track-level is the comparable metric — solve-level and
             # track-level differ by ~20x on the same data, so mixing them is
             # how two staging conclusions went wrong.
@@ -749,7 +791,9 @@ def main():
         label = f"assoc_interval={interval:g}s"
         if chi2_max is not None:
             label += f"  chi2/dof<={chi2_max:g}"
-        report(label, last)
+        if args.repeat > 1:
+            label += f"  (pooled over {args.repeat} seeds)"
+        report(label, agg if args.repeat > 1 else last)
         if args.repeat > 1:
             mean = statistics.mean(rates)
             sd = statistics.pstdev(rates)

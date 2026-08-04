@@ -43,8 +43,19 @@ __all__ = [
     "bistatic_max_radius_km", "bistatic_range_limit_km", "enu_km",
     "haversine_km", "km_per_deg_lon", "offset_latlon", "offset_latlon_m",
     "point_in_beam", "resolve_beam_azimuth_deg",
-    "node_beam_params", "in_node_beam",
+    "node_beam_params", "in_node_beam", "valid_latlon",
 ]
+
+
+def valid_latlon(lat, lon) -> bool:
+    """True when both coordinates are usable.
+
+    None (absent) and the (0, 0) broken-config sentinel are invalid, but a
+    legitimate 0.0 on a single axis is not.  The widespread
+    ``not lat or not lon`` form this replaces silently dropped anything on
+    the equator or the prime meridian.
+    """
+    return lat is not None and lon is not None and (bool(lat) or bool(lon))
 
 
 def node_beam_params(node_cfg: dict) -> dict:

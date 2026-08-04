@@ -14,8 +14,9 @@ from fastapi.responses import Response
 from core import state
 from core.task_registry import get_stale_tasks
 from core.users import require_admin
-from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex
-from services.geo import haversine_km
+from services.frame_processor import resolve_ground_truth_hex
+from services.geo import haversine_km, valid_latlon
+from services.id_utils import normalize_hex_key
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -309,10 +310,10 @@ async def push_ground_truth_snapshot(body: dict = Body(...), _key=Depends(_verif
         hex_code = normalize_hex_key(ac.get("hex") or ac.get("adsb_hex") or "")
         if not hex_code:
             continue
-        lat = ac.get("lat", 0.0)
-        lon = ac.get("lon", 0.0)
+        lat = ac.get("lat")
+        lon = ac.get("lon")
         alt_m = ac.get("alt_m") or ac.get("alt_km", 0) * 1000
-        if not lat or not lon:
+        if not valid_latlon(lat, lon):
             continue
         if hex_code not in state.ground_truth_trails:
             state.ground_truth_trails[hex_code] = deque(maxlen=state.GROUND_TRUTH_MAX)
@@ -373,7 +374,7 @@ async def sim_push_adsb_positions(body: dict = Body(...), _key=Depends(_verify_s
             continue
         lat = ac.get("lat")
         lon = ac.get("lon")
-        if not lat or not lon:
+        if not valid_latlon(lat, lon):
             continue
         state.adsb_aircraft[hex_code] = {
             "hex": hex_code,

@@ -85,9 +85,16 @@ async def prune_synthetic_nodes():
                     # Only prune if disconnected
                     if info.get("status") != "disconnected":
                         continue
-                    # Only prune if old enough
-                    first_seen = info.get("first_seen_ts", now)
-                    if now - first_seen > MAX_AGE_DISCONNECTED_S:
+                    # Age from the *disconnect*, not from first_seen — an
+                    # 8-day-connected node used to be pruned one second after
+                    # a blip.  Entries marked disconnected before the
+                    # disconnect timestamp existed (or restored from an old
+                    # snapshot) have no disconnected_ts; fall back to
+                    # first_seen_ts so they still age out eventually.
+                    disconnected_at = info.get("disconnected_ts") or info.get(
+                        "first_seen_ts", now
+                    )
+                    if now - disconnected_at > MAX_AGE_DISCONNECTED_S:
                         to_remove.append(node_id)
                         pruned.append(node_id)
                 for node_id in to_remove:

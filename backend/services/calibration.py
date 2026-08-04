@@ -25,6 +25,7 @@ from collections.abc import Iterable
 
 from config.constants import CAL_MAX_ADSB_AGE_S
 from core import state
+from services.geo import valid_latlon
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ def record_adsb_calibration(
     Returns the number of points recorded, so a caller can report rather than
     assume.
     """
-    if lat is None or lon is None or (not lat and not lon):
+    if not valid_latlon(lat, lon):
         return 0
     if age_s > CAL_MAX_ADSB_AGE_S:
         return 0

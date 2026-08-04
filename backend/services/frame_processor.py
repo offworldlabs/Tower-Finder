@@ -36,8 +36,10 @@ from services.geo import (
     haversine_km,
     offset_latlon,
     offset_latlon_m,
+    valid_latlon,
 )
 from services.id_utils import multinode_hex_from_key
+from services.id_utils import normalize_hex_key as _normalize_hex_key
 from services.storage import archive_detections
 
 # ── Archive batching ──────────────────────────────────────────────────────────
@@ -107,8 +109,9 @@ def flush_all_archive_buffers():
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def normalize_hex_key(hex_code: str) -> str:
-    return str(hex_code or "").strip().lower()
+# Re-exported for existing importers; the definition moved to id_utils so
+# modules that must not import frame_processor (tcp_handler) can share it.
+normalize_hex_key = _normalize_hex_key
 
 
 # Was a flat-earth approximation at 111.0 km/deg — 0.175% short of the
@@ -466,8 +469,17 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # Track-level association.  The detection-level path it replaced now lives
     # in retina_analytics.detection_association, reachable only from the
     # offline bench, which keeps it as the A/B baseline.
+    _track_views = _node_track_views(pipeline)
+    # Feed the per-node distinct-track counters — total_tracks /
+    # geolocated_tracks were exported (and read by the admin API) but never
+    # written anywhere.
+    state.node_analytics.record_node_tracks(
+        node_id,
+        (v["track_id"] for v in _track_views),
+        list(pipeline.geolocated_tracks.keys()),
+    )
     pairs = state.node_associator.submit_tracks(
-        node_id, _node_track_views(pipeline), _ts_ms_assoc,
+        node_id, _track_views, _ts_ms_assoc,
     )
     solver_inputs = (state.node_associator.format_track_pairs_for_solver(pairs)
                      if pairs else [])
@@ -503,10 +515,12 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
         for _ae in _adsb_list:
             if not isinstance(_ae, dict):
                 continue
-            _hex = _ae.get("hex") or _ae.get("icao")
-            _lat = _ae.get("lat", 0)
-            _lon = _ae.get("lon", 0)
-            if not _hex or not _lat or not _lon:
+            # Normalised for the same reason as the sim ingest path: readers
+            # that dedupe/cross-reference lowercase the key first.
+            _hex = normalize_hex_key(_ae.get("hex") or _ae.get("icao"))
+            _lat = _ae.get("lat")
+            _lon = _ae.get("lon")
+            if not _hex or not valid_latlon(_lat, _lon):
                 continue
             if not math.isfinite(_lat) or not math.isfinite(_lon):
                 continue
@@ -554,6 +568,26 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
 
 # ── Multi-node result → tar1090-compatible dict ──────────────────────────────
 
+# Hexes/keys currently flagged implausible.  state.implausible_velocity_count
+# is documented as "solves whose speed exceeded the bound", but both increment
+# sites run on the 1 Hz feed-render cadence — a single persistently-implausible
+# track was adding ~60 counts/minute.  Counting *transitions into* the state
+# makes the number mean what the docs (and /api/radar/accuracy) say it means.
+_implausible_now: set[str] = set()
+
+
+def _note_implausible(track_key: str, implausible: bool) -> bool:
+    """Record plausibility state; return True on a fresh transition into it."""
+    if implausible:
+        if track_key not in _implausible_now:
+            _implausible_now.add(track_key)
+            state.implausible_velocity_count += 1
+            return True
+        return False
+    _implausible_now.discard(track_key)
+    return False
+
+
 def multinode_to_aircraft(key: str, r: dict) -> dict:
     speed_ms = math.sqrt(r["vel_east"] ** 2 + r["vel_north"] ** 2)
     heading = math.degrees(math.atan2(r["vel_east"], r["vel_north"])) % 360
@@ -565,9 +599,9 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
     # genuinely supersonic *and* plausible motion keeps the old label.
     _mn_anomaly_types = []
     _mn_implausible = speed_ms > IMPLAUSIBLE_SPEED_MS
+    _note_implausible(key, _mn_implausible)
     if _mn_implausible:
         _mn_anomaly_types.append("implausible_velocity")
-        state.implausible_velocity_count += 1
         # Log the geometry needed to tell weak Doppler observability from a
         # mis-association.  Without contributing_node_ids and rms_doppler
         # there is nothing to troubleshoot from.
@@ -1181,9 +1215,9 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         # is identical: this speed is not one an aircraft produces, so the
         # estimate is untrustworthy.
         _implausible_v = (gs / 1.94384) > IMPLAUSIBLE_SPEED_MS if gs else False
+        _note_implausible(ac_hex, _implausible_v)
         if _implausible_v:
             _anom_types.add("implausible_velocity")
-            state.implausible_velocity_count += 1
             if _should_log_implausible(ac_hex, now):
                 logging.warning(
                     "Implausible velocity: %.0f kt on %s hex=%s node=%s "
@@ -1265,6 +1299,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             state.active_geo_aircraft.pop(k, None)
             state.track_last_emit.pop(k, None)
             state.track_gate_hold.pop(k, None)
+            _implausible_now.discard(k)
         with state.anomaly_lock:
             for k in stale_geo:
                 state.anomaly_hexes.discard(k)
@@ -1315,6 +1350,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         with state.anomaly_lock:
             state.anomaly_hexes.discard(multinode_hex_from_key(k))
         state.multinode_tracks.pop(k, None)
+        _implausible_now.discard(k)
 
     # 4. ADS-B only — excluded from map per design.
     # Aircraft must have at least one radar detection to appear.
