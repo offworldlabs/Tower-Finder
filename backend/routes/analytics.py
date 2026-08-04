@@ -75,29 +75,37 @@ async def radar_accuracy():
 
 @router.get("/api/radar/association/status")
 async def association_status():
+    """What association is currently doing.
+
+    This used to report ``pending_frames``, ``pending_frame_age_ms`` and a
+    ``frame_skew`` block.  All three read state that only ``submit_frame``
+    writes, and the server has run ``submit_tracks`` since the track path took
+    over — so all three had been reporting empty or zero, indefinitely, while
+    looking like live telemetry.  They are replaced by the counters that do
+    move on the path in use.
+    """
     _a = state.node_associator
-    _n = max(getattr(_a, "frame_skew_samples", 0), 1)
-    now_ms = int(time.time() * 1000)
     return {
         "registered_nodes": len(_a.node_geometries),
         "overlap_zones": len(_a.overlap_zones),
-        "pending_frames": list(_a._pending_frames.keys()),
-        # Age of each node's latest pending frame.  Association pairs a node's
-        # new frame against whatever its neighbours last sent, so this skew is
-        # position error injected straight into the geometry — roughly 250 m of
-        # aircraft motion per second of it.
-        "pending_frame_age_ms": {
-            nid: now_ms - int(f.get("timestamp", 0) or 0)
-            for nid, f in list(_a._pending_frames.items())
-            if f.get("timestamp")
+        # Confirmed single-node tracks each node last submitted; these are what
+        # pairings are drawn from.
+        "pending_tracks": {
+            nid: len(tracks)
+            for nid, tracks in list(_a._pending_tracks.items())
         },
-        "frame_skew": {
-            "samples": getattr(_a, "frame_skew_samples", 0),
-            "mean_ms": round(getattr(_a, "frame_skew_ms_total", 0) / _n, 1),
-            "max_ms": getattr(_a, "frame_skew_ms_max", 0),
-            "sync_rejects": getattr(_a, "frame_sync_rejects", 0),
-            "gate_ms": getattr(_a, "_FRAME_SYNC_MAX_AGE_MS", None),
-            "hist_500ms_buckets": getattr(_a, "frame_skew_hist", []),
+        # Track-pairing outcomes since boot.  gated is everything past the
+        # coarse delay grid; the rest is what the constant-velocity fit did with
+        # it, which in production is nothing — the fit is deferred to the solver
+        # worker, so accepted/rejected/superseded stay zero here by design and
+        # unfitted counts the pairings handed on.
+        "track_pairs": {
+            "gated": getattr(_a, "track_pairs_gated", 0),
+            "accepted": getattr(_a, "track_pairs_accepted", 0),
+            "rejected": getattr(_a, "track_pairs_rejected", 0),
+            "unfitted": getattr(_a, "track_pairs_unfitted", 0),
+            "superseded": getattr(_a, "track_pairs_superseded", 0),
+            "deferred": getattr(_a, "track_pairs_deferred", 0),
         },
         "overlaps": _a.get_overlap_summary(),
     }

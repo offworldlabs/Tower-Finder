@@ -46,7 +46,10 @@ from dataclasses import dataclass
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from retina_analytics.association import InterNodeAssociator  # noqa: E402
+# DetectionAssociator is a superset of InterNodeAssociator — it adds the
+# superseded detection path that --mode detection measures as the baseline, so
+# constructing it unconditionally leaves --mode track unaffected.
+from retina_analytics.detection_association import DetectionAssociator  # noqa: E402
 from retina_geolocator.multinode_solver import (  # noqa: E402
     fit_constant_velocity,
     solve_multinode,
@@ -358,7 +361,7 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
     # emits unscored pairings and the solver worker fits and arbitrates.  The
     # two are different code paths, so they need separate baselines.
     deferred = (mode == "track" and cv_fit_mode == "deferred")
-    assoc = InterNodeAssociator(
+    assoc = DetectionAssociator(
         grid_step_km=3.0,
         cv_fit=(fit_constant_velocity
                 if (mode == "track" and not deferred) else None),

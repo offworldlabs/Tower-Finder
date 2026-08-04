@@ -32,10 +32,11 @@ ASSOC_MAX_NEIGHBORS = 50              # CPU budget cap for neighbor checks
 # solver's own threads, behind its own queue and staleness drop, so the frame
 # path keeps only the coarse delay gate — one BLAS contraction per node pair.
 #
-# Turning this off falls back to detection-level association and disables the
-# n=2 chi2 requirement in solver.py; the two must move together, since the gate
-# reads a chi2 the detection path never produces and would otherwise withhold
-# every n=2 track.
+# This now controls only solver.py's _N2_REQUIRE_CONFIRMED — whether an n=2
+# solve must carry a chi2 confirmation before its track is published.  The
+# detection-level fallback it used to select has moved out of the production
+# import graph entirely (retina_analytics.detection_association, reachable from
+# the offline bench), so there is no second path left to switch to.
 N2_TRACK_ASSOCIATION = True
 
 # At n=2 a single-epoch solve has 5 unknowns against 4 residuals, so rms_delay

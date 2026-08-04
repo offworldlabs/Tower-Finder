@@ -22,7 +22,6 @@ from config.constants import (
     GT_DISPLAY_STALE_S,
     GT_REFRESH_S,
     IMPLAUSIBLE_SPEED_MS,
-    N2_TRACK_ASSOCIATION,
     N2_TRACK_HISTORY_MAX,
     STALE_TRACK_S,
     TRAIL_STALE_S,
@@ -463,18 +462,14 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
 
     _t2 = time.thread_time()
     _ts_ms_assoc = frame.get("timestamp", 0)
-    if N2_TRACK_ASSOCIATION:
-        pairs = state.node_associator.submit_tracks(
-            node_id, _node_track_views(pipeline), _ts_ms_assoc,
-        )
-        solver_inputs = (state.node_associator.format_track_pairs_for_solver(pairs)
-                         if pairs else [])
-    else:
-        # Detection-level path.  Cheap and known-good; see N2_TRACK_ASSOCIATION
-        # for why the track path is parked.
-        cands = state.node_associator.submit_frame(node_id, frame, _ts_ms_assoc)
-        solver_inputs = (state.node_associator.format_candidates_for_solver(cands)
-                         if cands else [])
+    # Track-level association.  The detection-level path it replaced now lives
+    # in retina_analytics.detection_association, reachable only from the
+    # offline bench, which keeps it as the A/B baseline.
+    pairs = state.node_associator.submit_tracks(
+        node_id, _node_track_views(pipeline), _ts_ms_assoc,
+    )
+    solver_inputs = (state.node_associator.format_track_pairs_for_solver(pairs)
+                     if pairs else [])
     if solver_inputs:
         node_cfgs = get_node_configs()
         for s_in in solver_inputs:
