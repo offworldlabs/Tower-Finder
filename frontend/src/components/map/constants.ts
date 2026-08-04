@@ -13,6 +13,17 @@ export const ARC_HOLD_MS = 0;
 export const ARC_FADE_MS = 5_000;
 export const ARC_TOTAL_LIFE_MS = ARC_HOLD_MS + ARC_FADE_MS;
 
+// Ground-truth objects and radar tracks both live in the frontend's per-hex
+// animation stores (fixesRef / smoothRef / trail buffers).  In simulation a
+// radar track carries the *same* ICAO hex as the aircraft it came from, so
+// without a namespace the two write to one key and the marker alternates
+// between the solved position and the true one on every ingest — measured at
+// 29.8 km apart for a single-node arc track on staging.  Truth entries are
+// therefore stored under this prefix; `hex` on the object stays the real hex
+// so labels, selection and error computation are unaffected.
+export const GT_KEY_PREFIX = "gt:";
+export const groundTruthKey = (hex) => GT_KEY_PREFIX + hex;
+
 // position_source string for single-node arc-only aircraft (lat/lon is the
 // arc midpoint, not a real fix).  Backend emits this verbatim — keep in sync
 // with the backend constant if it ever moves.

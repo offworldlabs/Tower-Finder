@@ -18,6 +18,9 @@ import "./LiveAircraftMap.css";
 import {
   STALE_AIRCRAFT_MS,
   POSITION_SOURCE_ARC_ONLY,
+  groundTruthKey,
+  applyGroundTruthFixes,
+  pruneGroundTruthFixes,
   isPointInViewport,
   isAircraftInViewport,
   sampleTrailPositions,
@@ -148,7 +151,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
         if (!Array.isArray(gtTrail) || gtTrail.length === 0) continue;
 
         // GT position from smoothRef (dead-reckoned at 60fps) if available, else raw
-        const smooth = smoothRef.current[gtHex];
+        const smooth = smoothRef.current[groundTruthKey(gtHex)];
         let gtLat, gtLon;
         if (smooth) {
           gtLat = smooth.lat;
@@ -469,7 +472,7 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
         // verification payload alone isn't enough to render aligned.
         let liveLat;
         let liveLon;
-        const smooth = smoothRef?.current?.[hex];
+        const smooth = smoothRef?.current?.[groundTruthKey(hex)];
         if (smooth) {
           liveLat = smooth.lat;
           liveLon = smooth.lon;
@@ -1084,6 +1087,7 @@ export default function LiveAircraftMap() {
 
       fixesRef.current[ac.hex] = {
         ...ac,
+        _key: ac.hex,
         _fixLat: ac.lat,
         _fixLon: ac.lon,
         // Only reset the position-anchor timestamp when the fix actually moved.
@@ -1121,6 +1125,9 @@ export default function LiveAircraftMap() {
       const now = Date.now();
       const fixes = fixesRef.current;
       for (const fix of Object.values(fixes)) {
+        // Store key, not the display hex — ground-truth objects are namespaced
+        // so a radar track sharing their ICAO hex can't overwrite them.
+        const key = fix._key || fix.hex;
         const elapsed = Math.min((now - fix._fixTs) / 1000, 60);
         const gs = fix.gs || 0;
 
@@ -1136,7 +1143,7 @@ export default function LiveAircraftMap() {
         }
 
         // 2. Exponential smoothing toward the target (glide / inertia effect)
-        const prev = smoothRef.current[fix.hex];
+        const prev = smoothRef.current[key];
         const sLat = prev ? prev.lat + (targetLat - prev.lat) * alpha : targetLat;
         const sLon = prev ? prev.lon + (targetLon - prev.lon) * alpha : targetLon;
 
@@ -1147,27 +1154,27 @@ export default function LiveAircraftMap() {
         const sTrack = (prevTrack + dTrack * alpha + 360) % 360;
 
         // Mutate smooth entry in place — avoids 412 short-lived object creations per frame
-        const sm = smoothRef.current[fix.hex];
+        const sm = smoothRef.current[key];
         if (sm) { sm.lat = sLat; sm.lon = sLon; sm.track = sTrack; }
-        else     smoothRef.current[fix.hex] = { lat: sLat, lon: sLon, track: sTrack };
+        else     smoothRef.current[key] = { lat: sLat, lon: sLon, track: sTrack };
 
         // Update rotation directly on the DOM — avoids setIcon() every frame
         // Cache element reference to avoid querySelector on every 16ms frame
-        let svgEl = svgElemsRef.current[fix.hex];
+        let svgEl = svgElemsRef.current[key];
         if (!svgEl || !svgEl.isConnected) {
-          svgEl = document.querySelector(`.ac-hex-${CSS.escape(fix.hex)} svg`);
-          if (svgEl) svgElemsRef.current[fix.hex] = svgEl;
-          else delete svgElemsRef.current[fix.hex];
+          svgEl = document.querySelector(`.ac-hex-${CSS.escape(key)} svg`);
+          if (svgEl) svgElemsRef.current[key] = svgEl;
+          else delete svgElemsRef.current[key];
         }
         if (svgEl) svgEl.style.transform = `rotate(${sTrack.toFixed(1)}deg)`;
 
         // Imperative Leaflet position — reuse cached L.LatLng and call marker.update() directly
         // to avoid per-frame LatLng + event-object allocations (was ~25k allocs/s at 60fps×412).
-        const marker = markerRegistryRef.current.get(fix.hex);
+        const marker = markerRegistryRef.current.get(key);
         if (marker) {
-          let ll = latLngCacheRef.current[fix.hex];
+          let ll = latLngCacheRef.current[key];
           if (ll) { ll.lat = sLat; ll.lng = sLon; }
-          else { ll = L.latLng(sLat, sLon); latLngCacheRef.current[fix.hex] = ll; }
+          else { ll = L.latLng(sLat, sLon); latLngCacheRef.current[key] = ll; }
           // Always bind our cached LatLng to the marker — when React re-renders
           // an AircraftMarker (altitude band change, selection, etc.), the new
           // L.Marker has a fresh _latlng that isn't our cached object.
@@ -1179,11 +1186,11 @@ export default function LiveAircraftMap() {
         // (every 500 ms).  This is the source for the trail polyline on
         // arc-only tracks whose backend recent_positions stays at 1 point
         // because the arc midpoint doesn't move between detections.
-        const lastSample = lastTrailSampleRef.current[fix.hex] || 0;
+        const lastSample = lastTrailSampleRef.current[key] || 0;
         if (now - lastSample >= 500) {
-          lastTrailSampleRef.current[fix.hex] = now;
-          let trail = frontendTrailsRef.current[fix.hex];
-          if (!trail) { trail = []; frontendTrailsRef.current[fix.hex] = trail; }
+          lastTrailSampleRef.current[key] = now;
+          let trail = frontendTrailsRef.current[key];
+          if (!trail) { trail = []; frontendTrailsRef.current[key] = trail; }
           trail.push([sLat, sLon, now / 1000]);
           if (trail.length > 60) trail.shift();
         }
@@ -1195,11 +1202,14 @@ export default function LiveAircraftMap() {
         const arr = [];
         const dispMap = {};
         for (const fix of Object.values(fixes)) {
-          const sm = smoothRef.current[fix.hex];
+          const sm = smoothRef.current[fix._key || fix.hex];
           if (!sm) continue;
           const item = { ...fix, lat: sm.lat, lon: sm.lon, track: sm.track };
           arr.push(item);
-          dispMap[fix.hex] = item;
+          // Keyed by display hex: this map is read by hex-based consumers
+          // (selection, detail panel).  A truth-only object claims the slot
+          // only when no radar track holds the same hex.
+          if (!dispMap[fix.hex] || !fix._isTruth) dispMap[fix.hex] = item;
         }
         displayedAircraftRef.current = dispMap;
         setDisplayAircraft(arr);
@@ -1248,40 +1258,13 @@ export default function LiveAircraftMap() {
 
   /* ── Feed ground-truth objects into fixesRef so the 60fps loop dead-reckons them ── */
   useEffect(() => {
-    const now = Date.now();
-    const activeGtHexes = new Set();
-    for (const [hex, positions] of Object.entries(groundTruthRef.current)) {
-      if (!Array.isArray(positions) || positions.length === 0) continue;
-      const last = positions[positions.length - 1];
-      const meta = groundTruthMetaRef.current[hex] || {};
-      const lat = last[0], lon = last[1];
-      activeGtHexes.add(hex);
-      const prev = fixesRef.current[hex];
-      const posChanged = !prev || prev._fixLat !== lat || prev._fixLon !== lon;
-      fixesRef.current[hex] = {
-        hex,
-        lat, lon,
-        alt_baro: Math.round(last[2] / 0.3048),
-        gs: Math.round((meta.speed_ms || 0) * 1.94384 * 10) / 10,
-        track: meta.heading || 0,
-        object_type: meta.object_type,
-        is_anomalous: meta.is_anomalous,
-        points: positions.length,
-        _isTruth: true,
-        _fixLat: lat,
-        _fixLon: lon,
-        _fixTs: posChanged ? now : (prev?._fixTs ?? now),
-        _updatedAt: now,
-      };
-    }
-    // Remove ground-truth entries that are no longer in the server snapshot
-    for (const hex of Object.keys(fixesRef.current)) {
-      if (!fixesRef.current[hex]._isTruth) continue;
-      if (!activeGtHexes.has(hex)) {
-        delete fixesRef.current[hex];
-        delete smoothRef.current[hex];
-      }
-    }
+    const activeGtKeys = applyGroundTruthFixes(
+      fixesRef.current, groundTruthRef.current, groundTruthMetaRef.current, Date.now(),
+    );
+    pruneGroundTruthFixes(
+      fixesRef.current, activeGtKeys,
+      smoothRef.current, frontendTrailsRef.current, lastTrailSampleRef.current,
+    );
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groundTruthTick]);
 
@@ -1345,7 +1328,8 @@ export default function LiveAircraftMap() {
     // this fallback the selected aircraft would render no trail at all.
     // Skip front samples already covered by the backend tail to avoid
     // doubling up on the very recent positions.
-    const frontTrail = frontendTrailsRef.current[selectedHex];
+    const frontTrail =
+      frontendTrailsRef.current[selectedHex] ?? frontendTrailsRef.current[groundTruthKey(selectedHex)];
     if (frontTrail && frontTrail.length) {
       const lastBack = pts[pts.length - 1];
       for (const [lat, lon] of frontTrail) {
@@ -1355,7 +1339,9 @@ export default function LiveAircraftMap() {
     }
     // smoothRef is updated at 60fps (vs displayedAircraftRef which is only 2fps)
     // so the trail tip connects exactly to the current smoothed position.
-    const animated = smoothRef.current[selectedHex];
+    // A truth-only selection has no radar entry under its bare hex; fall back
+    // to the namespaced ground-truth key so its trail tip still tracks.
+    const animated = smoothRef.current[selectedHex] ?? smoothRef.current[groundTruthKey(selectedHex)];
     if (animated?.lat && animated?.lon) {
       const last = pts[pts.length - 1];
       if (!last || Math.abs(last[0] - animated.lat) > 0.00001 || Math.abs(last[1] - animated.lon) > 0.00001) {

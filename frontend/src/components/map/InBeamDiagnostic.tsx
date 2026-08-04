@@ -3,6 +3,7 @@ import { memo, useEffect, useRef } from "react";
 import { useMap } from "react-leaflet";
 import L from "leaflet";
 import { isInBeam } from "./geo";
+import { groundTruthKey } from "./constants";
 
 /* ── InBeamDiagnostic: flags ADS-B aircraft inside a node's beam that
       have no recent confirmed detection from that node.  Renders a
@@ -52,7 +53,7 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundT
         // The drawn endpoint, by contrast, prefers the dead-reckoned position
         // (same source that draws the aircraft dot) so the line's far end
         // lands on the icon rather than lagging behind it by one update.
-        const s = smooth[hex];
+        const s = smooth[groundTruthKey(hex)];
         const acLat = s ? s.lat : beamLat;
         const acLon = s ? s.lon : beamLon;
 

@@ -216,7 +216,10 @@ export default function AircraftListPanel({
 
                   return (
                     <div
-                      key={ac.hex}
+                      // Solved and truth-only rows can carry the same hex (a
+                      // simulated radar track reuses the aircraft's ICAO), so
+                      // the store key — namespaced for truth — is the unique one.
+                      key={ac._key ?? ac.hex}
                       className={`al-row${isSelected ? " selected" : ""}${!isSolved ? " truth-only" : ""}`}
                       onClick={() => onSelect(ac.hex)}
                     >
