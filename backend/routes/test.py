@@ -178,6 +178,11 @@ def _build_dashboard_data() -> bytes:
                 # Only observable here — the per-solve reason is logged at DEBUG,
                 # which staging does not emit.
                 "n2_unconfirmed": state.n2_unconfirmed,
+                # Overlap grids rebuilt because a node's observed coverage
+                # tightened, and how many nodes triggered it.  Zero against
+                # populated polygons means the prior is not reaching the grids.
+                "coverage_rebuilds": state.coverage_rebuilds,
+                "coverage_rebuild_nodes": state.coverage_rebuild_nodes,
                 "queue_drops": state.solver_queue_drops,
                 "last_latency_s": round(state.solver_last_latency_s, 3),
                 "avg_latency_s": round(state.solver_total_latency_s / max(state.solver_total_solved, 1), 3),

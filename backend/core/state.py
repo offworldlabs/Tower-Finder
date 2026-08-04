@@ -179,6 +179,13 @@ solver_failures: int = 0
 # the solve succeeded, it simply has not earned publication, and a real target
 # is published as soon as it accumulates the observation span to justify itself.
 n2_unconfirmed: int = 0
+# Overlap-grid rebuilds triggered by a node's empirical coverage tightening.
+# A counter rather than a log line: the server emits WARNING and above, so an
+# INFO message about this is invisible in every deployed environment — the same
+# trap that hid n2_unconfirmed.  Zero here with populated polygons means the
+# constraint is not reaching the grids.
+coverage_rebuilds: int = 0
+coverage_rebuild_nodes: int = 0
 solver_queue_drops: int = 0
 
 # Velocity-plausibility counters.  The solver has RMS gates on delay and

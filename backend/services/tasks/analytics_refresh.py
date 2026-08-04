@@ -59,10 +59,8 @@ def _refresh_coverage_constraints() -> int:
         pairs = state.node_associator.rebuild_zones_for(node_id)
         if pairs:
             rebuilt += 1
-            logging.info(
-                "coverage constraint changed for %s — rebuilt %d overlap zones",
-                node_id, pairs,
-            )
+            state.coverage_rebuild_nodes += 1
+            state.coverage_rebuilds += pairs
     return rebuilt
 
 
