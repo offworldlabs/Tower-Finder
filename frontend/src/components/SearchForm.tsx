@@ -47,13 +47,17 @@ export default function SearchForm({ onSearch, loading }) {
     const parsedLon = parseFloat(lon);
     if (isNaN(parsedLat) || isNaN(parsedLon)) return;
 
-    let cancelled = false;
-    fetchElevation(parsedLat, parsedLon).then((elev) => {
-      if (!cancelled && elev != null && !altitudeManual.current) {
-        setAltitude(Math.round(elev).toString());
-      }
-    });
-    return () => { cancelled = true; };
+    // Debounced + aborted: this fired one un-cancellable request per
+    // KEYSTROKE in the lat/lon inputs.
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      fetchElevation(parsedLat, parsedLon, controller.signal).then((elev) => {
+        if (!controller.signal.aborted && elev != null && !altitudeManual.current) {
+          setAltitude(Math.round(elev).toString());
+        }
+      }).catch(() => {});
+    }, 400);
+    return () => { controller.abort(); clearTimeout(timer); };
   }, [lat, lon]);
 
   function handleSubmit(e) {

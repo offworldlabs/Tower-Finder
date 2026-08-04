@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { applyGroundTruthFixes, pruneGroundTruthFixes } from "./groundTruthFixes";
+import { applyGroundTruthFixes, pruneGroundTruthFixes, sweepStaleGroundTruthFixes } from "./groundTruthFixes";
 import { groundTruthKey } from "./constants";
 
 // Trail point layout matches the backend snapshot: [lat, lon, alt_m, ts].
@@ -106,5 +106,29 @@ describe("pruneGroundTruthFixes", () => {
     pruneGroundTruthFixes(fixes, new Set(), {});
 
     expect(fixes["652600"]).toBeDefined();
+  });
+});
+
+describe("sweepStaleGroundTruthFixes", () => {
+  it("drops truth objects whose feed has stopped, from every store", () => {
+    const fixes: any = {};
+    const now = 1_000_000;
+    applyGroundTruthFixes(fixes, { abc: [[34.8, -82.4, 3000, 999]] }, {}, now - 40_000);
+    const key = groundTruthKey("abc");
+    const smooth: any = { [key]: { lat: 34.8, lon: -82.4, track: 0 } };
+    const trails: any = { [key]: [[34.8, -82.4, 999]] };
+    sweepStaleGroundTruthFixes(fixes, now, 30_000, smooth, trails);
+    expect(fixes[key]).toBeUndefined();
+    expect(smooth[key]).toBeUndefined();
+    expect(trails[key]).toBeUndefined();
+  });
+
+  it("keeps fresh truth and never touches radar entries", () => {
+    const fixes: any = { r1: { hex: "r1", _updatedAt: 0 } };  // radar, ancient
+    const now = 1_000_000;
+    applyGroundTruthFixes(fixes, { abc: [[34.8, -82.4, 3000, 999]] }, {}, now - 1_000);
+    sweepStaleGroundTruthFixes(fixes, now, 30_000);
+    expect(fixes[groundTruthKey("abc")]).toBeDefined();
+    expect(fixes.r1).toBeDefined();  // radar staleness is someone else's rule
   });
 });

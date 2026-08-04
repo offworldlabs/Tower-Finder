@@ -21,6 +21,8 @@ export const ARC_TOTAL_LIFE_MS = ARC_HOLD_MS + ARC_FADE_MS;
 // 29.8 km apart for a single-node arc track on staging.  Truth entries are
 // therefore stored under this prefix; `hex` on the object stays the real hex
 // so labels, selection and error computation are unaffected.
+// TTL for truth objects when the feed stops (pushes arrive every ~2 s).
+export const GT_FEED_STALE_MS = 30_000;
 export const GT_KEY_PREFIX = "gt:";
 export const groundTruthKey = (hex) => GT_KEY_PREFIX + hex;
 

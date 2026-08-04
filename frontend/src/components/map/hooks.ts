@@ -344,6 +344,9 @@ export function useNodes() {
   const [nodes, setNodes] = useState([]);
 
   useEffect(() => {
+    // Cancelled on unmount: this poll had no guard at all, so an in-flight
+    // response resolved into setNodes on an unmounted component.
+    const controller = new AbortController();
     async function loadNodes() {
       try {
         // On map.retina.fm request only real nodes from the backend — avoids
@@ -351,9 +354,10 @@ export function useNodes() {
         const url = usesRealOnlyFeed
           ? `${API_BASE}/radar/analytics?real_only=true`
           : `${API_BASE}/radar/analytics`;
-        const res = await fetch(url);
+        const res = await fetch(url, { signal: controller.signal });
         if (!res.ok) return;
         const data = await res.json();
+        if (controller.signal.aborted) return;
         const nodeList = [];
         for (const [id, info] of Object.entries(data.nodes || {})) {
           // Mirror backend's is_synthetic_node() prefix list. The backend
@@ -415,7 +419,10 @@ export function useNodes() {
     }
     loadNodes();
     const interval = setInterval(loadNodes, 30000);
-    return () => clearInterval(interval);
+    return () => {
+      controller.abort();
+      clearInterval(interval);
+    };
   }, []);
 
   return nodes;

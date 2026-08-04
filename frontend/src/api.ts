@@ -1,5 +1,8 @@
 const API_BASE = "/api";
 
+// Wrappers accept an optional AbortSignal so unmounting components can cancel
+// in-flight requests instead of resolving into setState after unmount.
+
 const MLAT_VERIFICATION_TTL_MS = 5000;
 let mlatVerificationCache: unknown = null;
 let mlatVerificationCacheTs = 0;
@@ -24,25 +27,25 @@ export async function fetchTowers(lat, lon, altitude = 0, limit = 20, source = "
   return res.json();
 }
 
-export async function fetchElevation(lat, lon) {
+export async function fetchElevation(lat, lon, signal?: AbortSignal) {
   const params = new URLSearchParams({
     lat: String(lat),
     lon: String(lon),
   });
-  const res = await fetch(`${API_BASE}/elevation?${params}`);
+  const res = await fetch(`${API_BASE}/elevation?${params}`, { signal });
   if (!res.ok) return null;
   const data = await res.json();
   return data.elevation_m;
 }
 
-export async function fetchRadar3Verification() {
-  const res = await fetch(`${API_BASE}/test/radar3/verification`);
+export async function fetchRadar3Verification(signal?: AbortSignal) {
+  const res = await fetch(`${API_BASE}/test/radar3/verification`, { signal });
   if (!res.ok) return null;
   return res.json();
 }
 
-export async function fetchRadar3DetectionRange() {
-  const res = await fetch(`${API_BASE}/test/radar3/detection-range`);
+export async function fetchRadar3DetectionRange(signal?: AbortSignal) {
+  const res = await fetch(`${API_BASE}/test/radar3/detection-range`, { signal });
   if (!res.ok) return null;
   return res.json();
 }
@@ -73,8 +76,8 @@ export async function fetchMlatVerification() {
   }
 }
 
-export async function fetchMlatAccuracy() {
-  const res = await fetch(`${API_BASE}/test/mlat-accuracy`);
+export async function fetchMlatAccuracy(signal?: AbortSignal) {
+  const res = await fetch(`${API_BASE}/test/mlat-accuracy`, { signal });
   if (!res.ok) return null;
   return res.json();
 }

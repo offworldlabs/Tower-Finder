@@ -1,6 +1,6 @@
 // Barrel file — re-exports every module for clean imports
-export { API_BASE, ANIMATION_MS, STALE_AIRCRAFT_MS, MAX_HISTORY, VIEWPORT_PAD_DEG, FOCUS_CLUSTER_LIMIT, ARC_HOLD_MS, ARC_FADE_MS, ARC_TOTAL_LIFE_MS, POSITION_SOURCE_ARC_ONLY, GT_KEY_PREFIX, groundTruthKey, dopplerColor } from "./constants";
-export { applyGroundTruthFixes, pruneGroundTruthFixes } from "./groundTruthFixes";
+export { API_BASE, ANIMATION_MS, STALE_AIRCRAFT_MS, GT_FEED_STALE_MS, MAX_HISTORY, VIEWPORT_PAD_DEG, FOCUS_CLUSTER_LIMIT, ARC_HOLD_MS, ARC_FADE_MS, ARC_TOTAL_LIFE_MS, POSITION_SOURCE_ARC_ONLY, GT_KEY_PREFIX, groundTruthKey, dopplerColor } from "./constants";
+export { applyGroundTruthFixes, pruneGroundTruthFixes, sweepStaleGroundTruthFixes } from "./groundTruthFixes";
 export { interpolateBearing, easeInOutCubic } from "./animation";
 export {
   buildViewportSnapshot,

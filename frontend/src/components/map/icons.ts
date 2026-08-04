@@ -94,6 +94,9 @@ export function makeAircraftIcon(ac, showLabel, isSelected, colorByAlt = false) 
   });
 }
 
+// NOTE: the ac-hex-<hex> class is what the 60 fps DOM-rotation loop queries;
+// drone icons lacked it, so every drone burned a document-wide selector miss
+// per frame and never rotated to its heading.
 export function makeDroneIcon(ac, showLabel, isSelected) {
   const label = ac.flight?.trim() || ac.hex?.slice(-6)?.toUpperCase() || "";
   const glowFilter = isSelected
@@ -107,7 +110,7 @@ export function makeDroneIcon(ac, showLabel, isSelected) {
       : "";
 
   return L.divIcon({
-    className: "aircraft-marker",
+    className: `aircraft-marker ac-hex-${ac.hex}`,
     html: `<div style="display:flex;flex-direction:column;align-items:center;">${droneHtml}${labelHtml}</div>`,
     iconSize: [90, 40],
     iconAnchor: [45, 11],

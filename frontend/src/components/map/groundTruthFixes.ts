@@ -72,3 +72,24 @@ export function pruneGroundTruthFixes(fixes, activeKeys, ...companions) {
     for (const store of companions) delete store[key];
   }
 }
+
+/**
+ * Time-based sweep for when the ground-truth FEED stops entirely.
+ *
+ * pruneGroundTruthFixes only runs when a snapshot *arrives*; if the WS drops
+ * or the backend stops emitting ground_truth, no snapshot ever revokes the
+ * old keys and every truth object keeps dead-reckoning forever — stale blue
+ * dots flying indefinitely.  Radar tracks have STALE_AIRCRAFT_MS; this is
+ * the equivalent for truth, driven from the render loop so it runs even when
+ * no data is arriving.
+ */
+export function sweepStaleGroundTruthFixes(fixes, now, ttlMs, ...companions) {
+  for (const key of Object.keys(fixes)) {
+    const f = fixes[key];
+    if (!f._isTruth) continue;
+    if (now - (f._updatedAt ?? 0) > ttlMs) {
+      delete fixes[key];
+      for (const store of companions) delete store[key];
+    }
+  }
+}

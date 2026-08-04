@@ -17,10 +17,12 @@ import "./LiveAircraftMap.css";
 
 import {
   STALE_AIRCRAFT_MS,
+  GT_FEED_STALE_MS,
   POSITION_SOURCE_ARC_ONLY,
   groundTruthKey,
   applyGroundTruthFixes,
   pruneGroundTruthFixes,
+  sweepStaleGroundTruthFixes,
   isPointInViewport,
   isAircraftInViewport,
   sampleTrailPositions,
@@ -134,7 +136,10 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
       single canvas.  Updated at 4Hz from smoothRef for dead-reckoned positions. ── */
 const _mgCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
 
-const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAircraft, groundTruthRef, smoothRef }) {
+// Ref-driven like DetectionArcs: data is read INSIDE the tick, so the effect
+// mounts once instead of keying on the 2 Hz radarAircraft array identity —
+// which tore down and recreated every dot and line twice a second.
+const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAircraftRef, groundTruthRef, smoothRef }) {
   const map = useMap();
   const markersRef = useRef(new Map());  // gtHex → { dot: L.circleMarker, line: L.polyline }
 
@@ -145,7 +150,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
       const gt = groundTruthRef.current;
       const seen = new Set();
 
-      for (const ac of radarAircraft) {
+      for (const ac of radarAircraftRef.current || []) {
         const gtHex = ac.ground_truth_hex;
         if (!gtHex) continue;
         const gtTrail = gt[gtHex];
@@ -217,7 +222,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
       }
       markers.clear();
     };
-  }, [map, radarAircraft, groundTruthRef, smoothRef]);
+  }, [map, radarAircraftRef, groundTruthRef, smoothRef]);
 
   return null;
 });
@@ -599,7 +604,10 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels
       separately by the existing selectedTrailPositions block). ── */
 const _trailsCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
 
-const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraft, frontendTrailsRef, selectedHex }) {
+// Ref-driven (see MatchedGroundTruthLayer): keying the effect on the 2 Hz
+// visibleAircraft array identity destroyed and rebuilt every polyline twice a
+// second, and the 500 ms interval below essentially never fired twice.
+const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftRef, frontendTrailsRef, selectedHex }) {
   const map = useMap();
   const linesRef = useRef(new Map()); // hex → L.polyline
 
@@ -608,7 +616,7 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraft,
     const tick = () => {
       const trails = frontendTrailsRef.current || {};
       const seen = new Set();
-      for (const ac of visibleAircraft) {
+      for (const ac of visibleAircraftRef.current || []) {
         if (!ac.hex || ac.hex === selectedHex) continue;
         const buf = trails[ac.hex];
         if (!buf || buf.length < 2) continue;
@@ -645,7 +653,7 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraft,
       for (const line of lines.values()) line.remove();
       lines.clear();
     };
-  }, [map, visibleAircraft, frontendTrailsRef, selectedHex]);
+  }, [map, visibleAircraftRef, frontendTrailsRef, selectedHex]);
 
   return null;
 });
@@ -1025,6 +1033,7 @@ export default function LiveAircraftMap() {
   const smoothRef = useRef({});  // hex → { lat, lon, track } — smoothed render position
   const prevTsRef = useRef(null);
   const svgElemsRef = useRef({}); // hex → cached SVG DOM element (avoids querySelector every frame)
+  const svgMissRef = useRef({});  // hex → retry-after ts for DOM lookup misses (negative cache)
   const rafFrameRef = useRef(0);  // throttle React re-renders to ~2fps (position/rotation at 60fps via direct L.Marker/DOM)
   const markerRegistryRef = useRef(new Map()); // hex → L.Marker for imperative 60fps setLatLng
   const latLngCacheRef    = useRef({});         // hex → L.LatLng — mutated in place to avoid per-frame allocation
@@ -1114,6 +1123,8 @@ export default function LiveAircraftMap() {
         delete fixesRef.current[hex];
         delete smoothRef.current[hex];
         delete svgElemsRef.current[hex];
+        delete svgMissRef.current[hex];
+        delete latLngCacheRef.current[hex];
         delete frontendTrailsRef.current[hex];
         delete lastTrailSampleRef.current[hex];
       }
@@ -1177,15 +1188,31 @@ export default function LiveAircraftMap() {
         if (sm) { sm.lat = sLat; sm.lon = sLon; sm.track = sTrack; }
         else     smoothRef.current[key] = { lat: sLat, lon: sLon, track: sTrack };
 
-        // Update rotation directly on the DOM — avoids setIcon() every frame
-        // Cache element reference to avoid querySelector on every 16ms frame
-        let svgEl = svgElemsRef.current[key];
-        if (!svgEl || !svgEl.isConnected) {
-          svgEl = document.querySelector(`.ac-hex-${CSS.escape(key)} svg`);
-          if (svgEl) svgElemsRef.current[key] = svgEl;
-          else delete svgElemsRef.current[key];
+        // Update rotation directly on the DOM — avoids setIcon() every frame.
+        // Ground-truth objects render on a canvas layer with no divIcon, and
+        // their store key (gt:<hex>) never matches the ac-hex-<hex> class —
+        // querying for them every frame was a permanent document-wide
+        // selector miss, ~30k/s on testmap.  Misses for real markers are
+        // negative-cached briefly: an aircraft outside the viewport or
+        // filtered out has no DOM node until it re-enters.
+        if (!fix._isTruth) {
+          let svgEl = svgElemsRef.current[key];
+          if (!svgEl || !svgEl.isConnected) {
+            svgEl = null;
+            delete svgElemsRef.current[key];
+            const retryAt = svgMissRef.current[key] || 0;
+            if (now >= retryAt) {
+              svgEl = document.querySelector(`.ac-hex-${CSS.escape(key)} svg`);
+              if (svgEl) {
+                svgElemsRef.current[key] = svgEl;
+                delete svgMissRef.current[key];
+              } else {
+                svgMissRef.current[key] = now + 2000;
+              }
+            }
+          }
+          if (svgEl) svgEl.style.transform = `rotate(${sTrack.toFixed(1)}deg)`;
         }
-        if (svgEl) svgEl.style.transform = `rotate(${sTrack.toFixed(1)}deg)`;
 
         // Imperative Leaflet position — reuse cached L.LatLng and call marker.update() directly
         // to avoid per-frame LatLng + event-object allocations (was ~25k allocs/s at 60fps×412).
@@ -1218,6 +1245,15 @@ export default function LiveAircraftMap() {
       // Build React display array at 2fps only — avoids ~25k spread-object allocations/s at 60fps.
       rafFrameRef.current = (rafFrameRef.current + 1) % 30;
       if (rafFrameRef.current === 0) {
+        // Truth objects age out here (render-loop driven) because their
+        // arrival-driven prune never fires once the feed stops — stale blue
+        // dots dead-reckoned forever.
+        sweepStaleGroundTruthFixes(
+          fixes, now, GT_FEED_STALE_MS,
+          smoothRef.current, svgElemsRef.current, svgMissRef.current,
+          latLngCacheRef.current, frontendTrailsRef.current,
+          lastTrailSampleRef.current,
+        );
         const arr = [];
         const dispMap = {};
         for (const fix of Object.values(fixes)) {
@@ -1282,7 +1318,9 @@ export default function LiveAircraftMap() {
     );
     pruneGroundTruthFixes(
       fixesRef.current, activeGtKeys,
-      smoothRef.current, frontendTrailsRef.current, lastTrailSampleRef.current,
+      smoothRef.current, svgElemsRef.current, svgMissRef.current,
+      latLngCacheRef.current, frontendTrailsRef.current,
+      lastTrailSampleRef.current,
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groundTruthTick]);
@@ -1310,6 +1348,13 @@ export default function LiveAircraftMap() {
     () => filteredAircraft.filter((ac) => ac.hex === selectedHex || isAircraftInViewport(ac, viewport)),
     [filteredAircraft, selectedHex, viewport],
   );
+  // Ref mirrors for the imperative layers: their effects read data inside
+  // their own tick instead of keying on these 2 Hz array identities, which
+  // used to tear every Leaflet object down twice a second.
+  const visibleAircraftRef = useRef(visibleAircraft);
+  const radarAircraftRef = useRef(radarAircraft);
+  useEffect(() => { visibleAircraftRef.current = visibleAircraft; }, [visibleAircraft]);
+  useEffect(() => { radarAircraftRef.current = radarAircraft; }, [radarAircraft]);
 
   // No viewport filter — the L.canvas renderer handles off-screen dots natively.
   // Removing the filter means:
@@ -1883,7 +1928,7 @@ export default function LiveAircraftMap() {
                  rendered below from the same buffer source. */}
             {showTrails && (
               <AircraftTrailsLayer
-                visibleAircraft={visibleAircraft}
+                visibleAircraftRef={visibleAircraftRef}
                 frontendTrailsRef={frontendTrailsRef}
                 selectedHex={selectedHex}
               />
@@ -1968,7 +2013,7 @@ export default function LiveAircraftMap() {
             {/* Matched GT overlay — shows GT dots + error lines for radar aircraft with GT match */}
             {showGroundTruth && (
               <MatchedGroundTruthLayer
-                radarAircraft={radarAircraft}
+                radarAircraftRef={radarAircraftRef}
                 groundTruthRef={groundTruthRef}
                 smoothRef={smoothRef}
               />

@@ -101,11 +101,20 @@ export default function PhysicsSettings() {
   const fixesRef = useRef({});
   const [animatedAircraft, setAnimatedAircraft] = useState([]);
 
+  // Aborted on unmount — in-flight responses used to resolve into setState
+  // on an unmounted component.
+  const abortRef = useRef(null);
+  useEffect(() => {
+    abortRef.current = new AbortController();
+    return () => abortRef.current?.abort();
+  }, []);
+
   const fetchConfig = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/simulation/config`);
+      const res = await fetch(`${API}/simulation/config`, { signal: abortRef.current?.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      if (abortRef.current?.signal.aborted) return;
       setConfig(data);
       setDraft(prev => prev ? prev : {
         frac_anomalous: data.frac_anomalous,
@@ -128,9 +137,10 @@ export default function PhysicsSettings() {
 
   const fetchGt = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/simulation/ground-truth`);
+      const res = await fetch(`${API}/simulation/ground-truth`, { signal: abortRef.current?.signal });
       if (!res.ok) return;
       const data = await res.json();
+      if (abortRef.current?.signal.aborted) return;
       // Store fixes for dead-reckoning
       const newFixes = {};
       for (const ac of data.aircraft) {

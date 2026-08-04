@@ -57,7 +57,6 @@ export function checkEmergencySquawks(
   aircraft: Array<{ hex: string; squawk?: string | number | null }>,
   enabled: boolean,
 ): Array<{ hex: string; squawk: string }> {
-  if (!enabled) return [];
   const triggered: Array<{ hex: string; squawk: string }> = [];
   for (const ac of aircraft) {
     if (!ac?.hex || ac.squawk == null) continue;
@@ -65,8 +64,11 @@ export function checkEmergencySquawks(
     if (!EMERGENCY_SQUAWKS.has(sq)) continue;
     const key = `${ac.hex}::${sq}`;
     if (_alertedKeys.has(key)) continue;
+    // Record the key even while muted — the early `if (!enabled) return`
+    // used to skip this, so toggling sound back on re-alerted (and
+    // re-toasted) every squawk already on screen.
     _alertedKeys.add(key);
-    triggered.push({ hex: ac.hex, squawk: sq });
+    if (enabled) triggered.push({ hex: ac.hex, squawk: sq });
   }
   if (triggered.length > 0) {
     try {

@@ -38,6 +38,27 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundT
 
       const smooth = smoothRef?.current || {};
 
+      // Pre-resolve the node list once per tick.  Two fixes in one:
+      // 1. Use the REAL rx position when the payload carries it — rx_lat/lon
+      //    are privacy-fuzzed by ~400 m, which biased edge-of-beam decisions
+      //    (DetectionArcs already uses the _real fields for the same reason).
+      // 2. Precompute a bounding-box radius so the O(truth × nodes) loop
+      //    below rejects distant pairs with two comparisons instead of a
+      //    haversine + bearing — enabling this layer on a dense testmap used
+      //    to hang the tab.
+      const nodeList = [];
+      for (const [nodeId, node] of Object.entries(nodes)) {
+        const rxLat = node.rx_lat_real ?? node.rx_lat;
+        const rxLon = node.rx_lon_real ?? node.rx_lon;
+        const { beam_azimuth_deg: azimuth, beam_width_deg: beamWidth, max_range_km: maxRange } = node;
+        if (rxLat == null || rxLon == null || azimuth == null || beamWidth == null || maxRange == null) continue;
+        const reachKm = maxRange * MAX_RANGE_FACTOR;
+        nodeList.push({
+          nodeId, rxLat, rxLon, azimuth, beamWidth, reachKm,
+          latPadDeg: reachKm / 111 + 0.01,
+        });
+      }
+
       for (const [hex, trail] of Object.entries(truth)) {
         if (!Array.isArray(trail) || trail.length === 0) continue;
         const last = trail[trail.length - 1];
@@ -56,19 +77,20 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundT
         const s = smooth[groundTruthKey(hex)];
         const acLat = s ? s.lat : beamLat;
         const acLon = s ? s.lon : beamLon;
+        const kmPerDegLon = 111 * Math.cos(beamLat * (Math.PI / 180));
 
-        for (const [nodeId, node] of Object.entries(nodes)) {
-          if (recentDetections[`${hex}|${nodeId}`] != null) continue;
+        for (const n of nodeList) {
+          // Cheap box reject before any trig.
+          if (Math.abs(beamLat - n.rxLat) > n.latPadDeg) continue;
+          if (Math.abs(beamLon - n.rxLon) * kmPerDegLon > n.reachKm + 1) continue;
+          if (recentDetections[`${hex}|${n.nodeId}`] != null) continue;
 
-          const { rx_lat: rxLat, rx_lon: rxLon, beam_azimuth_deg: azimuth, beam_width_deg: beamWidth, max_range_km: maxRange } = node;
-          if (rxLat == null || rxLon == null || azimuth == null || beamWidth == null || maxRange == null) continue;
+          if (!isInBeam(n.rxLat, n.rxLon, n.azimuth, n.beamWidth * BEAM_WIDTH_FACTOR, n.reachKm, beamLat, beamLon)) continue;
 
-          if (!isInBeam(rxLat, rxLon, azimuth, beamWidth * BEAM_WIDTH_FACTOR, maxRange * MAX_RANGE_FACTOR, beamLat, beamLon)) continue;
-
-          const pairKey = `${hex}|${nodeId}`;
+          const pairKey = `${hex}|${n.nodeId}`;
           seen.add(pairKey);
 
-          const latLngs = [[rxLat, rxLon], [acLat, acLon]];
+          const latLngs = [[n.rxLat, n.rxLon], [acLat, acLon]];
           const existing = polyMap.get(pairKey);
           if (existing) {
             existing.setLatLngs(latLngs);
