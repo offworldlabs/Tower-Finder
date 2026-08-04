@@ -171,10 +171,39 @@ class DeferredN2Gate:
     time rather than wall-clock since a replay compresses both.
     """
 
-    def __init__(self, chi2_max: float, claim_ttl_s: float = 60.0):
+    def __init__(self, chi2_max: float, claim_ttl_s: float = 60.0,
+                 claim_policy: str = "strict"):
         self.chi2_max = chi2_max
         self.claim_ttl_s = claim_ttl_s
-        self._claims: dict[str, tuple[float, float]] = {}   # track_id → (chi2, at)
+        # off          — no arbitration; shows what the claim is worth at all
+        # strict       — production: refuse unless strictly better than the holder
+        # self-refresh — a pairing may always renew its own claim, so a track's
+        #                own winner is not locked out by its earlier, slightly
+        #                better score as chi2 drifts with a growing epoch set
+        # all-tracks   — self-refresh, but claiming every track in the cluster
+        #                rather than only the first pair.  production reads
+        #                track_pair_ids, which format_track_pairs_for_solver
+        #                truncates to [:1], so a 3-node cluster leaves its third
+        #                track unclaimed and free to seed a competing target.
+        self.claim_policy = claim_policy
+        # track_id → (chi2, at, pairing_key)
+        self._claims: dict[str, tuple[float, float, tuple]] = {}
+        # Attribution: a refusal by the *same* pairing is a self-lockout — the
+        # gate suppressing the hypothesis it already agreed with — and is a
+        # different failure from losing to a genuine competitor.
+        self.refused_self = 0
+        self.refused_other = 0
+        self.claim_chi2_drift: list[float] = []
+
+    @staticmethod
+    def _pairing_key(s_in: dict) -> tuple:
+        return tuple(sorted(tid for pair in (s_in.get("track_pair_ids") or [])
+                            for tid in pair))
+
+    def _claimed_track_ids(self, s_in: dict) -> list[str]:
+        if self.claim_policy == "all-tracks":
+            return list(s_in.get("track_ids") or [])
+        return [tid for pair in (s_in.get("track_pair_ids") or []) for tid in pair]
 
     def resolve_chi2(self, s_in: dict, node_cfgs: dict) -> float | None:
         chi2 = s_in.get("chi2_per_dof")
@@ -202,16 +231,31 @@ class DeferredN2Gate:
         pairs = s_in.get("track_pair_ids") or []
         if not pairs:
             return True
-        track_ids = [tid for pair in pairs for tid in pair]
-        for tid, (_held_chi2, held_at) in list(self._claims.items()):
+        if self.claim_policy == "off":
+            return True
+        key = self._pairing_key(s_in)
+        track_ids = self._claimed_track_ids(s_in)
+        for tid, (_c, held_at, _k) in list(self._claims.items()):
             if now_s - held_at > self.claim_ttl_s:
                 del self._claims[tid]
         for tid in track_ids:
             held = self._claims.get(tid)
-            if held is not None and held[0] < chi2:
+            if held is None or held[0] >= chi2:
+                continue
+            if held[2] == key:
+                # The holder *is* this pairing.  Its chi2 has drifted upward as
+                # the epoch set grew, and the strictly-better test then locks a
+                # track out of its own winning hypothesis.  The production
+                # comment anticipates only the identical-score case.
+                self.refused_self += 1
+                self.claim_chi2_drift.append(chi2 - held[0])
+                if self.claim_policy in ("self-refresh", "all-tracks"):
+                    continue
                 return False
+            self.refused_other += 1
+            return False
         for tid in track_ids:
-            self._claims[tid] = (chi2, now_s)
+            self._claims[tid] = (chi2, now_s, key)
         return True
 
 
@@ -242,6 +286,11 @@ class Result:
     n2_withheld_unfitted: int = 0
     n2_withheld_chi2: int = 0
     n2_withheld_claimed: int = 0
+    # Of those, how many lost to a claim held by *their own* pairing rather than
+    # a competing one — the gate suppressing a hypothesis it already accepted.
+    claim_refused_self: int = 0
+    claim_refused_other: int = 0
+    claim_chi2_drift: list = None
     # Per track, the contributing-node counts its solves were made from.  A
     # track-level ghost rate split by n needs this because one track can be
     # solved at n=2 on one round and n=3 on the next; "an n=2 track" means
@@ -258,6 +307,7 @@ class Result:
         self.ghost_tracks = set()
         self.speed_err_ms = []
         self.err_by_n = defaultdict(list)
+        self.claim_chi2_drift = []
         self.track_n = defaultdict(Counter)
         self._ghost_tracks = {}
 
@@ -346,7 +396,8 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
         metro_traffic_frac, layout="ring", illuminator_band="any",
         dual_aim="core", blind=True, mode="detection",
         chi2_max=2.0, min_span_s=12.0, history_n=20, exclusive=True,
-        cv_fit_mode="inline") -> Result:
+        cv_fit_mode="inline", claim_policy="strict",
+        claim_ttl_s=60.0) -> Result:
     import random
 
     random.seed(seed)
@@ -369,7 +420,9 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
         cv_min_span_s=min_span_s,
         cv_exclusive=exclusive,
     )
-    n2_gate = DeferredN2Gate(chi2_max) if deferred else None
+    n2_gate = (DeferredN2Gate(chi2_max, claim_ttl_s=claim_ttl_s,
+                              claim_policy=claim_policy)
+               if deferred else None)
     # One tracker per node, driven by every frame — mirrors
     # frame_processor.py:476-477.  The bench previously fed raw detections
     # straight to the associator, skipping the stage production runs first, so
@@ -516,6 +569,10 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                     res.ghost_tracks.add(hit)
                     res.track_n[hit][nn] += 1
 
+    if n2_gate is not None:
+        res.claim_refused_self = n2_gate.refused_self
+        res.claim_refused_other = n2_gate.refused_other
+        res.claim_chi2_drift = list(n2_gate.claim_chi2_drift)
     res.gate_gated = assoc.track_pairs_gated
     res.gate_rejected = assoc.track_pairs_rejected
     res.gate_accepted = assoc.track_pairs_accepted
@@ -568,6 +625,12 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
               f"-> {r.n2_withheld_unfitted} unfitted, "
               f"{r.n2_withheld_chi2} over χ², "
               f"{r.n2_withheld_claimed} outbid on a track claim")
+        if r.n2_withheld_claimed:
+            _drift = sorted(r.claim_chi2_drift)
+            _med = _drift[len(_drift)//2] if _drift else 0.0
+            print(f"    claim refusals: {r.claim_refused_self} by the pairing's "
+                  f"OWN earlier claim, {r.claim_refused_other} by a competitor"
+                  + (f"  (median chi2 drift +{_med:.3f})" if _drift else ""))
     print(f"  solver rejects/failures: {r.solver_rejects}")
 
 
@@ -607,6 +670,14 @@ def main():
                         "published bench figure was measured on. 'deferred' is "
                         "what production runs: the associator emits unscored "
                         "pairings and the solver fits and arbitrates them.")
+    p.add_argument("--claim-policy", choices=("off", "strict", "self-refresh", "all-tracks"),
+                   default="strict",
+                   help="deferred mode: how the solver-side track claim "
+                        "arbitrates. off disables it (what is it worth?); "
+                        "strict is production; self-refresh lets a pairing "
+                        "renew its own claim as its chi2 drifts.")
+    p.add_argument("--claim-ttl-s", type=float, default=60.0,
+                   help="deferred mode: how long a track claim is held")
     p.add_argument("--no-select", dest="exclusive", action="store_false",
                    default=True,
                    help="track mode: disable one-to-one hypothesis selection "
@@ -642,7 +713,7 @@ def main():
                        args.illuminator_band, args.dual_aim, args.blind,
                        args.mode, chi2_max if chi2_max is not None else 2.0,
                        args.min_span_s, args.history_n, args.exclusive,
-                       args.cv_fit_mode)
+                       args.cv_fit_mode, args.claim_policy, args.claim_ttl_s)
             # Track-level is the comparable metric — solve-level and
             # track-level differ by ~20x on the same data, so mixing them is
             # how two staging conclusions went wrong.
