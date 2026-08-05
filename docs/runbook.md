@@ -98,7 +98,9 @@ The health check only monitors these three tasks (defined in `critical_tasks` in
 | `aircraft_flush` | ~5 s | 15 s |
 | `analytics_refresh` | 30 s | 120 s |
 
-`blah2_bridge` and `solver` update `task_last_success` but are **not** checked by `/api/health` — their alerts fire via separate mechanisms (`solver_latency_high`, `solver_queue_drops`).
+The blah2 bridge tasks and `solver` update `task_last_success` but are **not** checked by `/api/health` — their alerts fire via separate mechanisms (`solver_latency_high`, `solver_queue_drops`).
+
+The bridge reports one task key per live node — `blah2_bridge:<node_id>` — so a single node going dark is visible on its own instead of being masked by its neighbours. The keys are registered at startup from the node list, which is config, not code (see below).
 
 **Check logs for exceptions in the named task:**
 ```bash
@@ -107,7 +109,31 @@ docker compose logs --tail=500 | grep -i "error\|exception\|traceback" | tail -2
 
 `frame_processor` stale is the most serious — it means detection frames are piling up unprocessed or the loop crashed. If the loop crashed, the container needs a restart (tasks are daemon threads and will not restart themselves).
 
-`blah2_bridge` stale is expected if no blah2 node is connected and `BLAH2_BRIDGE_URL` is not set — safe to ignore in that case.
+A stale `blah2_bridge:<node_id>` means that node's `/api/detection` is unreachable or serving only stale frames; other nodes are unaffected. Stale bridge keys are expected wherever there is no upstream retnode access — safe to ignore there.
+
+### Adding or changing a live blah2 node
+
+The node list is `blah2_nodes.json` — url, rx, tx, fc and friends per node — read through the runtime-config overlay, so this is a config change with no rebuild:
+
+```bash
+docker compose exec tower-finder vi /app/backend/data/runtime/blah2_nodes.json
+```
+
+Restart the container afterwards; the list is read once, at startup.
+
+`backend/config/blah2_nodes.json` in the repo is the shipped default that seeds that overlay on first boot. Once the overlay exists it wins, so editing the repo copy will not change a running deployment. `BLAH2_NODES_FILE` overrides the path entirely.
+
+After a change, confirm the node registered and is solving sensibly:
+
+```bash
+curl -sk https://localhost/api/radar/nodes | jq '.nodes | keys'
+```
+
+```bash
+curl -sk https://localhost/api/test/node/radar3a-retnode/verification | jq '{n_tracks, n_matched, position}'
+```
+
+A node missing from the first list failed validation — the reason is logged at error level, naming the offending field. Bad geometry passes validation but shows up in the second: `position.median_km` blows up when tx/rx or fc do not match the real hardware.
 
 ---
 
