@@ -118,3 +118,59 @@ status:
 logs:
     tail -n +1 -f "{{run}}/backend.log" "{{run}}/fleet.log" "{{run}}/frontend.log"
 
+# ── retina-test droplet (test-*.retina.fm) ───────────────────────────────────
+# Deliberately git-free: rsyncs the WORKING TREE, so uncommitted and unpushed
+# work deploys as-is. That is the point of this box, and the reason it is not a
+# CI job. Nothing here can reach staging or prod: the host, compose override and
+# nginx profile are all fixed to test.
+#
+# Consequences worth knowing: what runs on the droplet corresponds to no commit,
+# so `git log` there tells you nothing (there is no .git). If you need to know
+# what is deployed, look at your own working tree. Never point this at prod.
+#
+# --delete keeps the remote from accumulating files you have since removed
+# locally, which otherwise produces builds that work there and nowhere else.
+# .git is excluded so the droplet stays git-free; the heavy build inputs
+# (node_modules, venvs, vendored tar1090) are excluded because the image builds
+# them, and the data dirs because they are droplet state, not source.
+#
+# Deploy the WORKING TREE to the retina-test droplet (rsync + rebuild, no git)
+deploy-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v rsync >/dev/null || { echo "rsync not installed"; exit 1; }
+    echo "→ syncing working tree to retina-test:/opt/tower-finder"
+    # --stats, not --info=stats1: macOS still ships rsync 2.6.9, which predates
+    # --info entirely and dies on it.
+    rsync -az --delete --stats \
+        --exclude '.git/' \
+        --exclude 'node_modules/' \
+        --exclude '.venv/' \
+        --exclude '__pycache__/' \
+        --exclude 'tar1090/' \
+        --exclude '.testmap-run/' \
+        --exclude 'backend/coverage_data/' \
+        --exclude 'backend/data/' \
+        --exclude 'backend/.env' \
+        "{{root}}/" retina-test:/opt/tower-finder/
+    echo "→ rebuilding on the droplet (this takes a few minutes)"
+    ssh retina-test 'cd /opt/tower-finder && docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --build'
+    echo
+    echo "✓ deployed.  https://test-map.retina.fm  |  https://test-towers.retina.fm"
+    echo "  logs:   just deploy-test-logs"
+    echo "  health: curl -s https://test-api.retina.fm/api/health"
+
+# Tail the droplet's container logs
+deploy-test-logs:
+    ssh retina-test 'cd /opt/tower-finder && docker compose -f docker-compose.yml -f docker-compose.test.yml logs -f --tail 100'
+
+# Fleet/pipeline snapshot from the droplet (node count, queue depth, aircraft)
+deploy-test-status:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    ssh retina-test 'cd /opt/tower-finder && docker compose -f docker-compose.yml -f docker-compose.test.yml ps' || true
+    echo
+    curl -s --max-time 10 https://test-api.retina.fm/api/test/dashboard | python3 -c \
+      "import sys,json; d=json.load(sys.stdin); n=d['nodes']; h=d['server_health']; p=d['pipeline']; \
+       print(f\"nodes={n['active']}  queue={h['frame_queue_utilization_pct']}%  drops={h['frames_dropped']}  on_map={p['aircraft_on_map']}\")" \
+      2>/dev/null || echo "  (dashboard unreachable — is the stack up? try: just deploy-test-logs)"
