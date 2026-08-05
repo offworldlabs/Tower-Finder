@@ -25,6 +25,10 @@ backend/htmlcov/
 backend/data/events.json
 backend/data/state_snapshot.json
 backend/data/state_snapshot.json.sha256
+# Fleet ground-truth dump. The orchestrator's --ground-truth-path defaults to a
+# relative 'ground_truth.json', and `just up` runs it with cwd=backend, so a native
+# dev run drops one here. (The compose fleet writes /app/data/ instead.)
+backend/ground_truth.json
 backend/data/*.json.migrated
 backend/data/users.db
 backend/data/users.db-shm
