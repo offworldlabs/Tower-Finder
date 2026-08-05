@@ -1,6 +1,6 @@
 """Lightweight state snapshot: save/restore high-value in-memory state across restarts.
 
-Saved every 5 minutes by a background task.  Restored once at startup.
+Saved every SAVE_INTERVAL_S (60 s) by a background task.  Restored once at startup.
 Persists: trust_scores, reputations, accuracy_samples, chain_entries,
 node_identities, iq_commitments, anomaly_log.
 """
@@ -57,12 +57,24 @@ def save_snapshot() -> None:
     tmp = _SNAPSHOT_PATH + ".tmp"
     payload = json.dumps(snapshot)
     checksum = hashlib.sha256(payload.encode()).hexdigest()
+    # The checksum travels INSIDE the file so payload and checksum change in
+    # one atomic os.replace.  The old two-file scheme wrote the new checksum
+    # before replacing the payload, so a crash in the gap made a *valid* old
+    # snapshot fail its integrity check on boot — the server started empty,
+    # losing trust scores, reputations, chain entries and node identities.
+    # (Reordering the two writes only moves the window to the other side:
+    # new payload + old checksum is rejected just the same.)
+    envelope = json.dumps({"schema": 2, "sha256": checksum, "payload": payload})
     with open(tmp, "w") as f:
-        f.write(payload)
-    # Write checksum file atomically alongside
-    with open(_SNAPSHOT_PATH + ".sha256", "w") as f:
-        f.write(checksum)
+        f.write(envelope)
     os.replace(tmp, _SNAPSHOT_PATH)
+    # Keep the side file current for anything that still looks at it, written
+    # after the payload it describes; with the embedded checksum it is
+    # informational only and restore no longer trusts it.
+    sha_tmp = _SNAPSHOT_PATH + ".sha256.tmp"
+    with open(sha_tmp, "w") as f:
+        f.write(checksum)
+    os.replace(sha_tmp, _SNAPSHOT_PATH + ".sha256")
     size = os.path.getsize(_SNAPSHOT_PATH)
     logging.info("State snapshot saved (%d bytes, sha256=%s)", size, checksum[:12])
 
@@ -94,21 +106,38 @@ def restore_snapshot() -> bool:
         try:
             with open(_SNAPSHOT_PATH) as f:
                 raw = f.read()
-            # Verify integrity if checksum file exists
-            sha_path = _SNAPSHOT_PATH + ".sha256"
-            if os.path.exists(sha_path):
-                with open(sha_path) as _sha_f:
-                    expected = _sha_f.read().strip()
-                actual = hashlib.sha256(raw.encode()).hexdigest()
-                if actual != expected:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict) and "payload" in parsed and "sha256" in parsed:
+                # Schema 2: self-verifying envelope — checksum and payload are
+                # atomic by construction.
+                actual = hashlib.sha256(parsed["payload"].encode()).hexdigest()
+                if actual != parsed["sha256"]:
                     logging.error(
                         "State snapshot checksum mismatch (expected=%s, got=%s) — skipping corrupt file",
-                        expected[:12], actual[:12],
+                        str(parsed["sha256"])[:12], actual[:12],
                     )
                     send_alert("snapshot_corrupt", "State snapshot checksum mismatch — starting with empty state")
-                    raw = None
-            if raw is not None:
-                snap = json.loads(raw)
+                else:
+                    snap = json.loads(parsed["payload"])
+            else:
+                # Legacy schema 1: bare payload with a .sha256 side file that
+                # was written non-atomically — verify when present, but a
+                # mismatch here may be the old crash window rather than
+                # corruption, so log loudly and still refuse (the R2 fallback
+                # below gets a chance).
+                sha_path = _SNAPSHOT_PATH + ".sha256"
+                if os.path.exists(sha_path):
+                    with open(sha_path) as _sha_f:
+                        expected = _sha_f.read().strip()
+                    actual = hashlib.sha256(raw.encode()).hexdigest()
+                    if actual != expected:
+                        logging.error(
+                            "State snapshot checksum mismatch (expected=%s, got=%s) — skipping corrupt file",
+                            expected[:12], actual[:12],
+                        )
+                        send_alert("snapshot_corrupt", "State snapshot checksum mismatch — starting with empty state")
+                        parsed = None
+                snap = parsed
         except Exception:
             logging.exception("Failed to read local state snapshot")
 
@@ -122,9 +151,19 @@ def restore_snapshot() -> bool:
             if data:
                 try:
                     snap = json.loads(data)
-                    logging.info("State snapshot loaded from R2")
+                    # Schema-2 envelope replicated to R2: verify and unwrap.
+                    if isinstance(snap, dict) and "payload" in snap and "sha256" in snap:
+                        actual = hashlib.sha256(snap["payload"].encode()).hexdigest()
+                        if actual != snap["sha256"]:
+                            logging.error("R2 state snapshot checksum mismatch — ignoring")
+                            snap = None
+                        else:
+                            snap = json.loads(snap["payload"])
+                    if snap is not None:
+                        logging.info("State snapshot loaded from R2")
                 except Exception:
                     logging.exception("Failed to parse R2 state snapshot")
+                    snap = None
 
     if snap is None:
         logging.info("No state snapshot found (checked local + R2)")

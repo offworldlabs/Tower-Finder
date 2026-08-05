@@ -80,7 +80,7 @@ def _scan_archive_dir(archive_dir: Path) -> tuple[int, int, dict]:
             if r.returncode == 0 and r.stdout:
                 total_bytes = int(r.stdout.split()[0])
         except Exception:
-            pass
+            logging.debug("storage refresh step failed", exc_info=True)
 
     if total_bytes == 0:
         total_bytes = sum(e["bytes"] for e in per_node.values())
@@ -112,7 +112,7 @@ def _scan_archive_dir(archive_dir: Path) -> tuple[int, int, dict]:
                     node_id = parts[3]
                     per_node.setdefault(node_id, {"files": 0, "bytes": 0})["files"] += cnt
     except Exception:
-        pass
+        logging.debug("storage refresh failed", exc_info=True)
 
     return total_files, total_bytes, per_node
 

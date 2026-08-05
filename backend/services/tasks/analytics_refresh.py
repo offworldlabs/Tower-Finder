@@ -10,14 +10,18 @@ import time
 import numpy as np
 import orjson
 
-from config.constants import YAGI_BEAM_WIDTH_DEG, YAGI_MAX_RANGE_KM
-from core import state
-from services.id_utils import multinode_hex_from_key
-from services.tasks._helpers import (
-    _DELAY_MATCH_THRESHOLD_US,
-    bistatic_delay_us,
-    haversine_km,
+from config.constants import (
+    ANALYTICS_REFRESH_INTERVAL_S,
+    YAGI_BEAM_WIDTH_DEG,
+    YAGI_MAX_RANGE_KM,
 )
+from config.constants import (
+    DELAY_MATCH_THRESHOLD_US as _DELAY_MATCH_THRESHOLD_US,
+)
+from core import state
+from services.geo import bearing_deg, bistatic_delay_us, haversine_km, point_in_beam
+from services.geo import valid_latlon as _valid_latlon
+from services.id_utils import multinode_hex_from_key
 
 _analytics_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=1,
@@ -32,6 +36,41 @@ def _percentile(vals: list, pct: float) -> float:
     if not vals:
         return 0.0
     return float(np.percentile(vals, pct))
+
+
+# Coverage digest each node's overlap grids were last built under.  A polygon
+# that tightens after registration does not retroactively tighten the grids, so
+# without this the constraint would only ever take effect on a restart.
+_COVERAGE_DIGESTS: dict[str, tuple] = {}
+
+
+def _reset_for_tests() -> None:
+    """Restore this module's private state to boot values.  Tests only."""
+    _COVERAGE_DIGESTS.clear()
+
+
+def _refresh_coverage_constraints() -> int:
+    """Rebuild overlap grids for nodes whose observed coverage has changed.
+
+    Runs on the analytics cadence, not the frame path: each rebuild costs one
+    grid computation per neighbour.  Only acts when a node's constraint digest
+    actually moves, so a settled fleet pays nothing.
+    """
+    rebuilt = 0
+    for node_id in list(state.node_associator.node_geometries):
+        digest = state.node_analytics.coverage_digest(node_id)
+        if digest is None:
+            continue
+        if _COVERAGE_DIGESTS.get(node_id) == digest:
+            continue
+        # Record before rebuilding: a failure mid-rebuild should not spin.
+        _COVERAGE_DIGESTS[node_id] = digest
+        pairs = state.node_associator.rebuild_zones_for(node_id)
+        if pairs:
+            rebuilt += 1
+            state.coverage_rebuild_nodes += 1
+            state.coverage_rebuilds += pairs
+    return rebuilt
 
 
 def _refresh_analytics_and_nodes():
@@ -118,6 +157,12 @@ def _refresh_analytics_and_nodes():
     except Exception:
         logging.exception("_refresh_mlat_verification failed")
 
+    # Overlap grids follow a coverage polygon that has tightened
+    try:
+        _refresh_coverage_constraints()
+    except Exception:
+        logging.exception("_refresh_coverage_constraints failed")
+
     # Synthetic chain-of-custody entries for connected nodes that lack them
     _ensure_custody_data()
     # Evict PassiveRadarPipeline instances for long-disconnected nodes to free RAM
@@ -147,14 +192,10 @@ def _bistatic_angle_deg(
     return math.degrees(math.acos(cos_beta))
 
 
-def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Bearing from (lat1, lon1) to (lat2, lon2) in degrees [0, 360)."""
-    lat1r = math.radians(lat1)
-    lat2r = math.radians(lat2)
-    dlonr = math.radians(lon2 - lon1)
-    y = math.sin(dlonr) * math.cos(lat2r)
-    x = math.cos(lat1r) * math.sin(lat2r) - math.sin(lat1r) * math.cos(lat2r) * math.cos(dlonr)
-    return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+# Was a byte-for-byte duplicate of frame_processor's, which was itself a copy
+# of the library's.  Aliased rather than renamed at the ~12 call sites below
+# because tests import it from this module by name.
+_bearing_deg = bearing_deg
 
 
 def _aircraft_in_beam(
@@ -165,15 +206,28 @@ def _aircraft_in_beam(
     beam_azimuth_deg: float,
     beam_width_deg: float,
     max_range_km: float,
+    tx_lat: float | None = None,
+    tx_lon: float | None = None,
+    max_bistatic_range_km: float | None = None,
 ) -> bool:
-    """Return True if an aircraft at (ac_lat, ac_lon) is inside the node beam."""
-    dist_km = haversine_km(rx_lat, rx_lon, ac_lat, ac_lon)
-    if dist_km > max_range_km:
-        return False
-    bearing = _bearing_deg(rx_lat, rx_lon, ac_lat, ac_lon)
-    # Angular difference, wrapped to [-180, 180]
-    diff = (bearing - beam_azimuth_deg + 180) % 360 - 180
-    return abs(diff) <= beam_width_deg / 2.0
+    """Return True if an aircraft at (ac_lat, ac_lon) is inside the node beam.
+
+    Delegates to the shared gate.  The range rule must match the one the node
+    actually detects under, or the missed-detection statistic measures the
+    mismatch instead of the node: a node limited on bistatic range but scored
+    against a monostatic circle counts every aircraft near the RX but far from
+    the TX as "missed", which pushed the fleet-wide miss rate past the 70 %
+    health threshold.  One implementation is how that stays matched.
+    """
+    return point_in_beam(
+        ac_lat, ac_lon,
+        rx_lat=rx_lat, rx_lon=rx_lon,
+        tx_lat=tx_lat, tx_lon=tx_lon,
+        beam_azimuth_deg=beam_azimuth_deg,
+        beam_width_deg=beam_width_deg,
+        max_range_km=max_range_km,
+        max_bistatic_range_km=max_bistatic_range_km,
+    )
 
 
 def _refresh_missed_detections(nodes_snapshot: list):
@@ -232,10 +286,18 @@ def _refresh_missed_detections(nodes_snapshot: list):
             # explicitly in their config to avoid incorrect missed-detection counts.
             beam_azimuth = (_bearing_deg(rx_lat, rx_lon, tx_lat, tx_lon) + 90.0) % 360.0
 
+        # Score against the same range rule the node detects under; see
+        # _aircraft_in_beam. Absent key → monostatic, unchanged for hardware.
+        max_bistatic = cfg.get("max_bistatic_range_km")
+        max_bistatic = float(max_bistatic) if max_bistatic is not None else None
+
         # Aircraft within this node's beam
         in_range: list[str] = []
         for hex_code, ac_lat, ac_lon in adsb_snapshot:
-            if _aircraft_in_beam(ac_lat, ac_lon, rx_lat, rx_lon, beam_azimuth, beam_width, max_range):
+            if _aircraft_in_beam(
+                ac_lat, ac_lon, rx_lat, rx_lon, beam_azimuth, beam_width, max_range,
+                tx_lat=tx_lat, tx_lon=tx_lon, max_bistatic_range_km=max_bistatic,
+            ):
                 in_range.append(hex_code)
 
         if not in_range:
@@ -328,8 +390,80 @@ def _refresh_accuracy_stats():
         "p95_km": round(_percentile(errors, 95), 4),
         "max_km": round(errors[-1], 4),
         "by_source": source_stats,
+        "velocity": _velocity_accuracy(),
     }
     state.latest_accuracy_bytes = orjson.dumps(result)
+
+
+# Matching radius for pairing a solve to a ground-truth aircraft when comparing
+# speed.  Deliberately tighter than resolve_ground_truth_hex's 8 km display
+# radius: a loose match here would blame one aircraft's speed on another's
+# solve and make the statistic meaningless.
+_VELOCITY_MATCH_KM = 3.0
+
+
+def _velocity_accuracy() -> dict:
+    """Compare solved ground speed against simulated truth.
+
+    Position accuracy has been measured for a long time; velocity has not, and
+    velocity is where the errors are.  Staging showed 11 of 42 tracks reporting
+    above the simulator's fastest aircraft (522 kt), peaking at 824 kt, while
+    the *median* was accurate — a heavy tail rather than a bias, which is
+    exactly the shape a spot-check hides and a percentile makes obvious.
+
+    Returns {} when no ground truth exists (real deployments), so this costs
+    nothing outside simulation.
+    """
+    truth = []
+    for gt_hex, trail in list(state.ground_truth_trails.items()):
+        if not trail:
+            continue
+        meta = state.ground_truth_meta.get(gt_hex) or {}
+        speed = meta.get("speed_ms")
+        if not speed:
+            continue
+        last = trail[-1]
+        truth.append((last[0], last[1], float(speed)))
+    if not truth:
+        return {}
+
+    truth_max = max(t[2] for t in truth)
+    ratios: list[float] = []
+    over = 0
+    for r in list(state.multinode_tracks.values()):
+        lat, lon = r.get("lat"), r.get("lon")
+        if lat is None or lon is None:
+            continue
+        solved = math.hypot(r.get("vel_east", 0.0), r.get("vel_north", 0.0))
+        best, best_d = None, _VELOCITY_MATCH_KM
+        for t_lat, t_lon, t_speed in truth:
+            d = haversine_km(lat, lon, t_lat, t_lon)
+            if d < best_d:
+                best, best_d = t_speed, d
+        if not best:
+            continue
+        ratios.append(solved / best)
+        if solved > truth_max:
+            over += 1
+
+    out = {
+        "n_matched": len(ratios),
+        "truth_max_ms": round(truth_max, 1),
+        # Counters are cumulative since boot; they flag rate, not instant state.
+    }
+    if ratios:
+        ratios.sort()
+        out.update({
+            # Solved speed / truth speed. 1.0 is perfect; p95 is the number
+            # that moves when velocity observability degrades.
+            "ratio_median": round(_percentile(ratios, 50), 3),
+            "ratio_p95": round(_percentile(ratios, 95), 3),
+            "ratio_max": round(ratios[-1], 3),
+            # Solves faster than any aircraft the simulator actually flies.
+            # Should be 0; currently is not.
+            "n_faster_than_any_truth": over,
+        })
+    return out
 
 
 def _refresh_radar3_verification():
@@ -362,7 +496,7 @@ def _refresh_radar3_verification():
     seen_adsb_hexes: set[str] = set()
 
     for adsb_hex, entry in list(state.adsb_aircraft.items()):
-        if not entry.get("lat") or not entry.get("lon"):
+        if not _valid_latlon(entry.get("lat"), entry.get("lon")):
             continue
         age_s = now - entry.get("last_seen_ms", 0) / 1000
         if age_s > 60:
@@ -371,7 +505,7 @@ def _refresh_radar3_verification():
         seen_adsb_hexes.add(adsb_hex)
 
     for adsb_hex, entry in list(state.external_adsb_cache.items()):
-        if not entry.get("lat") or not entry.get("lon"):
+        if not _valid_latlon(entry.get("lat"), entry.get("lon")):
             continue
         if adsb_hex not in seen_adsb_hexes:
             adsb_candidates.append((adsb_hex, entry))
@@ -384,17 +518,20 @@ def _refresh_radar3_verification():
             last = trail[-1]
             if len(last) < 4 or (now - last[3]) > 60:
                 continue
-            adsb_candidates.append(
-                (
-                    gt_hex,
-                    {
-                        "lat": last[0],
-                        "lon": last[1],
-                        "alt_baro": last[2],
-                        "gs": 0,
-                    },
-                )
-            )
+            # Trail index 2 is METRES (routes/test.py packs alt_m) — keep it
+            # under the metric key so the consumer below doesn't re-convert it
+            # as feet.  Speed comes from the push metadata when present; when
+            # it is absent there is no speed truth, and the match is excluded
+            # from velocity-error stats rather than compared against 0.
+            candidate = {
+                "lat": last[0],
+                "lon": last[1],
+                "alt_m": last[2],
+            }
+            meta = state.ground_truth_meta.get(gt_hex) or {}
+            if meta.get("speed_ms") is not None:
+                candidate["velocity"] = float(meta["speed_ms"])
+            adsb_candidates.append((gt_hex, candidate))
             seen_adsb_hexes.add(gt_hex)
         except Exception:
             continue
@@ -452,25 +589,36 @@ def _refresh_radar3_verification():
         matched_adsb_hexes.add(best_adsb_hex)
         truth_lat = best_adsb["lat"]
         truth_lon = best_adsb["lon"]
+        # Dual schema, keyed on which fields exist (not on truthiness — 0 ft
+        # and 0 kt are legitimate values): live ADS-B entries carry
+        # alt_baro (ft) / gs (kt); external-cache and ground-truth candidates
+        # carry alt_m / velocity (m/s).  A candidate with neither speed field
+        # has no speed truth and is excluded from velocity stats.
+        _alt_ft = best_adsb.get("alt_baro")
+        _alt_m = best_adsb.get("alt_m")
+        _gs_kt = best_adsb.get("gs")
+        _vel_ms = best_adsb.get("velocity")
         truth_alt_m = (
-            (best_adsb.get("alt_baro", 0) or 0) * 0.3048
-            if best_adsb.get("alt_baro")
-            else (best_adsb.get("alt_m", 0) or 0)
+            float(_alt_ft) * 0.3048
+            if _alt_ft is not None
+            else float(_alt_m) if _alt_m is not None else None
         )
         truth_gs_ms = (
-            (best_adsb.get("gs", 0) or 0) * 0.514444 if best_adsb.get("gs") else (best_adsb.get("velocity") or 0)
+            float(_gs_kt) * 0.514444
+            if _gs_kt is not None
+            else float(_vel_ms) if _vel_ms is not None else None
         )
 
-        dlat = (solver_lat - truth_lat) * 111.0
-        dlon = (solver_lon - truth_lon) * 111.0 * math.cos(math.radians((solver_lat + truth_lat) / 2.0 or 1.0))
-        err_km = math.sqrt(dlat**2 + dlon**2)
+        err_km = haversine_km(solver_lat, solver_lon, truth_lat, truth_lon)
 
-        vel_err = abs(solver_speed - truth_gs_ms)
-        alt_err = abs(solver_alt_m - truth_alt_m)
+        vel_err = abs(solver_speed - truth_gs_ms) if truth_gs_ms is not None else None
+        alt_err = abs(solver_alt_m - truth_alt_m) if truth_alt_m is not None else None
 
         pos_errors.append(err_km)
-        vel_errors.append(vel_err)
-        alt_errors.append(alt_err)
+        if vel_err is not None:
+            vel_errors.append(vel_err)
+        if alt_err is not None:
+            alt_errors.append(alt_err)
 
         matches.append(
             {
@@ -484,11 +632,11 @@ def _refresh_radar3_verification():
                 "truth_lon": round(truth_lon, 6),
                 "position_error_km": round(err_km, 3),
                 "solver_speed_ms": round(solver_speed, 1),
-                "truth_speed_ms": round(truth_gs_ms, 1),
-                "velocity_error_ms": round(vel_err, 1),
+                "truth_speed_ms": round(truth_gs_ms, 1) if truth_gs_ms is not None else None,
+                "velocity_error_ms": round(vel_err, 1) if vel_err is not None else None,
                 "solver_alt_m": round(solver_alt_m, 0),
-                "truth_alt_m": round(truth_alt_m, 0),
-                "altitude_error_m": round(alt_err, 0),
+                "truth_alt_m": round(truth_alt_m, 0) if truth_alt_m is not None else None,
+                "altitude_error_m": round(alt_err, 0) if alt_err is not None else None,
             }
         )
         matched_detections.append((truth_lat, truth_lon, best_adsb_hex))
@@ -514,12 +662,15 @@ def _refresh_radar3_verification():
             "max_km": round(pos_errors[-1], 3) if pos_errors else 0,
         },
         "velocity": {
-            "mean_ms": round(sum(vel_errors) / n, 1) if n else 0,
+            # Denominator is the matches that HAD speed truth, not all matches.
+            "n": len(vel_errors),
+            "mean_ms": round(sum(vel_errors) / len(vel_errors), 1) if vel_errors else 0,
             "median_ms": round(_percentile(vel_errors, 50), 1),
             "p95_ms": round(_percentile(vel_errors, 95), 1),
         },
         "altitude": {
-            "mean_m": round(sum(alt_errors) / n, 0) if n else 0,
+            "n": len(alt_errors),
+            "mean_m": round(sum(alt_errors) / len(alt_errors), 0) if alt_errors else 0,
             "median_m": round(_percentile(alt_errors, 50), 0),
             "p95_m": round(_percentile(alt_errors, 95), 0),
         },
@@ -605,7 +756,9 @@ def _refresh_mlat_accuracy_stats() -> None:
     """
     samples = list(state.mlat_samples)
     if not samples:
-        state.latest_mlat_accuracy_bytes = orjson.dumps({"n_samples": 0})
+        state.latest_mlat_accuracy_bytes = orjson.dumps(
+            {"n_samples": 0, "computed_at": round(time.time(), 1)}
+        )
         return
 
     errors = [s["error_km"] for s in samples]
@@ -704,6 +857,12 @@ def _refresh_mlat_accuracy_stats() -> None:
     state.latest_mlat_accuracy_bytes = orjson.dumps(
         {
             "n_samples": n,
+            # Staleness markers: computed_at says when this payload was built;
+            # newest_sample_ts_ms says how old the underlying evidence is.  A
+            # fresh computed_at with an old newest_sample_ts_ms means the
+            # pipeline is alive but no new solves are being verified.
+            "computed_at": round(time.time(), 1),
+            "newest_sample_ts_ms": max((s.get("ts") or 0) for s in samples),
             "mean_km": round(sum(errors) / n, 4),
             "median_km": round(_percentile(errors, 50), 4),
             "p95_km": round(_percentile(errors, 95), 4),
@@ -791,11 +950,22 @@ def _refresh_mlat_verification():
     # _refresh_radar3_verification().  Useful when the live ADS-B injector
     # is in its rate-limit backoff window (up to 300 s).
     for adsb_hex, entry in list(state.external_adsb_cache.items()):
-        if not entry.get("lat") or not entry.get("lon"):
+        if not _valid_latlon(entry.get("lat"), entry.get("lon")):
             continue
         if adsb_hex not in seen_truth_hexes:
-            gs_ms = (entry.get("gs", 0) or 0) * 0.514444
-            alt_m = (entry.get("alt_baro", 0) or 0) * 0.3048
+            # external_adsb_cache schema is {lat, lon, alt_m, velocity,
+            # heading} (periodic.py) — NOT the tar1090 gs/alt_baro schema.
+            # Reading gs/alt_baro here zeroed every external truth entry.
+            gs_ms = float(
+                entry["velocity"]
+                if entry.get("velocity") is not None
+                else (entry.get("gs") or 0) * 0.514444
+            )
+            alt_m = float(
+                entry["alt_m"]
+                if entry.get("alt_m") is not None
+                else (entry.get("alt_baro") or 0) * 0.3048
+            )
             adsb_truth_pool.append(
                 (
                     adsb_hex,
@@ -816,9 +986,11 @@ def _refresh_mlat_verification():
     # Snapshot node configs (tx_lat/tx_lon/rx_lat/rx_lon) keyed by node_id so
     # we can compute the bistatic angle at each solver position without touching
     # state.connected_nodes inside the per-solve loop.
+    with state.connected_nodes_lock:
+        _cfg_items = list(state.connected_nodes.items())
     node_cfg_snap: dict[str, dict] = {
         nid: info.get("config", {})
-        for nid, info in list(state.connected_nodes.items())
+        for nid, info in _cfg_items
         if isinstance(info, dict)
     }
 
@@ -829,15 +1001,21 @@ def _refresh_mlat_verification():
         age_s = now - ts_ms / 1000.0
         if age_s > _MLAT_SOLVE_MAX_AGE_S or age_s < 0:
             continue
-        if not r.get("lat") or not r.get("lon"):
+        if not _valid_latlon(r.get("lat"), r.get("lon")):
             continue
         fresh_solves.append((key, r))
 
     n_solver_cycles = len(fresh_solves)
 
     if not gt_trails_snapshot and not adsb_truth_pool:
+        # Still refresh the rolling accuracy payload — otherwise
+        # /api/test/mlat-accuracy silently serves numbers frozen at the moment
+        # the truth feed stopped, with nothing marking them stale.
+        _refresh_mlat_accuracy_stats()
         state.latest_mlat_verification_bytes = orjson.dumps(
             {
+                "computed_at": round(now, 1),
+                "skip_reason": "no_truth_candidates",
                 "n_solves": n_solver_cycles,
                 "n_solver_cycles": n_solver_cycles,
                 "n_unique_aircraft": n_solver_cycles,
@@ -911,7 +1089,7 @@ def _refresh_mlat_verification():
         #     When the solver carries an adsb_hex, prefer binding to that
         #     aircraft's trail over a proximity guess (disambiguates between
         #     two aircraft that are close together). The threshold check is
-        #     intentional: a solve claiming hex H but landing >8 km from H's
+        #     intentional: a solve claiming hex H but landing beyond _MLAT_MATCH_THRESHOLD_KM (12 km) from H's
         #     trail is more plausibly a misclaim (wrong-frame association,
         #     spoofed-init convergence) than a real measurement of H. Letting
         #     unbounded errors through made post-PR-71 normal_only stats
@@ -1134,6 +1312,7 @@ def _refresh_mlat_verification():
     }
 
     result = {
+        "computed_at": round(now, 1),
         "n_solves": n_solves,
         "n_solver_cycles": n_solver_cycles,
         "n_unique_aircraft": n_unique_aircraft,
@@ -1262,7 +1441,7 @@ def _evict_stale_pipelines(nodes_snapshot: list):
             if (now - hb_time).total_seconds() > 7200:
                 stale.append(nid)
         except Exception:
-            pass
+            logging.debug("unparseable heartbeat timestamp for %s: %r", nid, hb)
     for nid in stale:
         state.node_pipelines.pop(nid, None)
     if stale:
@@ -1285,4 +1464,4 @@ async def analytics_refresh_task():
         except Exception:
             state.task_error_counts["analytics_refresh"] += 1
             logging.exception("Analytics refresh failed")
-        await asyncio.sleep(30)
+        await asyncio.sleep(ANALYTICS_REFRESH_INTERVAL_S)

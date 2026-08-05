@@ -80,6 +80,27 @@ jobs:
         run: git clone --depth 1 https://github.com/wiedehopf/tar1090.git tar1090
       - run: docker build -t tower-finder:ci .
 
+  env-parity:
+    name: Staging/production parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Both services declare `env_file: backend/.env`, which holds per-host
+      # secrets and so is never committed. `docker compose config` refuses to
+      # resolve without it, so stand in an empty one — the check compares the
+      # two overlays against each other and reads nothing out of it.
+      - name: Stub backend/.env for compose resolution
+        run: touch backend/.env
+      # Staging only protects production while the two stay the same everywhere
+      # that isn't hostnames or fleet size. This fails the build on any other
+      # difference — in the compose merge or in the rendered nginx config —
+      # naming the exact key so it can't be added by accident.
+      - name: Check compose + nginx parity
+        run: python3 deploy/check-env-parity.py
+
   e2e-staging:
     name: Playwright E2E (staging)
     runs-on: ubuntu-latest
@@ -141,7 +162,7 @@ jobs:
   deploy-staging:
     name: Deploy to staging
     runs-on: ubuntu-latest
-    needs: [backend-tests, frontend-build, dashboard-build, docker-build]
+    needs: [backend-tests, frontend-build, dashboard-build, docker-build, env-parity]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     concurrency:
       group: staging-deploy
@@ -183,7 +204,15 @@ jobs:
             git submodule update --init --recursive
             # Ensure tar1090 static assets are present
             [ -d tar1090/html ] || git clone --depth 1 https://github.com/wiedehopf/tar1090.git tar1090
-            docker compose -f docker-compose.staging.yml down --timeout 30
+            # The host's ./.env sets COMPOSE_FILE (base + staging overlay), so
+            # every command below is character-identical to the production
+            # deploy block. Fail loudly rather than silently deploying the
+            # base-only stack if the host was never set up with one.
+            grep -q '^COMPOSE_FILE=' .env 2>/dev/null || {
+              echo "::error::No COMPOSE_FILE in /opt/tower-finder/.env — run: cp deploy/env.staging.example .env"
+              exit 1
+            }
+            docker compose down --timeout 30
             # Cap build cache at ~10GB (LRU eviction) rather than wiping it all:
             # keeps recent layers so incremental builds stay fast, and bounds
             # total size so cache growth can't trip the disk pre-flight above.
@@ -195,10 +224,10 @@ jobs:
             # Deploy the app FIRST, on its own — building only `tower-finder`
             # means a broken Dockerfile.fleet can't abort the staging app deploy
             # (which would block the whole pipeline). Fleet is a separate step below.
-            docker compose -f docker-compose.staging.yml up -d --build tower-finder
+            docker compose up -d --build tower-finder
             # Wait for server to become healthy (up to 90s)
             for i in $(seq 1 18); do
-              if docker compose -f docker-compose.staging.yml exec -T tower-finder \
+              if docker compose exec -T tower-finder \
                 python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
                 echo "Staging server healthy after ~$((i*5))s"
                 break
@@ -207,13 +236,13 @@ jobs:
               sleep 5
               if [ "$i" = "18" ]; then
                 echo "Staging health check failed after 90s"
-                docker compose -f docker-compose.staging.yml logs --tail=50
+                docker compose logs --tail=50
                 exit 1
               fi
             done
             # Now the fleet, separately — a fleet build/start failure surfaces
             # loudly here without taking the already-healthy app down with it.
-            docker compose -f docker-compose.staging.yml up -d --build --no-deps fleet
+            docker compose up -d --build --no-deps fleet
 
   staging-smoke-tests:
     name: Staging smoke tests

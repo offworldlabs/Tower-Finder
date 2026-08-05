@@ -766,7 +766,9 @@ class TestMlatAccuracyStats:
     def test_empty_samples_returns_zero_count(self):
         _refresh_mlat_accuracy_stats()
         data = orjson.loads(state.latest_mlat_accuracy_bytes)
-        assert data == {"n_samples": 0}
+        assert data["n_samples"] == 0
+        # Staleness marker: even the empty payload says when it was built.
+        assert data["computed_at"] == pytest.approx(time.time(), abs=5)
 
     def test_stats_are_grouped_by_node_count(self):
         state.mlat_samples.extend(
@@ -1061,9 +1063,10 @@ class TestSolveResultFiltering:
         data = orjson.loads(state.latest_mlat_verification_bytes)
         assert data["n_solves"] == 0  # future result filtered out
 
-    def test_solve_with_lat_zero_skipped(self):
-        # lat=0.0 is falsy — the code uses `not r.get("lat")` which skips equatorial
-        # coordinates. This test documents the current behaviour.
+    def test_solve_on_the_equator_is_kept(self):
+        # lat=0.0 with a real lon is a legitimate coordinate.  The old
+        # `not r.get("lat")` falsy check silently dropped it; only the
+        # (0, 0) broken-config sentinel is filtered now.
         state.ground_truth_trails["abc123"] = deque([_trail_point(0.0001, -84.6)])
         state.ground_truth_meta["abc123"] = {
             "object_type": "aircraft", "is_anomalous": False, "speed_ms": 0.0,
@@ -1073,4 +1076,46 @@ class TestSolveResultFiltering:
 
         _refresh_mlat_verification()
         data = orjson.loads(state.latest_mlat_verification_bytes)
-        assert data["n_solves"] == 0  # lat=0 filtered by falsy check
+        assert data["n_solves"] == 1
+
+    def test_solve_at_the_null_island_sentinel_is_skipped(self):
+        # (0, 0) is the broken-config sentinel, not a position.
+        state.ground_truth_trails["abc123"] = deque([_trail_point(0.0001, -84.6)])
+        state.ground_truth_meta["abc123"] = {
+            "object_type": "aircraft", "is_anomalous": False, "speed_ms": 0.0,
+        }
+        r = _make_solve_result(0.0, 0.0)
+        state.multinode_tracks[_key(r)] = r
+
+        _refresh_mlat_verification()
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+        assert data["n_solves"] == 0
+
+
+class TestExternalAdsbTruthSchema:
+    """Stage-1 fix: the external cache carries {alt_m, velocity} (m / m/s),
+    not the tar1090 {alt_baro, gs} schema — reading the latter zeroed every
+    external truth entry's altitude and speed, and the zero altitude
+    disabled the disambiguation gate."""
+
+    def setup_method(self):
+        _clear()
+
+    def test_external_truth_keeps_metric_altitude_and_speed(self):
+        state.external_adsb_cache["ext123"] = {
+            "lat": 33.9, "lon": -84.6,
+            "alt_m": 10000.0, "velocity": 210.0, "heading": 90.0,
+        }
+        r = _make_solve_result(33.9001, -84.6001, alt_m=10050.0,
+                               vel_east=200.0, vel_north=50.0)
+        state.multinode_tracks[_key(r)] = r
+
+        _refresh_mlat_verification()
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+        assert data["n_matched"] == 1
+        (m,) = data["tracks"]
+        assert m["truth_alt_m"] == 10000.0
+        assert m["truth_speed_ms"] == 210.0
+        # The old code produced truth 0.0 for both, so vel error equalled the
+        # full solver speed (~206 m/s here).
+        assert m["velocity_error_ms"] < 10.0

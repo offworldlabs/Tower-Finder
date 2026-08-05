@@ -37,24 +37,29 @@ def _clean_db():
 
 
 @pytest.fixture(autouse=True)
-def _isolate_task_timestamps():
-    """Clear shared state before/after every test.
+def _reset_module_state():
+    """Reset every module-level mutable store before each test.
 
-    Several state fields accumulate across tests and can corrupt health checks
-    in later tests if not reset:
-    - task_last_success: set by background workers, causes stale_task health issues
-    - accuracy_samples: grows via _record_accuracy_sample during geolocation;
-      >20 samples with mean_km>10 triggers solver_accuracy_degraded in /api/health
-    - latest_accuracy_bytes: cached result from _refresh_accuracy_stats; must be
-      reset alongside the sample buffer so health checks see a clean slate
+    Each module owns a `_reset_for_tests()` beside the stores it declares, so
+    the authoritative list lives with the code, not here.  The predecessor of
+    this fixture reset 3 of ~50 stores; everything else leaked across tests —
+    most dangerously frame_processor's wall-clock feed caches, which handed
+    one test's detection_arcs/ground_truth to the next test verbatim.
     """
     from core import state
+    from services import (
+        aircraft_feed,
+        alerting,
+        feed_helpers,
+        frame_processor,
+        tcp_handler,
+        track_gates,
+    )
+    from services.tasks import analytics_refresh, solver
 
-    state.task_last_success.clear()
-    state.accuracy_samples.clear()
-    state.latest_accuracy_bytes = b"{}"
+    for mod in (state, frame_processor, aircraft_feed, track_gates,
+                feed_helpers, solver, analytics_refresh, alerting,
+                tcp_handler):
+        mod._reset_for_tests()
     yield
-    state.task_last_success.clear()
-    state.accuracy_samples.clear()
-    state.latest_accuracy_bytes = b"{}"
 

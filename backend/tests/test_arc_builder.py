@@ -10,6 +10,7 @@ import math
 import pytest
 
 import services.frame_processor as _fp
+from config.constants import DISPLAY_STALE_TRACK_S, GATE_MAX_HOLD_S
 from core import state
 from services.frame_processor import _bearing_deg, _build_single_node_arc, _enu_to_lla
 
@@ -303,6 +304,7 @@ class TestGatePreservesArc:
     def _clean_state(self):
         state.active_geo_aircraft.clear()
         state.track_last_emit.clear()
+        state.track_gate_hold.clear()
         state.adsb_aircraft.clear()
         state.external_adsb_cache.clear()
         state.multinode_tracks.clear()
@@ -310,6 +312,7 @@ class TestGatePreservesArc:
         yield
         state.active_geo_aircraft.clear()
         state.track_last_emit.clear()
+        state.track_gate_hold.clear()
         state.adsb_aircraft.clear()
         state.external_adsb_cache.clear()
         state.multinode_tracks.clear()
@@ -373,6 +376,157 @@ class TestGatePreservesArc:
         assert ac["position_source"] == "single_node_ellipse_arc"
 
 
+# ─── Regression: gates must not latch ────────────────────────────────────────
+
+class TestGateHoldIsBounded:
+    """A gate may suppress a bad frame; it may not freeze the track forever.
+
+    Both gates revert the emitted position to ``track_last_emit`` — and the
+    emit path then writes that reverted value *back* into ``track_last_emit``
+    with a fresh timestamp.  That made both gates absorbing states: every
+    subsequent frame was compared against a frozen reference, so it kept
+    reverting indefinitely.  Measured on staging before the fix: every
+    single-node arc track pinned in place for up to 141 s while its aircraft
+    flew on (error growing at the target's own ground speed), then a 19.6 km
+    teleport when the gate finally cleared.
+
+    The hold is now bounded by GATE_MAX_HOLD_S, and the held position is
+    dead-reckoned from the track's velocity so it coasts rather than freezes.
+    """
+
+    HEX = "gholdt"
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        state.active_geo_aircraft.clear()
+        state.track_last_emit.clear()
+        state.track_gate_hold.clear()
+        state.adsb_aircraft.clear()
+        state.external_adsb_cache.clear()
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+        yield
+        state.active_geo_aircraft.clear()
+        state.track_last_emit.clear()
+        state.track_gate_hold.clear()
+        state.adsb_aircraft.clear()
+        state.external_adsb_cache.clear()
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+
+    PREV_LAT, PREV_LON = 33.70, -84.85
+    NOW_LAT, NOW_LON = 33.65, -84.95
+
+    def _setup(self, *, rms_delay, hold_age_s=None):
+        """Install a track whose RMS sits above the gate threshold.
+
+        ``hold_age_s`` backdates the gate-hold anchor to simulate a hold that
+        has already been running that long.
+        """
+        import time as _time
+
+        from pipeline.passive_radar import GeolocatedTrack
+
+        track = GeolocatedTrack(
+            track_id=f"track-{self.HEX}",
+            lat=self.NOW_LAT,
+            lon=self.NOW_LON,
+            alt_m=3000,
+            vel_east=100.0,
+            vel_north=50.0,
+            vel_up=0.0,
+            rms_delay=rms_delay,
+            rms_doppler=1.0,
+            n_detections=10,
+            timestamp_ms=int(_time.time() * 1000),
+            adsb_hex=None,
+            latest_delay_us=80.0,
+            target_class="aircraft",
+        )
+        track.wall_clock_ts = _time.time()
+        state.active_geo_aircraft[self.HEX] = (track, dict(_NODE_CFG))
+        # prev_age 120 s keeps the speed gate (0 < dt < 60) out of it, so this
+        # exercises the RMS gate in isolation.
+        state.track_last_emit[self.HEX] = [
+            self.PREV_LAT, self.PREV_LON, _time.time() - 120.0,
+        ]
+        if hold_age_s is not None:
+            state.track_gate_hold[self.HEX] = (
+                _time.time() - hold_age_s, self.PREV_LAT, self.PREV_LON,
+            )
+        return track
+
+    def _build(self):
+        import types
+
+        from services.frame_processor import build_combined_aircraft_json
+
+        pipeline = types.SimpleNamespace(geolocated_tracks={}, config=dict(_NODE_CFG))
+        result = build_combined_aircraft_json(pipeline)
+        return next((a for a in result["aircraft"] if a["hex"] == self.HEX), None)
+
+    def test_hold_engages_and_records_anchor(self):
+        self._setup(rms_delay=12.5)
+        ac = self._build()
+        assert ac is not None
+        # First held frame still reverts, exactly as before.
+        assert (ac["lat"], ac["lon"]) == (self.PREV_LAT, self.PREV_LON)
+        # ...but now records when the hold started, so it can be bounded.
+        assert self.HEX in state.track_gate_hold
+
+    def test_hold_releases_after_max_hold(self):
+        # The bug: this stayed at PREV forever.  Past GATE_MAX_HOLD_S the
+        # measurement is accepted — a noisy position beats a confidently
+        # wrong stationary one.
+        self._setup(rms_delay=12.5, hold_age_s=GATE_MAX_HOLD_S + 5.0)
+        ac = self._build()
+        assert ac is not None
+        assert (ac["lat"], ac["lon"]) != (self.PREV_LAT, self.PREV_LON)
+
+    def test_held_position_coasts_instead_of_freezing(self):
+        # Mid-hold the icon must advance along the track's velocity rather
+        # than sit still while the aircraft flies away.
+        self._setup(rms_delay=12.5, hold_age_s=5.0)
+        ac = self._build()
+        assert ac is not None
+        assert (ac["lat"], ac["lon"]) != (self.PREV_LAT, self.PREV_LON)
+        # vel_north is +50 m/s, so it must have moved north of the anchor.
+        assert ac["lat"] > self.PREV_LAT
+
+    def test_hold_clears_when_gate_stops_firing(self):
+        self._setup(rms_delay=12.5, hold_age_s=3.0)
+        self._build()
+        assert self.HEX in state.track_gate_hold
+        # Same track, now with clean RMS — the hold must not persist.
+        self._setup(rms_delay=1.2, hold_age_s=3.0)
+        ac = self._build()
+        assert ac is not None
+        assert self.HEX not in state.track_gate_hold
+
+    def test_stale_track_is_not_rendered(self):
+        # A track with no fresh detections used to be painted at its last
+        # position for STALE_TRACK_S (120 s).  It must stop rendering once it
+        # passes DISPLAY_STALE_TRACK_S, while the tracker keeps its state for
+        # re-acquisition.
+        import time as _time
+
+        track = self._setup(rms_delay=1.2)
+        track.wall_clock_ts = _time.time() - (DISPLAY_STALE_TRACK_S + 5.0)
+        assert self._build() is None
+        assert self.HEX in state.active_geo_aircraft
+
+    def test_seen_reports_real_age(self):
+        # "seen" was hardcoded to 0, so a frozen track claimed to be fresh and
+        # no downstream staleness check could ever catch it.
+        import time as _time
+
+        track = self._setup(rms_delay=1.2)
+        track.wall_clock_ts = _time.time() - 6.0
+        ac = self._build()
+        assert ac is not None
+        assert 5.0 <= ac["seen"] <= 7.5
+
+
 # ─── Regression: arc-motion gs/heading fallback ──────────────────────────────
 
 class TestArcMotionVelocityFallback:
@@ -388,6 +542,7 @@ class TestArcMotionVelocityFallback:
     def _clean_state(self):
         state.active_geo_aircraft.clear()
         state.track_last_emit.clear()
+        state.track_gate_hold.clear()
         state.track_arc_motion.clear()
         state.adsb_aircraft.clear()
         state.external_adsb_cache.clear()
@@ -396,6 +551,7 @@ class TestArcMotionVelocityFallback:
         yield
         state.active_geo_aircraft.clear()
         state.track_last_emit.clear()
+        state.track_gate_hold.clear()
         state.track_arc_motion.clear()
         state.adsb_aircraft.clear()
         state.external_adsb_cache.clear()
@@ -426,12 +582,19 @@ class TestArcMotionVelocityFallback:
         state.track_arc_motion[self.HEX] = [(33.70, -84.85, now - 5.0)]
         assert _estimate_velocity_from_motion(self.HEX, 33.75, -84.80, now) is None
 
-    def test_estimator_rejects_supersonic_clamp(self):
+    def test_estimator_accepts_supersonic_displacement(self):
+        """Supersonic targets are in scope: the estimator must report a fast
+        displacement as-is rather than reject it as implausible.  (The 340 m/s
+        upper bound this used to assert was removed deliberately.)"""
         from services.frame_processor import _estimate_velocity_from_motion
         now = 1_700_000_000.0
-        # 100 km in 20 s = 5000 m/s = ~9700 kt — way above the 800 kt clamp.
+        # 100 km north in 20 s = 5000 m/s = ~9700 kt.
         state.track_arc_motion[self.HEX] = [(33.70, -84.85, now - 20.0)]
-        assert _estimate_velocity_from_motion(self.HEX, 34.60, -84.85, now) is None
+        est = _estimate_velocity_from_motion(self.HEX, 34.60, -84.85, now)
+        assert est is not None
+        gs, track_deg = est
+        assert gs == pytest.approx(5000 * 1.94384, rel=0.02)
+        assert track_deg == pytest.approx(0.0, abs=2.0)
 
 
 # ─── Regression: position-jump (teleport) anomaly ────────────────────────────
@@ -521,15 +684,20 @@ class _ArcTrack:
 
 
 def _spy_build_count(monkeypatch):
-    """Wrap _build_single_node_arc to count how often it actually rebuilds."""
+    """Wrap _build_single_node_arc to count how often it actually rebuilds.
+
+    Patched on services.track_gates — the module the cache lives in and calls
+    through — not on the frame_processor re-export, which is just a binding.
+    """
+    from services import track_gates as _tg
     calls = {"n": 0}
-    real = _fp._build_single_node_arc
+    real = _tg._build_single_node_arc
 
     def _spy(*args, **kwargs):
         calls["n"] += 1
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(_fp, "_build_single_node_arc", _spy)
+    monkeypatch.setattr(_tg, "_build_single_node_arc", _spy)
     return calls
 
 
@@ -601,6 +769,7 @@ class TestArcCacheIntegration:
         _fp._single_node_arc_cache.clear()
         state.active_geo_aircraft.clear()
         state.track_last_emit.clear()
+        state.track_gate_hold.clear()
         state.track_histories.clear()
         state.adsb_aircraft.clear()
         state.external_adsb_cache.clear()
@@ -609,6 +778,7 @@ class TestArcCacheIntegration:
         _fp._single_node_arc_cache.clear()
         state.active_geo_aircraft.clear()
         state.track_last_emit.clear()
+        state.track_gate_hold.clear()
         state.track_histories.clear()
         state.adsb_aircraft.clear()
         state.external_adsb_cache.clear()

@@ -7,7 +7,6 @@
  * `[lat, lon, ts_sec]` (no altitude). We accept both via `normaliseRow`.
  */
 
-export type TrailRow = [number, number, number, number];
 
 function csvEscape(s: string): string {
   if (s.includes(",") || s.includes("\"") || s.includes("\n")) {

@@ -4,6 +4,7 @@ import { POSITION_SOURCE_ARC_ONLY } from "./constants";
 import { classifyHex, emergencySquawkLabel } from "./hexInfo";
 import { trailToCsv, downloadCsv } from "./trailExport";
 import { copyToClipboard, toast } from "./toast";
+import { M_PER_FT, KNOTS_PER_MS, MS_PER_KNOT } from "./units";
 
 export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError }) {
   if (!ac) return null;
@@ -14,7 +15,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
   const solvedPts = (trails[ac.hex] || []).length;
   const truthPts = gtTrail?.length || 0;
   const gtLast = gtTrail?.length ? gtTrail[gtTrail.length - 1] : null;
-  const altErrFt = gtLast ? Math.abs((ac.alt_baro || 0) - gtLast[2] / 0.3048) : null;
+  const altErrFt = gtLast ? Math.abs((ac.alt_baro || 0) - gtLast[2] / M_PER_FT) : null;
 
   // Enthusiast classification — military/govt/test hex ranges and special
   // squawk codes. Both are "always on": even a truth-only entry gets a
@@ -60,7 +61,10 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
             ? "ADS-B"
             : ac.type || "Unknown";
   const sourceBadge = isMultinode ? "multinode" : isSolverAdsbSeed ? "adsb" : hasAdsb ? "adsb" : "other";
-  const isTruthOnly = !ac.type && !ac.flight;
+  // Authoritative flag set by applyGroundTruthFixes — the old
+  // `!ac.type && !ac.flight` heuristic classified ordinary radar tracks
+  // (which usually have neither) as "Ground truth only".
+  const isTruthOnly = Boolean(ac._isTruth);
 
   return (
     <div className="detail-panel">
@@ -151,7 +155,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
               ac.alt_baro != null
                 ? `${ac.alt_baro.toLocaleString()} ft`
                 : ac.alt_m != null
-                  ? `${Math.round(ac.alt_m / 0.3048).toLocaleString()} ft`
+                  ? `${Math.round(ac.alt_m / M_PER_FT).toLocaleString()} ft`
                   : "\u2014"
             }
           />
@@ -166,7 +170,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
           )}
           {isTruthOnly && (
             <>
-              <Field label="Speed" value={ac.speed_ms != null && ac.speed_ms > 0 ? `${(ac.speed_ms * 1.94384).toFixed(0)} kts (${ac.speed_ms.toFixed(0)} m/s)` : ac.gs != null ? `${ac.gs} kts` : "\u2014"} />
+              <Field label="Speed" value={ac.speed_ms != null && ac.speed_ms > 0 ? `${(ac.speed_ms * KNOTS_PER_MS).toFixed(0)} kts (${ac.speed_ms.toFixed(0)} m/s)` : ac.gs != null ? `${ac.gs} kts` : "\u2014"} />
               <Field label="Heading" value={ac.heading != null && ac.heading > 0 ? `${ac.heading.toFixed(0)}\u00b0` : ac.track != null ? `${ac.track.toFixed(0)}\u00b0` : "\u2014"} />
             </>
           )}
@@ -206,6 +210,9 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
                 <span style={{ color: "#f43f5e", fontWeight: 600 }}>
                   {(ac.anomaly_types || []).map(t => ({
                     supersonic: "Supersonic",
+                    // Not a claim about the aircraft — a claim about our own
+                    // estimate.  Labelled distinctly so a weakly-observable
+                    // Doppler geometry is not read as a Mach-1 target.
                     instant_acceleration: "Instant Acceleration",
                     instant_direction_change: "Instant Direction Change",
                     sustained_orbit: "Sustained Orbit",
@@ -227,7 +234,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
             {ac.gs != null && (
               <Field
                 label="Current speed"
-                value={`${ac.gs} kts (${(ac.gs * 0.514444).toFixed(0)} m/s)`}
+                value={`${ac.gs} kts (${(ac.gs * MS_PER_KNOT).toFixed(0)} m/s)`}
               />
             )}
           </div>

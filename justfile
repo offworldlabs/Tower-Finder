@@ -48,19 +48,24 @@ up profile="local":
     # ── Resolve fleet params by profile ────────────────────────────────────────
     #  local   — dev-only dense stream (~1 ellipse/s); no deployed equivalent.
     #  testmap — sourced from docker-compose.test.yml   (the testmap.retina.fm test stack).
-    #  prod    — sourced from docker-compose.yml's `fleet` service (the Compose
-    #            service that actually serves the live testmap.retina.fm + map.retina.fm).
+    #  prod    — sourced from docker-compose.prod.yml's `fleet` service (the
+    #            Compose service that actually serves the live
+    #            testmap.retina.fm + map.retina.fm). The FLEET_* sizing lives in
+    #            the prod overlay rather than the shared base: fleet scale is the
+    #            one thing staging is meant to differ on.
     case "{{profile}}" in
       local)
         FLEET_NODES=200; FLEET_MODE=detection; FLEET_INTERVAL=0.5
-        FLEET_TIME_SCALE=1.0; FLEET_MIN_AIRCRAFT=40; FLEET_MAX_AIRCRAFT=60 ;;
+        FLEET_TIME_SCALE=1.0; FLEET_MIN_AIRCRAFT=40; FLEET_MAX_AIRCRAFT=60
+        FLEET_METRO=gvl; FLEET_N_CLUSTER=30; FLEET_N_CLUSTERS=1 ;;
       testmap)
         # every FLEET_* value comes straight from the compose file's fleet-simulator block
         eval "$(grep -oE 'FLEET_[A-Z_]+=[^[:space:]]+' "{{root}}/docker-compose.test.yml")" ;;
       prod)
-        # every FLEET_* value comes straight from docker-compose.yml's `fleet`
-        # service block (same extraction the testmap profile uses on test.yml)
-        eval "$(grep -oE 'FLEET_[A-Z_]+=[^[:space:]]+' "{{root}}/docker-compose.yml")" ;;
+        # every FLEET_* value comes straight from docker-compose.prod.yml's
+        # `fleet` block, plus the connection settings it shares with staging in
+        # docker-compose.yml (same extraction the testmap profile uses)
+        eval "$(grep -hoE 'FLEET_[A-Z_]+=[^[:space:]]+' "{{root}}/docker-compose.yml" "{{root}}/docker-compose.prod.yml")" ;;
       *)
         echo "✗ unknown profile '{{profile}}' — use: local | testmap | prod"; exit 1 ;;
     esac
@@ -86,9 +91,18 @@ up profile="local":
         exit 1
     fi
 
-    echo "→ synthetic fleet [{{profile}}]: ${FLEET_NODES} nodes, mode=${FLEET_MODE}, interval=${FLEET_INTERVAL}s, ${FLEET_MIN_AIRCRAFT}-${FLEET_MAX_AIRCRAFT} aircraft"
+    # Metro scoping must be forwarded too, or the testmap/prod profiles would
+    # silently run a nationwide fleet while claiming to mirror the compose files.
+    METRO_ARGS=()
+    if [ -n "${FLEET_METRO:-}" ]; then METRO_ARGS+=(--metro "${FLEET_METRO}"); fi
+    if [ -n "${FLEET_METRO_TRAFFIC_FRAC:-}" ]; then METRO_ARGS+=(--metro-traffic-frac "${FLEET_METRO_TRAFFIC_FRAC}"); fi
+    if [ -n "${FLEET_N_CLUSTER:-}" ]; then METRO_ARGS+=(--n-cluster "${FLEET_N_CLUSTER}"); fi
+    if [ -n "${FLEET_N_CLUSTERS:-}" ]; then METRO_ARGS+=(--n-clusters "${FLEET_N_CLUSTERS}"); fi
+
+    echo "→ synthetic fleet [{{profile}}]: ${FLEET_NODES} nodes, metro=${FLEET_METRO:-nationwide}, mode=${FLEET_MODE}, interval=${FLEET_INTERVAL}s, ${FLEET_MIN_AIRCRAFT}-${FLEET_MAX_AIRCRAFT} aircraft"
     ( cd "{{be}}" && PYTHONPATH=. "{{py}}" -m retina_simulation.orchestrator \
         --nodes "${FLEET_NODES}" --mode "${FLEET_MODE}" \
+        ${METRO_ARGS[@]+"${METRO_ARGS[@]}"} \
         --interval "${FLEET_INTERVAL}" --time-scale "${FLEET_TIME_SCALE:-1.0}" \
         --min-aircraft "${FLEET_MIN_AIRCRAFT}" --max-aircraft "${FLEET_MAX_AIRCRAFT}" \
         --seed "${FLEET_SEED:-42}" ) \

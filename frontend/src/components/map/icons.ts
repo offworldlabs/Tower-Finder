@@ -52,7 +52,8 @@ export function makeAircraftIcon(ac, showLabel, isSelected, colorByAlt = false) 
   const track = ac.track ?? 0;
   const color = getAircraftColor(ac, colorByAlt);
   const label = ac.flight?.trim() || ac.hex?.slice(-6)?.toUpperCase() || "";
-  const alt = ac.alt_baro ? `FL${Math.round(ac.alt_baro / 100)}` : "";
+  // Nullish: FL0 (on the ground) is a value, not an absence.
+  const alt = ac.alt_baro != null ? `FL${Math.round(ac.alt_baro / 100)}` : "";
 
   // Arc-only tracks: lat/lon is the arc-midpoint estimate — the aircraft is
   // actually somewhere along the arc, not exactly at this point.  Render the
@@ -93,6 +94,9 @@ export function makeAircraftIcon(ac, showLabel, isSelected, colorByAlt = false) 
   });
 }
 
+// NOTE: the ac-hex-<hex> class is what the 60 fps DOM-rotation loop queries;
+// drone icons lacked it, so every drone burned a document-wide selector miss
+// per frame and never rotated to its heading.
 export function makeDroneIcon(ac, showLabel, isSelected) {
   const label = ac.flight?.trim() || ac.hex?.slice(-6)?.toUpperCase() || "";
   const glowFilter = isSelected
@@ -106,7 +110,7 @@ export function makeDroneIcon(ac, showLabel, isSelected) {
       : "";
 
   return L.divIcon({
-    className: "aircraft-marker",
+    className: `aircraft-marker ac-hex-${ac.hex}`,
     html: `<div style="display:flex;flex-direction:column;align-items:center;">${droneHtml}${labelHtml}</div>`,
     iconSize: [90, 40],
     iconAnchor: [45, 11],

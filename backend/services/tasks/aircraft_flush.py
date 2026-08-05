@@ -131,8 +131,12 @@ async def aircraft_flush_task(default_pipeline):
                 data = build_combined_aircraft_json(default_pipeline)
                 data_bytes = orjson.dumps(data, option=orjson.OPT_SERIALIZE_NUMPY)
                 aircraft_path = os.path.join(_TAR1090_DATA_DIR, "aircraft.json")
-                with open(aircraft_path, "wb") as f:
+                # tmp + os.replace: an in-place truncating write let any
+                # HTTP/tar1090 reader observe a half-written file.
+                tmp_path = aircraft_path + ".tmp"
+                with open(tmp_path, "wb") as f:
                     f.write(data_bytes)
+                os.replace(tmp_path, aircraft_path)
                 return data, data_bytes
             aircraft_data, aircraft_bytes = await loop.run_in_executor(
                 _aircraft_flush_executor, _build_and_serialize,

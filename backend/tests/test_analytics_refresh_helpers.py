@@ -8,7 +8,8 @@ Tests the pure helper functions:
 
 import pytest
 
-from services.tasks._helpers import haversine_km
+from services.geo import haversine_km
+from services.tasks import analytics_refresh
 from services.tasks.analytics_refresh import _aircraft_in_beam, _bearing_deg, _bistatic_angle_deg
 
 
@@ -308,3 +309,129 @@ class TestBistaticAngleDeg:
         # TX=(0,0), RX=(0,2), aircraft=(0,1): collinear midpoint
         angle = _bistatic_angle_deg(0, 1, 0, 0, 0, 2)
         assert angle > 150
+
+
+# ── Miss-rate scoring must match the node's own range rule ──────────────────
+
+class TestInBeamRespectsBistaticRule:
+    """The missed-detection statistic compares "aircraft the node should have
+    seen" against "aircraft it did see".  If the two use different range rules
+    the number measures the mismatch, not the node.
+
+    Scoring a bistatically-limited node against a monostatic circle counted
+    every aircraft near the RX but far from the TX as missed, which pushed the
+    fleet-wide miss rate past the 70% health threshold and turned /api/health
+    to degraded.
+    """
+
+    # RX at origin, TX 40 km due east.
+    RX_LAT, RX_LON = 34.85, -82.39
+    BASELINE_KM = 40.0
+
+    @property
+    def tx_lon(self):
+        import math
+        return self.RX_LON + self.BASELINE_KM / (111.32 * math.cos(math.radians(self.RX_LAT)))
+
+    def _ac_west_of_rx(self, km):
+        import math
+        return (
+            self.RX_LAT,
+            self.RX_LON - km / (111.32 * math.cos(math.radians(self.RX_LAT))),
+        )
+
+    def test_bistatic_rule_excludes_what_monostatic_includes(self):
+        # 35 km west of the RX: inside a 50 km monostatic circle, but the TX
+        # leg makes the bistatic range 70 km — beyond a 60 km budget.
+        ac_lat, ac_lon = self._ac_west_of_rx(35.0)
+        common = (ac_lat, ac_lon, self.RX_LAT, self.RX_LON, 270.0, 200.0, 50.0)
+        assert _aircraft_in_beam(*common) is True
+        assert _aircraft_in_beam(
+            *common,
+            tx_lat=self.RX_LAT, tx_lon=self.tx_lon,
+            max_bistatic_range_km=60.0,
+        ) is False
+
+    def test_bistatic_rule_includes_targets_inside_the_budget(self):
+        ac_lat, ac_lon = self._ac_west_of_rx(20.0)
+        assert _aircraft_in_beam(
+            ac_lat, ac_lon, self.RX_LAT, self.RX_LON, 270.0, 200.0, 50.0,
+            tx_lat=self.RX_LAT, tx_lon=self.tx_lon,
+            max_bistatic_range_km=60.0,
+        ) is True
+
+    def test_absent_key_keeps_monostatic_scoring(self):
+        """Hardware nodes carry only max_range_km and must score as before."""
+        ac_lat, ac_lon = self._ac_west_of_rx(35.0)
+        assert _aircraft_in_beam(
+            ac_lat, ac_lon, self.RX_LAT, self.RX_LON, 270.0, 200.0, 50.0,
+            tx_lat=self.RX_LAT, tx_lon=self.tx_lon,
+            max_bistatic_range_km=None,
+        ) is True
+
+    def test_beam_still_gates_under_the_bistatic_rule(self):
+        """Range is not the only test — an out-of-beam target stays excluded."""
+        ac_lat, ac_lon = self._ac_west_of_rx(10.0)
+        assert _aircraft_in_beam(
+            ac_lat, ac_lon, self.RX_LAT, self.RX_LON, 90.0, 40.0, 50.0,
+            tx_lat=self.RX_LAT, tx_lon=self.tx_lon,
+            max_bistatic_range_km=60.0,
+        ) is False
+
+
+class TestCoverageConstraintRefresh:
+    """Overlap grids follow a coverage polygon that tightens after registration.
+
+    Grids are built once at registration, so without this the empirical
+    constraint would only ever take effect on a restart.  It runs on the
+    analytics cadence rather than the frame path because each rebuild costs one
+    grid computation per neighbour.
+    """
+
+    def setup_method(self):
+        analytics_refresh._COVERAGE_DIGESTS.clear()
+
+    def _stub(self, monkeypatch, digests, rebuilt_calls):
+        class _Assoc:
+            node_geometries = {"n1": object(), "n2": object()}
+
+            def rebuild_zones_for(self, node_id):
+                rebuilt_calls.append(node_id)
+                return 3
+
+        class _Analytics:
+            def coverage_digest(self, node_id):
+                return digests.get(node_id)
+
+        monkeypatch.setattr(analytics_refresh.state, "node_associator", _Assoc())
+        monkeypatch.setattr(analytics_refresh.state, "node_analytics", _Analytics())
+
+    def test_a_changed_digest_triggers_a_rebuild(self, monkeypatch):
+        calls = []
+        self._stub(monkeypatch, {"n1": (1.0, None), "n2": None}, calls)
+        assert analytics_refresh._refresh_coverage_constraints() == 1
+        assert calls == ["n1"]
+
+    def test_an_unchanged_digest_costs_nothing(self, monkeypatch):
+        calls = []
+        self._stub(monkeypatch, {"n1": (1.0, None), "n2": None}, calls)
+        analytics_refresh._refresh_coverage_constraints()
+        calls.clear()
+        assert analytics_refresh._refresh_coverage_constraints() == 0
+        assert calls == []
+
+    def test_a_node_without_a_polygon_is_skipped(self, monkeypatch):
+        calls = []
+        self._stub(monkeypatch, {"n1": None, "n2": None}, calls)
+        assert analytics_refresh._refresh_coverage_constraints() == 0
+        assert calls == []
+
+    def test_a_later_change_triggers_another_rebuild(self, monkeypatch):
+        calls = []
+        digests = {"n1": (1.0, None), "n2": None}
+        self._stub(monkeypatch, digests, calls)
+        analytics_refresh._refresh_coverage_constraints()
+        digests["n1"] = (0.5, None)          # polygon tightened further
+        calls.clear()
+        assert analytics_refresh._refresh_coverage_constraints() == 1
+        assert calls == ["n1"]

@@ -3,6 +3,7 @@ import { PLANE_PATH, getAircraftColor } from "./icons";
 import { POSITION_SOURCE_ARC_ONLY } from "./constants";
 import { classifyHex } from "./hexInfo";
 import { distanceKm } from "./distance";
+import { M_PER_FT } from "./units";
 
 // Fixed row height must match .al-row CSS (height: 40px, box-sizing: border-box).
 // Changing this constant without updating the CSS will break the virtual list.
@@ -52,7 +53,7 @@ export default function AircraftListPanel({
         ...truthOnly.map((ac) => ({ ...ac, _isSolved: false })),
       ];
       const pinSet = pinned instanceof Set ? pinned : new Set(pinned || []);
-      const altOf = (a) => a.alt_baro ?? (a.alt_m ? a.alt_m / 0.3048 : 0);
+      const altOf = (a) => a.alt_baro ?? (a.alt_m ? a.alt_m / M_PER_FT : 0);
       const distOf = (a) =>
         userLoc && Number.isFinite(a.lat) && Number.isFinite(a.lon)
           ? distanceKm(userLoc.lat, userLoc.lon, a.lat, a.lon)
@@ -190,13 +191,15 @@ export default function AircraftListPanel({
                   const color = !isSolved ? "#2dd4bf" : getAircraftColor(ac);
                   const callsign =
                     ac.flight?.trim() || ac.hex?.slice(-6).toUpperCase() || ac.hex;
-                  const alt = ac.alt_baro
+                  // Nullish checks: 0 ft, 0 kt and 0° (due north) are real
+                  // values, not absences.
+                  const alt = ac.alt_baro != null
                     ? `FL${Math.round(ac.alt_baro / 100)}`
-                    : ac.alt_m
-                      ? `FL${Math.round(ac.alt_m / 0.3048 / 100)}`
+                    : ac.alt_m != null
+                      ? `FL${Math.round(ac.alt_m / M_PER_FT / 100)}`
                       : "—";
-                  const spd = ac.gs ? `${Math.round(ac.gs)}kt` : "—";
-                  const hdg = ac.track ? `${Math.round(ac.track)}°` : "";
+                  const spd = ac.gs != null ? `${Math.round(ac.gs)}kt` : "—";
+                  const hdg = ac.track != null ? `${Math.round(ac.track)}°` : "";
                   const isSelected = ac.hex === selectedHex;
                   const sourceLabel = !isSolved
                     ? "Truth"
@@ -216,7 +219,10 @@ export default function AircraftListPanel({
 
                   return (
                     <div
-                      key={ac.hex}
+                      // Solved and truth-only rows can carry the same hex (a
+                      // simulated radar track reuses the aircraft's ICAO), so
+                      // the store key — namespaced for truth — is the unique one.
+                      key={ac._key ?? ac.hex}
                       className={`al-row${isSelected ? " selected" : ""}${!isSolved ? " truth-only" : ""}`}
                       onClick={() => onSelect(ac.hex)}
                     >

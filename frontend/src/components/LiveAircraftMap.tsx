@@ -17,7 +17,12 @@ import "./LiveAircraftMap.css";
 
 import {
   STALE_AIRCRAFT_MS,
+  GT_FEED_STALE_MS,
   POSITION_SOURCE_ARC_ONLY,
+  groundTruthKey,
+  applyGroundTruthFixes,
+  pruneGroundTruthFixes,
+  sweepStaleGroundTruthFixes,
   isPointInViewport,
   isAircraftInViewport,
   sampleTrailPositions,
@@ -44,12 +49,14 @@ import {
 import { fetchRadar3Verification, fetchRadar3DetectionRange, fetchMlatVerification } from "../api";
 import { defaultsGroundTruthOff } from "../utils/domains";
 import { usePersistedState } from "./map/usePersistedState";
-import { parseHash, useHashWriter, encodeLayers } from "./map/useUrlHashState";
+import { parseHash, useHashWriter, encodeLayers, decodeLayers } from "./map/useUrlHashState";
 import { useKeyboardShortcuts } from "./map/useKeyboardShortcuts";
 import { trailToCsv, trailsToBulkCsv, downloadCsv } from "./map/trailExport";
 import { toast, copyToClipboard } from "./map/toast";
 import { checkEmergencySquawks, resetEmergencyAlertCache } from "./map/emergencyAudio";
 import { distanceKm } from "./map/distance";
+import { validLatLon } from "./map/geo";
+import { snapTrack, sweepStaleRadar } from "./map/trackStores";
 import StatsOverlay from "./map/StatsOverlay";
 import ShortcutHelp from "./map/ShortcutHelp";
 
@@ -130,7 +137,10 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
       single canvas.  Updated at 4Hz from smoothRef for dead-reckoned positions. ── */
 const _mgCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
 
-const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAircraft, groundTruthRef, smoothRef }) {
+// Ref-driven like DetectionArcs: data is read INSIDE the tick, so the effect
+// mounts once instead of keying on the 2 Hz radarAircraft array identity —
+// which tore down and recreated every dot and line twice a second.
+const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAircraftRef, groundTruthRef, smoothRef }) {
   const map = useMap();
   const markersRef = useRef(new Map());  // gtHex → { dot: L.circleMarker, line: L.polyline }
 
@@ -141,14 +151,14 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
       const gt = groundTruthRef.current;
       const seen = new Set();
 
-      for (const ac of radarAircraft) {
+      for (const ac of radarAircraftRef.current || []) {
         const gtHex = ac.ground_truth_hex;
         if (!gtHex) continue;
         const gtTrail = gt[gtHex];
         if (!Array.isArray(gtTrail) || gtTrail.length === 0) continue;
 
         // GT position from smoothRef (dead-reckoned at 60fps) if available, else raw
-        const smooth = smoothRef.current[gtHex];
+        const smooth = smoothRef.current[groundTruthKey(gtHex)];
         let gtLat, gtLon;
         if (smooth) {
           gtLat = smooth.lat;
@@ -164,7 +174,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
         const rLat = radarSmooth ? radarSmooth.lat : ac.lat;
         const rLon = radarSmooth ? radarSmooth.lon : ac.lon;
 
-        if (!gtLat || !gtLon || !rLat || !rLon) continue;
+        if (!validLatLon(gtLat, gtLon) || !validLatLon(rLat, rLon)) continue;
 
         seen.add(gtHex);
         let entry = markers.get(gtHex);
@@ -213,7 +223,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
       }
       markers.clear();
     };
-  }, [map, radarAircraft, groundTruthRef, smoothRef]);
+  }, [map, radarAircraftRef, groundTruthRef, smoothRef]);
 
   return null;
 });
@@ -226,7 +236,6 @@ const _r3Canvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : n
 const Radar3VerificationLayer = memo(function Radar3VerificationLayer({ visible }) {
   const map = useMap();
   const markersRef = useRef(new Map());
-  const dataRef = useRef(null);
 
   useEffect(() => {
     if (!visible) {
@@ -234,8 +243,7 @@ const Radar3VerificationLayer = memo(function Radar3VerificationLayer({ visible 
       for (const entry of markersRef.current.values()) {
         entry.dot.remove();
         entry.line.remove();
-        if (entry.label) entry.label.remove();
-      }
+        }
       markersRef.current.clear();
       return;
     }
@@ -246,13 +254,12 @@ const Radar3VerificationLayer = memo(function Radar3VerificationLayer({ visible 
       try {
         const data = await fetchRadar3Verification();
         if (cancelled || !data) return;
-        dataRef.current = data;
 
         const markers = markersRef.current;
         const seen = new Set();
 
         for (const t of data.tracks || []) {
-          if (!t.truth_lat || !t.truth_lon || !t.solver_lat || !t.solver_lon) continue;
+          if (!validLatLon(t.truth_lat, t.truth_lon) || !validLatLon(t.solver_lat, t.solver_lon)) continue;
           seen.add(t.hex);
 
           let entry = markers.get(t.hex);
@@ -288,7 +295,7 @@ const Radar3VerificationLayer = memo(function Radar3VerificationLayer({ visible 
             markers.delete(hex);
           }
         }
-      } catch (e) {
+      } catch {
         // Silently ignore fetch errors
       }
     };
@@ -313,7 +320,6 @@ const Radar3VerificationLayer = memo(function Radar3VerificationLayer({ visible 
 const Radar3RangeLayer = memo(function Radar3RangeLayer({ visible }) {
   const map = useMap();
   const layersRef = useRef([]);
-  const dataRef = useRef(null);
 
   useEffect(() => {
     // Clean up previous layers
@@ -331,7 +337,6 @@ const Radar3RangeLayer = memo(function Radar3RangeLayer({ visible }) {
         // Clean previous
         for (const l of layersRef.current) l.remove();
         layersRef.current = [];
-        dataRef.current = data;
 
         const rx = data.rx;
         if (!rx) return;
@@ -367,7 +372,7 @@ const Radar3RangeLayer = memo(function Radar3RangeLayer({ visible }) {
           marker.addTo(map);
           layersRef.current.push(marker);
         }
-      } catch (e) {
+      } catch {
         // Silently ignore
       }
     };
@@ -460,7 +465,7 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
       const tracks = tracksRef.current;
 
       for (const t of tracks) {
-        if (!t.truth_lat || !t.truth_lon || !t.solver_lat || !t.solver_lon) continue;
+        if (!validLatLon(t.truth_lat, t.truth_lon) || !validLatLon(t.solver_lat, t.solver_lon)) continue;
         const hex = t.truth_hex;
         if (!hex) continue;
 
@@ -469,7 +474,7 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
         // verification payload alone isn't enough to render aligned.
         let liveLat;
         let liveLon;
-        const smooth = smoothRef?.current?.[hex];
+        const smooth = smoothRef?.current?.[groundTruthKey(hex)];
         if (smooth) {
           liveLat = smooth.lat;
           liveLon = smooth.lon;
@@ -595,7 +600,10 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels
       separately by the existing selectedTrailPositions block). ── */
 const _trailsCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
 
-const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraft, frontendTrailsRef, selectedHex }) {
+// Ref-driven (see MatchedGroundTruthLayer): keying the effect on the 2 Hz
+// visibleAircraft array identity destroyed and rebuilt every polyline twice a
+// second, and the 500 ms interval below essentially never fired twice.
+const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftRef, frontendTrailsRef, selectedHex }) {
   const map = useMap();
   const linesRef = useRef(new Map()); // hex → L.polyline
 
@@ -604,7 +612,7 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraft,
     const tick = () => {
       const trails = frontendTrailsRef.current || {};
       const seen = new Set();
-      for (const ac of visibleAircraft) {
+      for (const ac of visibleAircraftRef.current || []) {
         if (!ac.hex || ac.hex === selectedHex) continue;
         const buf = trails[ac.hex];
         if (!buf || buf.length < 2) continue;
@@ -641,9 +649,76 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraft,
       for (const line of lines.values()) line.remove();
       lines.clear();
     };
-  }, [map, visibleAircraft, frontendTrailsRef, selectedHex]);
+  }, [map, visibleAircraftRef, frontendTrailsRef, selectedHex]);
 
   return null;
+});
+
+/* ── BasemapLayer: TileLayer with bounded retry on tile load failure.
+
+      Leaflet does not retry a failed tile.  A single 429 or timeout from the
+      basemap CDN (Carto's free tier is rate-limited) leaves that square blank
+      *permanently* — until something else forces a redraw — which is what
+      "sections of the map don't render" looks like.  Retrying with backoff
+      recovers the transient case, which is nearly all of it.
+
+      TILE_MAX_RETRIES is deliberately small: if the CDN is genuinely down,
+      hammering it makes the rate limiting worse, not better. ── */
+const TILE_MAX_RETRIES = 3;
+const TILE_RETRY_BASE_MS = 400;
+
+const BasemapLayer = memo(function BasemapLayer({ url }) {
+  const retriesRef = useRef(new Map()); // tile src → attempts so far
+
+  const handlers = useMemo(
+    () => ({
+      tileerror: (e) => {
+        const tile = e.tile;
+        if (!tile) return;
+        // Strip any cache-buster we added so the retry count keys off the
+        // real tile identity rather than growing a new entry per attempt.
+        const baseSrc = (tile.src || "").split("#tfretry=")[0];
+        if (!baseSrc) return;
+        const attempts = retriesRef.current.get(baseSrc) ?? 0;
+        if (attempts >= TILE_MAX_RETRIES) return;
+        retriesRef.current.set(baseSrc, attempts + 1);
+        // Exponential backoff. The fragment forces the browser to re-request
+        // rather than serve the cached failure, without altering the path the
+        // CDN sees.
+        setTimeout(() => {
+          tile.src = `${baseSrc}#tfretry=${attempts + 1}`;
+        }, TILE_RETRY_BASE_MS * 2 ** attempts);
+      },
+      // Bound the map: without this, a long session panning a large area
+      // accumulates one entry per tile ever loaded.
+      tileload: (e) => {
+        const baseSrc = (e.tile?.src || "").split("#tfretry=")[0];
+        if (baseSrc) retriesRef.current.delete(baseSrc);
+      },
+    }),
+    [],
+  );
+
+  // Both Carto and OSM require attribution under their terms of use; the map
+  // previously suppressed the control entirely.
+  const attribution = url.includes("openstreetmap.org")
+    ? '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+    : '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>';
+
+  return (
+    <TileLayer
+      url={url}
+      attribution={attribution}
+      eventHandlers={handlers}
+      // keepBuffer 4 (default 2): a fast pan otherwise evicts tiles just
+      // outside the viewport that are about to be needed again, so they have
+      // to be re-fetched — visible as a band of missing map behind the drag.
+      keepBuffer={4}
+      // Don't request intermediate zoom levels mid-pinch; they are discarded
+      // on arrival and only compete for the CDN's rate limit.
+      updateWhenZooming={false}
+    />
+  );
 });
 
 /* ── NodeMarkersLayer: SVG CircleMarkers for synthetic nodes + divIcon for the
@@ -668,7 +743,9 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
           <Popup>
             <strong>{n.node_id}</strong><br />
             Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
-            Range: {n.max_range_km} km
+            {n.max_bistatic_range_km != null
+              ? <>Bistatic range: {n.max_bistatic_range_km} km<br /></>
+              : <>Range: {n.max_range_km} km</>}
           </Popup>
         </CircleMarker>
       );
@@ -684,7 +761,9 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
         <Popup>
           <strong>{n.node_id}</strong><br />
           Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
-          Range: {n.max_range_km} km
+          {n.max_bistatic_range_km != null
+            ? <>Bistatic range: {n.max_bistatic_range_km} km<br /></>
+            : <>Range: {n.max_range_km} km</>}
         </Popup>
       </Marker>
     );
@@ -713,6 +792,7 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
           n.beam_azimuth_deg,
           n.beam_width_deg ?? 42,
           n.max_range_km ?? 50,
+          n.max_bistatic_range_km,
         )}
         pathOptions={{ color: "#facc15", fillColor: "#facc15", fillOpacity: 0.1, weight: 1.5, dashArray: "4 4" }}
       />
@@ -760,7 +840,10 @@ const FollowController = memo(function FollowController({ followSelected, select
   useEffect(() => {
     if (!followSelected || !selectedHex) return;
     const id = setInterval(() => {
-      const sm = smoothRef.current?.[selectedHex];
+      // Truth-only objects live under the namespaced key — without the
+      // fallback, Follow silently did nothing for them.
+      const sm = smoothRef.current?.[selectedHex]
+        ?? smoothRef.current?.[groundTruthKey(selectedHex)];
       if (sm) map.panTo([sm.lat, sm.lon], { animate: false });
     }, 100);
     // A manual drag means the user wants to look elsewhere — disengage follow.
@@ -797,7 +880,8 @@ const HashSync = memo(function HashSync({ onMove, showRangeRings, selectedHex, s
   }, []);
 
   if (!showRangeRings || !selectedHex) return null;
-  const sm = smoothRef.current?.[selectedHex];
+  const sm = smoothRef.current?.[selectedHex]
+    ?? smoothRef.current?.[groundTruthKey(selectedHex)];
   if (!sm) return null;
   // Three rings at 5/10/20 km — useful for judging "how far away" without
   // dropping into the detail panel.  Light, dashed strokes keep the rings
@@ -866,21 +950,12 @@ export default function LiveAircraftMap() {
   // overrides the user's persisted preferences, so a teammate sharing a
   // link sees the exact view that was sent.
   const initialHash = useMemo(() => parseHash(), []);
-  const initialLayers = useMemo(() => {
-    const s = initialHash.layers;
-    if (!s) return null;
-    return {
-      coverage:     s.includes("c"),
-      labels:       s.includes("l"),
-      trails:       s.includes("t"),
-      groundTruth:  s.includes("g"),
-      illuminators: s.includes("i"),
-      colorByAlt:   s.includes("a"),
-      stats:        s.includes("s"),
-      rangeRings:   s.includes("r"),
-      inBeamDiag:   s.includes("b"),
-    };
-  }, [initialHash]);
+  // Single-sourced from useUrlHashState — this was a character-for-character
+  // inline copy of decodeLayers, maintained twice.
+  const initialLayers = useMemo(
+    () => (initialHash.layers ? decodeLayers(initialHash.layers) : null),
+    [initialHash],
+  );
 
   const [displayAircraft, setDisplayAircraft] = useState([]);
   const [showCoverage, setShowCoverage] = usePersistedState("tf.layer.coverage", initialLayers?.coverage ?? false);
@@ -893,6 +968,11 @@ export default function LiveAircraftMap() {
   const [focusNonce, setFocusNonce] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [paused, setPaused] = useState(false);
+  // Read by the 60 fps loop (which has [] deps and can't see state) so pause
+  // actually freezes the display instead of racing the playback slider.
+  const pausedLoopRef = useRef(false);
+  // Controlled slider position for the playback bar; null = live end.
+  const [seekIndex, setSeekIndex] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = usePersistedState("tf.sidebar.collapsed", false);
   const [viewport, setViewport] = useState(null);
   const [showAnomaliesOnly, setShowAnomaliesOnly] = useState(false);
@@ -902,7 +982,14 @@ export default function LiveAircraftMap() {
   const [showFilters, setShowFilters] = useState(false);
   const [showStats, setShowStats] = usePersistedState("tf.layer.stats", initialLayers?.stats ?? true);
   const [showRangeRings, setShowRangeRings] = usePersistedState("tf.layer.rangeRings", initialLayers?.rangeRings ?? false);
-  const [showInBeamDiag, setShowInBeamDiag] = usePersistedState("tf.layer.inBeamDiag", initialLayers?.inBeamDiag ?? true);
+  // Beam-gap diagnostic defaults OFF: it draws one line per (aircraft, node)
+  // pair, so a metro-scoped fleet whose nodes all cover the same airspace turns
+  // the map into a thicket. Still available from the "Beam gaps" toolbar button
+  // and the `b` URL-hash layer.
+  // Storage key is versioned (.v2) so the new default reaches anyone who
+  // already has the old `tf.layer.inBeamDiag: true` persisted in localStorage —
+  // without it, every existing user keeps seeing the lines.
+  const [showInBeamDiag, setShowInBeamDiag] = usePersistedState("tf.layer.inBeamDiag.v2", initialLayers?.inBeamDiag ?? false);
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   // Enthusiast filters: altitude band (FL, hundreds of ft), speed floor, type.
   const [filters, setFilters] = usePersistedState("tf.filters", { minFl: "", maxFl: "", minGs: "", type: "all" });
@@ -928,11 +1015,11 @@ export default function LiveAircraftMap() {
   const [tileTheme, setTileTheme] = usePersistedState("tf.tile.theme", "voyager");
 
   const animationFrameRef = useRef(null);
-  const displayedAircraftRef = useRef({});
   const fixesRef = useRef({});   // hex → last server fix
   const smoothRef = useRef({});  // hex → { lat, lon, track } — smoothed render position
   const prevTsRef = useRef(null);
   const svgElemsRef = useRef({}); // hex → cached SVG DOM element (avoids querySelector every frame)
+  const svgMissRef = useRef({});  // hex → retry-after ts for DOM lookup misses (negative cache)
   const rafFrameRef = useRef(0);  // throttle React re-renders to ~2fps (position/rotation at 60fps via direct L.Marker/DOM)
   const markerRegistryRef = useRef(new Map()); // hex → L.Marker for imperative 60fps setLatLng
   const latLngCacheRef    = useRef({});         // hex → L.LatLng — mutated in place to avoid per-frame allocation
@@ -944,20 +1031,31 @@ export default function LiveAircraftMap() {
   // without needing backend changes.  Bounded to 60 samples per hex (30 s).
   const frontendTrailsRef = useRef({});  // hex → Array<[lat, lon, ts_sec]>
   const lastTrailSampleRef = useRef({}); // hex → last sample timestamp (ms)
+  // One bundle over all eight per-object stores, so the prune paths are
+  // three callers of trackStores.forgetTrack instead of three hand-kept
+  // subsets (see map/trackStores.ts for the history).
+  const allStoresRef = useRef(null);
+  if (!allStoresRef.current) {
+    allStoresRef.current = {
+      get fixes() { return fixesRef.current; },
+      get smooth() { return smoothRef.current; },
+      get svgElems() { return svgElemsRef.current; },
+      get svgMiss() { return svgMissRef.current; },
+      get latLng() { return latLngCacheRef.current; },
+      get trails() { return frontendTrailsRef.current; },
+      get lastTrailSample() { return lastTrailSampleRef.current; },
+      get markerRegistry() { return markerRegistryRef.current; },
+    };
+  }
 
   /* ── Record server fixes when new WS data arrives ───────────── */
   useEffect(() => {
     const now = Date.now();
-    // Equirect distance approximation (km) — good enough for the
-    // "is this jump plausible?" test (< 1% error inside a metro area).
-    const distKm = (lat1, lon1, lat2, lon2) => {
-      const cosLat = Math.cos(((lat1 + lat2) / 2) * (Math.PI / 180));
-      const dx = (lon2 - lon1) * 111.32 * cosLat;
-      const dy = (lat2 - lat1) * 111.32;
-      return Math.hypot(dx, dy);
-    };
+    // Shared spherical helper — this held one of the map's five distance
+    // implementations (equirect at 111.32); <1% apart, but one is enough.
+    const distKm = distanceKm;
     for (const ac of aircraft) {
-      if (!ac.lat || !ac.lon) continue;
+      if (!validLatLon(ac.lat, ac.lon)) continue;
       const prev = fixesRef.current[ac.hex];
       const posChanged = !prev || prev._fixLat !== ac.lat || prev._fixLon !== ac.lon;
 
@@ -979,32 +1077,13 @@ export default function LiveAircraftMap() {
         const refLon = sm?.lon ?? prev._fixLon;
         const jumpKm = distKm(refLat, refLon, ac.lat, ac.lon);
         if (jumpKm > maxPlausibleKm) {
-          if (sm) {
-            sm.lat = ac.lat;
-            sm.lon = ac.lon;
-          } else {
-            smoothRef.current[ac.hex] = {
-              lat: ac.lat,
-              lon: ac.lon,
-              track: ac.track || 0,
-            };
-          }
-          // Reset the cached Leaflet LatLng so the marker.update() in the
-          // tick loop renders at the new position on the next frame.
-          const cachedLL = latLngCacheRef.current[ac.hex];
-          if (cachedLL) {
-            cachedLL.lat = ac.lat;
-            cachedLL.lng = ac.lon;
-          }
-          // Drop the trail so the polyline doesn't draw a straight line
-          // through the discontinuity.
-          delete frontendTrailsRef.current[ac.hex];
-          delete lastTrailSampleRef.current[ac.hex];
+          snapTrack(ac.hex, allStoresRef.current, ac.lat, ac.lon, ac.track);
         }
       }
 
       fixesRef.current[ac.hex] = {
         ...ac,
+        _key: ac.hex,
         _fixLat: ac.lat,
         _fixLon: ac.lon,
         // Only reset the position-anchor timestamp when the fix actually moved.
@@ -1015,16 +1094,7 @@ export default function LiveAircraftMap() {
       };
     }
     // Drop stale entries no longer in the feed (skip truth-only — managed by their own effect)
-    for (const hex of Object.keys(fixesRef.current)) {
-      if (fixesRef.current[hex]._isTruth) continue;
-      if (now - (fixesRef.current[hex]._updatedAt ?? 0) > STALE_AIRCRAFT_MS) {
-        delete fixesRef.current[hex];
-        delete smoothRef.current[hex];
-        delete svgElemsRef.current[hex];
-        delete frontendTrailsRef.current[hex];
-        delete lastTrailSampleRef.current[hex];
-      }
-    }
+    sweepStaleRadar(allStoresRef.current, now, STALE_AIRCRAFT_MS);
   }, [aircraft]);
 
   /* ── Continuous 60fps glide loop (dead-reckoning + exponential smoothing) ── */
@@ -1035,6 +1105,15 @@ export default function LiveAircraftMap() {
     const TAU = 0.55;
 
     const tick = (ts) => {
+      // Paused: freeze everything.  The loop used to keep dead-reckoning and
+      // pushing setDisplayAircraft at 2 Hz regardless, so a frame chosen on
+      // the playback slider was clobbered by live data within ~500 ms —
+      // playback was effectively non-functional.
+      if (pausedLoopRef.current) {
+        prevTsRef.current = ts;
+        animationFrameRef.current = requestAnimationFrame(tick);
+        return;
+      }
       const dt = prevTsRef.current !== null ? Math.min((ts - prevTsRef.current) / 1000, 0.1) : 0;
       prevTsRef.current = ts;
       const alpha = dt > 0 ? 1 - Math.exp(-dt / TAU) : 1;
@@ -1042,6 +1121,9 @@ export default function LiveAircraftMap() {
       const now = Date.now();
       const fixes = fixesRef.current;
       for (const fix of Object.values(fixes)) {
+        // Store key, not the display hex — ground-truth objects are namespaced
+        // so a radar track sharing their ICAO hex can't overwrite them.
+        const key = fix._key || fix.hex;
         const elapsed = Math.min((now - fix._fixTs) / 1000, 60);
         const gs = fix.gs || 0;
 
@@ -1057,7 +1139,7 @@ export default function LiveAircraftMap() {
         }
 
         // 2. Exponential smoothing toward the target (glide / inertia effect)
-        const prev = smoothRef.current[fix.hex];
+        const prev = smoothRef.current[key];
         const sLat = prev ? prev.lat + (targetLat - prev.lat) * alpha : targetLat;
         const sLon = prev ? prev.lon + (targetLon - prev.lon) * alpha : targetLon;
 
@@ -1068,27 +1150,43 @@ export default function LiveAircraftMap() {
         const sTrack = (prevTrack + dTrack * alpha + 360) % 360;
 
         // Mutate smooth entry in place — avoids 412 short-lived object creations per frame
-        const sm = smoothRef.current[fix.hex];
+        const sm = smoothRef.current[key];
         if (sm) { sm.lat = sLat; sm.lon = sLon; sm.track = sTrack; }
-        else     smoothRef.current[fix.hex] = { lat: sLat, lon: sLon, track: sTrack };
+        else     smoothRef.current[key] = { lat: sLat, lon: sLon, track: sTrack };
 
-        // Update rotation directly on the DOM — avoids setIcon() every frame
-        // Cache element reference to avoid querySelector on every 16ms frame
-        let svgEl = svgElemsRef.current[fix.hex];
-        if (!svgEl || !svgEl.isConnected) {
-          svgEl = document.querySelector(`.ac-hex-${CSS.escape(fix.hex)} svg`);
-          if (svgEl) svgElemsRef.current[fix.hex] = svgEl;
-          else delete svgElemsRef.current[fix.hex];
+        // Update rotation directly on the DOM — avoids setIcon() every frame.
+        // Ground-truth objects render on a canvas layer with no divIcon, and
+        // their store key (gt:<hex>) never matches the ac-hex-<hex> class —
+        // querying for them every frame was a permanent document-wide
+        // selector miss, ~30k/s on testmap.  Misses for real markers are
+        // negative-cached briefly: an aircraft outside the viewport or
+        // filtered out has no DOM node until it re-enters.
+        if (!fix._isTruth) {
+          let svgEl = svgElemsRef.current[key];
+          if (!svgEl || !svgEl.isConnected) {
+            svgEl = null;
+            delete svgElemsRef.current[key];
+            const retryAt = svgMissRef.current[key] || 0;
+            if (now >= retryAt) {
+              svgEl = document.querySelector(`.ac-hex-${CSS.escape(key)} svg`);
+              if (svgEl) {
+                svgElemsRef.current[key] = svgEl;
+                delete svgMissRef.current[key];
+              } else {
+                svgMissRef.current[key] = now + 2000;
+              }
+            }
+          }
+          if (svgEl) svgEl.style.transform = `rotate(${sTrack.toFixed(1)}deg)`;
         }
-        if (svgEl) svgEl.style.transform = `rotate(${sTrack.toFixed(1)}deg)`;
 
         // Imperative Leaflet position — reuse cached L.LatLng and call marker.update() directly
         // to avoid per-frame LatLng + event-object allocations (was ~25k allocs/s at 60fps×412).
-        const marker = markerRegistryRef.current.get(fix.hex);
+        const marker = markerRegistryRef.current.get(key);
         if (marker) {
-          let ll = latLngCacheRef.current[fix.hex];
+          let ll = latLngCacheRef.current[key];
           if (ll) { ll.lat = sLat; ll.lng = sLon; }
-          else { ll = L.latLng(sLat, sLon); latLngCacheRef.current[fix.hex] = ll; }
+          else { ll = L.latLng(sLat, sLon); latLngCacheRef.current[key] = ll; }
           // Always bind our cached LatLng to the marker — when React re-renders
           // an AircraftMarker (altitude band change, selection, etc.), the new
           // L.Marker has a fresh _latlng that isn't our cached object.
@@ -1100,11 +1198,11 @@ export default function LiveAircraftMap() {
         // (every 500 ms).  This is the source for the trail polyline on
         // arc-only tracks whose backend recent_positions stays at 1 point
         // because the arc midpoint doesn't move between detections.
-        const lastSample = lastTrailSampleRef.current[fix.hex] || 0;
+        const lastSample = lastTrailSampleRef.current[key] || 0;
         if (now - lastSample >= 500) {
-          lastTrailSampleRef.current[fix.hex] = now;
-          let trail = frontendTrailsRef.current[fix.hex];
-          if (!trail) { trail = []; frontendTrailsRef.current[fix.hex] = trail; }
+          lastTrailSampleRef.current[key] = now;
+          let trail = frontendTrailsRef.current[key];
+          if (!trail) { trail = []; frontendTrailsRef.current[key] = trail; }
           trail.push([sLat, sLon, now / 1000]);
           if (trail.length > 60) trail.shift();
         }
@@ -1113,16 +1211,16 @@ export default function LiveAircraftMap() {
       // Build React display array at 2fps only — avoids ~25k spread-object allocations/s at 60fps.
       rafFrameRef.current = (rafFrameRef.current + 1) % 30;
       if (rafFrameRef.current === 0) {
+        // Truth objects age out here (render-loop driven) because their
+        // arrival-driven prune never fires once the feed stops — stale blue
+        // dots dead-reckoned forever.
+        sweepStaleGroundTruthFixes(allStoresRef.current, now, GT_FEED_STALE_MS);
         const arr = [];
-        const dispMap = {};
         for (const fix of Object.values(fixes)) {
-          const sm = smoothRef.current[fix.hex];
+          const sm = smoothRef.current[fix._key || fix.hex];
           if (!sm) continue;
-          const item = { ...fix, lat: sm.lat, lon: sm.lon, track: sm.track };
-          arr.push(item);
-          dispMap[fix.hex] = item;
+          arr.push({ ...fix, lat: sm.lat, lon: sm.lon, track: sm.track });
         }
-        displayedAircraftRef.current = dispMap;
         setDisplayAircraft(arr);
       }
       animationFrameRef.current = requestAnimationFrame(tick);
@@ -1162,47 +1260,12 @@ export default function LiveAircraftMap() {
   );
 
   /* ── Derived: truth-only aircraft ───────────────────────────── */
-  const matchedTruthHexes = useMemo(
-    () => new Set(radarAircraft.map((ac) => ac.ground_truth_hex || ac.hex).filter(Boolean)),
-    [radarAircraft],
-  );
-
   /* ── Feed ground-truth objects into fixesRef so the 60fps loop dead-reckons them ── */
   useEffect(() => {
-    const now = Date.now();
-    const activeGtHexes = new Set();
-    for (const [hex, positions] of Object.entries(groundTruthRef.current)) {
-      if (!Array.isArray(positions) || positions.length === 0) continue;
-      const last = positions[positions.length - 1];
-      const meta = groundTruthMetaRef.current[hex] || {};
-      const lat = last[0], lon = last[1];
-      activeGtHexes.add(hex);
-      const prev = fixesRef.current[hex];
-      const posChanged = !prev || prev._fixLat !== lat || prev._fixLon !== lon;
-      fixesRef.current[hex] = {
-        hex,
-        lat, lon,
-        alt_baro: Math.round(last[2] / 0.3048),
-        gs: Math.round((meta.speed_ms || 0) * 1.94384 * 10) / 10,
-        track: meta.heading || 0,
-        object_type: meta.object_type,
-        is_anomalous: meta.is_anomalous,
-        points: positions.length,
-        _isTruth: true,
-        _fixLat: lat,
-        _fixLon: lon,
-        _fixTs: posChanged ? now : (prev?._fixTs ?? now),
-        _updatedAt: now,
-      };
-    }
-    // Remove ground-truth entries that are no longer in the server snapshot
-    for (const hex of Object.keys(fixesRef.current)) {
-      if (!fixesRef.current[hex]._isTruth) continue;
-      if (!activeGtHexes.has(hex)) {
-        delete fixesRef.current[hex];
-        delete smoothRef.current[hex];
-      }
-    }
+    const activeGtKeys = applyGroundTruthFixes(
+      fixesRef.current, groundTruthRef.current, groundTruthMetaRef.current, Date.now(),
+    );
+    pruneGroundTruthFixes(allStoresRef.current, activeGtKeys);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groundTruthTick]);
 
@@ -1229,6 +1292,13 @@ export default function LiveAircraftMap() {
     () => filteredAircraft.filter((ac) => ac.hex === selectedHex || isAircraftInViewport(ac, viewport)),
     [filteredAircraft, selectedHex, viewport],
   );
+  // Ref mirrors for the imperative layers: their effects read data inside
+  // their own tick instead of keying on these 2 Hz array identities, which
+  // used to tear every Leaflet object down twice a second.
+  const visibleAircraftRef = useRef(visibleAircraft);
+  const radarAircraftRef = useRef(radarAircraft);
+  useEffect(() => { visibleAircraftRef.current = visibleAircraft; }, [visibleAircraft]);
+  useEffect(() => { radarAircraftRef.current = radarAircraft; }, [radarAircraft]);
 
   // No viewport filter — the L.canvas renderer handles off-screen dots natively.
   // Removing the filter means:
@@ -1266,7 +1336,8 @@ export default function LiveAircraftMap() {
     // this fallback the selected aircraft would render no trail at all.
     // Skip front samples already covered by the backend tail to avoid
     // doubling up on the very recent positions.
-    const frontTrail = frontendTrailsRef.current[selectedHex];
+    const frontTrail =
+      frontendTrailsRef.current[selectedHex] ?? frontendTrailsRef.current[groundTruthKey(selectedHex)];
     if (frontTrail && frontTrail.length) {
       const lastBack = pts[pts.length - 1];
       for (const [lat, lon] of frontTrail) {
@@ -1276,7 +1347,9 @@ export default function LiveAircraftMap() {
     }
     // smoothRef is updated at 60fps (vs displayedAircraftRef which is only 2fps)
     // so the trail tip connects exactly to the current smoothed position.
-    const animated = smoothRef.current[selectedHex];
+    // A truth-only selection has no radar entry under its bare hex; fall back
+    // to the namespaced ground-truth key so its trail tip still tracks.
+    const animated = smoothRef.current[selectedHex] ?? smoothRef.current[groundTruthKey(selectedHex)];
     if (animated?.lat && animated?.lon) {
       const last = pts[pts.length - 1];
       if (!last || Math.abs(last[0] - animated.lat) > 0.00001 || Math.abs(last[1] - animated.lon) > 0.00001) {
@@ -1309,10 +1382,13 @@ export default function LiveAircraftMap() {
     const next = !paused;
     setPaused(next);
     setFeedPaused(next);
+    pausedLoopRef.current = next;
+    setSeekIndex(next ? historyRef.current.length - 1 : null);
   }
 
   function handleHistorySeek(index) {
     if (index >= 0 && index < historyRef.current.length) {
+      setSeekIndex(index);
       setDisplayAircraft(historyRef.current[index].aircraft);
     }
   }
@@ -1379,7 +1455,16 @@ export default function LiveAircraftMap() {
   const exportSelectedTrail = useCallback(() => {
     if (!selectedHex) { toast("Select an aircraft first", { tone: "warn" }); return; }
     const ac = (radarAircraft || []).find((a) => a.hex === selectedHex);
-    if (!ac) return;
+    if (!ac) {
+      // Truth-only selection: no radar track, but the ground-truth trail is
+      // still exportable.  This used to return silently — a dead keystroke.
+      const gtRows = groundTruthRef.current?.[selectedHex] || [];
+      if (!gtRows.length) { toast("No trail data for this object", { tone: "warn" }); return; }
+      const gtCsv = trailToCsv(selectedHex, "", gtRows);
+      downloadCsv(`trail-${selectedHex}-${Date.now()}.csv`, gtCsv);
+      toast(`Exported ${gtRows.length} ground-truth points`, { tone: "success" });
+      return;
+    }
     // Prefer the backend-fed trail (alt + ms timestamps); fall back to the
     // frontend smoothed trail (no altitude) when no backend points exist.
     const rows =
@@ -1459,12 +1544,17 @@ export default function LiveAircraftMap() {
 
   function computeError(hex, ac) {
     const gtHex = ac.ground_truth_hex || hex;
+    // Compare against the SMOOTHED ground-truth position — the same one the
+    // yellow error line on the map is drawn from — so the panel number and
+    // the drawn line agree.  Comparing dead-reckoned radar against the raw
+    // last GT point added up to ~0.25 km of pure timing skew at 480 kt, and
+    // used a third flat-earth constant (111.0) 0.3% off the shared helper.
+    const sm = smoothRef.current?.[groundTruthKey(gtHex)];
+    if (sm) return distanceKm(ac.lat, ac.lon, sm.lat, sm.lon);
     const gtTrail = groundTruthRef.current[gtHex];
     if (!gtTrail || !gtTrail.length) return null;
     const last = gtTrail[gtTrail.length - 1];
-    const dlat = (ac.lat - last[0]) * 111.0;
-    const dlon = (ac.lon - last[1]) * 111.0 * Math.cos((ac.lat * Math.PI) / 180);
-    return Math.sqrt(dlat * dlat + dlon * dlon);
+    return distanceKm(ac.lat, ac.lon, last[0], last[1]);
   }
 
   function formatSecondsAgo(ts) {
@@ -1586,12 +1676,11 @@ export default function LiveAircraftMap() {
             </div>
           )}
           <MapContainer
-            center={[initialHash.lat ?? 34.0, initialHash.lon ?? -84.5]}
-            zoom={initialHash.z ?? 8}
+            center={[initialHash.lat ?? 34.85, initialHash.lon ?? -82.39]}
+            zoom={initialHash.z ?? 9}
             style={{ height: "100%", width: "100%" }}
-            attributionControl={false}
           >
-            <TileLayer
+            <BasemapLayer
               key={tileTheme}
               url={
                 tileTheme === "positron"
@@ -1643,6 +1732,7 @@ export default function LiveAircraftMap() {
                 sn.beam_azimuth_deg,
                 sn.beam_width_deg ?? 42,
                 sn.max_range_km ?? 50,
+                sn.max_bistatic_range_km,
               );
               // Find aircraft detected by this node (those whose node_id matches)
               const nodeAircraft = radarAircraft.filter((ac) => ac.node_id === selectedNodeId);
@@ -1730,6 +1820,7 @@ export default function LiveAircraftMap() {
                           cn.beam_azimuth_deg,
                           cn.beam_width_deg ?? 40,
                           cn.max_range_km ?? 50,
+                          cn.max_bistatic_range_km,
                         )}
                         pathOptions={{ color: "#a78bfa", fillColor: "#a78bfa", fillOpacity: 0.08, weight: 1.5, dashArray: "5 3" }}
                       />
@@ -1781,7 +1872,7 @@ export default function LiveAircraftMap() {
                  rendered below from the same buffer source. */}
             {showTrails && (
               <AircraftTrailsLayer
-                visibleAircraft={visibleAircraft}
+                visibleAircraftRef={visibleAircraftRef}
                 frontendTrailsRef={frontendTrailsRef}
                 selectedHex={selectedHex}
               />
@@ -1819,7 +1910,7 @@ export default function LiveAircraftMap() {
                  communicate that their position is approximate (the aircraft is somewhere along
                  the visible arc, not exactly at the midpoint). */}
             {visibleAircraft.map((ac) => {
-              if (!ac.lat || !ac.lon) return null;
+              if (!validLatLon(ac.lat, ac.lon)) return null;
               const isSelected = ac.hex === selectedHex;
               return (
                 <AircraftMarker
@@ -1866,7 +1957,7 @@ export default function LiveAircraftMap() {
             {/* Matched GT overlay — shows GT dots + error lines for radar aircraft with GT match */}
             {showGroundTruth && (
               <MatchedGroundTruthLayer
-                radarAircraft={radarAircraft}
+                radarAircraftRef={radarAircraftRef}
                 groundTruthRef={groundTruthRef}
                 smoothRef={smoothRef}
               />
@@ -1879,10 +1970,16 @@ export default function LiveAircraftMap() {
             <Radar3RangeLayer visible={selectedNodeId === "radar3-retnode"} />
 
             {/* MLAT (multinode) solver verification — magenta truth dots + pink error lines */}
-            <MlatVerificationLayer
-              groundTruthRef={groundTruthRef}
-              smoothRef={smoothRef}
-            />
+            {/* Gated like the Radar3 layers: this polls /api/test/
+                mlat-verification and draws truth-vs-solver error lines, which
+                is meaningless (and a wasted poll) when ground truth is off —
+                as it is by default on the production map domains. */}
+            {showGroundTruth && (
+              <MlatVerificationLayer
+                groundTruthRef={groundTruthRef}
+                smoothRef={smoothRef}
+              />
+            )}
           </MapContainer>
 
           <StatsOverlay
@@ -1907,6 +2004,7 @@ export default function LiveAircraftMap() {
           {paused && historyRef.current.length > 0 && (
             <PlaybackBar
               history={historyRef.current}
+              value={seekIndex ?? historyRef.current.length - 1}
               onSeek={handleHistorySeek}
               formatSecondsAgo={formatSecondsAgo}
             />

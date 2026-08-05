@@ -267,7 +267,19 @@ class PassiveRadarPipeline:
         self.frequency = config["FC"]
 
         # Calculate baseline geometry (antenna boresight, baseline distance, etc.)
-        self.geometry = calculate_baseline_geometry(self.rx_lla, self.tx_lla)
+        # Pass the configured aim when the node declares one; otherwise the
+        # library defaults to broadside, matching resolve_beam_azimuth_deg.
+        try:
+            _beam_az = (
+                float(config["beam_azimuth_deg"])
+                if config.get("beam_azimuth_deg") is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            _beam_az = None
+        self.geometry = calculate_baseline_geometry(
+            self.rx_lla, self.tx_lla, beam_azimuth_deg=_beam_az
+        )
 
         # Compute TX position in ENU (km) relative to RX
         tx_ecef = Geometry.lla2ecef(self.tx_lla[0], self.tx_lla[1], self.tx_lla[2])

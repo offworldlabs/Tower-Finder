@@ -177,9 +177,12 @@ class TestSnapshotEdgeCases:
         with patch("services.state_snapshot._SNAPSHOT_PATH", snap_path):
             save_snapshot()
 
-        # Verify the snapshot is valid JSON
+        # Verify the snapshot is a valid schema-2 envelope (checksum travels
+        # inside the file so payload+checksum replace atomically).
         with open(snap_path) as f:
-            data = json.load(f)
+            envelope = json.load(f)
+        assert envelope["schema"] == 2
+        data = json.loads(envelope["payload"])
         assert "saved_at" in data
         assert data["saved_at"] > 0
 

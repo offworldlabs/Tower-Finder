@@ -8,20 +8,21 @@ import logging
 import math
 import threading
 import time
-from collections import defaultdict, deque
+from collections import defaultdict
 
 from retina_tracker.track import TrackState
 
 from config.constants import (
-    ARC_REFRESH_S,
     ARCHIVE_BATCH_MAX,
     ARCHIVE_FLUSH_INTERVAL_S,
-    GT_REFRESH_S,
-    STALE_TRACK_S,
+    N2_TRACK_HISTORY_MAX,
 )
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
-from services.id_utils import multinode_hex_from_key
+from services.geo import (
+    valid_latlon,
+)
+from services.id_utils import normalize_hex_key as _normalize_hex_key
 from services.storage import archive_detections
 
 # ── Archive batching ──────────────────────────────────────────────────────────
@@ -34,6 +35,13 @@ _ARCHIVE_BATCH_MAX = ARCHIVE_BATCH_MAX
 # Hard cap on buffer growth when writes fail repeatedly. Beyond this we drop
 # the oldest frames to bound memory; data loss is preferable to OOM.
 _ARCHIVE_BUFFER_HARD_CAP = ARCHIVE_BATCH_MAX * 2
+# One flush per node at a time.  The snapshot → write → truncate cycle is not
+# atomic under _archive_buffer_lock (the disk write must happen outside it),
+# so two concurrent flushers for the same node — a frame worker hitting the
+# batch-max trigger and the background flush task — would both write the same
+# N frames (duplicate Parquet rows) and then truncate twice, discarding up to
+# N frames that arrived during the first write.
+_archive_inflight: set[str] = set()
 
 
 def _flush_archive_node(node_id: str):
@@ -45,8 +53,16 @@ def _flush_archive_node(node_id: str):
     to prevent unbounded growth if the disk stays unhealthy.
     """
     with _archive_buffer_lock:
+        if node_id in _archive_inflight:
+            # Another thread is mid-cycle for this node; its truncation
+            # accounts exactly for the frames it wrote, and ours will be
+            # picked up by the next flush.
+            return
+        _archive_inflight.add(node_id)
         frames = list(_archive_buffer.get(node_id, []))
     if not frames:
+        with _archive_buffer_lock:
+            _archive_inflight.discard(node_id)
         return
     try:
         archive_detections(node_id, frames)
@@ -54,6 +70,7 @@ def _flush_archive_node(node_id: str):
         # Write failed — keep frames buffered for the next cycle, but enforce
         # a memory cap so a sustained outage can't OOM the process.
         with _archive_buffer_lock:
+            _archive_inflight.discard(node_id)
             buf = _archive_buffer.get(node_id, [])
             if len(buf) > _ARCHIVE_BUFFER_HARD_CAP:
                 dropped = len(buf) - _ARCHIVE_BUFFER_HARD_CAP
@@ -73,6 +90,7 @@ def _flush_archive_node(node_id: str):
     # that arrived during the write (which were appended after our snapshot).
     n_written = len(frames)
     with _archive_buffer_lock:
+        _archive_inflight.discard(node_id)
         buf = _archive_buffer.get(node_id, [])
         remaining = buf[n_written:]
         if remaining:
@@ -91,139 +109,38 @@ def flush_all_archive_buffers():
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def normalize_hex_key(hex_code: str) -> str:
-    return str(hex_code or "").strip().lower()
+# Re-exported for existing importers; the definition moved to id_utils so
+# modules that must not import frame_processor (tcp_handler) can share it.
+normalize_hex_key = _normalize_hex_key
 
 
-def position_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    dlat = (lat1 - lat2) * 111.0
-    dlon = (lon1 - lon2) * 111.0 * math.cos(math.radians((lat1 + lat2) / 2.0))
-    return math.sqrt(dlat ** 2 + dlon ** 2)
+def _reset_for_tests() -> None:
+    """Restore this module's private state to boot values.  Tests only.
 
-
-def append_track_history(hex_code: str, lat: float, lon: float, alt_ft: float, ts: float):
-    """Append a position to the rolling track history for a hex."""
-    if hex_code not in state.track_histories:
-        state.track_histories[hex_code] = deque(maxlen=state.TRACK_HISTORY_MAX)
-    hist = state.track_histories[hex_code]
-    if hist:
-        dlat = abs(hist[-1][0] - lat)
-        dlon = abs(hist[-1][1] - lon)
-        if dlat < 0.00005 and dlon < 0.00005:
-            return
-    hist.append([round(lat, 6), round(lon, 6), round(alt_ft, 0), round(ts, 1)])
-
-
-# Minimum displacement (metres) before a new arc-motion sample is appended.
-# Smaller than this counts as "same position" — sub-100 m drift on a stationary
-# arc midpoint isn't a real velocity signal.
-_ARC_MOTION_MIN_M = 100.0
-# Number of distinct positions retained per track.  Long enough to span a few
-# bistatic frames (~40 s apart) so velocity estimation can average over
-# 60–120 s windows without holding state forever.
-_ARC_MOTION_LOG_MAX = 6
-
-
-def _record_arc_motion(ac_hex: str, lat: float, lon: float, ts: float) -> None:
-    """Log distinct emitted positions for later velocity estimation.
-
-    Only entries that have moved > _ARC_MOTION_MIN_M from the last logged
-    position are appended — repeated emits at the same arc midpoint between
-    detections would otherwise drown out real motion.
+    Covers only what this module still owns after the feed split — the
+    archive buffer and the profiling accumulators.  The feed caches, gates
+    and helpers have their own hooks (services.aircraft_feed,
+    services.track_gates, services.feed_helpers), all called by conftest.
     """
-    log = state.track_arc_motion.get(ac_hex)
-    if log:
-        plat, plon, _pts = log[-1]
-        cos_lat = math.cos(math.radians(lat)) or 1e-9
-        dlat_m = (lat - plat) * 111_320
-        dlon_m = (lon - plon) * 111_320 * cos_lat
-        if math.hypot(dlat_m, dlon_m) < _ARC_MOTION_MIN_M:
-            return
-    else:
-        log = []
-        state.track_arc_motion[ac_hex] = log
-    log.append((lat, lon, ts))
-    if len(log) > _ARC_MOTION_LOG_MAX:
-        log.pop(0)
+    global _prof_cpu, _prof_wall, _prof_n
+    global _prof_analytics, _prof_assoc, _prof_pipeline, _prof_archive
+    with _archive_buffer_lock:
+        _archive_buffer.clear()
+        _archive_inflight.clear()
+    with _prof_lock:
+        _prof_cpu = _prof_wall = 0.0
+        _prof_analytics = _prof_assoc = _prof_pipeline = _prof_archive = 0.0
+        _prof_n = 0
 
-
-def _estimate_velocity_ms_from_motion(
-    ac_hex: str, lat: float, lon: float, now: float,
-) -> tuple[float, float] | None:
-    """Return (vel_east_ms, vel_north_ms) inferred from arc-midpoint motion.
-
-    Searches the per-track motion log for the oldest sample 15–120 s old
-    that's > 200 m from the current position; uses that displacement to
-    derive an averaged east/north velocity.  Returns None if no sample is
-    recent-enough-but-old-enough or the displacement is too small to trust
-    or the implied speed exceeds an 800 kt sanity bound.
-    """
-    log = state.track_arc_motion.get(ac_hex)
-    if not log:
-        return None
-    cos_lat = math.cos(math.radians(lat)) or 1e-9
-    for plat, plon, pts in log:
-        dt = now - pts
-        if dt < 15:
-            continue  # too recent — noise dominates
-        if dt > 120:
-            continue  # too old — aircraft may have manoeuvred
-        dlat_m = (lat - plat) * 111_320
-        dlon_m = (lon - plon) * 111_320 * cos_lat
-        dist_m = math.hypot(dlat_m, dlon_m)
-        if dist_m < 200:
-            continue  # essentially still — can't infer velocity
-        # Clamp: real cruise tops at ~600 kt, cap at 800 kt (~411 m/s) to
-        # leave headroom for headwind combinations and military traffic.
-        if dist_m / dt > 411.0:
-            continue
-        return dlon_m / dt, dlat_m / dt
-    return None
-
-
-def _estimate_velocity_from_motion(
-    ac_hex: str, lat: float, lon: float, now: float,
-) -> tuple[float, float] | None:
-    """Return (gs_knots, track_deg) inferred from arc-midpoint motion, or None.
-
-    Thin wrapper over _estimate_velocity_ms_from_motion that converts to the
-    knots/degrees form used by the emitted aircraft entry.
-    """
-    ms = _estimate_velocity_ms_from_motion(ac_hex, lat, lon, now)
-    if ms is None:
-        return None
-    vel_e_ms, vel_n_ms = ms
-    gs_kn = math.hypot(vel_e_ms, vel_n_ms) * 1.94384
-    bearing_deg = math.degrees(math.atan2(vel_e_ms, vel_n_ms)) % 360.0
-    return round(gs_kn, 1), round(bearing_deg, 1)
-
-
-def resolve_ground_truth_hex(
-    ac_hex: str, lat: float, lon: float, max_distance_km: float = 8.0,
-) -> str | None:
-    """Find the best ground-truth hex for a solved aircraft."""
-    norm_hex = normalize_hex_key(ac_hex)
-    if norm_hex and norm_hex in state.ground_truth_trails and state.ground_truth_trails[norm_hex]:
-        return norm_hex
-
-    best_hex = None
-    best_distance = max_distance_km
-    for gt_hex, trail in list(state.ground_truth_trails.items()):
-        if not trail:
-            continue
-        last = trail[-1]
-        dist = position_distance_km(lat, lon, last[0], last[1])
-        if dist <= best_distance:
-            best_distance = dist
-            best_hex = gt_hex
-    return best_hex
 
 
 # ── Node configs helper ──────────────────────────────────────────────────────
 
 def get_node_configs() -> dict[str, dict]:
     configs = {}
-    for nid, info in list(state.connected_nodes.items()):
+    with state.connected_nodes_lock:
+        snapshot = list(state.connected_nodes.items())
+    for nid, info in snapshot:
         cfg = info.get("config")
         if cfg:
             configs[nid] = cfg
@@ -266,6 +183,10 @@ def get_or_create_node_pipeline(
 
 # Lightweight profiling: track thread-CPU vs wall-clock to distinguish
 # actual work from GIL-wait.  Logs every 1000 frames (~45 s at 22 fps).
+# Guarded by _prof_lock: up to FRAME_WORKERS threads run process_one_frame
+# concurrently, and unlocked `+=` on these lost updates — _prof_n
+# undercounted, inflating every per-frame millisecond in the PERF line.
+_prof_lock = threading.Lock()
 _prof_cpu = 0.0
 _prof_wall = 0.0
 _prof_n = 0
@@ -273,13 +194,47 @@ _prof_n = 0
 _prof_analytics = 0.0
 _prof_assoc = 0.0
 _prof_pipeline = 0.0
-_prof_save = 0.0
+_prof_archive = 0.0
+
+
+def confirmed_track_views(tracker, history_n: int = N2_TRACK_HISTORY_MAX) -> list[dict]:
+    """A tracker's confirmed tracks, in the shape submit_tracks takes.
+
+    TENTATIVE tracks are excluded, the same filter the arc builder applies: they
+    have too little history to fit and may yet be deleted, and admitting them
+    would put the clutter rejection back onto the association layer, which is
+    most of what track-level association buys.  COASTING is kept for the same
+    reason arcs keep it — at 22 fps a single missed frame flips ACTIVE →
+    COASTING and the next flips it back.
+
+    Shared with scripts/association_bench.py (which carried a near-verbatim
+    copy) so the bench feeds association exactly what production does.
+    """
+    views = []
+    for tr in tracker.tracks:
+        if tr.state_status == TrackState.TENTATIVE:
+            continue
+        hist = tr.get_recent_detections(history_n)
+        if len(hist) < 2:
+            continue
+        views.append({
+            "track_id": tr.id or f"tmp-{id(tr)}",
+            "history": [{"t_s": h["timestamp"] / 1000.0,
+                         "delay_us": h["delay"],
+                         "doppler_hz": h["doppler"],
+                         "snr": h["snr"]} for h in hist],
+        })
+    return views
+
+
+def _node_track_views(pipeline: PassiveRadarPipeline) -> list[dict]:
+    return confirmed_track_views(pipeline.tracker)
 
 
 def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarPipeline):
     """CPU-heavy frame processing — never runs on the event loop."""
     global _prof_cpu, _prof_wall, _prof_n
-    global _prof_analytics, _prof_assoc, _prof_pipeline, _prof_save
+    global _prof_analytics, _prof_assoc, _prof_pipeline, _prof_archive
     _t0_wall = time.monotonic()
     _t0_cpu = time.thread_time()
 
@@ -298,12 +253,40 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
 
     _t1 = time.thread_time()
     state.node_analytics.record_detection_frame(node_id, frame)
-    _prof_analytics += time.thread_time() - _t1
+    _d_analytics = time.thread_time() - _t1
+
+    # The node's own tracker runs first now.  Association used to see the raw
+    # detection frame, which at n=2 is untestable — two nodes give 4
+    # measurements against 6 unknowns, so a cross pairing between two real
+    # aircraft leaves the same zero residual a real target does.  Pairing
+    # *confirmed tracks* instead removes clutter before association (M-of-N),
+    # collapses the candidate count from Na x Nb detections to Ta x Tb tracks,
+    # and supplies the time history the constant-velocity fit needs.
+    _t3 = time.thread_time()
+    pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
+    pipeline.process_frame(frame)
+    _d_pipeline = time.thread_time() - _t3
 
     _t2 = time.thread_time()
-    assoc = state.node_associator.submit_frame(node_id, frame, frame.get("timestamp", 0))
-    if assoc:
-        solver_inputs = state.node_associator.format_candidates_for_solver(assoc)
+    _ts_ms_assoc = frame.get("timestamp", 0)
+    # Track-level association.  The detection-level path it replaced now lives
+    # in retina_analytics.detection_association, reachable only from the
+    # offline bench, which keeps it as the A/B baseline.
+    _track_views = _node_track_views(pipeline)
+    # Feed the per-node distinct-track counters — total_tracks /
+    # geolocated_tracks were exported (and read by the admin API) but never
+    # written anywhere.
+    state.node_analytics.record_node_tracks(
+        node_id,
+        (v["track_id"] for v in _track_views),
+        list(pipeline.geolocated_tracks.keys()),
+    )
+    pairs = state.node_associator.submit_tracks(
+        node_id, _track_views, _ts_ms_assoc,
+    )
+    solver_inputs = (state.node_associator.format_track_pairs_for_solver(pairs)
+                     if pairs else [])
+    if solver_inputs:
         node_cfgs = get_node_configs()
         for s_in in solver_inputs:
             if s_in["n_nodes"] < 2:
@@ -311,7 +294,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             try:
                 state.solver_queue.put_nowait((s_in, node_cfgs, time.time()))
             except Exception:
-                state.solver_queue_drops += 1
+                state.bump_counter("solver_queue_drops")
                 if state.solver_queue_drops % 100 == 1:
                     logging.warning(
                         "Solver queue full — dropped %d candidates total",
@@ -323,7 +306,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
                         f"Solver queue full — {state.solver_queue_drops} candidates dropped",
                         {"total_drops": state.solver_queue_drops},
                     )
-    _prof_assoc += time.thread_time() - _t2
+    _d_assoc = time.thread_time() - _t2
 
     # ADS-B extraction: TCP handler runs _apply_synthetic_adsb for synth nodes
     # before queuing.  For non-TCP sources (e.g. blah2_bridge) the adsb list
@@ -335,10 +318,12 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
         for _ae in _adsb_list:
             if not isinstance(_ae, dict):
                 continue
-            _hex = _ae.get("hex") or _ae.get("icao")
-            _lat = _ae.get("lat", 0)
-            _lon = _ae.get("lon", 0)
-            if not _hex or not _lat or not _lon:
+            # Normalised for the same reason as the sim ingest path: readers
+            # that dedupe/cross-reference lowercase the key first.
+            _hex = normalize_hex_key(_ae.get("hex") or _ae.get("icao"))
+            _lat = _ae.get("lat")
+            _lon = _ae.get("lon")
+            if not _hex or not valid_latlon(_lat, _lon):
                 continue
             if not math.isfinite(_lat) or not math.isfinite(_lon):
                 continue
@@ -354,748 +339,74 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             }
         state.aircraft_dirty = True
 
-    _t3 = time.thread_time()
-    pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
-    pipeline.process_frame(frame)
-    _prof_pipeline += time.thread_time() - _t3
-
+    # Time the archive append + conditional flush — the phase that actually
+    # hits disk.  This timer used to wrap an empty region (its body had moved
+    # to analytics_refresh_task) and printed save=0.0 forever.
     _t4 = time.thread_time()
-    # maybe_auto_save moved to analytics_refresh_task to avoid blocking
-    # frame workers during 915-file coverage-map save.
-    _prof_save += time.thread_time() - _t4
-
     with _archive_buffer_lock:
         _archive_buffer[node_id].append(frame)
         _should_flush = len(_archive_buffer[node_id]) >= _ARCHIVE_BATCH_MAX
     if _should_flush:
         _flush_archive_node(node_id)
+    _d_archive = time.thread_time() - _t4
 
     _dt_cpu = time.thread_time() - _t0_cpu
     _dt_wall = time.monotonic() - _t0_wall
-    _prof_cpu += _dt_cpu
-    _prof_wall += _dt_wall
-    _prof_n += 1
-    if _prof_n % 1000 == 0:
-        _ac = _prof_cpu / _prof_n * 1000
-        _aw = _prof_wall / _prof_n * 1000
-        _idle = (1 - _ac / _aw) * 100 if _aw > 0 else 0
-        _a_an = _prof_analytics / _prof_n * 1000
-        _a_as = _prof_assoc / _prof_n * 1000
-        _a_pp = _prof_pipeline / _prof_n * 1000
-        _a_sv = _prof_save / _prof_n * 1000
+    # One locked update per frame; log fields are snapshotted under the same
+    # lock so the printed averages are self-consistent.
+    with _prof_lock:
+        _prof_cpu += _dt_cpu
+        _prof_wall += _dt_wall
+        _prof_analytics += _d_analytics
+        _prof_assoc += _d_assoc
+        _prof_pipeline += _d_pipeline
+        _prof_archive += _d_archive
+        _prof_n += 1
+        _log_now = _prof_n % 1000 == 0
+        if _log_now:
+            _ac = _prof_cpu / _prof_n * 1000
+            _aw = _prof_wall / _prof_n * 1000
+            _idle = (1 - _ac / _aw) * 100 if _aw > 0 else 0
+            _a_an = _prof_analytics / _prof_n * 1000
+            _a_as = _prof_assoc / _prof_n * 1000
+            _a_pp = _prof_pipeline / _prof_n * 1000
+            _a_sv = _prof_archive / _prof_n * 1000
+            _n_snap = _prof_n
+    if _log_now:
         logging.warning(
             "PERF: %d frames  cpu=%.1f wall=%.1f idle%%=%.0f  "
-            "[analytics=%.1f assoc=%.1f pipeline=%.1f save=%.1f]ms",
-            _prof_n, _ac, _aw, _idle, _a_an, _a_as, _a_pp, _a_sv,
+            "[analytics=%.1f assoc=%.1f pipeline=%.1f archive=%.1f]ms",
+            _n_snap, _ac, _aw, _idle, _a_an, _a_as, _a_pp, _a_sv,
         )
 
-# ── Multi-node result → tar1090-compatible dict ──────────────────────────────
 
-def multinode_to_aircraft(key: str, r: dict) -> dict:
-    speed_ms = math.sqrt(r["vel_east"] ** 2 + r["vel_north"] ** 2)
-    heading = math.degrees(math.atan2(r["vel_east"], r["vel_north"])) % 360
-    _MACH_1 = 343.0
-    _mn_anomaly_types = []
-    if speed_ms > _MACH_1:
-        _mn_anomaly_types.append("supersonic")
-    _mn_is_anom = bool(_mn_anomaly_types)
-    _mn_hex = multinode_hex_from_key(key)
-    with state.anomaly_lock:
-        if _mn_is_anom:
-            state.anomaly_hexes.add(_mn_hex)
-        else:
-            state.anomaly_hexes.discard(_mn_hex)
-    return {
-        "hex": _mn_hex,
-        "type": "multinode_solve",
-        "flight": f"MN{r['n_nodes']}N",
-        "alt_baro": round(r["alt_m"] / 0.3048),
-        "alt_geom": round(r["alt_m"] / 0.3048),
-        "gs": round(speed_ms * 1.94384, 1),
-        "track": round(heading, 1),
-        "lat": round(r["lat"], 5),
-        "lon": round(r["lon"], 5),
-        "seen": 0,
-        "messages": r["n_measurements"],
-        "rssi": -round(1.0 / max(r.get("rms_delay", 1), 0.01), 1),
-        "multinode": True,
-        "n_nodes": r["n_nodes"],
-        "contributing_node_ids": r.get("contributing_node_ids", []),
-        "rms_delay": round(r["rms_delay"], 3),
-        "rms_doppler": round(r["rms_doppler"], 2),
-        "position_source": "multinode_solve",
-        "is_anomalous": _mn_is_anom,
-        "anomaly_types": _mn_anomaly_types,
-        "max_velocity_ms": round(speed_ms, 1),
-    }
-
-
-def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    lat1r = math.radians(lat1)
-    lat2r = math.radians(lat2)
-    dlonr = math.radians(lon2 - lon1)
-    y = math.sin(dlonr) * math.cos(lat2r)
-    x = math.cos(lat1r) * math.sin(lat2r) - math.sin(lat1r) * math.cos(lat2r) * math.cos(dlonr)
-    return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
-
-
-def _enu_to_lla(rx_lat: float, rx_lon: float, east_km: float, north_km: float) -> list[float]:
-    cos_lat = max(0.1, math.cos(math.radians(rx_lat)))
-    lat = rx_lat + north_km / 111.32
-    lon = rx_lon + east_km / (111.32 * cos_lat)
-    return [float(lat), float(lon)]
-
-
-def _build_single_node_arc(
-    track_or_delay,
-    node_cfg: dict,
-    *,
-    target_lat: float | None = None,
-    target_lon: float | None = None,
-) -> list[list[float]] | None:
-    """Build the bistatic-ambiguity arc for one detection.
-
-    When `target_lat`/`target_lon` are provided (i.e. we know roughly where
-    the aircraft actually is, via ADS-B or a prior solve), the arc is
-    trimmed to a short segment around the known position. This makes the
-    frontend trail of successive arcs readable as a chain of distinct
-    blips tracing the target's path through the beam, instead of one fat
-    smudge of overlapping full-beam loci.
-
-    Without a known position (true unknowns like raw radar-only detections)
-    the full beam-spanning locus is returned so the operator can see the
-    full ambiguity.
-    """
-    if isinstance(track_or_delay, (int, float)):
-        delay_us = track_or_delay
-    else:
-        delay_us = getattr(track_or_delay, "latest_delay_us", None)
-    if delay_us is None or delay_us <= 0:
-        return None
-
-    rx_lat = node_cfg.get("rx_lat")
-    rx_lon = node_cfg.get("rx_lon")
-    tx_lat = node_cfg.get("tx_lat")
-    tx_lon = node_cfg.get("tx_lon")
-    if None in (rx_lat, rx_lon, tx_lat, tx_lon):
-        return None
-
-    beam_width_deg = float(node_cfg.get("beam_width_deg", 41.0) or 41.0)
-    max_range_km = float(node_cfg.get("max_range_km", 50.0) or 50.0)
-    beam_azimuth_deg = node_cfg.get("beam_azimuth_deg")
-    if beam_azimuth_deg is None:
-        beam_azimuth_deg = (_bearing_deg(rx_lat, rx_lon, tx_lat, tx_lon) + 90.0) % 360.0
-
-    cos_lat = max(0.1, math.cos(math.radians((rx_lat + tx_lat) / 2.0)))
-    tx_east_km = (tx_lon - rx_lon) * 111.32 * cos_lat
-    tx_north_km = (tx_lat - rx_lat) * 111.32
-    baseline_km = math.hypot(tx_east_km, tx_north_km)
-    differential_range_km = delay_us * 0.299792458
-
-    def _differential_at(range_km: float, bearing_deg: float) -> float:
-        bearing_rad = math.radians(bearing_deg)
-        east_km = math.sin(bearing_rad) * range_km
-        north_km = math.cos(bearing_rad) * range_km
-        tx_dist_km = math.hypot(east_km - tx_east_km, north_km - tx_north_km)
-        return tx_dist_km + range_km - baseline_km
-
-    # When we have a known target position, centre the sweep on the bearing
-    # from RX to that position and aim for an arc whose ground length is
-    # roughly the same regardless of range — short enough to look like a
-    # radar blip near the aircraft, long enough to remain visible at
-    # continental zoom. Pure angular trimming (e.g. fixed 6°) collapses
-    # below 1 pixel at low zooms; targeting an arc length in km solves it.
-    if target_lat is not None and target_lon is not None:
-        centre_bearing = _bearing_deg(rx_lat, rx_lon, target_lat, target_lon)
-        target_east_km = (target_lon - rx_lon) * 111.32 * cos_lat
-        target_north_km = (target_lat - rx_lat) * 111.32
-        target_range_km = max(math.hypot(target_east_km, target_north_km), 5.0)
-        # ~25 km arc length keeps the blip visible at zoom ≥4 and short
-        # enough to read as a chain at zoom ≥7 — verified on staging.
-        BLIP_ARC_LENGTH_KM = 25.0
-        sweep_width_deg = min(beam_width_deg, math.degrees(BLIP_ARC_LENGTH_KM / target_range_km))
-        steps = 18
-    else:
-        centre_bearing = beam_azimuth_deg
-        sweep_width_deg = beam_width_deg
-        steps = 36
-
-    half_sweep = sweep_width_deg / 2.0
-    points: list[list[float]] = []
-    for step in range(steps + 1):
-        bearing_deg = centre_bearing - half_sweep + sweep_width_deg * (step / steps)
-        # Stay within the antenna beam — drop bearings that fall outside.
-        delta_from_axis = abs(((bearing_deg - beam_azimuth_deg + 180.0) % 360.0) - 180.0)
-        if delta_from_axis > beam_width_deg / 2.0:
-            continue
-        lo = 0.0
-        hi = max_range_km
-        if _differential_at(hi, bearing_deg) < differential_range_km:
-            continue
-        for _ in range(32):
-            mid = (lo + hi) / 2.0
-            if _differential_at(mid, bearing_deg) < differential_range_km:
-                lo = mid
-            else:
-                hi = mid
-        bearing_rad = math.radians(bearing_deg)
-        points.append(_enu_to_lla(
-            rx_lat,
-            rx_lon,
-            hi * math.sin(bearing_rad),
-            hi * math.cos(bearing_rad),
-        ))
-
-    if len(points) < 2:
-        return None
-    return points
-
-
-# ── Combined aircraft.json builder ───────────────────────────────────────────
-
-# How often to recompute detection arcs and GT snapshot (seconds).
-# Iterating 915 pipelines × 5000 tracks every second is the #1 GIL hog;
-# caching at 5 s cuts that penalty by 4/5.
-_ARC_REFRESH_S = ARC_REFRESH_S
-_GT_REFRESH_S = GT_REFRESH_S
-_cached_pending_arcs: list[dict] = []
-_arcs_last_ts: float = 0.0
-_cached_gt_snapshot: dict = {}
-_cached_gt_meta: dict = {}
-_gt_last_ts: float = 0.0
-
-# Per-track single-node arc memo.  _build_single_node_arc is a pure function
-# of (delay_us, target position, node geometry); the flush loop rebuilds it
-# every cycle even when the detection is unchanged, which is the compute the
-# ~4s map pulse traces back to.  Key by (ac_hex, node_id) -- the identity the
-# rest of the pipeline and the frontend already use -- with a fingerprint of
-# the non-static inputs, so a miss happens exactly when a new detection changes
-# them (invalidate on arrival, no timer).  node_cfg is treated as static per
-# node_id.  The fingerprint is None-safe: latest_delay_us is None for ADS-B-only
-# tracks and rounding None would raise.
-_single_node_arc_cache: dict[tuple[str, str | None], tuple[tuple, list | None]] = {}
-
-
-def _cached_single_node_arc(ac_hex, track, node_cfg, touched_keys):
-    """Memoised _build_single_node_arc for the per-geolocated-track arc.
-
-    Returns exactly what
-        _build_single_node_arc(track, node_cfg,
-                               target_lat=track.lat, target_lon=track.lon)
-    returns, but recomputes only when the detection's inputs change.  The arc is
-    a pure function of those inputs, so this is transparent to callers and the
-    wire format.  ``touched_keys`` accumulates the keys visited this build so the
-    caller can evict everything else, bounding the cache to the live fleet.
-    """
-    node_id = node_cfg.get("node_id")
-    key = (ac_hex, node_id)
-    touched_keys.add(key)
-
-    delay_us = getattr(track, "latest_delay_us", None)
-    fingerprint = (
-        None if delay_us is None else round(delay_us, 3),
-        round(track.lat, 6),
-        round(track.lon, 6),
-    )
-    cached = _single_node_arc_cache.get(key)
-    if cached is not None and cached[0] == fingerprint:
-        return cached[1]
-
-    arc = _build_single_node_arc(
-        track,
-        node_cfg,
-        target_lat=track.lat,
-        target_lon=track.lon,
-    )
-    _single_node_arc_cache[key] = (fingerprint, arc)
-    return arc
-
-
-def _record_accuracy_sample(ac_hex: str, error_km: float, position_source: str, ts: float):
-    """Append a solver-vs-ADS-B accuracy sample for the rolling accuracy API."""
-    state.accuracy_samples.append({
-        "hex": ac_hex,
-        "error_km": round(error_km, 4),
-        "position_source": position_source,
-        "ts": round(ts, 1),
-    })
-
-
-def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict:
-    """Merge per-node pipelines, default pipeline, multinode, ADS-B into one feed."""
-    now = time.time()
-    seen_hex: set[str] = set()
-    _touched_arc_keys: set[tuple[str, str | None]] = set()
-    aircraft: list[dict] = []
-
-    def _fresh_adsb(ac_hex: str):
-        """Return ADS-B entry for ac_hex, or None if unavailable/stale.
-
-        Checks state.adsb_aircraft first (live feed, < 60 s).  Falls back to
-        state.external_adsb_cache (OpenSky snapshot) which the background
-        poller already refreshes periodically — no additional staleness guard
-        needed here.
-        """
-        entry = state.adsb_aircraft.get(ac_hex)
-        if entry and now - entry.get("last_seen_ms", 0) / 1000 <= 60:
-            return entry
-        # Fallback: external ADS-B truth sourced from OpenSky Network.
-        ext = state.external_adsb_cache.get(ac_hex)
-        if ext and ext.get("lat") and ext.get("lon"):
-            alt_m = ext.get("alt_m") or 0
-            vel = ext.get("velocity") or 0
-            hdg = ext.get("heading") or 0
-            try:
-                alt_ft_val = float(alt_m) / 0.3048
-                gs_val = float(vel) * 1.94384
-                hdg_val = float(hdg)
-            except (TypeError, ValueError):
-                alt_ft_val = 0.0
-                gs_val = 0.0
-                hdg_val = 0.0
-            return {
-                "hex": ac_hex,
-                "lat": ext["lat"],
-                "lon": ext["lon"],
-                "alt_baro": round(alt_ft_val),
-                "gs": round(gs_val, 1),
-                "track": round(hdg_val, 1),
-                "last_seen_ms": int(now * 1000),
-            }
-        return None
-
-    def _track_entry(ac_hex, track, node_cfg):
-        # The solver output is always the primary position.  ADS-B data
-        # enriches callsign / altitude / velocity but never overrides the
-        # radar-derived position — that's the whole point of the system.
-        adsb = _fresh_adsb(ac_hex)
-
-        # Primary position: always from the LM solver
-        solver_lat = round(track.lat, 6)
-        solver_lon = round(track.lon, 6)
-        lat = solver_lat
-        lon = solver_lon
-
-        # When ADS-B seeded the solver, label accordingly
-        has_adsb = adsb and adsb.get("lat") and adsb.get("lon")
-        position_source = "solver_adsb_seed" if has_adsb else "solver_single_node"
-
-        # Altitude / speed / heading: use ADS-B when available (more precise
-        # than the bistatic solver for these quantities), solver otherwise.
-        # ADS-B alt_baro can be the string "ground"; coerce to float safely.
-        def _num(v, fallback=0.0):
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                return float(fallback)
-
-        alt_ft = _num(adsb.get("alt_baro", track.alt_ft) if adsb else track.alt_ft)
-        gs = round(_num(adsb.get("gs", track.speed_knots) if adsb else track.speed_knots), 1)
-        heading = round(_num(adsb.get("track", track.track_angle) if adsb else track.track_angle), 1)
-
-        # Build ambiguity arc for every detection — including ADS-B-anchored
-        # ones. The frontend uses these as a radar-style afterglow trail: each
-        # WS update produces a new arc tagged with the current timestamp, old
-        # arcs fade independently. Without arcs for ADS-B aircraft, the
-        # synthetic fleet (where almost every target has ADS-B) gives the
-        # impression that nodes are idle, which they're not.
-        # Always centre on the bistatic-solved position (track.lat/lon), not
-        # on the raw ADS-B GPS fix.  When the ADS-B fix is stale or sits
-        # outside the beam (e.g. an aircraft near the TX tower), centering on
-        # adsb.lat/lon sweeps the wrong beam sector, yields few or no valid
-        # arc points, and the position falls back to an unstable raw solver
-        # output that jumps tens of km between frames.  track.lat/lon is
-        # always the bistatic-constrained estimate — correct sector, stable arc.
-        ambiguity_arc = _cached_single_node_arc(
-            ac_hex, track, node_cfg, _touched_arc_keys,
-        )
-        # raw_midpoint_lat/lon: the bistatic arc midpoint *before* any gates
-        # or smoothing.  Captured for the arc-motion log so velocity
-        # estimation is fed only true bistatic positions, not feedback from
-        # the smoothing pipeline or gate-reverted last_emit values.
-        raw_midpoint_lat = None
-        raw_midpoint_lon = None
-        if ambiguity_arc and position_source in ("solver_single_node", "solver_adsb_seed"):
-            midpoint = ambiguity_arc[len(ambiguity_arc) // 2]
-            lat = round(midpoint[0], 6)
-            lon = round(midpoint[1], 6)
-            raw_midpoint_lat = lat
-            raw_midpoint_lon = lon
-            position_source = "single_node_ellipse_arc"
-
-            # Speed gate: if the new arc midpoint moved faster than 800 m/s
-            # (~1560 kt) from the last EMITTED position, the tracker has likely
-            # mis-associated this frame's measurement to a different target.
-            # We compare against ``track_last_emit`` (refreshed every emit)
-            # rather than ``track_histories`` (deduped at ~5 m), because dedup
-            # can age the history timestamp 20-60 s for slow tracks and let a
-            # 20 km mis-association come out under 800 m/s.
-            # We revert the icon's lat/lon to the previous emit so a single
-            # mis-associated frame doesn't yank the marker.  The arc itself is
-            # still emitted: it represents this frame's bistatic measurement,
-            # which the user reads as "radar saw something along this curve".
-            # Nulling it left the testmap looking like every node was idle
-            # whenever a single noisy frame came through.
-            _last_emit = state.track_last_emit.get(ac_hex)
-            if _last_emit:
-                _prev_lat, _prev_lon, _prev_ts = _last_emit
-                _dt = now - _prev_ts
-                if 0 < _dt < 60:
-                    _dlat = (lat - _prev_lat) * 111_320
-                    _dlon = (lon - _prev_lon) * 111_320 * math.cos(math.radians(lat))
-                    _speed_ms = math.hypot(_dlat, _dlon) / _dt
-                    if _speed_ms > 800:
-                        lat = _prev_lat
-                        lon = _prev_lon
-
-            # RMS gate: persistently high rms_delay means the Kalman filter
-            # cannot fit the current measurement — the track is in a
-            # mis-association state and the icon's midpoint is unreliable.
-            # Revert the icon to the last emitted position; keep the arc as
-            # the honest "radar saw a detection along this curve" signal.
-            # Threshold 7 µs: median rms is ~2 µs for clean tracks; bad
-            # actors observed at 8–11 µs over dozens of consecutive frames.
-            # Inside the outer `if ambiguity_arc and position_source in (...)`
-            # block, so ambiguity_arc is guaranteed non-null here — only rms
-            # needs checking.
-            _rms = getattr(track, "rms_delay", 0.0) or 0.0
-            if _rms > 7.0 and _last_emit:
-                lat = _last_emit[0]
-                lon = _last_emit[1]
-        elif not ambiguity_arc:
-            # Arc is None.  Only suppress the track if there was a valid delay
-            # measurement (delay > 0) but the arc still failed — which means
-            # the solver position is outside the antenna beam and is unreliable.
-            # If delay is 0/None the track has no bistatic measurement data and
-            # should pass through rather than disappearing due to a missing arc.
-            _arc_delay = getattr(track, "latest_delay_us", None)
-            if _arc_delay and _arc_delay > 0:
-                return None
-
-        # Dead-reckon non-arc tracks (multinode, solver_adsb_seed) from the
-        # last fix using stored velocity so positions update smoothly
-        # between frame arrivals.  Arc tracks (single_node_ellipse_arc)
-        # stay pinned to the bistatic-detected position — attempts to
-        # extrapolate the arc midpoint between detections produced visible
-        # oscillation because multiple node-pipelines can update the same
-        # hex with conflicting track.lat values.  The frontend's own 60 fps
-        # icon dead-reckoning still slides the visible aircraft forward
-        # between emits using the gs / track fields.
-        if position_source != "single_node_ellipse_arc":
-            _vel_e = getattr(track, 'vel_east', 0.0) or 0.0
-            _vel_n = getattr(track, 'vel_north', 0.0) or 0.0
-            _pft = getattr(track, 'pos_fix_ts', 0.0) or getattr(track, 'wall_clock_ts', 0.0) or 0.0
-            _dr_elapsed = min(now - _pft, 60.0)
-            if _dr_elapsed > 0.5 and (_vel_e != 0.0 or _vel_n != 0.0):
-                _cos_lat = math.cos(math.radians(lat)) or 1e-9
-                lat = round(lat + (_vel_n / 111_320.0) * _dr_elapsed, 6)
-                lon = round(lon + (_vel_e / (111_320.0 * _cos_lat)) * _dr_elapsed, 6)
-
-        # Record arc-motion samples from the raw bistatic midpoint (kept
-        # for the gs/heading estimator that drives the frontend's icon
-        # dead-reckoning on tracks without ADS-B).
-        if raw_midpoint_lat is not None:
-            _record_arc_motion(ac_hex, raw_midpoint_lat, raw_midpoint_lon, now)
-
-        # ── Position-jump anomaly ──────────────────────────────────────────
-        # Flag a track that teleports — the solver mis-associated a far-away
-        # measurement and the position leapt across the map.  The tracker's
-        # own anomaly checks (supersonic, position_mismatch, identity_swap)
-        # all require ADS-B truth, so non-ADS-B synthetic single-node tracks
-        # had no jump detection at all; the speed gate above only reverts
-        # arc-track positions (silently, no flag) and is skipped entirely
-        # when dt ≥ 60 s, and multinode tracks have no gate.  This check is
-        # universal: it compares the candidate position (the raw solver /
-        # arc-midpoint position, *before* the arc-track revert hides it)
-        # against the last emit and flags an implausible jump.
-        #
-        # state.track_last_emit still holds the PREVIOUS emit here — it is
-        # refreshed on the line below.  We compare the FINAL emitted position
-        # (post-revert), so an arc jump that the speed gate already caught
-        # and reverted is NOT flagged — there's no visible teleport in that
-        # case.  Only positions that actually leap on screen get flagged.
-        _position_jump = False
-        _prev_emit = state.track_last_emit.get(ac_hex)
-        if _prev_emit:
-            _pe_lat, _pe_lon, _pe_ts = _prev_emit
-            _jdt = now - _pe_ts
-            _jdlat = (lat - _pe_lat) * 111_320
-            _jdlon = (lon - _pe_lon) * 111_320 * math.cos(math.radians(lat))
-            _jdist_m = math.hypot(_jdlat, _jdlon)
-            # Trigger on either: a sustained-interval speed above Mach 3
-            # (~1029 m/s — well past any real aircraft, so no false positives
-            # on legitimate military supersonic traffic), or an absolute
-            # single-emit leap over 30 km regardless of dt (covers the
-            # reappear-after-gap case where dt is large and the implied speed
-            # looks deceptively low).
-            if (0 < _jdt < 120 and _jdist_m / _jdt > 1029.0) or _jdist_m > 30_000.0:
-                _position_jump = True
-
-        append_track_history(ac_hex, lat, lon, alt_ft, now)
-        # Refresh the speed-gate reference on every emit (dedup-free) so the
-        # next frame's gate sees the true emit-to-emit interval.
-        state.track_last_emit[ac_hex] = [lat, lon, now]
-
-        # gs/heading fallback for single-node arc tracks without ADS-B: the
-        # LM solver routinely emits track.speed_knots in the 0–5 kt range
-        # because doppler-only velocity is poorly constrained, and the
-        # aircraft sits frozen on the map between sparse bistatic frames.
-        # Derive a plausible gs/track from the arc-midpoint displacement
-        # logged across recent emits — the only honest velocity signal
-        # we have for those tracks.
-        if gs < 10 and not has_adsb:
-            _est = _estimate_velocity_from_motion(ac_hex, lat, lon, now)
-            if _est is not None:
-                gs, heading = _est
-
-        # Record ADS-B-verified positions as calibration points for empirical coverage.
-        if has_adsb:
-            nid = node_cfg.get("node_id")
-            if nid:
-                state.node_analytics.record_calibration_point(nid, solver_lat, solver_lon)
-                # Track furthest verified detections per node (for detection range)
-                area = state.node_analytics.detection_areas.get(nid)
-                if area:
-                    area.record_verified_detection(adsb.get("lat", 0), adsb.get("lon", 0), ac_hex)
-            # Track accuracy: haversine(solver, adsb) per aircraft per update
-            adsb_lat = adsb.get("lat", 0)
-            adsb_lon = adsb.get("lon", 0)
-            if adsb_lat and adsb_lon:
-                err_km = position_distance_km(solver_lat, solver_lon, adsb_lat, adsb_lon)
-                _record_accuracy_sample(ac_hex, err_km, position_source, now)
-
-        rms_delay = round(getattr(track, "rms_delay", 0.0) or 0.0, 3)
-        rms_doppler = round(getattr(track, "rms_doppler", 0.0) or 0.0, 2)
-
-        # Anomaly propagation: GeolocatedTrack → state.anomaly_hexes.
-        # Fold in the position-jump flag computed above so a teleporting
-        # track is marked anomalous even when the tracker itself saw nothing
-        # wrong (no ADS-B to contradict, doppler within Mach 1).
-        _anom_types = set(getattr(track, "anomaly_types", set()))
-        if _position_jump:
-            _anom_types.add("position_jump")
-        _is_anom = bool(getattr(track, "is_anomalous", False)) or _position_jump
-        _max_vel = getattr(track, "max_velocity_ms", 0.0)
-        _flag_hex = ac_hex
-        with state.anomaly_lock:
-            if _is_anom:
-                state.anomaly_hexes.add(_flag_hex)
-            else:
-                state.anomaly_hexes.discard(_flag_hex)
-
-        return {
-            "hex": ac_hex,
-            "ground_truth_hex": resolve_ground_truth_hex(ac_hex, lat, lon),
-            "type": "tisb_other",
-            "flight": (track.adsb_hex or f"PR{abs(hash(track.track_id)) % 10000:04d}").strip(),
-            "alt_baro": round(alt_ft),
-            "alt_geom": round(alt_ft),
-            "gs": gs,
-            "track": heading,
-            "lat": lat,
-            "lon": lon,
-            "seen": 0,
-            "messages": track.n_detections,
-            "rssi": -10.0,
-            "category": "A3",
-            "multinode": False,
-            "position_source": position_source,
-            "ambiguity_arc": ambiguity_arc,
-            "solver_lat": solver_lat,
-            "solver_lon": solver_lon,
-            "rms_delay": rms_delay,
-            "rms_doppler": rms_doppler,
-            "delay_us": round(getattr(track, "latest_delay_us", 0.0) or 0.0, 3),
-            "doppler_hz": round(getattr(track, "latest_doppler_hz", 0.0) or 0.0, 2),
-            "node_id": node_cfg.get("node_id"),
-            "target_class": getattr(track, "target_class", None),
-            "recent_positions": list(state.track_histories.get(ac_hex, [])),
-            "is_anomalous": _is_anom,
-            "anomaly_types": sorted(_anom_types) if _anom_types else [],
-            "max_velocity_ms": round(_max_vel, 1),
-        }
-
-    # Staleness threshold: skip geolocated tracks not updated in the last
-    # 120 s.  Without this, geolocated_tracks accumulates dead entries
-    # between prune cycles and causes O(N_stale) work per flush — arc
-    # computation, ground-truth resolution, history writes — all holding
-    # the GIL and starving frame workers.
-    _STALE_TRACK_S_LOCAL = STALE_TRACK_S
-
-    # 1. Pre-aggregated geolocated aircraft (O(active) ≈ 275 instead of
-    #    O(pipelines × tracks) ≈ 915 × 2.4).  Stale entries are pruned here.
-    stale_geo = []
-    with state.geo_aircraft_lock:
-        for ac_hex, (track, cfg) in list(state.active_geo_aircraft.items()):
-            if (now - getattr(track, 'wall_clock_ts', 0)) > _STALE_TRACK_S_LOCAL:
-                stale_geo.append(ac_hex)
-                continue
-            if ac_hex in seen_hex:
-                continue
-            seen_hex.add(ac_hex)
-            entry = _track_entry(ac_hex, track, cfg)
-            if entry is not None:
-                aircraft.append(entry)
-        for k in stale_geo:
-            state.active_geo_aircraft.pop(k, None)
-            state.track_last_emit.pop(k, None)
-        with state.anomaly_lock:
-            for k in stale_geo:
-                state.anomaly_hexes.discard(k)
-
-    # 2. Default pipeline — catch any tracks not in the pre-aggregated dict
-    for track in list(default_pipeline.geolocated_tracks.values()):
-        if (now - getattr(track, 'wall_clock_ts', 0)) > _STALE_TRACK_S_LOCAL:
-            continue
-        ac_hex = track.adsb_hex or track.hex_id
-        if ac_hex in seen_hex:
-            continue
-        seen_hex.add(ac_hex)
-        entry = _track_entry(ac_hex, track, default_pipeline.config)
-        if entry is not None:
-            aircraft.append(entry)
-
-    # 3. Multi-node solver
-    stale_mn = []
-    for key, r in list(state.multinode_tracks.items()):
-        age_s = now - r.get("timestamp_ms", 0) / 1000
-        if age_s > 60:
-            stale_mn.append(key)
-            continue
-        ac = multinode_to_aircraft(key, r)
-        # Dead-reckon position using solver velocity (vel_east/vel_north in m/s)
-        ts_fix = r.get("timestamp_ms", 0) / 1000.0
-        elapsed = min(now - ts_fix, 60.0)
-        vel_east_m_s = r.get("vel_east", 0.0)
-        vel_north_m_s = r.get("vel_north", 0.0)
-        if elapsed > 0.0 and (vel_east_m_s != 0.0 or vel_north_m_s != 0.0):
-            cos_lat = math.cos(math.radians(ac["lat"])) or 1e-9
-            ac["lat"] = round(ac["lat"] + (vel_north_m_s / 111_320.0) * elapsed, 5)
-            ac["lon"] = round(ac["lon"] + (vel_east_m_s / (111_320.0 * cos_lat)) * elapsed, 5)
-        if ac["hex"] not in seen_hex:
-            seen_hex.add(ac["hex"])
-            append_track_history(ac["hex"], ac["lat"], ac["lon"], ac["alt_baro"], now)
-            ac["recent_positions"] = list(state.track_histories.get(ac["hex"], []))
-            ac["ground_truth_hex"] = resolve_ground_truth_hex(ac["hex"], ac["lat"], ac["lon"])
-            aircraft.append(ac)
-    for k in stale_mn:
-        _mn_hex = f"mn{abs(hash(k)) % 0xFFFF:04x}"
-        with state.anomaly_lock:
-            state.anomaly_hexes.discard(_mn_hex)
-        state.multinode_tracks.pop(k, None)
-
-    # 4. ADS-B only — excluded from map per design.
-    # Aircraft must have at least one radar detection to appear.
-    # ADS-B data is used only as a solver seed and for enrichment
-    # (callsign, altitude, velocity) of radar-detected aircraft.
-    # Stale entries are still pruned to avoid unbounded memory growth.
-    stale_adsb = []
-    for hex_code, entry in list(state.adsb_aircraft.items()):
-        age_s = now - entry.get("last_seen_ms", 0) / 1000
-        if age_s > 60:
-            stale_adsb.append(hex_code)
-    for k in stale_adsb:
-        state.adsb_aircraft.pop(k, None)
-
-    # 4b. Prune stale ground-truth trails and track histories to bound
-    # memory and keep resolve_ground_truth_hex O(N) scans cheap.
-    _GT_STALE_S = 300.0
-    stale_gt = [
-        h for h, trail in list(state.ground_truth_trails.items())
-        if not trail or (now - trail[-1][3]) > _GT_STALE_S
-    ]
-    for h in stale_gt:
-        state.ground_truth_trails.pop(h, None)
-        state.ground_truth_meta.pop(h, None)
-        with state.anomaly_lock:
-            state.anomaly_hexes.discard(h)
-
-    stale_th = [
-        h for h, trail in list(state.track_histories.items())
-        if not trail or (now - trail[-1][3]) > _GT_STALE_S
-    ]
-    for h in stale_th:
-        state.track_histories.pop(h, None)
-        # NOTE: do NOT prune track_last_emit here.  track_histories ages out
-        # via the ~5 m dedup even when the track is still actively emitting
-        # the same arc midpoint.  Clearing the speed-gate reference would
-        # then let the next bad measurement leak through unchecked.
-        # track_last_emit is pruned when the track itself goes stale
-        # (see stale_geo cleanup above).
-
-    # 5. Pending detection arcs from tracker tracks not yet geolocated.
-    # These arcs appear immediately on each detection without waiting for
-    # M-of-N promotion + LM solver convergence.
-    # Recompute only every _ARC_REFRESH_S seconds — iterating 915 pipelines
-    # × ~5000 tracks per second is a GIL-heavy operation that starves frame
-    # workers.  Cached arcs are good enough for the 1-Hz map refresh.
-    global _cached_pending_arcs, _arcs_last_ts
-    if now - _arcs_last_ts >= _ARC_REFRESH_S:
-        _arcs_last_ts = now
-        pending_arcs = []
-        for pipeline in list(state.node_pipelines.values()):
-            node_cfg = pipeline.config
-            for track in list(pipeline.tracker.tracks):
-                # TENTATIVE tracks haven't been promoted via M-of-N yet — they
-                # may still be flagged for deletion.  Skip them so spurious
-                # short-lived tracks don't produce arcs.  ACTIVE and COASTING
-                # tracks both produce arcs: at 22 fps a single missed frame
-                # flips ACTIVE → COASTING and the next frame flips it back, so
-                # filtering COASTING here would cause the arc to flicker at
-                # ~11 Hz for any aircraft with intermittent detection.  The
-                # natural lifecycle (track deleted after N_DELETE missed frames)
-                # is what stops the arc when the aircraft truly leaves the beam.
-                if track.state_status == TrackState.TENTATIVE:
-                    continue
-                if track.adsb_hex:
-                    _ae = state.adsb_aircraft.get(track.adsb_hex)
-                    if _ae and now - _ae.get("last_seen_ms", 0) / 1000 < 60:
-                        continue
-                meas = track.history.get("measurements")
-                if not meas:
-                    continue
-                latest = next((m for m in reversed(meas) if m is not None), None)
-                if latest is None:
-                    continue
-                delay_us = latest.get("delay", 0)
-                if delay_us <= 0:
-                    continue
-                arc = _build_single_node_arc(delay_us, node_cfg)
-                if not arc or len(arc) < 2:
-                    continue
-                pending_arcs.append({
-                    "ambiguity_arc": arc,
-                    "node_id": node_cfg.get("node_id"),
-                    "doppler_hz": round(latest.get("doppler", 0), 2),
-                    "target_class": getattr(track, "target_class", None),
-                })
-        _cached_pending_arcs = pending_arcs
-    else:
-        pending_arcs = _cached_pending_arcs
-
-    # Ground-truth snapshot — recompute every _GT_REFRESH_S seconds.
-    global _cached_gt_snapshot, _cached_gt_meta, _gt_last_ts
-    if now - _gt_last_ts >= _GT_REFRESH_S:
-        _gt_last_ts = now
-        _cached_gt_snapshot = {
-            h: list(trail)[-30:]
-            for h, trail in list(state.ground_truth_trails.items())
-            if trail
-        }
-        _cached_gt_meta = dict(state.ground_truth_meta)
-
-    # Evict arc-cache entries for tracks not present this build, bounding the
-    # cache to the live fleet with no timer: a plane is either in this snapshot
-    # or it is not.  An empty touched set (no arc tracks this build) prunes all.
-    for _stale_key in [k for k in _single_node_arc_cache if k not in _touched_arc_keys]:
-        del _single_node_arc_cache[_stale_key]
-
-    return {
-        "now": now,
-        "messages": len(aircraft),
-        "aircraft": aircraft,
-        "detection_arcs": pending_arcs,
-        "ground_truth": _cached_gt_snapshot,
-        "ground_truth_meta": _cached_gt_meta,
-        "anomaly_hexes": sorted(state.anomaly_hexes),
-    }
+# ── Back-compat re-exports ────────────────────────────────────────────────────
+# The feed builder, track gates, GC and shared helpers moved to their own
+# modules (services.aircraft_feed / track_gates / feed_gc / feed_helpers).
+# These bindings keep every existing import site working; the mutable objects
+# (e.g. _single_node_arc_cache) are only
+# ever mutated in place by their owners, so shared bindings stay in sync.
+from services.aircraft_feed import (  # noqa: E402,F401
+    build_combined_aircraft_json,
+    multinode_to_aircraft,
+)
+from services.feed_helpers import (  # noqa: E402,F401
+    _estimate_velocity_from_motion,
+    _estimate_velocity_ms_from_motion,
+    _looks_like_same_aircraft,
+    _record_arc_motion,
+    append_track_history,
+    dedup_aircraft,
+    position_distance_km,
+    resolve_ground_truth_hex,
+)
+from services.track_gates import (  # noqa: E402,F401
+    _bearing_deg,
+    _build_single_node_arc,
+    _cached_single_node_arc,
+    _enu_to_lla,
+    _record_accuracy_sample,
+    _single_node_arc_cache,
+    fresh_adsb,
+    track_entry,
+)

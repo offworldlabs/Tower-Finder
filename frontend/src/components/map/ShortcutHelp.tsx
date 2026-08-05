@@ -3,22 +3,28 @@ interface ShortcutHelpProps {
   onClose: () => void;
 }
 
+// Keep in sync with `shortcutMap` in LiveAircraftMap.tsx — this table is the
+// user-facing documentation of those bindings.  (It previously listed an "O"
+// binding that never existed and omitted Shift+X / P / M / N.)
 const SHORTCUTS: Array<[string, string]> = [
-  ["?",      "Show / hide this help"],
-  ["/",      "Focus the aircraft search box"],
-  ["Escape", "Clear search / deselect aircraft"],
-  ["Space",  "Pause / resume live feed"],
-  ["F",      "Toggle filter panel"],
-  ["L",      "Toggle aircraft labels"],
-  ["T",      "Toggle trails"],
-  ["C",      "Toggle node coverage zones"],
-  ["I",      "Toggle illuminators (TX towers)"],
-  ["G",      "Toggle ground-truth overlay"],
-  ["A",      "Colour aircraft by altitude"],
-  ["R",      "Range rings around selected"],
-  ["S",      "Live stats panel"],
-  ["X",      "Export selected aircraft trail (CSV)"],
-  ["O",      "Toggle 'my nodes only' (owner view)"],
+  ["?",       "Show / hide this help"],
+  ["/",       "Focus the aircraft search box"],
+  ["Escape",  "Clear search / deselect aircraft"],
+  ["Space",   "Pause / resume live feed"],
+  ["F",       "Toggle filter panel"],
+  ["L",       "Toggle aircraft labels"],
+  ["T",       "Toggle trails"],
+  ["C",       "Toggle node coverage zones"],
+  ["I",       "Toggle illuminators (TX towers)"],
+  ["G",       "Toggle ground-truth overlay"],
+  ["A",       "Colour aircraft by altitude"],
+  ["R",       "Range rings around selected"],
+  ["S",       "Live stats panel"],
+  ["X",       "Export selected aircraft trail (CSV)"],
+  ["Shift+X", "Export all aircraft trails (CSV)"],
+  ["P",       "Pin / unpin selected aircraft"],
+  ["M",       "Locate me"],
+  ["N",       "Toggle emergency-squawk sound"],
 ];
 
 export default function ShortcutHelp({ visible, onClose }: ShortcutHelpProps) {

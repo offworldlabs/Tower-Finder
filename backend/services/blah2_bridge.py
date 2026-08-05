@@ -160,7 +160,7 @@ async def blah2_bridge_task():
                         try:
                             state.frame_queue.put_nowait((NODE_ID, frame))
                         except Exception:
-                            state.frames_dropped += 1
+                            state.bump_counter("frames_dropped")
 
                 failures = 0
                 state.task_last_success["blah2_bridge"] = time.time()

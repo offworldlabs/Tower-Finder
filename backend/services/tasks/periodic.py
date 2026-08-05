@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import math
 import time
 
 import httpx
@@ -17,9 +16,33 @@ from config.constants import (
 )
 from core import state
 from services.frame_processor import flush_all_archive_buffers
+from services.geo import haversine_km
 
 _opensky_client: httpx.AsyncClient | None = None
 _adsb_lol_client: object | None = None
+
+
+async def close_http_clients() -> None:
+    """Shutdown hook: close the pooled clients (they had no close path)."""
+    global _opensky_client, _adsb_lol_client
+    if _opensky_client is not None:
+        try:
+            await _opensky_client.aclose()
+        except Exception:
+            pass
+        _opensky_client = None
+    if _adsb_lol_client is not None:
+        closer = getattr(_adsb_lol_client, "aclose", None) or getattr(
+            _adsb_lol_client, "close", None
+        )
+        if closer is not None:
+            try:
+                res = closer()
+                if asyncio.iscoroutine(res):
+                    await res
+            except Exception:
+                pass
+        _adsb_lol_client = None
 
 
 async def archive_flush_task():
@@ -85,9 +108,16 @@ async def prune_synthetic_nodes():
                     # Only prune if disconnected
                     if info.get("status") != "disconnected":
                         continue
-                    # Only prune if old enough
-                    first_seen = info.get("first_seen_ts", now)
-                    if now - first_seen > MAX_AGE_DISCONNECTED_S:
+                    # Age from the *disconnect*, not from first_seen — an
+                    # 8-day-connected node used to be pruned one second after
+                    # a blip.  Entries marked disconnected before the
+                    # disconnect timestamp existed (or restored from an old
+                    # snapshot) have no disconnected_ts; fall back to
+                    # first_seen_ts so they still age out eventually.
+                    disconnected_at = info.get("disconnected_ts") or info.get(
+                        "first_seen_ts", now
+                    )
+                    if now - disconnected_at > MAX_AGE_DISCONNECTED_S:
                         to_remove.append(node_id)
                         pruned.append(node_id)
                 for node_id in to_remove:
@@ -186,7 +216,14 @@ async def _fetch_external_adsb() -> bool:
                 return False
             opensky_failed = True
     except Exception:
-        _opensky_client = None
+        # Close before dropping the reference: discarding the client leaked
+        # its connection pool once per poll for the whole of an outage.
+        _dead_client, _opensky_client = _opensky_client, None
+        if _dead_client is not None:
+            try:
+                await _dead_client.aclose()
+            except Exception:
+                pass
         opensky_failed = True
 
     # ── Fallback: adsb.lol ────────────────────────────────────────────────────
@@ -248,9 +285,8 @@ def _cross_validate_adsb_reports():
             ext = state.external_adsb_cache.get(sample.adsb_hex.lower())
             if ext is None:
                 continue
-            dlat = sample.adsb_lat - ext["lat"]
-            dlon = sample.adsb_lon - ext["lon"]
-            dist_km = math.sqrt(dlat ** 2 + dlon ** 2) * 111.0
+            dist_km = haversine_km(sample.adsb_lat, sample.adsb_lon,
+                                   ext["lat"], ext["lon"])
             if dist_km > 10.0:
                 rep = state.node_analytics.reputations.get(node_id)
                 if rep:

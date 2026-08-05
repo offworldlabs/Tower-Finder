@@ -37,7 +37,7 @@ from core.auth import (
     set_node_owner,
 )
 from core.runtime_config import runtime_path
-from core.task_registry import TASK_EXPECTED_INTERVAL_S
+from core.task_registry import get_stale_tasks
 from core.users import (
     User,
     get_async_session,
@@ -49,16 +49,17 @@ from core.users import (
 logger = logging.getLogger(__name__)
 
 
-def _get_stale_tasks() -> list[str]:
-    now = time.time()
-    stale = []
-    for task_name, expected_s in TASK_EXPECTED_INTERVAL_S.items():
-        last = state.task_last_success.get(task_name)
-        if last is None:
-            continue
-        if (now - last) > expected_s * 2:
-            stale.append(task_name)
-    return stale
+# Was a byte-identical copy of routes/test.py's; the rule now lives beside the
+# interval table it reads.
+_get_stale_tasks = get_stale_tasks
+
+
+def _mn_pos_history_size() -> int:
+    """Size of the solver's per-hex smoothing buffer (soak observability)."""
+    from services.tasks import solver as _solver
+    with _solver._MN_POS_HISTORY_LOCK:
+        return len(_solver._MN_POS_HISTORY)
+
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 # ── Persistent event log ─────────────────────────────────────────────────────
@@ -75,7 +76,7 @@ def _load_events():
             for ev in data:
                 _events.append(ev)
         except Exception:
-            pass
+            logger.debug("could not load %s", _EVENTS_FILE, exc_info=True)
 
 
 def _save_events():
@@ -264,6 +265,52 @@ async def admin_set_node_owner(
     return {"ok": True, "node_id": node_id, "user_id": body.user_id}
 
 
+# ── Node retirement ───────────────────────────────────────────────────────────
+
+@router.get("/nodes/stale")
+async def admin_list_stale_nodes(_admin=Depends(require_admin)):
+    """Per-node state held for nodes that are no longer in the fleet.
+
+    Nothing removes a node automatically, so decommissioned, renamed, or
+    superseded receivers accumulate here and are paid for on every analytics
+    pass and snapshot write.  See services.node_retirement.
+    """
+    from services import node_retirement
+    stale = node_retirement.stale_node_ids()
+    return {"stale_nodes": stale, "count": len(stale),
+            "live_nodes": len(node_retirement.live_node_ids())}
+
+
+@router.delete("/nodes/{node_id}/state")
+async def admin_retire_node(node_id: str, force: bool = False, admin=Depends(require_admin)):
+    """Forget a node: analytics, coverage files, custody chain, reputation.
+
+    Irreversible — the coverage polygon represents observation time that cannot
+    be recreated.  Refuses a currently-connected node unless force=true, since
+    the next registration would undo it anyway.
+    """
+    from services import node_retirement
+    try:
+        report = node_retirement.retire_node(node_id, force=force)
+    except node_retirement.NodeStillConnected as exc:
+        raise HTTPException(
+            409, f"Node {node_id} is connected; pass force=true to retire it anyway"
+        ) from exc
+    log_event("node", f"Retired node state for {node_id}", "warning",
+              {"node_id": node_id, "by": admin["email"], "report": report})
+    return report
+
+
+@router.post("/nodes/retire-stale")
+async def admin_retire_stale_nodes(admin=Depends(require_admin)):
+    """Retire every node held in state but absent from the fleet."""
+    from services import node_retirement
+    result = node_retirement.retire_stale_nodes()
+    log_event("node", f"Retired {result['count']} stale node(s)", "warning",
+              {"by": admin["email"], "nodes": [r["node_id"] for r in result["retired"]]})
+    return result
+
+
 # ── Events ────────────────────────────────────────────────────────────────────
 
 @router.get("/events")
@@ -422,7 +469,7 @@ async def leaderboard(_user=Depends(get_current_user)):
         try:
             summaries = orjson.loads(raw).get("nodes", {})
         except Exception:
-            pass
+            logger.debug("analytics snapshot bytes unparseable", exc_info=True)
     # Fall back to live computation only if the snapshot is empty
     if not summaries:
         loop = asyncio.get_running_loop()
@@ -507,6 +554,12 @@ async def system_metrics(_user=Depends(require_admin)):
         "active_geo_aircraft": len(state.active_geo_aircraft),
         "multinode_tracks": len(state.multinode_tracks),
         "adsb_aircraft": len(state.adsb_aircraft),
+        # Store sizes that used to grow without bound — exposed so a soak can
+        # watch them plateau instead of trusting the fix.
+        "track_arc_motion": len(state.track_arc_motion),
+        "mn_pos_history": _mn_pos_history_size(),
+        "track_histories": len(state.track_histories),
+        "ground_truth_trails": len(state.ground_truth_trails),
         "ws_clients": len(state.ws_clients),
         "ws_live_clients": len(state.ws_live_clients),
         "stale_tasks": _get_stale_tasks(),

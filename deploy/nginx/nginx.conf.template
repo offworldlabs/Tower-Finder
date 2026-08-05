@@ -1,0 +1,209 @@
+# ── Single nginx config for every deployed environment ───────────────────────
+# Rendered at container boot by deploy/start.sh via deploy/render-nginx-config.py:
+# `# RETINA_INCLUDE <path>` markers are inlined from deploy/nginx/, then the
+# brace-delimited placeholders below are substituted from an explicit allowlist.
+# Production and staging run *the same* routing, security headers and rate
+# limits — only the hostnames and the CSP's connect-src differ.
+#
+# This replaced a hand-maintained nginx.conf + nginx-staging.conf pair that had
+# silently diverged: staging had no Content-Security-Policy on any vhost and no
+# /api/auth/ rate limit, so both were effectively untested until production.
+#
+# Every placeholder used here MUST appear in SUBSTITUTIONS in
+# render-nginx-config.py and in both compose overlays; the renderer fails the
+# boot if one is missing,
+# and CI asserts the two environments render to the same config modulo
+# hostnames (deploy/check-env-parity.sh).
+
+# Redirect all HTTP → HTTPS
+server {
+    listen 80;
+    server_name ${HOST_MAIN} ${HOST_API} ${HOST_MAP} ${HOST_DASH} ${HOST_ADMIN} ${HOST_TESTAPI} ${HOST_TESTMAP} ${HOST_LEGACY_REDIRECT} _;
+    return 301 https://$host$request_uri;
+}
+
+# ${HOST_MAIN} — tower finder frontend
+server {
+    listen 443 ssl;
+    server_name ${HOST_MAIN};
+
+    # RETINA_INCLUDE snippets/tls.conf
+    # RETINA_INCLUDE snippets/security-headers-page.conf
+
+    root /app/frontend/dist;
+    index index.html;
+
+    # WebSocket → FastAPI backend
+    location /ws/ {
+        # RETINA_INCLUDE snippets/ws.conf
+    }
+
+    # API requests → FastAPI backend
+    location /api/ {
+        # RETINA_INCLUDE snippets/api.conf
+    }
+
+    location /api/auth/ {
+        # RETINA_INCLUDE snippets/auth.conf
+    }
+
+    # Frontend SPA at /towers as well as at the root
+    location /towers {
+        alias /app/frontend/dist;
+        try_files $uri $uri/ /index.html;
+    }
+
+    # RETINA_INCLUDE snippets/spa.conf
+}
+
+# ${HOST_API} — dedicated API subdomain
+server {
+    listen 443 ssl;
+    server_name ${HOST_API};
+
+    # RETINA_INCLUDE snippets/tls.conf
+    # RETINA_INCLUDE snippets/security-headers-api.conf
+
+    location /ws/ {
+        # RETINA_INCLUDE snippets/ws.conf
+    }
+
+    location /api/auth/ {
+        # RETINA_INCLUDE snippets/auth.conf
+    }
+
+    location / {
+        # RETINA_INCLUDE snippets/api.conf
+    }
+}
+
+# ${HOST_MAP} — live radar map (React frontend)
+server {
+    listen 443 ssl;
+    server_name ${HOST_MAP};
+
+    # RETINA_INCLUDE snippets/tls.conf
+    # RETINA_INCLUDE snippets/security-headers-page.conf
+
+    root /app/frontend/dist;
+    index index.html;
+
+    location /ws/ {
+        # RETINA_INCLUDE snippets/ws.conf
+    }
+
+    location /api/ {
+        # RETINA_INCLUDE snippets/api.conf
+    }
+
+    # RETINA_INCLUDE snippets/spa.conf
+}
+
+# ${HOST_TESTAPI} — test network API (same backend as ${HOST_API})
+server {
+    listen 443 ssl;
+    server_name ${HOST_TESTAPI};
+
+    # RETINA_INCLUDE snippets/tls.conf
+    # RETINA_INCLUDE snippets/security-headers-api.conf
+
+    location /ws/ {
+        # RETINA_INCLUDE snippets/ws.conf
+    }
+
+    location / {
+        # RETINA_INCLUDE snippets/api.conf
+    }
+}
+
+# ${HOST_TESTMAP} — test network live radar map (React frontend)
+server {
+    listen 443 ssl;
+    server_name ${HOST_TESTMAP};
+
+    # RETINA_INCLUDE snippets/tls.conf
+    # RETINA_INCLUDE snippets/security-headers-page.conf
+
+    root /app/frontend/dist;
+    index index.html;
+
+    location /ws/ {
+        # RETINA_INCLUDE snippets/ws.conf
+    }
+
+    location /api/ {
+        # RETINA_INCLUDE snippets/api.conf
+    }
+
+    # RETINA_INCLUDE snippets/spa.conf
+}
+
+# ${HOST_DASH} — user dashboard
+server {
+    listen 443 ssl;
+    server_name ${HOST_DASH};
+
+    # RETINA_INCLUDE snippets/tls.conf
+    # RETINA_INCLUDE snippets/security-headers-page.conf
+
+    root /app/dashboard/dist;
+    index index.html;
+
+    location /ws/ {
+        # RETINA_INCLUDE snippets/ws.conf
+    }
+
+    location /api/ {
+        # RETINA_INCLUDE snippets/api.conf
+    }
+
+    # RETINA_INCLUDE snippets/spa.conf
+}
+
+# ${HOST_ADMIN} — admin dashboard (same bundle as ${HOST_DASH}; the app gates
+# the admin routes on the authenticated user's role)
+server {
+    listen 443 ssl;
+    server_name ${HOST_ADMIN};
+
+    # RETINA_INCLUDE snippets/tls.conf
+    # RETINA_INCLUDE snippets/security-headers-page.conf
+
+    root /app/dashboard/dist;
+    index index.html;
+
+    location /ws/ {
+        # RETINA_INCLUDE snippets/ws.conf
+    }
+
+    location /api/ {
+        # RETINA_INCLUDE snippets/api.conf
+    }
+
+    # RETINA_INCLUDE snippets/spa.conf
+}
+
+# ${HOST_LEGACY_REDIRECT} — standalone tower-finder-service (a separate compose
+# stack reached over the shared `retina-edge` docker network). Only production
+# runs that stack; on staging this vhost answers 502, which is expected and
+# harmless — keeping the block identical is what lets the parity check assert
+# the two rendered configs match.
+server {
+    listen 443 ssl;
+    server_name ${HOST_LEGACY_REDIRECT};
+
+    # RETINA_INCLUDE snippets/tls.conf
+    # RETINA_INCLUDE snippets/security-headers-api.conf
+
+    location / {
+        limit_req zone=api burst=60 nodelay;
+        # Resolve the upstream via Docker's embedded DNS at request time (note
+        # the variable) so this nginx still boots when the tower-finder-service
+        # stack is down — a missing upstream then 502s instead of failing boot.
+        resolver 127.0.0.11 valid=10s;
+        set $tfs_upstream tower-finder-service;
+        proxy_pass http://$tfs_upstream:8000;
+        # RETINA_INCLUDE snippets/proxy-common.conf
+        proxy_read_timeout 120s;
+    }
+}

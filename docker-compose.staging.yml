@@ -1,98 +1,83 @@
-# ── Staging Environment ──────────────────────────────────────────────────────
-# Deploys server + fleet simulator with synthetic data.
-# Used by CI to validate changes before production promotion.
+# ── Staging overlay ──────────────────────────────────────────────────────────
+# Combined with docker-compose.yml (the shared base). Everything that is not
+# inherently per-environment lives in the base; this file carries only the
+# staging values for the things that legitimately differ:
+#   hostnames/CORS · droplet capacity · fleet scale
 #
-# Usage:
-#   docker compose -f docker-compose.staging.yml up -d --build
-#   docker compose -f docker-compose.staging.yml logs -f
-#   docker compose -f docker-compose.staging.yml down
+# Staging deliberately mirrors production in every other respect — same image
+# pins, same volumes, same healthcheck, same nginx template, same authenticated
+# ingest path — so a change that breaks prod breaks staging first.
+#
+# Usage (the host's ./.env sets COMPOSE_FILE, so this is normally implicit):
+#   docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d --build
+#
+# Adding anything else here will fail deploy/check-env-parity.sh in CI. If a new
+# setting really is per-environment, add its key to that script's allowlist in
+# the same commit, so the divergence is a recorded decision rather than drift.
 
 services:
-  # ── Main server: API + TCP + nginx ────────────────────────────────────────
   tower-finder:
-    build: .
     container_name: retina-staging-server
-    ports:
-      - "80:80"
-      - "443:443"
-      - "3012:3012"
-    volumes:
-      - /etc/ssl/cloudflare:/etc/ssl/cloudflare:ro
-    env_file:
-      - backend/.env
     environment:
       - RETINA_ENV=staging
-      - CORS_ORIGINS=https://staging.retina.fm,https://staging-api.retina.fm,https://staging-dash.retina.fm,https://staging-map.retina.fm
-      - RADAR_TCP_PORT=3012
-      - FRAME_WORKERS=6
-      - FRAME_QUEUE_SIZE=10000
-      # Bind the API on the compose network (port 8000 is NOT published in
-      # `ports:`, so it stays off-host) so the fleet can POST ADS-B/ground-truth.
-      - UVICORN_HOST=0.0.0.0
-    # bash, not sh: start.sh's supervisor uses `wait -n`, a bash builtin that
-    # dash rejects ("Illegal option -n"), which crash-loops the server.
-    command: ["/bin/bash", "/app/deploy/start.sh"]
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      # Grace window for a cold boot (state/coverage warmup): failing checks
-      # here don't count toward `retries` or flip the container `unhealthy`, so
-      # a slow-but-fine boot isn't branded unhealthy and doesn't abort the
-      # fleet's `depends_on: service_healthy`. Matches prod (docker-compose.yml)
-      # and composes safely with start.sh's fast-failure supervisor, whose T
-      # (60s) sits below this so a slow-but-running boot never counts as a crash.
-      start_period: 90s
+      - CORS_ORIGINS=https://staging.retina.fm,https://staging-api.retina.fm,https://staging-map.retina.fm,https://staging-dash.retina.fm,https://staging-admin.retina.fm
+      # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
+      # at boot to render deploy/nginx/nginx.conf.template. One template serves
+      # both environments; only these values change.
+      #
+      # Every vhost is defined here even where no DNS record exists yet
+      # (staging-admin, staging-testapi): the Cloudflare origin cert is
+      # *.retina.fm, so an unresolved name costs nothing, and keeping the two
+      # variable sets the same shape is what lets the parity check assert the
+      # rendered configs are identical.
+      - HOST_MAIN=staging.retina.fm
+      - HOST_API=staging-api.retina.fm
+      - HOST_MAP=staging-map.retina.fm
+      - HOST_DASH=staging-dash.retina.fm
+      - HOST_ADMIN=staging-admin.retina.fm
+      - HOST_TESTAPI=staging-testapi.retina.fm
+      - HOST_TESTMAP=staging-testmap.retina.fm
+      - HOST_LEGACY_REDIRECT=staging-tower-finder.retina.fm
+      # The only host-naming part of the CSP. wss://*.retina.fm already covers
+      # both environments, so only the two explicit origins vary.
+      - CSP_CONNECT_SRC=https://staging-api.retina.fm https://staging-admin.retina.fm wss://*.retina.fm
     deploy:
       resources:
         limits:
           cpus: "2"
           memory: 3G
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "3"
 
-  # ── Fleet simulator: synthetic radar nodes ────────────────────────────────
   fleet:
-    build:
-      context: .
-      dockerfile: Dockerfile.fleet
     container_name: retina-staging-fleet
-    depends_on:
-      tower-finder:
-        condition: service_healthy
     environment:
-      - FLEET_NODES=50
+      # Scoped to the Greenville, SC metro, and ~60% of prod's node count: the
+      # staging droplet is smaller. This is the intended difference between the
+      # two environments — everything else is meant to match.
+      - FLEET_NODES=15
       - FLEET_REGIONS=us
+      - FLEET_METRO=gvl
+      - FLEET_N_CLUSTER=10
+      - FLEET_N_CLUSTERS=1
+      # Undesigned community layout rather than the ring.  The ring surrounds
+      # the core with receivers that all share one illuminator and all aim
+      # inward — geometry a real fleet will not have, so staging was measuring
+      # the solver under conditions it will not meet.  Scatter clumps sites
+      # where people live, gives each its own nearby illuminator, aims by hand
+      # and varies the hardware.  Prod keeps the ring for the demo.
+      - FLEET_LAYOUT=scatter
+      - FLEET_METRO_TRAFFIC_FRAC=0.85
       - FLEET_MODE=adsb
-      - FLEET_INTERVAL=40.0
+      # 15 nodes / 2.0s = 7.5 fps
+      - FLEET_INTERVAL=2.0
       - FLEET_TIME_SCALE=1.0
-      - FLEET_MIN_AIRCRAFT=20
-      - FLEET_MAX_AIRCRAFT=40
+      - FLEET_MIN_AIRCRAFT=10
+      - FLEET_MAX_AIRCRAFT=20
       - FLEET_BEAM_WIDTH_DEG=0
       - FLEET_MAX_RANGE_KM=0
       - FLEET_CONCURRENCY=10
       - FLEET_CONNECT_RETRIES=10
-      - FLEET_HOST=tower-finder
-      - FLEET_PORT=3012
-      - FLEET_VALIDATE=false
-      # HTTP base URL for live ADS-B / ground-truth pushes (the moving "truth"
-      # tracks). Must point at the server over the compose network, not the
-      # fleet's own localhost. Reaches uvicorn directly (UVICORN_HOST=0.0.0.0).
-      - FLEET_VALIDATION_URL=http://tower-finder:8000
-      - FLEET_SEED=42
-    restart: unless-stopped
     deploy:
       resources:
         limits:
           cpus: "1"
           memory: 1G
-    logging:
-      driver: json-file
-      options:
-        max-size: "20m"
-        max-file: "3"

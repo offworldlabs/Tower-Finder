@@ -16,6 +16,8 @@ from retina_custody.hash_chain import HashChainEntry, HashChainVerifier
 
 from config.constants import CHAIN_ENTRIES_MAX_PER_NODE, IQ_COMMITMENTS_MAX_PER_NODE
 from core import state
+from services.geo import valid_latlon
+from services.id_utils import normalize_hex_key
 
 # Optional shared token for node authentication. If not set, any node can connect.
 _RADAR_NODE_TOKEN: str | None = os.getenv("RADAR_NODE_TOKEN")
@@ -45,7 +47,7 @@ def _log_event(category: str, message: str, severity: str = "info", meta: dict |
         from routes.admin import log_event
         log_event(category, message, severity, meta)
     except Exception:
-        pass
+        logging.debug("event log write failed", exc_info=True)
 
 RETINA_PROTOCOL_VERSION = "1.0"
 SERVER_CAPABILITIES = {
@@ -329,6 +331,9 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
         if node_id and node_id in state.connected_nodes:
             with state.connected_nodes_lock:
                 state.connected_nodes[node_id]["status"] = "disconnected"
+                # Retention windows must age from *this* moment, not from
+                # first_seen_ts — prune_synthetic_nodes reads it.
+                state.connected_nodes[node_id]["disconnected_ts"] = time.time()
             _log_event(
                 "node",
                 f"Node {node_id} disconnected",
@@ -461,6 +466,13 @@ _NODE_MIN_INTERVAL_S: float = float(_os.getenv("NODE_FRAME_MIN_INTERVAL_S", "1.0
 _per_node_last_enqueue: dict[str, float] = {}
 
 
+def _reset_for_tests() -> None:
+    """Restore this module's private state to boot values.  Tests only."""
+    global _last_drop_log
+    _per_node_last_enqueue.clear()
+    _last_drop_log = 0.0
+
+
 def _enqueue_detection(msg: dict, node_id: str | None):
     global _last_drop_log
     frame = msg.get("data", msg)
@@ -492,7 +504,7 @@ def _enqueue_detection(msg: dict, node_id: str | None):
     try:
         state.frame_queue.put_nowait((node_id or "tcp-unknown", frame))
     except asyncio.QueueFull:
-        state.frames_dropped += 1
+        state.bump_counter("frames_dropped")
         # Rate-limit drop warnings to once per 30 s so logging doesn't
         # block the event loop under heavy load (1000+ nodes).
         if now_m - _last_drop_log > 30:
@@ -520,12 +532,17 @@ def _apply_synthetic_adsb(msg: dict, node_id: str):
     for entry in adsb_list:
         if not isinstance(entry, dict):
             continue
-        hex_code = entry.get("hex")
+        # Normalise the key: every reader of state.adsb_aircraft that
+        # deduplicates or cross-references lowercases first, and the sim
+        # ingest path already stores lowercased.  A node reporting uppercase
+        # ICAO hexes otherwise silently loses ADS-B enrichment, EWMA
+        # smoothing and coverage calibration.
+        hex_code = normalize_hex_key(entry.get("hex"))
         if not hex_code:
             continue
-        lat = entry.get("lat", 0)
-        lon = entry.get("lon", 0)
-        if not lat or not lon or not _math.isfinite(lat) or not _math.isfinite(lon):
+        lat = entry.get("lat")
+        lon = entry.get("lon")
+        if not valid_latlon(lat, lon) or not _math.isfinite(lat) or not _math.isfinite(lon):
             continue
         state.adsb_aircraft[hex_code] = {
             "hex": hex_code,

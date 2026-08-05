@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { API_BASE, ARC_TOTAL_LIFE_MS, MAX_HISTORY } from "./constants";
 import { mergeTrailPositions } from "./trails";
+import { validLatLon } from "./geo";
+import type { RadarNode } from "../../types";
 import { usesRealOnlyFeed } from "../../utils/domains";
 import { fetchMe, fetchMyNodes } from "../../api";
 
@@ -31,6 +33,9 @@ export function useAircraftFeed(ownerOnly = false) {
   const wsRef = useRef(null);
   const reconnectTimer = useRef(null);
   const reconnectAttempts = useRef(0);
+  // True once the owning effect has cleaned up — stops the async onclose
+  // handler from resurrecting the socket after unmount.
+  const wsClosedRef = useRef(false);
   const pausedRef = useRef(false);
   const historyRef = useRef([]);
   // Watchdog: timestamp of last received WS message — detects zombie connections
@@ -62,7 +67,7 @@ export function useAircraftFeed(ownerOnly = false) {
     const trails = trailsRef.current;
     const now = Date.now() / 1000;
     for (const ac of newAircraft) {
-      if (!ac.lat || !ac.lon) continue;
+      if (!validLatLon(ac.lat, ac.lon)) continue;
       const hex = ac.hex;
       if (ac.recent_positions && ac.recent_positions.length > 0) {
         trails[hex] = mergeTrailPositions(trails[hex] || [], ac.recent_positions);
@@ -180,7 +185,7 @@ export function useAircraftFeed(ownerOnly = false) {
 
   // --- WebSocket connection with reconnect ---
   const connectWs = useCallback(() => {
-    if (wsRef.current) return;
+    if (wsRef.current || wsClosedRef.current) return;
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     // Owner mode overrides the public feeds with a server-filtered, cookie-authed feed.
     // Otherwise map.retina.fm streams only the real radar node; testmap streams all.
@@ -206,6 +211,10 @@ export function useAircraftFeed(ownerOnly = false) {
     };
 
     ws.onclose = () => {
+      // Unmounted: onclose fires *after* the effect cleanup ran, so without
+      // this guard it re-scheduled connectWs and opened a fresh socket that
+      // outlived the component (and called setConnected on an unmounted one).
+      if (wsClosedRef.current) return;
       setConnected(false);
       wsRef.current = null;
       // Exponential backoff: 3s, 6s, 12s … capped at 30s
@@ -219,10 +228,13 @@ export function useAircraftFeed(ownerOnly = false) {
   }, [ingestAircraft, ownerOnly]);
 
   useEffect(() => {
+    wsClosedRef.current = false;
     connectWs();
     return () => {
+      wsClosedRef.current = true;
       clearTimeout(reconnectTimer.current);
       if (wsRef.current) {
+        wsRef.current.onclose = null;
         wsRef.current.close();
         wsRef.current = null;
       }
@@ -330,9 +342,12 @@ function nodeDisplayFuzz(nodeId) {
  * Fetch radar node positions for coverage zones.
  */
 export function useNodes() {
-  const [nodes, setNodes] = useState([]);
+  const [nodes, setNodes] = useState<RadarNode[]>([]);
 
   useEffect(() => {
+    // Cancelled on unmount: this poll had no guard at all, so an in-flight
+    // response resolved into setNodes on an unmounted component.
+    const controller = new AbortController();
     async function loadNodes() {
       try {
         // On map.retina.fm request only real nodes from the backend — avoids
@@ -340,10 +355,11 @@ export function useNodes() {
         const url = usesRealOnlyFeed
           ? `${API_BASE}/radar/analytics?real_only=true`
           : `${API_BASE}/radar/analytics`;
-        const res = await fetch(url);
+        const res = await fetch(url, { signal: controller.signal });
         if (!res.ok) return;
         const data = await res.json();
-        const nodeList = [];
+        if (controller.signal.aborted) return;
+        const nodeList: RadarNode[] = [];
         for (const [id, info] of Object.entries(data.nodes || {})) {
           // Mirror backend's is_synthetic_node() prefix list. The backend
           // already strips these from real_only feeds, but the analytics
@@ -389,6 +405,9 @@ export function useNodes() {
               beam_azimuth_deg: da.beam_azimuth_deg,
               beam_width_deg: da.beam_width_deg,
               max_range_km: da.max_range_km,
+              // Null for a node that declares no differential limit, which
+              // keeps the legacy circular sector.
+              max_bistatic_range_km: da.max_bistatic_range_km ?? null,
               empirical_polygon: ec?.polygon ?? null,
               empirical_n_points: ec?.n_points ?? 0,
             });
@@ -401,7 +420,10 @@ export function useNodes() {
     }
     loadNodes();
     const interval = setInterval(loadNodes, 30000);
-    return () => clearInterval(interval);
+    return () => {
+      controller.abort();
+      clearInterval(interval);
+    };
   }, []);
 
   return nodes;

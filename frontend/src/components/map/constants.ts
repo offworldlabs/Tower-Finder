@@ -1,9 +1,7 @@
 export const API_BASE = "/api";
-export const ANIMATION_MS = 700;
 export const STALE_AIRCRAFT_MS = 8000;
 export const MAX_HISTORY = 150;
 export const VIEWPORT_PAD_DEG = 1.5;
-export const FOCUS_CLUSTER_LIMIT = 24;
 
 // Arc fade lifecycle.  Single source of truth for the renderer (LiveAircraftMap
 // DetectionArcs) and the buffer pruner (hooks.useAircraftFeed).  They must
@@ -12,6 +10,19 @@ export const FOCUS_CLUSTER_LIMIT = 24;
 export const ARC_HOLD_MS = 0;
 export const ARC_FADE_MS = 5_000;
 export const ARC_TOTAL_LIFE_MS = ARC_HOLD_MS + ARC_FADE_MS;
+
+// Ground-truth objects and radar tracks both live in the frontend's per-hex
+// animation stores (fixesRef / smoothRef / trail buffers).  In simulation a
+// radar track carries the *same* ICAO hex as the aircraft it came from, so
+// without a namespace the two write to one key and the marker alternates
+// between the solved position and the true one on every ingest — measured at
+// 29.8 km apart for a single-node arc track on staging.  Truth entries are
+// therefore stored under this prefix; `hex` on the object stays the real hex
+// so labels, selection and error computation are unaffected.
+// TTL for truth objects when the feed stops (pushes arrive every ~2 s).
+export const GT_FEED_STALE_MS = 30_000;
+export const GT_KEY_PREFIX = "gt:";
+export const groundTruthKey = (hex) => GT_KEY_PREFIX + hex;
 
 // position_source string for single-node arc-only aircraft (lat/lon is the
 // arc midpoint, not a real fix).  Backend emits this verbatim — keep in sync

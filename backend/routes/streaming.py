@@ -49,7 +49,9 @@ async def websocket_aircraft(ws: WebSocket):
     except WebSocketDisconnect:
         pass
     except Exception:
-        pass
+        # NOT a client disconnect — a bug here (e.g. in payload filtering)
+        # used to be swallowed and read as one.
+        logging.debug("websocket handler error", exc_info=True)
     finally:
         state.ws_clients.discard(ws)
         logging.info("WebSocket client disconnected (%d remaining)", len(state.ws_clients))
@@ -74,7 +76,9 @@ async def websocket_aircraft_live(ws: WebSocket):
     except WebSocketDisconnect:
         pass
     except Exception:
-        pass
+        # NOT a client disconnect — a bug here (e.g. in payload filtering)
+        # used to be swallowed and read as one.
+        logging.debug("websocket handler error", exc_info=True)
     finally:
         state.ws_live_clients.discard(ws)
         logging.info("WS live client disconnected (%d remaining)", len(state.ws_live_clients))
@@ -113,7 +117,9 @@ async def websocket_aircraft_owner(ws: WebSocket):
     except WebSocketDisconnect:
         pass
     except Exception:
-        pass
+        # NOT a client disconnect — a bug here (e.g. in payload filtering)
+        # used to be swallowed and read as one.
+        logging.debug("websocket handler error", exc_info=True)
     finally:
         state.ws_owner_clients.pop(ws, None)
         logging.info("WS owner client disconnected (%d remaining)", len(state.ws_owner_clients))

@@ -1,7 +1,6 @@
 """Radar pipeline endpoints: receiver/aircraft JSON, detections, nodes, status."""
 
 import asyncio
-import json
 import logging
 import os
 import time
@@ -52,7 +51,6 @@ if not RADAR_API_KEY:
         logging.warning(_msg)
 _RATE_LIMIT = int(os.getenv("RADAR_RATE_LIMIT", "60"))
 _RATE_WINDOW = int(os.getenv("RADAR_RATE_WINDOW", "60"))
-_TAR1090_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tar1090_data")
 _ALLOWED_DETECTION_DIR = os.path.realpath(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "coverage_data", "archive")
 )
@@ -219,8 +217,10 @@ async def load_detection_file(body: LoadFileRequest, _admin=Depends(require_admi
 
     tracks = _default_pipeline.process_file(filepath)
     aircraft_data = _default_pipeline.generate_aircraft_json()
-    with open(os.path.join(_TAR1090_DATA_DIR, "aircraft.json"), "w") as f:
-        json.dump(aircraft_data, f)
+    # Do NOT write aircraft.json here.  The flush task is the file's single
+    # writer (a different schema was being raced in from this request
+    # thread); marking dirty makes the next 1 Hz flush pick the load up.
+    state.aircraft_dirty = True
 
     return {"status": "ok", "tracks": len(tracks), "aircraft": aircraft_data["aircraft"]}
 

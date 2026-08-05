@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { haversineDistanceKm, bearingDeg, isInBeam } from "./geo";
+import {
+  haversineDistanceKm,
+  bearingDeg,
+  isInBeam,
+  bistaticRangeLimitKm,
+  yagiSectorPositions,
+} from "./geo";
 
 describe("haversineDistanceKm", () => {
   it("is zero for the same point", () => {
@@ -83,5 +89,76 @@ describe("isInBeam", () => {
     // Beam pointing 10°, half-width 30°. Target at bearing ~315° (NW),
     // delta ≈ -55°, well outside.
     expect(isInBeam(RX_LAT, RX_LON, 10, 60, MAX_RANGE_KM, 0.5, -0.5)).toBe(false);
+  });
+});
+
+describe("bistaticRangeLimitKm", () => {
+  const DELTA = 60;
+
+  it("gives Δ/2 directly away from the transmitter, whatever the baseline", () => {
+    // The case a circle of radius Δ gets most wrong: 30 km of real coverage
+    // against 60 km assumed.
+    for (const baseline of [5, 25, 43, 100]) {
+      expect(bistaticRangeLimitKm(180, baseline, DELTA)).toBeCloseTo(30, 6);
+    }
+  });
+
+  it("gives Δ/2 + L toward the transmitter, which can exceed Δ", () => {
+    expect(bistaticRangeLimitKm(0, 25, DELTA)).toBeCloseTo(55, 6);
+    // A tower 43 km out genuinely reaches past 60 km.
+    expect(bistaticRangeLimitKm(0, 43, DELTA)).toBeCloseTo(73, 6);
+  });
+
+  it("collapses to a circle of radius Δ/2 with no baseline", () => {
+    for (const psi of [0, 45, 90, 180]) {
+      expect(bistaticRangeLimitKm(psi, 0, DELTA)).toBeCloseTo(30, 6);
+    }
+  });
+
+  it("matches the backend's bistatic_range_limit_km", () => {
+    // Same formula the association gate uses; drift between them would make
+    // the map disagree with what is actually being associated.
+    expect(bistaticRangeLimitKm(90, 30, DELTA)).toBeCloseTo(
+      (DELTA * (DELTA + 2 * 30)) / (2 * (30 + DELTA)), 6,
+    );
+  });
+});
+
+describe("yagiSectorPositions", () => {
+  // RX at 34.85N, TX 43 km due north — a long baseline, so the two shapes
+  // differ in both directions.
+  const RX_LAT = 34.85, RX_LON = -82.40;
+  const TX_LAT = 35.236, TX_LON = -82.40;
+
+  function reach(points, bearingDegWanted) {
+    // Distance from RX to the vertex nearest the requested bearing.
+    let best = null, bestDiff = Infinity;
+    for (const [lat, lon] of points.slice(1, -1)) {
+      const b = bearingDeg(RX_LAT, RX_LON, lat, lon);
+      const diff = Math.abs(((b - bearingDegWanted + 180) % 360 + 360) % 360 - 180);
+      if (diff < bestDiff) { bestDiff = diff; best = [lat, lon]; }
+    }
+    return haversineDistanceKm(RX_LAT, RX_LON, best[0], best[1]);
+  }
+
+  it("keeps a constant radius when no bistatic limit is given", () => {
+    const pts = yagiSectorPositions(RX_LAT, RX_LON, TX_LAT, TX_LON, 0, 180, 60);
+    expect(reach(pts, 0)).toBeCloseTo(60, 0);
+    expect(reach(pts, 90)).toBeCloseTo(60, 0);
+  });
+
+  it("reaches further toward the transmitter than away from it", () => {
+    const pts = yagiSectorPositions(RX_LAT, RX_LON, TX_LAT, TX_LON, 0, 360, 60, 60);
+    const toward = reach(pts, 0);     // due north, at the TX
+    const away = reach(pts, 180);     // due south
+    expect(toward).toBeCloseTo(73, 0);
+    expect(away).toBeCloseTo(30, 0);
+    expect(toward).toBeGreaterThan(away * 2);
+  });
+
+  it("closes the polygon at the receiver", () => {
+    const pts = yagiSectorPositions(RX_LAT, RX_LON, TX_LAT, TX_LON, 0, 41, 60, 60);
+    expect(pts[0]).toEqual([RX_LAT, RX_LON]);
+    expect(pts[pts.length - 1]).toEqual([RX_LAT, RX_LON]);
   });
 });

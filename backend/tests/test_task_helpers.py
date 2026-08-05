@@ -1,9 +1,12 @@
-"""Unit tests for services/tasks/_helpers.py — haversine_km and bistatic_delay_us."""
+"""Unit tests for the backend geodesy surface — haversine_km and bistatic_delay_us.
+
+(The services/tasks/_helpers.py shim these came from is collapsed; the one
+implementation lives in services.geo.)"""
 
 import pytest
 
 from config.constants import C_KM_US
-from services.tasks._helpers import bistatic_delay_us, haversine_km
+from services.geo import bistatic_delay_us, haversine_km
 
 
 class TestHaversineKm:

@@ -4,7 +4,6 @@ import logging
 import math
 import os
 import time
-from collections import deque
 from datetime import datetime, timezone
 
 import orjson
@@ -12,9 +11,11 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from fastapi.responses import Response
 
 from core import state
-from core.task_registry import TASK_EXPECTED_INTERVAL_S
+from core.task_registry import get_stale_tasks
 from core.users import require_admin
-from services.frame_processor import normalize_hex_key, resolve_ground_truth_hex
+from services.frame_processor import resolve_ground_truth_hex
+from services.geo import haversine_km
+from services.id_utils import normalize_hex_key
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -50,17 +51,9 @@ def _verify_sim_key(x_api_key: str = Header(default="", alias="X-API-Key")):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
 
-def _get_stale_tasks() -> list[str]:
-    """Return names of tasks that haven't reported success within their expected interval."""
-    now = time.time()
-    stale = []
-    for task_name, expected_s in TASK_EXPECTED_INTERVAL_S.items():
-        last = state.task_last_success.get(task_name)
-        if last is None:
-            continue  # task hasn't started yet — not stale
-        if (now - last) > expected_s * 2:
-            stale.append(task_name)
-    return stale
+# Was a byte-identical copy of routes/admin.py's; the rule now lives beside the
+# interval table it reads.
+_get_stale_tasks = get_stale_tasks
 
 
 # Module-level reference set from main.py at startup
@@ -171,6 +164,18 @@ def _build_dashboard_data() -> bytes:
             "solver": {
                 "successes": state.solver_successes,
                 "failures": state.solver_failures,
+                # n=2 solves that succeeded but were withheld from the map
+                # because their track pairing did not clear the chi2 gate (or
+                # was outbid for a shared single-node track).  Distinct from
+                # failures: the solve worked, it just did not earn publication.
+                # Only observable here — the per-solve reason is logged at DEBUG,
+                # which staging does not emit.
+                "n2_unconfirmed": state.n2_unconfirmed,
+                # Overlap grids rebuilt because a node's observed coverage
+                # tightened, and how many nodes triggered it.  Zero against
+                # populated polygons means the prior is not reaching the grids.
+                "coverage_rebuilds": state.coverage_rebuilds,
+                "coverage_rebuild_nodes": state.coverage_rebuild_nodes,
                 "queue_drops": state.solver_queue_drops,
                 "last_latency_s": round(state.solver_last_latency_s, 3),
                 "avg_latency_s": round(state.solver_total_latency_s / max(state.solver_total_solved, 1), 3),
@@ -186,7 +191,9 @@ def _build_dashboard_data() -> bytes:
 
 
 @router.post("/api/test/validate")
-async def validate_ground_truth(body: dict = Body(...)):
+async def validate_ground_truth(body: dict = Body(...), _key=Depends(_verify_sim_key)):
+    # _verify_sim_key: this was the one POST here with no auth dependency at
+    # all — an unauthenticated compute endpoint over the full aircraft list.
     truth_list = body.get("ground_truth", [])
     if not truth_list:
         raise HTTPException(status_code=400, detail="ground_truth list required")
@@ -209,9 +216,7 @@ async def validate_ground_truth(body: dict = Body(...)):
             sa_lat, sa_lon = sa.get("lat", 0), sa.get("lon", 0)
             if sa_lat == 0 and sa_lon == 0:
                 continue
-            dlat = (gt_lat - sa_lat) * 111.0
-            dlon = (gt_lon - sa_lon) * 111.0 * math.cos(math.radians(gt_lat))
-            dist_km = math.sqrt(dlat**2 + dlon**2)
+            dist_km = haversine_km(gt_lat, gt_lon, sa_lat, sa_lon)
             if dist_km < best_dist and dist_km < 50:
                 best_dist = dist_km
                 best_match = (i, sa)
@@ -295,100 +300,6 @@ async def validate_ground_truth(body: dict = Body(...)):
     }
 
 
-@router.post("/api/test/ground-truth/push")
-async def push_ground_truth_snapshot(body: dict = Body(...), _key=Depends(_verify_sim_key)):
-    ts = body.get("ts_ms", int(time.time() * 1000)) / 1000.0
-    aircraft_list = body.get("aircraft", [])
-    if not isinstance(aircraft_list, list):
-        raise HTTPException(status_code=400, detail="aircraft list required")
-
-    for ac in aircraft_list:
-        hex_code = normalize_hex_key(ac.get("hex") or ac.get("adsb_hex") or "")
-        if not hex_code:
-            continue
-        lat = ac.get("lat", 0.0)
-        lon = ac.get("lon", 0.0)
-        alt_m = ac.get("alt_m") or ac.get("alt_km", 0) * 1000
-        if not lat or not lon:
-            continue
-        if hex_code not in state.ground_truth_trails:
-            state.ground_truth_trails[hex_code] = deque(maxlen=state.GROUND_TRUTH_MAX)
-        trail = state.ground_truth_trails[hex_code]
-        if trail:
-            dlat = abs(trail[-1][0] - lat)
-            dlon = abs(trail[-1][1] - lon)
-            if dlat < 0.00005 and dlon < 0.00005:
-                continue
-        trail.append([round(lat, 6), round(lon, 6), round(alt_m, 0), round(ts, 1)])
-        # Store/update metadata for this ground truth object
-        state.ground_truth_meta[hex_code] = {
-            "object_type": ac.get("object_type", "aircraft"),
-            "is_anomalous": ac.get("is_anomalous", False),
-            "speed_ms": ac.get("speed_ms", 0),
-            "heading": ac.get("heading", 0),
-        }
-        # Flag anomalous objects and log events
-        if ac.get("is_anomalous"):
-            with state.anomaly_lock:
-                if hex_code not in state.anomaly_hexes:
-                    state.anomaly_hexes.add(hex_code)
-                    event = {
-                        "hex": hex_code,
-                        "ts": round(ts, 1),
-                        "lat": round(lat, 5),
-                        "lon": round(lon, 5),
-                        "reason": "anomalous_behavior",
-                        "object_type": ac.get("object_type", "unknown"),
-                        "flagged_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                    state.anomaly_log.append(event)
-                    if len(state.anomaly_log) > state.ANOMALY_LOG_MAX:
-                        state.anomaly_log = state.anomaly_log[-state.ANOMALY_LOG_MAX :]
-        else:
-            with state.anomaly_lock:
-                state.anomaly_hexes.discard(hex_code)
-
-    return {"status": "ok", "received": len(aircraft_list), "tracked_hex": len(state.ground_truth_trails)}
-
-
-@router.post("/api/sim/adsb/push")
-async def sim_push_adsb_positions(body: dict = Body(...), _key=Depends(_verify_sim_key)):
-    """Simulator pushes live ADS-B positions every second directly into state.adsb_aircraft.
-
-    This keeps each aircraft's position current at 1 Hz regardless of how many
-    nodes happen to observe it in a given frame interval.
-    """
-    ts_ms = body.get("ts_ms", int(time.time() * 1000))
-    aircraft_list = body.get("aircraft", [])
-    if not isinstance(aircraft_list, list):
-        raise HTTPException(status_code=400, detail="aircraft list required")
-
-    updated = 0
-    for ac in aircraft_list:
-        hex_code = normalize_hex_key(ac.get("hex") or "")
-        if not hex_code:
-            continue
-        lat = ac.get("lat")
-        lon = ac.get("lon")
-        if not lat or not lon:
-            continue
-        state.adsb_aircraft[hex_code] = {
-            "hex": hex_code,
-            "flight": ac.get("flight", ""),
-            "lat": lat,
-            "lon": lon,
-            "alt_baro": ac.get("alt_baro", 0),
-            "gs": ac.get("gs", 0),
-            "track": ac.get("track", 0),
-            "last_seen_ms": ts_ms,
-        }
-        updated += 1
-
-    if updated:
-        state.aircraft_dirty = True
-
-    return {"status": "ok", "updated": updated}
-
 
 @router.get("/api/test/ground-truth/{hex_code}")
 async def get_ground_truth_trail(hex_code: str):
@@ -410,9 +321,8 @@ async def get_ground_truth_trail(hex_code: str):
     if gt_trail and solved_trail:
         gt_last = gt_trail[-1]
         sol_last = solved_trail[-1]
-        dlat = (sol_last[0] - gt_last[0]) * 111.0
-        dlon = (sol_last[1] - gt_last[1]) * 111.0 * math.cos(math.radians(gt_last[0]))
-        position_error_km = round(math.sqrt(dlat**2 + dlon**2), 3)
+        position_error_km = round(
+            haversine_km(sol_last[0], sol_last[1], gt_last[0], gt_last[1]), 3)
 
     return {
         "hex": hex_code,
@@ -574,9 +484,8 @@ async def get_simulation_ground_truth():
             if trail:
                 gt_last = list(trail)[-1]
                 sol = solved_by_hex[hx]
-                dlat = (sol[0] - gt_last[0]) * 111.0
-                dlon = (sol[1] - gt_last[1]) * 111.0 * math.cos(math.radians(gt_last[0]))
-                pos_errors.append(math.sqrt(dlat**2 + dlon**2))
+                pos_errors.append(
+                    haversine_km(sol[0], sol[1], gt_last[0], gt_last[1]))
             if len(pos_errors) >= 200:
                 break
 

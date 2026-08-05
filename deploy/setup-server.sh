@@ -103,15 +103,23 @@ else
     cd "$APP_DIR"
 fi
 
-# Create .env with API keys + CORS for the REAL production domains.
+# Select the environment overlay for this host. Every `docker compose` command
+# below — and every one a human types over SSH later — resolves through this, so
+# the same commands work identically on staging and production. Without it a
+# bare `docker compose up` starts the shared base alone, which start.sh refuses
+# to boot because RETINA_ENV is unset.
+cp deploy/env."${RETINA_TARGET_ENV:-prod}".example .env
+
+# Create backend/.env with API keys. Hostnames, CORS and every other
+# per-environment value now live in the compose overlay (docker-compose.prod.yml
+# / docker-compose.staging.yml), not here — keeping them out of a hand-edited
+# per-host file is what stops the two environments drifting apart.
 # NOTE: this writes the minimum to boot the app + fleet. The live box also
-# carries deploy-specific config/secrets not set here (R2_* archive storage,
-# TOWER_API_URL, RETINA_ENV, COVERAGE_ENABLED); add those manually if needed.
+# carries deploy-specific secrets not set here (R2_* archive storage,
+# TOWER_API_URL, JWT_SECRET, COVERAGE_ENABLED); add those manually if needed.
 {
     echo "MAPRAD_API_KEY=${MAPRAD_API_KEY}"
     echo "RADAR_API_KEY=${RADAR_API_KEY}"
-    # Browser-facing origins, from deploy/nginx.conf server_name (not retina.fm).
-    echo "CORS_ORIGINS=https://towers.retina.fm,https://map.retina.fm,https://testmap.retina.fm,https://dash.retina.fm,https://admin.retina.fm,https://api.retina.fm"
 } > backend/.env
 
 chmod 600 backend/.env

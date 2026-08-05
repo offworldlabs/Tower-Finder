@@ -32,11 +32,32 @@ if [ -f /app/deploy/config-image/config/constants.py ]; then
         || echo "[start.sh] Info: could not refresh volume constants.py (volume may be root-owned); PYTHONPATH override is active"
 fi
 
-# Swap nginx config based on environment
-if [ "${RETINA_ENV}" = "staging" ] && [ -f /app/deploy/nginx-staging.conf ]; then
-    echo "[start.sh] Using staging nginx config for staging.retina.fm domains"
-    cp /app/deploy/nginx-staging.conf /etc/nginx/sites-available/default
-fi
+# ── Environment guard ───────────────────────────────────────────────────────
+# docker-compose.yml is a shared base carrying no environment identity; the
+# per-environment values live in docker-compose.{prod,staging}.yml. If the
+# overlay is missing (usually: no COMPOSE_FILE in the host's ./.env) we would
+# otherwise boot a stack with no hostnames and an empty CSP, which looks fine
+# until someone loads the site. Fail here instead, with the fix in the message.
+: "${RETINA_ENV:?not set — the compose overlay is missing. On the host: cp deploy/env.<prod|staging>.example .env}"
+: "${HOST_MAIN:?not set — the compose overlay is missing (see deploy/env.*.example)}"
+
+# ── Render the nginx config for this environment ────────────────────────────
+# One template + one set of snippets serve every deployed environment; only the
+# hostnames and the CSP's connect-src differ. Previously this was a `cp` that
+# swapped in a separate, hand-maintained nginx-staging.conf — which is how
+# staging ended up with no Content-Security-Policy and no /api/auth/ rate limit.
+#
+# The renderer substitutes an explicit allowlist of variables and leaves nginx's
+# own ($host, $remote_addr, …) untouched; it exits non-zero on a missing or
+# unknown variable. `set -e` turns that into a failed boot, which the deploy's
+# health gate reports — far better than silently serving a half-rendered site.
+python3 /app/deploy/render-nginx-config.py \
+    /app/deploy/nginx/nginx.conf.template \
+    /etc/nginx/sites-available/default
+
+# Validate before the supervisor starts, for the same reason.
+nginx -t
+echo "[start.sh] Rendered nginx config for RETINA_ENV=${RETINA_ENV} (${HOST_MAIN})"
 
 # ── uvicorn supervision: exit on a persistent fast crash-loop ────────────────
 # The fast in-process restart below absorbs *transient* uvicorn crashes without

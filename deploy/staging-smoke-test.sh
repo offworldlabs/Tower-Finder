@@ -63,6 +63,42 @@ check_json_field() {
     fi
 }
 
+check_header() {
+    local name="$1" url="$2" header="$3"
+    printf "  %-40s " "$name"
+    HEADERS=$($CURL -o /dev/null -D - "$url" 2>/dev/null) || { echo "FAIL (connection error)"; FAIL=$((FAIL+1)); return; }
+
+    if echo "$HEADERS" | tr 'A-Z' 'a-z' | grep -q "^${header}:"; then
+        echo "OK"
+        PASS=$((PASS+1))
+    else
+        echo "FAIL (no ${header} header)"
+        FAIL=$((FAIL+1))
+    fi
+}
+
+check_auth_rate_limit() {
+    local name="$1" url="$2"
+    printf "  %-40s " "$name"
+    # The `auth` zone is 5r/m with burst=3, so a short run of requests must
+    # start getting 429s. Anything else means the /api/auth/ location is
+    # missing — which is exactly the state staging was in before the nginx
+    # template was shared with production.
+    local code saw_429=0
+    for _ in $(seq 1 10); do
+        code=$($CURL -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) || continue
+        if [ "$code" = "429" ]; then saw_429=1; break; fi
+    done
+
+    if [ "$saw_429" = "1" ]; then
+        echo "OK (429 after burst)"
+        PASS=$((PASS+1))
+    else
+        echo "FAIL (no 429 in 10 requests; last=$code)"
+        FAIL=$((FAIL+1))
+    fi
+}
+
 echo "═══════════════════════════════════════════════════"
 echo "  Staging Smoke Tests"
 echo "  frontend: ${BASE_URL}"
@@ -91,6 +127,32 @@ echo ""
 echo "── Frontend assets ──"
 check_status "GET / (frontend)"             "${BASE_URL}/"                  "200"
 check        "HTML has app root"            "${BASE_URL}/"                  "id=\"root\""
+
+echo ""
+echo "── Shared nginx config (must match production) ──"
+# These used to exist only in production's hand-maintained nginx.conf, so a
+# change that broke either of them reached prod untested. Both environments now
+# render from deploy/nginx/nginx.conf.template — assert staging really serves
+# them, so the shared config is exercised and not merely present in the repo.
+#
+# Deliberately probed on /api/ rather than on `/`: nginx drops inherited
+# add_header directives in any location that declares its own, and the SPA's
+# `location = /index.html` sets Cache-Control — so the HTML document itself
+# carries none of these headers. That is long-standing production behaviour,
+# preserved as-is by the template refactor and tracked separately; asserting it
+# here on `/` would just fail.
+check_header "CSP on dashboard vhost"       "${DASH_URL}/api/health" "content-security-policy"
+check_header "CSP on frontend vhost"        "${BASE_URL}/api/health" "content-security-policy"
+check_header "HSTS on api subdomain"        "${API_URL}/api/health"  "strict-transport-security"
+check_auth_rate_limit "/api/auth/ is rate limited" "${BASE_URL}/api/auth/me"
+
+echo ""
+echo "── Detection archive (dash /data) ──"
+# The Data Explorer reads this endpoint. It returns an empty list for the first
+# hour after a deploy (ARCHIVE_FLUSH_INTERVAL_S), so assert the endpoint answers
+# rather than that it has rows — the volume that makes those rows survive a
+# rebuild is asserted by deploy/check-env-parity.sh instead.
+check_status "GET /api/data/archive"        "${BASE_URL}/api/data/archive?limit=1" "200"
 
 echo ""
 echo "── Synthetic fleet data (wait for fleet to connect) ──"

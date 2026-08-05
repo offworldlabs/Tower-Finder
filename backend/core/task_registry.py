@@ -1,8 +1,10 @@
 """Shared task staleness registry.
 
-Single source of truth for expected task intervals.
-Import from here in any module that needs to detect stale tasks.
+Single source of truth for expected task intervals — and, since two routers had
+grown byte-identical copies of the check, for the staleness rule itself.
 """
+
+import time
 
 # Task name → expected success interval in seconds.
 # A task is considered stale if it hasn't reported success within 2× this value.
@@ -21,3 +23,17 @@ TASK_EXPECTED_INTERVAL_S: dict[str, int] = {
     "track_archive_flush": 180,  # flush every 60 s; alert if >3× late
     "users_db_backup": 86400 * 2,  # daily; alert if it hasn't run in 2 days
 }
+
+
+def get_stale_tasks() -> list[str]:
+    """Tasks that have not reported success within 2x their expected interval.
+
+    A task with no recorded success has not started yet and is not stale.
+    """
+    from core import state
+    now = time.time()
+    return [
+        name for name, expected_s in TASK_EXPECTED_INTERVAL_S.items()
+        if (last := state.task_last_success.get(name)) is not None
+        and (now - last) > expected_s * 2
+    ]
