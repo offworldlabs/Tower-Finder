@@ -54,6 +54,22 @@ class TestShippedConfig:
         assert r3a["fc_hz"] == 177_000_000
         assert r3a["fc_hz"] != r3["fc_hz"]
 
+    def test_radar3_tx_is_wxia_not_a_copy_of_rx(self):
+        """Regression: tx_lat was once byte-identical to rx_lat, putting the
+        illuminator ~20 km north of WXIA-TV and biasing every radar3 solve.
+        A wrong coordinate is silent — only the delay residual shows it."""
+        r3 = next(n.config for n in load_nodes(config_file_path())
+                  if n.node_id == "radar3-retnode")
+        assert r3["tx_lat"] != r3["rx_lat"]
+        assert (r3["tx_lat"], r3["tx_lon"]) == (33.756667, -84.331944)
+        assert r3["fc_hz"] == 195_000_000
+
+    def test_every_node_tx_differs_from_its_rx(self):
+        """A bistatic pair with TX on top of RX has no baseline to solve against."""
+        for node in load_nodes(config_file_path()):
+            c = node.config
+            assert (c["tx_lat"], c["tx_lon"]) != (c["rx_lat"], c["rx_lon"]), node.node_id
+
     def test_registers_a_staleness_key_per_node(self):
         for node in load_nodes(config_file_path()):
             assert task_key(node.node_id) in TASK_EXPECTED_INTERVAL_S
