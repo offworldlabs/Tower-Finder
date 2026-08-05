@@ -9,7 +9,7 @@ const META = { "652600": { speed_ms: 148.8, heading: 217.3, object_type: "aircra
 
 describe("applyGroundTruthFixes", () => {
   it("namespaces truth entries away from the bare hex", () => {
-    const fixes = {};
+    const fixes: Record<string, any> = {};
     const keys = applyGroundTruthFixes(fixes, { "652600": trail(34.61, -82.4996) }, META, 1000);
 
     expect(Object.keys(fixes)).toEqual([groundTruthKey("652600")]);
@@ -18,7 +18,7 @@ describe("applyGroundTruthFixes", () => {
   });
 
   it("keeps the real hex on the object for labels and selection", () => {
-    const fixes = {};
+    const fixes: Record<string, any> = {};
     applyGroundTruthFixes(fixes, { "652600": trail(34.61, -82.4996) }, META, 1000);
 
     const fix = fixes[groundTruthKey("652600")];
@@ -38,7 +38,7 @@ describe("applyGroundTruthFixes", () => {
       position_source: "single_node_ellipse_arc",
       _fixLat: 34.8443, _fixLon: -82.342, _fixTs: 500,
     };
-    const fixes = { "652600": radar };
+    const fixes: Record<string, any> = { "652600": radar };
 
     applyGroundTruthFixes(fixes, { "652600": trail(34.61, -82.4996) }, META, 1000);
 
@@ -49,7 +49,7 @@ describe("applyGroundTruthFixes", () => {
   });
 
   it("preserves the dead-reckoning anchor while the fix has not moved", () => {
-    const fixes = {};
+    const fixes: Record<string, any> = {};
     applyGroundTruthFixes(fixes, { "652600": trail(34.61, -82.4996) }, META, 1000);
     applyGroundTruthFixes(fixes, { "652600": trail(34.61, -82.4996) }, META, 2000);
 
@@ -58,7 +58,7 @@ describe("applyGroundTruthFixes", () => {
   });
 
   it("re-anchors when the fix moves", () => {
-    const fixes = {};
+    const fixes: Record<string, any> = {};
     applyGroundTruthFixes(fixes, { "652600": trail(34.61, -82.4996) }, META, 1000);
     applyGroundTruthFixes(fixes, { "652600": trail(34.62, -82.4996) }, META, 2000);
 
@@ -66,7 +66,7 @@ describe("applyGroundTruthFixes", () => {
   });
 
   it("converts altitude to feet and speed to knots", () => {
-    const fixes = {};
+    const fixes: Record<string, any> = {};
     applyGroundTruthFixes(fixes, { "652600": trail(34.61, -82.4996, 3048) }, META, 1000);
 
     const fix = fixes[groundTruthKey("652600")];
@@ -75,7 +75,7 @@ describe("applyGroundTruthFixes", () => {
   });
 
   it("skips hexes with an empty trail", () => {
-    const fixes = {};
+    const fixes: Record<string, any> = {};
     const keys = applyGroundTruthFixes(fixes, { "652600": [], "218b6d": null }, META, 1000);
 
     expect(Object.keys(fixes)).toEqual([]);
@@ -96,7 +96,7 @@ function makeStores(fixes = {}, extra = {}) {
 
 describe("pruneGroundTruthFixes", () => {
   it("drops truth entries the snapshot no longer vouches for, across every store", () => {
-    const fixes = {};
+    const fixes: Record<string, any> = {};
     applyGroundTruthFixes(
       fixes, { "652600": trail(34.61, -82.4996), "218b6d": trail(34.85, -81.67) }, META, 1000,
     );

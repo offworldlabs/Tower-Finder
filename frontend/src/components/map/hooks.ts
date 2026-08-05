@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { API_BASE, ARC_TOTAL_LIFE_MS, MAX_HISTORY } from "./constants";
 import { mergeTrailPositions } from "./trails";
 import { validLatLon } from "./geo";
+import type { RadarNode } from "../../types";
 import { usesRealOnlyFeed } from "../../utils/domains";
 import { fetchMe, fetchMyNodes } from "../../api";
 
@@ -341,7 +342,7 @@ function nodeDisplayFuzz(nodeId) {
  * Fetch radar node positions for coverage zones.
  */
 export function useNodes() {
-  const [nodes, setNodes] = useState([]);
+  const [nodes, setNodes] = useState<RadarNode[]>([]);
 
   useEffect(() => {
     // Cancelled on unmount: this poll had no guard at all, so an in-flight
@@ -358,7 +359,7 @@ export function useNodes() {
         if (!res.ok) return;
         const data = await res.json();
         if (controller.signal.aborted) return;
-        const nodeList = [];
+        const nodeList: RadarNode[] = [];
         for (const [id, info] of Object.entries(data.nodes || {})) {
           // Mirror backend's is_synthetic_node() prefix list. The backend
           // already strips these from real_only feeds, but the analytics

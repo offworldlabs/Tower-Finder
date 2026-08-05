@@ -371,19 +371,9 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
         raw_midpoint_lon = lon
         position_source = "single_node_ellipse_arc"
 
-        # Speed gate: if the new arc midpoint moved faster than 800 m/s
-        # (~1560 kt) from the last EMITTED position, the tracker has likely
-        # mis-associated this frame's measurement to a different target.
-        # We compare against ``track_last_emit`` (refreshed every emit)
-        # rather than ``track_histories`` (deduped at ~5 m), because dedup
-        # can age the history timestamp 20-60 s for slow tracks and let a
-        # 20 km mis-association come out under 800 m/s.
-        # We revert the icon's lat/lon to the previous emit so a single
-        # mis-associated frame doesn't yank the marker.  The arc itself is
-        # still emitted: it represents this frame's bistatic measurement,
-        # which the user reads as "radar saw something along this curve".
-        # Nulling it left the testmap looking like every node was idle
-        # whenever a single noisy frame came through.
+        # Gate-hold bookkeeping shared by the speed and RMS gates below.
+        # (The 13-line speed-gate rationale was duplicated here verbatim;
+        # it now lives once, beside the gate itself.)
         #
         # Both gates below are bounded by GATE_MAX_HOLD_S.  Reverting sets
         # track_last_emit to the reverted value with a fresh timestamp (see

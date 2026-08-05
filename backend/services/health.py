@@ -11,6 +11,7 @@ Each issue is a dict: {"type": str, "severity": "critical"|"warning", "message":
 includes enough context (e.g. the task name) to distinguish distinct problems.
 """
 
+import logging
 import os
 import resource
 import shutil
@@ -60,7 +61,7 @@ def compute_health_issues() -> list[dict]:
         if free_mb < 500:
             add("disk_low", CRITICAL, f"Disk low: {free_mb:.0f}MB free")
     except Exception:
-        pass
+        logging.debug("health probe failed", exc_info=True)
 
     # Process memory (>3 GB on a 4 GB droplet)
     try:
@@ -69,7 +70,7 @@ def compute_health_issues() -> list[dict]:
         if rss_mb > 3000:
             add("memory_high", CRITICAL, f"Memory high: {rss_mb:.0f}MB RSS")
     except Exception:
-        pass
+        logging.debug("health probe failed", exc_info=True)
 
     # Solver queue backpressure (>50% — early warning before drops)
     solver_q_pct = state.solver_queue.qsize() / max(state.solver_queue.maxsize, 1)
@@ -125,7 +126,7 @@ def compute_health_issues() -> list[dict]:
                     add("solver_accuracy_degraded", WARNING,
                         f"Solver mean error {mean_trusted:.1f}km over {n_trusted} trusted-position samples")
     except Exception:
-        pass
+        logging.debug("health probe failed", exc_info=True)
 
     # Fleet-wide miss rate (avg >70% = network effectively blind)
     try:
@@ -140,6 +141,6 @@ def compute_health_issues() -> list[dict]:
                 if avg > 0.7:
                     add("high_miss_rate", WARNING, f"High miss rate ({avg:.0%})")
     except Exception:
-        pass
+        logging.debug("health probe failed", exc_info=True)
 
     return issues

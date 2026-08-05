@@ -18,7 +18,7 @@ os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
 from services import geo  # noqa: E402
-from services.tasks import _helpers  # noqa: E402
+from services import geo as _helpers  # noqa: E402  (shim collapsed; same surface)
 
 
 def _rng_positions(rng, n, around=(34.85, -82.40), spread=1.2):

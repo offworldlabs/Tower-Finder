@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { M_PER_FT } from "./units";
 
 interface StatsOverlayProps {
   aircraft: any[];
@@ -35,7 +36,7 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
       else if (ac.position_source === "solver_adsb_seed") adsbSeed++;
       else if (ac.position_source === "solver_single_node") solverOnly++;
       if (ac.target_class === "drone") drones++;
-      const alt = ac.alt_baro ?? (ac.alt_m ? ac.alt_m / 0.3048 : null);
+      const alt = ac.alt_baro ?? (ac.alt_m ? ac.alt_m / M_PER_FT : null);
       if (alt != null && alt > 0) { altSum += alt; altCount++; }
       const gs = ac.gs ?? 0;
       if (gs > maxGs) { maxGs = gs; maxGsCallsign = (ac.flight || ac.hex || "").trim(); }

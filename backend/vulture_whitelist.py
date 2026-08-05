@@ -20,17 +20,10 @@ _ = type("_", (), {})()
 
 
 # ── config/constants.py ───────────────────────────────────────────────────────
-# Module-level constants that document protocol / algorithm parameters.
-# Some are consumed by libs/ (retina_analytics, retina_geolocator) via their
-# own defaults; others are intentional named literals for future wiring.
-C_M_S
-DELAY_GATE_US
-DOPPLER_GATE_HZ
-ASSOC_MIN_INTERVAL_S
-ANALYTICS_REFRESH_INTERVAL_S
-TRUST_WARN_THRESHOLD
-TRUST_BLOCK_THRESHOLD
-REPUTATION_BLOCK_THRESHOLD
+# (The "intentional named literals for future wiring" that used to sit here
+# were dead config laundered through this whitelist — deleted, per this
+# file's own preamble.  ANALYTICS_REFRESH_INTERVAL_S is now wired;
+# ASSOC_MIN_INTERVAL_S is passed by core/state.)
 
 
 # ── core/types.py ─────────────────────────────────────────────────────────────

@@ -185,7 +185,8 @@ def _estimate_velocity_ms_from_motion(
     that's > 200 m from the current position; uses that displacement to
     derive an averaged east/north velocity.  Returns None if no sample is
     recent-enough-but-old-enough or the displacement is too small to trust
-    or the implied speed exceeds an 800 kt sanity bound.
+    or the implied speed exceeds the ARC_MOTION_MAX_SPEED_MS sanity bound
+    (340 m/s ≈ 661 kt; the inline comment below records why 800 kt was wrong).
     """
     log = state.track_arc_motion.get(ac_hex)
     if not log:

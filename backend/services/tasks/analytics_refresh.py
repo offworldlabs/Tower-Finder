@@ -10,15 +10,18 @@ import time
 import numpy as np
 import orjson
 
-from config.constants import YAGI_BEAM_WIDTH_DEG, YAGI_MAX_RANGE_KM
+from config.constants import (
+    ANALYTICS_REFRESH_INTERVAL_S,
+    YAGI_BEAM_WIDTH_DEG,
+    YAGI_MAX_RANGE_KM,
+)
+from config.constants import (
+    DELAY_MATCH_THRESHOLD_US as _DELAY_MATCH_THRESHOLD_US,
+)
 from core import state
-from services.geo import bearing_deg, haversine_km, point_in_beam
+from services.geo import bearing_deg, bistatic_delay_us, haversine_km, point_in_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
-from services.tasks._helpers import (
-    _DELAY_MATCH_THRESHOLD_US,
-    bistatic_delay_us,
-)
 
 _analytics_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=1,
@@ -1088,7 +1091,7 @@ def _refresh_mlat_verification():
         #     When the solver carries an adsb_hex, prefer binding to that
         #     aircraft's trail over a proximity guess (disambiguates between
         #     two aircraft that are close together). The threshold check is
-        #     intentional: a solve claiming hex H but landing >8 km from H's
+        #     intentional: a solve claiming hex H but landing beyond _MLAT_MATCH_THRESHOLD_KM (12 km) from H's
         #     trail is more plausibly a misclaim (wrong-frame association,
         #     spoofed-init convergence) than a real measurement of H. Letting
         #     unbounded errors through made post-PR-71 normal_only stats
@@ -1440,7 +1443,7 @@ def _evict_stale_pipelines(nodes_snapshot: list):
             if (now - hb_time).total_seconds() > 7200:
                 stale.append(nid)
         except Exception:
-            pass
+            logging.debug("unparseable heartbeat timestamp for %s: %r", nid, hb)
     for nid in stale:
         state.node_pipelines.pop(nid, None)
     if stale:
@@ -1463,4 +1466,4 @@ async def analytics_refresh_task():
         except Exception:
             state.task_error_counts["analytics_refresh"] += 1
             logging.exception("Analytics refresh failed")
-        await asyncio.sleep(30)
+        await asyncio.sleep(ANALYTICS_REFRESH_INTERVAL_S)

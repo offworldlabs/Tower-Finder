@@ -90,16 +90,22 @@ export interface AircraftFeedReturn {
   detectionsRef: React.MutableRefObject<Record<string, number>>;
 }
 
-/** Radar node metadata from /api/radar/analytics */
+/** Radar node metadata from /api/radar/analytics (as shaped by useNodes) */
 export interface RadarNode {
   node_id: string;
+  /** Display position — privacy-fuzzed by ~400 m, stable per node_id. */
   rx_lat: number;
   rx_lon: number;
+  /** True RX position, for geometry that must match the backend's curves. */
+  rx_lat_real: number;
+  rx_lon_real: number;
   tx_lat: number;
   tx_lon: number;
   beam_azimuth_deg: number;
   beam_width_deg: number;
   max_range_km: number;
+  /** Differential-range limit; null keeps the legacy circular sector. */
+  max_bistatic_range_km: number | null;
   empirical_polygon: [number, number][] | null;
   empirical_n_points: number;
 }

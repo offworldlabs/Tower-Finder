@@ -73,7 +73,6 @@ async def solver_aircraft(real_only: bool = Query(False, description="Return onl
     - ``solver_single_node`` — LM solver converged without ADS-B
     - ``single_node_ellipse_arc`` — solver did not converge; position is midpoint of bistatic delay ellipse arc
     - ``multinode_solve`` — position solved from ≥2 node detections (highest accuracy)
-    - ``adsb_fallback`` — solver failed; raw ADS-B coordinates used temporarily
 
     **Query params:**
     - ``real_only=true`` — filter to aircraft detected by real hardware nodes only (excludes simulated fleet)
@@ -154,7 +153,6 @@ async def ground_truth_real():
     - ``alt_m`` — barometric altitude (metres)
     - ``velocity`` — ground speed (m/s)
     - ``heading`` — track angle (degrees)
-    - ``age_s`` — seconds since last OpenSky update
 
     **Usage:** Compare solver output from ``/api/v1/solver/aircraft?real_only=true``
     against these positions to measure geolocation accuracy on real traffic.
@@ -279,7 +277,6 @@ _DOCS_HTML = """<!DOCTYPE html>
       <tr><td>solver_single_node</td><td>LM solver converged without ADS-B seed.</td></tr>
       <tr><td>single_node_ellipse_arc</td><td>Solver did not converge. Position is midpoint of bistatic delay ellipse.</td></tr>
       <tr><td>multinode_solve</td><td>Solved from ≥2 node detections. Independent of ADS-B. Highest geometric accuracy.</td></tr>
-      <tr><td>adsb_fallback</td><td>Solver failed on this cycle. Position is ADS-B coordinates (temporary).</td></tr>
     </table>
 
     <div class="example">

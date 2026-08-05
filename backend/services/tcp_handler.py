@@ -47,7 +47,7 @@ def _log_event(category: str, message: str, severity: str = "info", meta: dict |
         from routes.admin import log_event
         log_event(category, message, severity, meta)
     except Exception:
-        pass
+        logging.debug("event log write failed", exc_info=True)
 
 RETINA_PROTOCOL_VERSION = "1.0"
 SERVER_CAPABILITIES = {

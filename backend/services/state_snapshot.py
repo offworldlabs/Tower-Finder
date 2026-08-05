@@ -1,6 +1,6 @@
 """Lightweight state snapshot: save/restore high-value in-memory state across restarts.
 
-Saved every 5 minutes by a background task.  Restored once at startup.
+Saved every SAVE_INTERVAL_S (60 s) by a background task.  Restored once at startup.
 Persists: trust_scores, reputations, accuracy_samples, chain_entries,
 node_identities, iq_commitments, anomaly_log.
 """

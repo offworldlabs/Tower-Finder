@@ -76,7 +76,7 @@ def _load_events():
             for ev in data:
                 _events.append(ev)
         except Exception:
-            pass
+            logger.debug("could not load %s", _EVENTS_FILE, exc_info=True)
 
 
 def _save_events():
@@ -469,7 +469,7 @@ async def leaderboard(_user=Depends(get_current_user)):
         try:
             summaries = orjson.loads(raw).get("nodes", {})
         except Exception:
-            pass
+            logger.debug("analytics snapshot bytes unparseable", exc_info=True)
     # Fall back to live computation only if the snapshot is empty
     if not summaries:
         loop = asyncio.get_running_loop()

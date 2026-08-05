@@ -1,6 +1,6 @@
-// @ts-nocheck — gradual TS migration
 import { groundTruthKey } from "./constants";
 import { forgetTrack } from "./trackStores";
+import { mToFt, msToKnots } from "./units";
 
 /* ── Ground-truth objects in the frontend animation stores.
  *
@@ -44,8 +44,8 @@ export function applyGroundTruthFixes(fixes, snapshot, meta, now) {
       hex,
       _key: key,
       lat, lon,
-      alt_baro: Math.round(last[2] / 0.3048),
-      gs: Math.round((m.speed_ms || 0) * 1.94384 * 10) / 10,
+      alt_baro: Math.round(mToFt(last[2])),
+      gs: Math.round(msToKnots(m.speed_ms || 0) * 10) / 10,
       track: m.heading || 0,
       object_type: m.object_type,
       is_anomalous: m.is_anomalous,

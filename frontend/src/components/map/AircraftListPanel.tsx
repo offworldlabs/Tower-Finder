@@ -3,6 +3,7 @@ import { PLANE_PATH, getAircraftColor } from "./icons";
 import { POSITION_SOURCE_ARC_ONLY } from "./constants";
 import { classifyHex } from "./hexInfo";
 import { distanceKm } from "./distance";
+import { M_PER_FT } from "./units";
 
 // Fixed row height must match .al-row CSS (height: 40px, box-sizing: border-box).
 // Changing this constant without updating the CSS will break the virtual list.
@@ -52,7 +53,7 @@ export default function AircraftListPanel({
         ...truthOnly.map((ac) => ({ ...ac, _isSolved: false })),
       ];
       const pinSet = pinned instanceof Set ? pinned : new Set(pinned || []);
-      const altOf = (a) => a.alt_baro ?? (a.alt_m ? a.alt_m / 0.3048 : 0);
+      const altOf = (a) => a.alt_baro ?? (a.alt_m ? a.alt_m / M_PER_FT : 0);
       const distOf = (a) =>
         userLoc && Number.isFinite(a.lat) && Number.isFinite(a.lon)
           ? distanceKm(userLoc.lat, userLoc.lon, a.lat, a.lon)
@@ -195,7 +196,7 @@ export default function AircraftListPanel({
                   const alt = ac.alt_baro != null
                     ? `FL${Math.round(ac.alt_baro / 100)}`
                     : ac.alt_m != null
-                      ? `FL${Math.round(ac.alt_m / 0.3048 / 100)}`
+                      ? `FL${Math.round(ac.alt_m / M_PER_FT / 100)}`
                       : "—";
                   const spd = ac.gs != null ? `${Math.round(ac.gs)}kt` : "—";
                   const hdg = ac.track != null ? `${Math.round(ac.track)}°` : "";

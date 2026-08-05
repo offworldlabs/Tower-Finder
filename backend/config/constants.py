@@ -8,14 +8,11 @@ retina_tracker YAML config stays separate (loaded at runtime via config.yaml).
 """
 
 # ── Physics ──────────────────────────────────────────────────────────────────
-C_M_S = 299_792_458.0                  # Speed of light (m/s)
 C_KM_US = 0.299792458                  # Speed of light (km/µs)
 R_EARTH_KM = 6371.0                    # Mean Earth radius (km)
 FT_TO_M = 0.3048                       # Feet → metres
 
 # ── Association gates ────────────────────────────────────────────────────────
-DELAY_GATE_US = 5.0                    # Max bistatic delay mismatch (µs)
-DOPPLER_GATE_HZ = 30.0                 # Max Doppler mismatch (Hz)
 DELAY_MATCH_THRESHOLD_US = 15.0        # Bistatic delay tolerance for matching
 ASSOC_GRID_STEP_KM = 3.0              # Overlap zone grid resolution (km)
 ASSOC_MIN_INTERVAL_S = 30.0           # Per-node association rate limit (s)
@@ -100,11 +97,6 @@ ARCHIVE_LIFECYCLE_INTERVAL_S = 3600   # Run lifecycle check every hour
 # unbounded as the user table itself does.
 USERS_DB_BACKUP_INTERVAL_S = 86400    # Once per day
 USERS_DB_BACKUP_RETENTION_DAYS = 30   # Keep last N daily snapshots in R2
-
-# ── Reputation thresholds ────────────────────────────────────────────────────
-TRUST_WARN_THRESHOLD = 0.3            # Trust score warning level
-TRUST_BLOCK_THRESHOLD = 0.1           # Trust score block level
-REPUTATION_BLOCK_THRESHOLD = 0.2      # Reputation block level
 
 # ── Geolocation solver ───────────────────────────────────────────────────────
 GEO_INTERVAL_S = 10.0                 # Per-track solver rate limit (seconds)

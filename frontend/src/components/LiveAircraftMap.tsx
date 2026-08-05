@@ -236,7 +236,6 @@ const _r3Canvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : n
 const Radar3VerificationLayer = memo(function Radar3VerificationLayer({ visible }) {
   const map = useMap();
   const markersRef = useRef(new Map());
-  const dataRef = useRef(null);
 
   useEffect(() => {
     if (!visible) {
@@ -244,8 +243,7 @@ const Radar3VerificationLayer = memo(function Radar3VerificationLayer({ visible 
       for (const entry of markersRef.current.values()) {
         entry.dot.remove();
         entry.line.remove();
-        if (entry.label) entry.label.remove();
-      }
+        }
       markersRef.current.clear();
       return;
     }
@@ -256,7 +254,6 @@ const Radar3VerificationLayer = memo(function Radar3VerificationLayer({ visible 
       try {
         const data = await fetchRadar3Verification();
         if (cancelled || !data) return;
-        dataRef.current = data;
 
         const markers = markersRef.current;
         const seen = new Set();
@@ -298,7 +295,7 @@ const Radar3VerificationLayer = memo(function Radar3VerificationLayer({ visible 
             markers.delete(hex);
           }
         }
-      } catch (e) {
+      } catch {
         // Silently ignore fetch errors
       }
     };
@@ -323,7 +320,6 @@ const Radar3VerificationLayer = memo(function Radar3VerificationLayer({ visible 
 const Radar3RangeLayer = memo(function Radar3RangeLayer({ visible }) {
   const map = useMap();
   const layersRef = useRef([]);
-  const dataRef = useRef(null);
 
   useEffect(() => {
     // Clean up previous layers
@@ -341,7 +337,6 @@ const Radar3RangeLayer = memo(function Radar3RangeLayer({ visible }) {
         // Clean previous
         for (const l of layersRef.current) l.remove();
         layersRef.current = [];
-        dataRef.current = data;
 
         const rx = data.rx;
         if (!rx) return;
@@ -377,7 +372,7 @@ const Radar3RangeLayer = memo(function Radar3RangeLayer({ visible }) {
           marker.addTo(map);
           layersRef.current.push(marker);
         }
-      } catch (e) {
+      } catch {
         // Silently ignore
       }
     };
@@ -1020,7 +1015,6 @@ export default function LiveAircraftMap() {
   const [tileTheme, setTileTheme] = usePersistedState("tf.tile.theme", "voyager");
 
   const animationFrameRef = useRef(null);
-  const displayedAircraftRef = useRef({});
   const fixesRef = useRef({});   // hex → last server fix
   const smoothRef = useRef({});  // hex → { lat, lon, track } — smoothed render position
   const prevTsRef = useRef(null);
@@ -1222,18 +1216,11 @@ export default function LiveAircraftMap() {
         // dots dead-reckoned forever.
         sweepStaleGroundTruthFixes(allStoresRef.current, now, GT_FEED_STALE_MS);
         const arr = [];
-        const dispMap = {};
         for (const fix of Object.values(fixes)) {
           const sm = smoothRef.current[fix._key || fix.hex];
           if (!sm) continue;
-          const item = { ...fix, lat: sm.lat, lon: sm.lon, track: sm.track };
-          arr.push(item);
-          // Keyed by display hex: this map is read by hex-based consumers
-          // (selection, detail panel).  A truth-only object claims the slot
-          // only when no radar track holds the same hex.
-          if (!dispMap[fix.hex] || !fix._isTruth) dispMap[fix.hex] = item;
+          arr.push({ ...fix, lat: sm.lat, lon: sm.lon, track: sm.track });
         }
-        displayedAircraftRef.current = dispMap;
         setDisplayAircraft(arr);
       }
       animationFrameRef.current = requestAnimationFrame(tick);
@@ -1273,11 +1260,6 @@ export default function LiveAircraftMap() {
   );
 
   /* ── Derived: truth-only aircraft ───────────────────────────── */
-  const matchedTruthHexes = useMemo(
-    () => new Set(radarAircraft.map((ac) => ac.ground_truth_hex || ac.hex).filter(Boolean)),
-    [radarAircraft],
-  );
-
   /* ── Feed ground-truth objects into fixesRef so the 60fps loop dead-reckons them ── */
   useEffect(() => {
     const activeGtKeys = applyGroundTruthFixes(

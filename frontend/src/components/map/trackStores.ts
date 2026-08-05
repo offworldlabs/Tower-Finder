@@ -1,4 +1,3 @@
-// @ts-nocheck — gradual TS migration
 /* ── One forget path for the per-object animation stores.
  *
  * LiveAircraftMap keeps eight stores keyed by one string (fixes, smooth,

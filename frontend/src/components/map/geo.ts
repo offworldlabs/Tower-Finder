@@ -197,42 +197,6 @@ export function isInBeam(rxLat, rxLon, azimuthDeg, beamWidthDeg, maxRangeKm, acL
   return Math.abs(delta) <= beamWidthDeg / 2;
 }
 
-/**
- * @deprecated Use yagiSectorPositions instead.
- * Kept for reference — the bistatic ellipse no longer reflects the actual
- * Yagi beam pattern used in the field.
- */
-export function bistaticOvalPositions(rxLat, rxLon, txLat, txLon, maxRangeKm) {
-  const cosLat = Math.cos(((rxLat + txLat) / 2) * (Math.PI / 180));
-  const dx = (txLon - rxLon) * cosLat * 111.32; // km east
-  const dy = (txLat - rxLat) * 111.32;          // km north
-  const L  = Math.sqrt(dx * dx + dy * dy);       // baseline km
-
-  const a = (L + maxRangeKm) / 2;
-  const c = L / 2;
-  const b = Math.sqrt(Math.max(0, a * a - c * c));
-
-  // Tilt: angle of major axis from north (RX→TX bearing)
-  const tiltRad = Math.atan2(dx, dy);
-
-  const centerLat = (rxLat + txLat) / 2;
-  const centerLon = (rxLon + txLon) / 2;
-
-  const points = [];
-  const steps = 64;
-  for (let i = 0; i <= steps; i++) {
-    const theta = (2 * Math.PI * i) / steps;
-    const cosT = Math.cos(theta);
-    const sinT = Math.sin(theta);
-    // Rotate ellipse by tilt angle
-    const localNorth = a * cosT * Math.cos(tiltRad) - b * sinT * Math.sin(tiltRad);
-    const localEast  = a * cosT * Math.sin(tiltRad) + b * sinT * Math.cos(tiltRad);
-    const lat = centerLat + localNorth / 111.32;
-    const lon = centerLon + localEast  / (111.32 * cosLat);
-    points.push([lat, lon]);
-  }
-  return points;
-}
 
 /** True when both coordinates are usable.  null/undefined and the (0, 0)
  *  broken-config sentinel are invalid, but a legitimate 0 on a single axis

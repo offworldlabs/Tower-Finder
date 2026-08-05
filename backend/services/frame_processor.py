@@ -123,13 +123,13 @@ def _reset_for_tests() -> None:
     services.track_gates, services.feed_helpers), all called by conftest.
     """
     global _prof_cpu, _prof_wall, _prof_n
-    global _prof_analytics, _prof_assoc, _prof_pipeline, _prof_save
+    global _prof_analytics, _prof_assoc, _prof_pipeline, _prof_archive
     with _archive_buffer_lock:
         _archive_buffer.clear()
         _archive_inflight.clear()
     with _prof_lock:
         _prof_cpu = _prof_wall = 0.0
-        _prof_analytics = _prof_assoc = _prof_pipeline = _prof_save = 0.0
+        _prof_analytics = _prof_assoc = _prof_pipeline = _prof_archive = 0.0
         _prof_n = 0
 
 
@@ -194,7 +194,7 @@ _prof_n = 0
 _prof_analytics = 0.0
 _prof_assoc = 0.0
 _prof_pipeline = 0.0
-_prof_save = 0.0
+_prof_archive = 0.0
 
 
 def confirmed_track_views(tracker, history_n: int = N2_TRACK_HISTORY_MAX) -> list[dict]:
@@ -234,7 +234,7 @@ def _node_track_views(pipeline: PassiveRadarPipeline) -> list[dict]:
 def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarPipeline):
     """CPU-heavy frame processing — never runs on the event loop."""
     global _prof_cpu, _prof_wall, _prof_n
-    global _prof_analytics, _prof_assoc, _prof_pipeline, _prof_save
+    global _prof_analytics, _prof_assoc, _prof_pipeline, _prof_archive
     _t0_wall = time.monotonic()
     _t0_cpu = time.thread_time()
 
@@ -339,16 +339,16 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             }
         state.aircraft_dirty = True
 
+    # Time the archive append + conditional flush — the phase that actually
+    # hits disk.  This timer used to wrap an empty region (its body had moved
+    # to analytics_refresh_task) and printed save=0.0 forever.
     _t4 = time.thread_time()
-    # maybe_auto_save moved to analytics_refresh_task to avoid blocking
-    # frame workers during 915-file coverage-map save.
-    _d_save = time.thread_time() - _t4
-
     with _archive_buffer_lock:
         _archive_buffer[node_id].append(frame)
         _should_flush = len(_archive_buffer[node_id]) >= _ARCHIVE_BATCH_MAX
     if _should_flush:
         _flush_archive_node(node_id)
+    _d_archive = time.thread_time() - _t4
 
     _dt_cpu = time.thread_time() - _t0_cpu
     _dt_wall = time.monotonic() - _t0_wall
@@ -360,7 +360,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
         _prof_analytics += _d_analytics
         _prof_assoc += _d_assoc
         _prof_pipeline += _d_pipeline
-        _prof_save += _d_save
+        _prof_archive += _d_archive
         _prof_n += 1
         _log_now = _prof_n % 1000 == 0
         if _log_now:
@@ -370,12 +370,12 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             _a_an = _prof_analytics / _prof_n * 1000
             _a_as = _prof_assoc / _prof_n * 1000
             _a_pp = _prof_pipeline / _prof_n * 1000
-            _a_sv = _prof_save / _prof_n * 1000
+            _a_sv = _prof_archive / _prof_n * 1000
             _n_snap = _prof_n
     if _log_now:
         logging.warning(
             "PERF: %d frames  cpu=%.1f wall=%.1f idle%%=%.0f  "
-            "[analytics=%.1f assoc=%.1f pipeline=%.1f save=%.1f]ms",
+            "[analytics=%.1f assoc=%.1f pipeline=%.1f archive=%.1f]ms",
             _n_snap, _ac, _aw, _idle, _a_an, _a_as, _a_pp, _a_sv,
         )
 
