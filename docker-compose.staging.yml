@@ -23,7 +23,7 @@ services:
       # Explicitly select nginx-staging.conf. start.sh does not derive the nginx
       # profile from RETINA_ENV (prod runs RETINA_ENV=test), so staging names it.
       - NGINX_PROFILE=staging
-      - CORS_ORIGINS=https://staging.retina.fm,https://staging-api.retina.fm,https://staging-dash.retina.fm,https://staging-map.retina.fm
+      - CORS_ORIGINS=https://staging-towers.retina.fm,https://staging-api.retina.fm,https://staging-dash.retina.fm,https://staging-map.retina.fm
       - RADAR_TCP_PORT=3012
       - FRAME_WORKERS=6
       - FRAME_QUEUE_SIZE=10000

@@ -7,7 +7,7 @@
 # Exit code: 0 = all checks passed, 1 = failure
 set -euo pipefail
 
-BASE_URL="https://staging.retina.fm"
+BASE_URL="https://staging-towers.retina.fm"
 API_URL="https://staging-api.retina.fm"
 DASH_URL="https://staging-dash.retina.fm"
 CURL="curl -s --connect-timeout 10 --max-time 30"
@@ -71,7 +71,7 @@ echo "  dash:     ${DASH_URL}"
 echo "═══════════════════════════════════════════════════"
 
 echo ""
-echo "── Health & API endpoints (staging.retina.fm) ──"
+echo "── Health & API endpoints (staging-towers.retina.fm) ──"
 check_status "GET /api/health"              "${BASE_URL}/api/health"        "200"
 check_status "GET /api/radar/nodes"         "${BASE_URL}/api/radar/nodes"   "200"
 check_status "GET /api/radar/analytics"     "${BASE_URL}/api/radar/analytics" "200"

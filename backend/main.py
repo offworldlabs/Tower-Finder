@@ -204,7 +204,7 @@ app.add_middleware(
         "CORS_ORIGINS",
         "http://localhost:5173,http://localhost:3000,http://localhost:5174,"
         "https://retina.fm,https://api.retina.fm,https://dash.retina.fm,"
-        "https://admin.retina.fm,https://testapi.retina.fm,https://testmap.retina.fm,"
+        "https://admin.retina.fm,https://testmap.retina.fm,"
         "https://towers.retina.fm,https://map.retina.fm",
     ).split(","),
     allow_credentials=True,

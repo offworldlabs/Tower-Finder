@@ -4,34 +4,35 @@ import { defineConfig, devices } from "@playwright/test";
  * Playwright E2E test configuration.
  *
  * Environments (set via E2E_ENV):
- *   staging  → staging.retina.fm / staging-api.retina.fm / staging-testmap.retina.fm (default)
+ *   staging  → staging-towers.retina.fm / staging-api.retina.fm / staging-map.retina.fm (default)
  *   prod     → towers.retina.fm / api.retina.fm / testmap.retina.fm
  *   local    → localhost:5173 / localhost:8000
  */
 
 const ENV = (process.env.E2E_ENV ?? "staging") as "staging" | "prod" | "local";
 
+// `syntheticMap` is the live-radar surface fed by the synthetic fleet, which is
+// a different subdomain per environment: prod keeps its real-radar map.retina.fm
+// separate, whereas staging is entirely synthetic so staging-map IS that surface.
+// It is named for the role rather than the hostname so the specs need not care.
 const HOSTS = {
   staging: {
-    frontend:  "https://staging.retina.fm",
-    api:       "https://staging-api.retina.fm",
-    map:       "https://staging-map.retina.fm",
-    testmap:   "https://staging-testmap.retina.fm",
-    dash:      "https://staging-dash.retina.fm",
+    frontend:     "https://staging-towers.retina.fm",
+    api:          "https://staging-api.retina.fm",
+    syntheticMap: "https://staging-map.retina.fm",
+    dash:         "https://staging-dash.retina.fm",
   },
   prod: {
-    frontend:  "https://towers.retina.fm",
-    api:       "https://api.retina.fm",
-    map:       "https://map.retina.fm",
-    testmap:   "https://testmap.retina.fm",
-    dash:      "https://dash.retina.fm",
+    frontend:     "https://towers.retina.fm",
+    api:          "https://api.retina.fm",
+    syntheticMap: "https://testmap.retina.fm",
+    dash:         "https://dash.retina.fm",
   },
   local: {
-    frontend:  "http://localhost:5173",
-    api:       "http://localhost:8000",
-    map:       "http://localhost:5173",
-    testmap:   "http://localhost:5173",
-    dash:      "http://localhost:5174",
+    frontend:     "http://localhost:5173",
+    api:          "http://localhost:8000",
+    syntheticMap: "http://localhost:5173",
+    dash:         "http://localhost:5174",
   },
 } as const;
 

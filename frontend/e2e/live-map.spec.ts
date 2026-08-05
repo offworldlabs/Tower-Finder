@@ -1,9 +1,10 @@
 /**
- * Live Aircraft Map (staging-testmap / testmap domain) E2E tests.
+ * Live Aircraft Map E2E tests, run against the synthetic-fleet map surface
+ * (staging-map on staging, testmap on prod; see playwright.config.ts).
  *
- * This suite visits staging-testmap.retina.fm (synthetic fleet, not filtered)
- * and verifies the map page loads, WebSocket connects, aircraft appear,
- * and key interactive elements work correctly.
+ * Verifies the map page loads, WebSocket connects, aircraft appear, and key
+ * interactive elements work correctly. The feed is unfiltered, so simulated
+ * aircraft are expected.
  *
  * NOTE: These tests require the synthetic fleet to be running on the target
  * environment. They use generous timeouts to account for warm-up time.
@@ -11,7 +12,7 @@
 import { test, expect, Page } from "@playwright/test";
 import { hosts } from "../playwright.config";
 
-const BASE = hosts.testmap;
+const BASE = hosts.syntheticMap;
 
 // Helper: wait for the connection badge to show "LIVE"
 async function waitForLive(page: Page, timeoutMs = 15_000) {
@@ -69,7 +70,7 @@ test.describe("Live Map — map rendering", () => {
     await expect(page.getByRole("button", { name: /Trails/i })).toBeVisible();
   });
 
-  test("Debug Truth toggle is present on testmap domain", async ({ page }) => {
+  test("Debug Truth toggle is present on the synthetic map domain", async ({ page }) => {
     await page.goto(BASE);
     await expect(page.locator(".live-map-toolbar")).toBeVisible({ timeout: 10_000 });
     await expect(page.getByRole("button", { name: /Debug Truth/i })).toBeVisible();
