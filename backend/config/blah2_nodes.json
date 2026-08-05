@@ -1,0 +1,57 @@
+{
+  "_README": [
+    "Live blah2 retnodes polled over HTTP by services/blah2_bridge.py.",
+    "One entry per node; the bridge runs one polling task per entry, so adding a",
+    "node here is the only change needed to ingest it.",
+    "",
+    "Required: node_id, detection_url, rx_lat, rx_lon, tx_lat, tx_lon, fc_hz.",
+    "Optional (defaults in blah2_bridge.py): rx_alt_ft, tx_alt_ft, fs_hz,",
+    "doppler_min, doppler_max, min_doppler, beam_width_deg, max_range_km, notes.",
+    "",
+    "Geometry must match the real hardware — tx/rx positions and fc feed the",
+    "bistatic solver directly, so an error here misplaces every target from that",
+    "node. Verify with GET /api/test/node/<node_id>/verification after a change.",
+    "",
+    "This file is the source-controlled default. The running app reads the copy",
+    "in backend/data/runtime/, seeded from here on first boot; edit that copy (or",
+    "set BLAH2_NODES_FILE) to change nodes without a rebuild."
+  ],
+  "nodes": [
+    {
+      "node_id": "radar3-retnode",
+      "detection_url": "https://radar3.retnode.com/api/detection",
+      "notes": "RX Wilderness. TX recorded as WXIA HDTV (RF ch 10, 195 MHz). NOTE: tx_lat here is byte-identical to rx_lat, while the FCC record for WXIA-TV puts the tower at 33.756667, -84.331944 — this looks like a copy-paste bug that biases radar3 solves. Left as-is pending a deliberate before/after check.",
+      "rx_lat": 33.939182,
+      "rx_lon": -84.651910,
+      "rx_alt_ft": 1050,
+      "tx_lat": 33.939182,
+      "tx_lon": -84.331844,
+      "tx_alt_ft": 2133,
+      "fc_hz": 195000000,
+      "fs_hz": 2000000,
+      "doppler_min": -300,
+      "doppler_max": 300,
+      "min_doppler": 15,
+      "beam_width_deg": 120,
+      "max_range_km": 140
+    },
+    {
+      "node_id": "radar3a-retnode",
+      "detection_url": "https://radar3a.retnode.com/api/detection",
+      "notes": "Shares radar3's receive site. Illuminated by WGTV (FCC facility 23948, RF ch 7, Stone Mountain) at N 33d48'18.0\" W 84d08'40.0\", RCAMSL 605 m. Geometry reproduces the node's own adsb expected_delay to 21.8 m RMS; expected_doppler fits fc = 177.01 MHz, the ch 7 centre.",
+      "rx_lat": 33.939182,
+      "rx_lon": -84.651910,
+      "rx_alt_ft": 1050,
+      "tx_lat": 33.805000,
+      "tx_lon": -84.144444,
+      "tx_alt_ft": 1985,
+      "fc_hz": 177000000,
+      "fs_hz": 2000000,
+      "doppler_min": -300,
+      "doppler_max": 300,
+      "min_doppler": 15,
+      "beam_width_deg": 120,
+      "max_range_km": 140
+    }
+  ]
+}

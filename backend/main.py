@@ -66,7 +66,7 @@ from services.background import (
     track_flush_task,
     users_backup_task,
 )
-from services.blah2_bridge import blah2_bridge_task
+from services.blah2_bridge import blah2_bridge_task, load_nodes as load_blah2_nodes
 from services.runtime_coverage import start as _start_coverage
 from services.runtime_coverage import stop as _stop_coverage
 from services.state_snapshot import SAVE_INTERVAL_S, restore_snapshot, save_snapshot
@@ -106,6 +106,10 @@ async def lifespan(app: FastAPI):
     # Idempotent: only fills in files that don't already exist in data/runtime/.
     from core.runtime_config import migrate_defaults_into_runtime
     migrate_defaults_into_runtime()
+
+    # Live blah2 nodes are config-driven — read after the overlay is seeded so
+    # the runtime copy wins, and before the task list is built below.
+    blah2_nodes = load_blah2_nodes()
 
     # Initialise SQLite user database (creates tables on first run)
     from core.users import create_db_and_tables
@@ -153,7 +157,7 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(users_backup_task()),
             asyncio.create_task(analytics_refresh_task()),
             asyncio.create_task(storage_refresh_task()),
-            asyncio.create_task(blah2_bridge_task()),
+            *[asyncio.create_task(blah2_bridge_task(n)) for n in blah2_nodes],
             asyncio.create_task(health_monitor_task()),
             asyncio.create_task(heartbeat_task()),
             asyncio.create_task(_snapshot_loop()),
