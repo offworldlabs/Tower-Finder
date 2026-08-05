@@ -37,35 +37,23 @@ setup:
     cd "{{fe}}" && npm install
     echo "✓ setup complete — now: just up"
 
-# Bring up backend + synthetic fleet + frontend (background). Open http://testmap.localhost:5173/
-# Fleet profile: `just up` (local, dense) · `just up testmap` (8s) · `just up prod` (40s).
-# testmap/prod read their fleet params LIVE from the real deploy configs so they can't drift.
-up profile="local":
+# This is the INNER LOOP, not a deploy rehearsal: uvicorn --reload + Vite HMR, which
+# the Docker stack structurally cannot offer (its frontend bundle and nginx config are
+# baked at build time). It deliberately does NOT mirror the deploy: no nginx, no
+# start.sh, and the libs come from the editable ../libs/* checkouts rather than the
+# pinned submodules in the image. For fidelity to the live deploy, use the Docker
+# stack instead (see CLAUDE.md); for fast iteration, use this.
+#
+# The fleet runs a dense dev-only stream (~1 ellipse/s) with no deployed equivalent.
+#
+# Backend + synthetic fleet + frontend (background). Open http://testmap.localhost:5173/
+up:
     #!/usr/bin/env bash
     set -euo pipefail
     [ -x "{{py}}" ] || { echo "no backend venv — run: just setup"; exit 1; }
     [ -d "{{fe}}/node_modules" ] || { echo "no frontend deps — run: just setup"; exit 1; }
-    # ── Resolve fleet params by profile ────────────────────────────────────────
-    #  local   — dev-only dense stream (~1 ellipse/s); no deployed equivalent.
-    #  testmap — sourced from docker-compose.test.yml   (the testmap.retina.fm test stack).
-    #  prod    — sourced from docker-compose.yml's `fleet` service (the Compose
-    #            service that actually serves the live testmap.retina.fm + map.retina.fm).
-    case "{{profile}}" in
-      local)
-        FLEET_NODES=200; FLEET_MODE=detection; FLEET_INTERVAL=0.5
-        FLEET_TIME_SCALE=1.0; FLEET_MIN_AIRCRAFT=40; FLEET_MAX_AIRCRAFT=60 ;;
-      testmap)
-        # every FLEET_* value comes straight from the compose file's fleet-simulator block
-        eval "$(grep -oE 'FLEET_[A-Z_]+=[^[:space:]]+' "{{root}}/docker-compose.test.yml")" ;;
-      prod)
-        # every FLEET_* value comes straight from docker-compose.yml's `fleet`
-        # service block (same extraction the testmap profile uses on test.yml)
-        eval "$(grep -oE 'FLEET_[A-Z_]+=[^[:space:]]+' "{{root}}/docker-compose.yml")" ;;
-      *)
-        echo "✗ unknown profile '{{profile}}' — use: local | testmap | prod"; exit 1 ;;
-    esac
-    # fail loudly if extraction ever silently breaks, rather than launch a wrong fleet
-    : "${FLEET_INTERVAL:?could not resolve fleet params for profile '{{profile}}'}"
+    FLEET_NODES=200; FLEET_MODE=detection; FLEET_INTERVAL=0.5
+    FLEET_TIME_SCALE=1.0; FLEET_MIN_AIRCRAFT=40; FLEET_MAX_AIRCRAFT=60
     # preflight: refuse to start (silently half-broken) if a port is already taken
     for p in 8000 3012 5173; do
         if lsof -nP -iTCP:$p -sTCP:LISTEN >/dev/null 2>&1; then
@@ -86,7 +74,7 @@ up profile="local":
         exit 1
     fi
 
-    echo "→ synthetic fleet [{{profile}}]: ${FLEET_NODES} nodes, mode=${FLEET_MODE}, interval=${FLEET_INTERVAL}s, ${FLEET_MIN_AIRCRAFT}-${FLEET_MAX_AIRCRAFT} aircraft"
+    echo "→ synthetic fleet: ${FLEET_NODES} nodes, mode=${FLEET_MODE}, interval=${FLEET_INTERVAL}s, ${FLEET_MIN_AIRCRAFT}-${FLEET_MAX_AIRCRAFT} aircraft"
     ( cd "{{be}}" && PYTHONPATH=. "{{py}}" -m retina_simulation.orchestrator \
         --nodes "${FLEET_NODES}" --mode "${FLEET_MODE}" \
         --interval "${FLEET_INTERVAL}" --time-scale "${FLEET_TIME_SCALE:-1.0}" \
@@ -98,9 +86,9 @@ up profile="local":
     ( cd "{{fe}}" && npm run dev ) > "{{run}}/frontend.log" 2>&1 &
 
     echo
-    echo "✓ up [{{profile}}].  Open →  http://testmap.localhost:5173/"
-    echo "  (plain localhost shows tower search — the testmap.* host selects the live map)"
-    echo "  fleet [{{profile}}]: ${FLEET_NODES} nodes @ ${FLEET_INTERVAL}s.  Profiles: local | testmap (8s) | prod (40s)"
+    echo "✓ up.  Open →  http://testmap.localhost:5173/"
+    echo "  (plain localhost shows tower search; the testmap.* host selects the live map)"
+    echo "  fleet: ${FLEET_NODES} nodes @ ${FLEET_INTERVAL}s (dense dev stream)"
     echo "  logs: just logs    status: just status    stop: just down"
 
 # Stop everything (by port for the servers, by pattern for the portless fleet client)
@@ -129,3 +117,4 @@ status:
 # Tail all three logs (Ctrl-C to stop tailing; services keep running)
 logs:
     tail -n +1 -f "{{run}}/backend.log" "{{run}}/fleet.log" "{{run}}/frontend.log"
+
