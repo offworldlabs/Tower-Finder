@@ -32,11 +32,32 @@ if [ -f /app/deploy/config-image/config/constants.py ]; then
         || echo "[start.sh] Info: could not refresh volume constants.py (volume may be root-owned); PYTHONPATH override is active"
 fi
 
-# Swap nginx config based on environment
-if [ "${RETINA_ENV}" = "staging" ] && [ -f /app/deploy/nginx-staging.conf ]; then
-    echo "[start.sh] Using staging nginx config for staging.retina.fm domains"
-    cp /app/deploy/nginx-staging.conf /etc/nginx/sites-available/default
+# >>> nginx-profile-select >>>
+# Copy in the nginx config for the active profile. NGINX_PROFILE is an explicit
+# opt-in: the staging and test compose overrides set it; when it is unset the
+# baked production config (nginx.conf) is kept. It deliberately does NOT fall
+# back to RETINA_ENV, because prod runs RETINA_ENV=test (admin-access-for-all
+# while we build) and must still be served the production config with its real
+# domains and TLS. Selecting nginx off RETINA_ENV would silently swap prod onto
+# the cert-free nginx-local.conf. Paths are parameterised (APP_ROOT /
+# NGINX_TARGET) so the block is unit-testable outside the container.
+: "${APP_ROOT:=/app}"
+: "${NGINX_TARGET:=/etc/nginx/sites-available/default}"
+if [ -n "${NGINX_PROFILE:-}" ]; then
+    if [ -f "${APP_ROOT}/deploy/nginx-${NGINX_PROFILE}.conf" ]; then
+        echo "[start.sh] Using nginx-${NGINX_PROFILE}.conf (profile=${NGINX_PROFILE})"
+        cp "${APP_ROOT}/deploy/nginx-${NGINX_PROFILE}.conf" "${NGINX_TARGET}"
+    else
+        # A named profile with no matching config is a misconfiguration. Fail
+        # closed rather than fall through to the baked default (the production
+        # nginx.conf): a non-prod environment must never be served with prod
+        # server_names, TLS and security headers. An unset profile (production)
+        # skips this block and keeps the baked default.
+        echo "[start.sh] ERROR: NGINX_PROFILE=${NGINX_PROFILE} but ${APP_ROOT}/deploy/nginx-${NGINX_PROFILE}.conf is missing; refusing to fall back to the baked production config" >&2
+        exit 1
+    fi
 fi
+# <<< nginx-profile-select <<<
 
 # ── uvicorn supervision: exit on a persistent fast crash-loop ────────────────
 # The fast in-process restart below absorbs *transient* uvicorn crashes without
