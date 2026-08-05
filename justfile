@@ -131,6 +131,22 @@ down:
     # parent reloader that owns no socket — pattern-kill catches both
     pkill -f 'retina_simulation.orchestrator' 2>/dev/null && echo "→ killed fleet orchestrator" || true
     pkill -f 'uvicorn main:app' 2>/dev/null || true
+    # Wait for them to actually go. SIGTERM only *asks*, and uvicorn --reload's
+    # child plus the fleet orchestrator can take ~25s to unwind. Reporting "down"
+    # on the strength of having sent the signal makes the very next `just status`
+    # contradict it, which is exactly the sequence anyone types.
+    for _ in $(seq 1 40); do
+        alive=0
+        for port in 8000 3012 5173; do
+            lsof -nP -tiTCP:$port -sTCP:LISTEN >/dev/null 2>&1 && alive=1
+        done
+        pgrep -f 'retina_simulation.orchestrator' >/dev/null 2>&1 && alive=1
+        [ "$alive" = 0 ] && break
+        sleep 1
+    done
+    if [ "${alive:-0}" != 0 ]; then
+        echo "⚠ still running after 40s — inspect: just status"; exit 1
+    fi
     echo "✓ down"
 
 # Which of the three are alive (port-based, so it never lies due to stale pids)
