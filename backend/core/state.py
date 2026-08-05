@@ -266,6 +266,78 @@ latest_storage_bytes: bytes = b"{}"
 # ── Rate limiter buckets ──────────────────────────────────────────────────────
 rate_buckets: dict[str, list] = defaultdict(list)
 
+def _reset_for_tests() -> None:
+    """Restore every module-level mutable store to boot state.  Tests only.
+
+    Owned here (not in conftest) so adding a store means updating the module
+    that declares it.  conftest's autouse fixture calls this before every
+    test; previously it reset 3 of ~50 stores and the rest leaked across
+    tests — most dangerously the wall-clock feed caches in frame_processor,
+    which handed one test's detection_arcs/ground_truth to the next.
+    """
+    global aircraft_dirty, latest_aircraft_json, latest_aircraft_json_bytes
+    global latest_real_aircraft_json_bytes, latest_analytics_bytes
+    global latest_analytics_real_bytes, latest_nodes_bytes, latest_overlaps_bytes
+    global latest_accuracy_bytes, latest_radar3_verification_bytes
+    global latest_mlat_accuracy_bytes, latest_mlat_verification_bytes
+    global latest_storage_bytes, simulation_config
+    global frames_dropped, frames_processed, solver_successes, solver_failures
+    global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
+    global solver_queue_drops, implausible_velocity_count, arc_velocity_rejects
+    global solver_last_latency_s, solver_total_latency_s, solver_total_solved
+    global peak_connected_nodes
+
+    for store in (
+        connected_nodes, node_pipelines, active_geo_aircraft, multinode_tracks,
+        adsb_aircraft, track_histories, track_last_emit, track_gate_hold,
+        track_arc_motion, ground_truth_trails, ground_truth_meta,
+        node_identities, chain_entries, iq_commitments, anomaly_hexes,
+        external_adsb_cache, ws_clients, ws_live_clients, ws_owner_clients,
+        task_last_success, task_error_counts, rate_buckets,
+        latest_missed_detections,
+    ):
+        store.clear()
+    anomaly_log.clear()
+    track_archive_buffer.clear()
+    accuracy_samples.clear()
+    mlat_samples.clear()
+    for q in (frame_queue, solver_queue):
+        try:
+            while True:
+                q.get_nowait()
+        except Exception:
+            pass
+
+    node_analytics._reset_for_tests()
+    node_associator._reset_for_tests()
+
+    aircraft_dirty = False
+    latest_aircraft_json = {"now": 0, "aircraft": [], "messages": 0}
+    latest_aircraft_json_bytes = b'{"now":0,"aircraft":[],"messages":0}'
+    latest_real_aircraft_json_bytes = b'{"now":0,"aircraft":[],"messages":0}'
+    latest_analytics_bytes = (
+        b'{"nodes":{},"cross_node":{"pair_overlaps":[],"coverage_suggestions":[],"blocked_nodes":[]}}'
+    )
+    latest_analytics_real_bytes = latest_analytics_bytes
+    latest_nodes_bytes = b'{"nodes":{},"connected":0,"total":0,"synthetic":0}'
+    latest_overlaps_bytes = b'{"overlaps":[],"registered_nodes":[]}'
+    latest_accuracy_bytes = b"{}"
+    latest_radar3_verification_bytes = b"{}"
+    latest_mlat_accuracy_bytes = b"{}"
+    latest_mlat_verification_bytes = b"{}"
+    latest_storage_bytes = b"{}"
+    simulation_config = dict(_SIMULATION_CONFIG_DEFAULTS)
+
+    with counters_lock:
+        frames_dropped = frames_processed = 0
+        solver_successes = solver_failures = n2_unconfirmed = 0
+        coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
+        implausible_velocity_count = arc_velocity_rejects = 0
+        solver_total_solved = 0
+        solver_last_latency_s = solver_total_latency_s = 0.0
+        peak_connected_nodes = 0
+
+
 # ── Simulation physics config (read by fleet orchestrator, written by UI) ─────
 simulation_config: dict = {
     # Anomalies off by default. Raise via PUT /api/simulation/config (or the
@@ -280,3 +352,4 @@ simulation_config: dict = {
     "max_aircraft": 100,
     "_updated_at": 0.0,
 }
+_SIMULATION_CONFIG_DEFAULTS: dict = dict(simulation_config)

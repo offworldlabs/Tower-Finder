@@ -22,6 +22,12 @@ _last_sent: dict[str, float] = {}
 _lock = threading.Lock()
 
 
+def _reset_for_tests() -> None:
+    """Restore this module's private state to boot values.  Tests only."""
+    with _lock:
+        _last_sent.clear()
+
+
 def is_enabled() -> bool:
     return bool(WEBHOOK_URL)
 

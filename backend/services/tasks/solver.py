@@ -219,6 +219,16 @@ _MN_HISTORY_TTL_S = 600.0
 _mn_history_last_sweep = 0.0
 
 
+def _reset_for_tests() -> None:
+    """Restore this module's private state to boot values.  Tests only."""
+    global _mn_history_last_sweep
+    with _MN_POS_HISTORY_LOCK:
+        _MN_POS_HISTORY.clear()
+        _mn_history_last_sweep = 0.0
+    with _TRACK_CLAIMS_LOCK:
+        _TRACK_CLAIMS.clear()
+
+
 def _sweep_mn_history(now_s: float) -> None:
     """Drop hexes whose newest sample is stale.  Caller holds the lock."""
     global _mn_history_last_sweep

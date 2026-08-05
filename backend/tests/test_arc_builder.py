@@ -677,15 +677,20 @@ class _ArcTrack:
 
 
 def _spy_build_count(monkeypatch):
-    """Wrap _build_single_node_arc to count how often it actually rebuilds."""
+    """Wrap _build_single_node_arc to count how often it actually rebuilds.
+
+    Patched on services.track_gates — the module the cache lives in and calls
+    through — not on the frame_processor re-export, which is just a binding.
+    """
+    from services import track_gates as _tg
     calls = {"n": 0}
-    real = _fp._build_single_node_arc
+    real = _tg._build_single_node_arc
 
     def _spy(*args, **kwargs):
         calls["n"] += 1
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(_fp, "_build_single_node_arc", _spy)
+    monkeypatch.setattr(_tg, "_build_single_node_arc", _spy)
     return calls
 
 

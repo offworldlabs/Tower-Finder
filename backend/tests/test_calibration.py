@@ -80,9 +80,11 @@ class TestFanOut:
 
 
 class TestBothCallSitesUseIt:
-    def test_frame_processor_routes_through_the_helper(self):
-        import services.frame_processor as fp
-        assert fp.record_adsb_calibration is record_adsb_calibration
+    def test_frame_path_routes_through_the_helper(self):
+        # The frame path's call site moved to services.track_gates with the
+        # feed split; that module's binding is the one that matters now.
+        import services.track_gates as tg
+        assert tg.record_adsb_calibration is record_adsb_calibration
 
     def test_solver_routes_through_the_helper(self):
         import services.tasks.solver as sv

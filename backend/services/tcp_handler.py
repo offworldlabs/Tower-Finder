@@ -466,6 +466,13 @@ _NODE_MIN_INTERVAL_S: float = float(_os.getenv("NODE_FRAME_MIN_INTERVAL_S", "1.0
 _per_node_last_enqueue: dict[str, float] = {}
 
 
+def _reset_for_tests() -> None:
+    """Restore this module's private state to boot values.  Tests only."""
+    global _last_drop_log
+    _per_node_last_enqueue.clear()
+    _last_drop_log = 0.0
+
+
 def _enqueue_detection(msg: dict, node_id: str | None):
     global _last_drop_log
     frame = msg.get("data", msg)

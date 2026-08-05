@@ -41,6 +41,11 @@ def _percentile(vals: list, pct: float) -> float:
 _COVERAGE_DIGESTS: dict[str, tuple] = {}
 
 
+def _reset_for_tests() -> None:
+    """Restore this module's private state to boot values.  Tests only."""
+    _COVERAGE_DIGESTS.clear()
+
+
 def _refresh_coverage_constraints() -> int:
     """Rebuild overlap grids for nodes whose observed coverage has changed.
 
