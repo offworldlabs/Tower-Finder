@@ -582,12 +582,19 @@ class TestArcMotionVelocityFallback:
         state.track_arc_motion[self.HEX] = [(33.70, -84.85, now - 5.0)]
         assert _estimate_velocity_from_motion(self.HEX, 33.75, -84.80, now) is None
 
-    def test_estimator_rejects_supersonic_clamp(self):
+    def test_estimator_accepts_supersonic_displacement(self):
+        """Supersonic targets are in scope: the estimator must report a fast
+        displacement as-is rather than reject it as implausible.  (The 340 m/s
+        upper bound this used to assert was removed deliberately.)"""
         from services.frame_processor import _estimate_velocity_from_motion
         now = 1_700_000_000.0
-        # 100 km in 20 s = 5000 m/s = ~9700 kt — way above the 800 kt clamp.
+        # 100 km north in 20 s = 5000 m/s = ~9700 kt.
         state.track_arc_motion[self.HEX] = [(33.70, -84.85, now - 20.0)]
-        assert _estimate_velocity_from_motion(self.HEX, 34.60, -84.85, now) is None
+        est = _estimate_velocity_from_motion(self.HEX, 34.60, -84.85, now)
+        assert est is not None
+        gs, track_deg = est
+        assert gs == pytest.approx(5000 * 1.94384, rel=0.02)
+        assert track_deg == pytest.approx(0.0, abs=2.0)
 
 
 # ─── Regression: position-jump (teleport) anomaly ────────────────────────────

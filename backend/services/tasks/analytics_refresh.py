@@ -450,8 +450,6 @@ def _velocity_accuracy() -> dict:
         "n_matched": len(ratios),
         "truth_max_ms": round(truth_max, 1),
         # Counters are cumulative since boot; they flag rate, not instant state.
-        "implausible_velocity_count": state.implausible_velocity_count,
-        "arc_velocity_rejects": state.arc_velocity_rejects,
     }
     if ratios:
         ratios.sort()

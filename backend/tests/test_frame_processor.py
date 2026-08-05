@@ -231,39 +231,22 @@ class TestMultinodeToAircraft:
         assert ac["lon"] == -84.6
         assert ac["alt_baro"] == 10000  # 3048m / 0.3048
 
-    def test_impossible_speed_flagged_as_implausible_not_supersonic(self):
-        """400 m/s is faster than any aircraft this fleet flies (max 268 m/s),
-        so the honest statement is that the *estimate* is untrustworthy — not
-        that the aircraft broke the sound barrier.  Every "supersonic" flag
-        raised in production has been this case."""
+    def test_supersonic_speed_is_not_flagged(self):
+        """Supersonic targets are in scope: a 400 m/s solve must pass
+        through un-flagged and un-clamped.  (The implausible-velocity gate
+        that used to mark this anomalous was removed deliberately.)"""
         r = {
             "lat": 33.9, "lon": -84.6, "alt_m": 10000.0,
-            "vel_east": 400.0, "vel_north": 0.0,  # > IMPLAUSIBLE_SPEED_MS
+            "vel_east": 400.0, "vel_north": 0.0,
             "n_nodes": 2, "n_measurements": 10,
             "rms_delay": 0.3, "rms_doppler": 0.8,
         }
         ac = multinode_to_aircraft("mn-key-2", r)
-        assert ac["is_anomalous"] is True
-        assert "implausible_velocity" in ac["anomaly_types"]
-        assert "supersonic" not in ac["anomaly_types"]
-        # Cleanup
-        state.anomaly_hexes.discard(ac["hex"])
-
-    def test_implausible_velocity_is_counted(self):
-        """The count is what makes the rate trackable while the underlying
-        cause is chased; the speed itself is deliberately left on the wire."""
-        before = state.implausible_velocity_count
-        r = {
-            "lat": 33.9, "lon": -84.6, "alt_m": 10000.0,
-            "vel_east": 420.0, "vel_north": 0.0,
-            "n_nodes": 2, "n_measurements": 10,
-            "rms_delay": 0.3, "rms_doppler": 0.8,
-        }
-        ac = multinode_to_aircraft("mn-key-2b", r)
-        assert state.implausible_velocity_count == before + 1
-        # Not clamped — the reported speed still reflects what was solved.
-        assert ac["gs"] > 420.0 * 1.94384 - 1
-        state.anomaly_hexes.discard(ac["hex"])
+        assert ac["is_anomalous"] is False
+        assert ac["anomaly_types"] == []
+        # Not clamped — the reported speed reflects what was solved.
+        assert ac["gs"] > 400.0 * 1.94384 - 1
+        assert ac["hex"] not in state.anomaly_hexes
 
     def test_subsonic_not_flagged(self):
         r = {

@@ -384,7 +384,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
 # The feed builder, track gates, GC and shared helpers moved to their own
 # modules (services.aircraft_feed / track_gates / feed_gc / feed_helpers).
 # These bindings keep every existing import site working; the mutable objects
-# (_single_node_arc_cache, _implausible_now, _implausible_last_log) are only
+# (e.g. _single_node_arc_cache) are only
 # ever mutated in place by their owners, so shared bindings stay in sync.
 from services.aircraft_feed import (  # noqa: E402,F401
     build_combined_aircraft_json,
@@ -393,10 +393,8 @@ from services.aircraft_feed import (  # noqa: E402,F401
 from services.feed_helpers import (  # noqa: E402,F401
     _estimate_velocity_from_motion,
     _estimate_velocity_ms_from_motion,
-    _implausible_last_log,
     _looks_like_same_aircraft,
     _record_arc_motion,
-    _should_log_implausible,
     append_track_history,
     dedup_aircraft,
     position_distance_km,
@@ -407,8 +405,6 @@ from services.track_gates import (  # noqa: E402,F401
     _build_single_node_arc,
     _cached_single_node_arc,
     _enu_to_lla,
-    _implausible_now,
-    _note_implausible,
     _record_accuracy_sample,
     _single_node_arc_cache,
     fresh_adsb,

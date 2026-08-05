@@ -136,24 +136,6 @@ GT_DISPLAY_STALE_S = 10.0
 # desired behaviour rather than a staleness bug.
 TRAIL_STALE_S = 300.0
 
-# ── Velocity plausibility ────────────────────────────────────────────────────
-# Ground speed above which a *velocity estimate* is treated as untrustworthy.
-# This is deliberately not the supersonic threshold: "supersonic" asserts the
-# aircraft is going Mach 1, whereas exceeding this says our estimate is wrong.
-# Calibrated against the simulator, whose fastest aircraft is 268 m/s (522 kt);
-# a real airliner tops out near 290 m/s ground speed, more with a jetstream.
-# 340 m/s leaves headroom for a strong tailwind while still catching the
-# 400-825 kt values observed from weakly-observable Doppler geometry.
-#
-# NOTE: this flags and logs — it does not clamp the speed or drop the solve.
-# Both would hide the signal needed to find the underlying cause.
-IMPLAUSIBLE_SPEED_MS = 340.0
-
-# Sanity bound for velocity inferred from arc-midpoint displacement.  The old
-# value was 411 m/s (799 kt), which is not a sanity bound at all: it accepted
-# a few km of arc jitter over 15 s as a legitimate 500-800 kt.
-ARC_MOTION_MAX_SPEED_MS = 340.0
-
 # ── Target classification (drone detection) ──────────────────────────────────
 DRONE_ALTITUDE_BOUNDS = [0, 500]       # metres ASL
 DRONE_VELOCITY_BOUNDS = [-60, 60]      # m/s per component

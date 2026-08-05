@@ -7,7 +7,6 @@ services.track_gates; shared helpers in services.feed_helpers; stale-store GC
 in services.feed_gc.
 """
 
-import logging
 import math
 import time
 
@@ -16,14 +15,12 @@ from retina_tracker.track import TrackState
 from config.constants import (
     ARC_REFRESH_S,
     GT_REFRESH_S,
-    IMPLAUSIBLE_SPEED_MS,
     STALE_TRACK_S,
 )
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
 from services.feed_gc import prune_stale_stores
 from services.feed_helpers import (
-    _should_log_implausible,
     append_track_history,
     dedup_aircraft,
     resolve_ground_truth_hex,
@@ -32,8 +29,6 @@ from services.geo import offset_latlon_m
 from services.id_utils import multinode_hex_from_key
 from services.track_gates import (
     _build_single_node_arc,
-    _implausible_now,
-    _note_implausible,
     _single_node_arc_cache,
     track_entry,
 )
@@ -59,40 +54,12 @@ def _reset_for_tests() -> None:
 def multinode_to_aircraft(key: str, r: dict) -> dict:
     speed_ms = math.sqrt(r["vel_east"] ** 2 + r["vel_north"] ** 2)
     heading = math.degrees(math.atan2(r["vel_east"], r["vel_north"])) % 360
-    # "supersonic" claims the *aircraft* is going Mach 1.  On this fleet that
-    # claim has never once been true — the simulator's fastest aircraft is
-    # 268 m/s — so every one of these has really been a bad velocity estimate,
-    # which is a different fact about a different thing.  Report it as one:
-    # `implausible_velocity` marks the estimate as untrustworthy, and only
-    # genuinely supersonic *and* plausible motion keeps the old label.
-    _mn_anomaly_types = []
-    _mn_implausible = speed_ms > IMPLAUSIBLE_SPEED_MS
-    _note_implausible(key, _mn_implausible)
-    if _mn_implausible:
-        _mn_anomaly_types.append("implausible_velocity")
-        # Log the geometry needed to tell weak Doppler observability from a
-        # mis-association.  Without contributing_node_ids and rms_doppler
-        # there is nothing to troubleshoot from.
-        # Keyed on `key` rather than _mn_hex, which is not computed until below;
-        # both are stable per-track identities so the throttle is equivalent.
-        if _should_log_implausible(key, time.time()):
-            logging.warning(
-                "Implausible velocity: %.0f m/s (%.0f kt) n_nodes=%d "
-                "rms_doppler=%.1f Hz rms_delay=%.1f µs vel_e=%.1f vel_n=%.1f "
-                "lat=%.3f lon=%.3f nodes=%s",
-                speed_ms, speed_ms * 1.94384, r.get("n_nodes", 0),
-                r.get("rms_doppler", 0) or 0, r.get("rms_delay", 0) or 0,
-                r.get("vel_east", 0), r.get("vel_north", 0),
-                r.get("lat", 0), r.get("lon", 0),
-                ",".join(r.get("contributing_node_ids", [])) or "?",
-            )
-    _mn_is_anom = bool(_mn_anomaly_types)
+    # No velocity-plausibility flag: supersonic targets are in scope, so a
+    # high solved speed is reported as-is.  The discard clears any hex left
+    # in the anomaly set by an earlier release.
     _mn_hex = multinode_hex_from_key(key)
     with state.anomaly_lock:
-        if _mn_is_anom:
-            state.anomaly_hexes.add(_mn_hex)
-        else:
-            state.anomaly_hexes.discard(_mn_hex)
+        state.anomaly_hexes.discard(_mn_hex)
     return {
         "hex": _mn_hex,
         "type": "multinode_solve",
@@ -116,8 +83,8 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
         "rms_delay": round(r["rms_delay"], 3),
         "rms_doppler": round(r["rms_doppler"], 2),
         "position_source": "multinode_solve",
-        "is_anomalous": _mn_is_anom,
-        "anomaly_types": _mn_anomaly_types,
+        "is_anomalous": False,
+        "anomaly_types": [],
         "max_velocity_ms": round(speed_ms, 1),
     }
 
@@ -167,7 +134,6 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             state.track_last_emit.pop(k, None)
             state.track_gate_hold.pop(k, None)
             state.track_arc_motion.pop(k, None)
-            _implausible_now.discard(k)
         with state.anomaly_lock:
             for k in stale_geo:
                 state.anomaly_hexes.discard(k)
@@ -218,7 +184,6 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         with state.anomaly_lock:
             state.anomaly_hexes.discard(multinode_hex_from_key(k))
         state.multinode_tracks.pop(k, None)
-        _implausible_now.discard(k)
 
     # 4/4b. Stale-store GC — services.feed_gc.
     prune_stale_stores(now)

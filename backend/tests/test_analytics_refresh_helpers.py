@@ -8,8 +8,8 @@ Tests the pure helper functions:
 
 import pytest
 
-from services.tasks import analytics_refresh
 from services.geo import haversine_km
+from services.tasks import analytics_refresh
 from services.tasks.analytics_refresh import _aircraft_in_beam, _bearing_deg, _bistatic_angle_deg
 
 

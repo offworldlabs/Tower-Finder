@@ -3,24 +3,21 @@
 Extracted from frame_processor.py.  ``track_entry`` was a 370-line closure
 inside build_combined_aircraft_json; it is the display-side machinery for one
 geolocated track — staleness, the speed/RMS gates with their bounded hold,
-dead-reckoning, the position-jump and implausible-velocity anomaly flags, and
+dead-reckoning, the position-jump anomaly flag, and
 the memoised single-node ambiguity arc.
 """
 
-import logging
 import math
 
 from config.constants import (
     DISPLAY_STALE_TRACK_S,
     GATE_MAX_HOLD_S,
-    IMPLAUSIBLE_SPEED_MS,
 )
 from core import state
 from services.calibration import record_adsb_calibration
 from services.feed_helpers import (
     _estimate_velocity_from_motion,
     _record_arc_motion,
-    _should_log_implausible,
     append_track_history,
     position_distance_km,
     resolve_ground_truth_hex,
@@ -37,31 +34,10 @@ from services.geo import (
 
 def _reset_for_tests() -> None:
     """Restore this module's private state to boot values.  Tests only."""
-    _implausible_now.clear()
     _single_node_arc_cache.clear()
 
 
 # ── Multi-node result → tar1090-compatible dict ──────────────────────────────
-
-# Hexes/keys currently flagged implausible.  state.implausible_velocity_count
-# is documented as "solves whose speed exceeded the bound", but both increment
-# sites run on the 1 Hz feed-render cadence — a single persistently-implausible
-# track was adding ~60 counts/minute.  Counting *transitions into* the state
-# makes the number mean what the docs (and /api/radar/accuracy) say it means.
-_implausible_now: set[str] = set()
-
-
-def _note_implausible(track_key: str, implausible: bool) -> bool:
-    """Record plausibility state; return True on a fresh transition into it."""
-    if implausible:
-        if track_key not in _implausible_now:
-            _implausible_now.add(track_key)
-            state.bump_counter("implausible_velocity_count")
-            return True
-        return False
-    _implausible_now.discard(track_key)
-    return False
-
 
 
 # Aliases: tests import both names from this module, and the arc builder below
@@ -512,7 +488,7 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
     # when dt ≥ 60 s, and multinode tracks have no gate.  This check is
     # universal: it compares the candidate position (the raw solver /
     # arc-midpoint position, *before* the arc-track revert hides it)
-    # against the last emit and flags an implausible jump.
+    # against the last emit and flags a physically impossible jump.
     #
     # state.track_last_emit still holds the PREVIOUS emit here — it is
     # refreshed on the line below.  We compare the FINAL emitted position
@@ -592,26 +568,11 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
     _anom_types = set(getattr(track, "anomaly_types", set()))
     if _position_jump:
         _anom_types.add("position_jump")
-    # Same velocity-plausibility marker as the multinode path.  Arc tracks
-    # reach it by a different route — the LM solver's own speed_knots, or
-    # velocity inferred from arc-midpoint displacement — but the statement
-    # is identical: this speed is not one an aircraft produces, so the
-    # estimate is untrustworthy.
-    _implausible_v = (gs / 1.94384) > IMPLAUSIBLE_SPEED_MS if gs else False
-    _note_implausible(ac_hex, _implausible_v)
-    if _implausible_v:
-        _anom_types.add("implausible_velocity")
-        if _should_log_implausible(ac_hex, now):
-            logging.warning(
-                "Implausible velocity: %.0f kt on %s hex=%s node=%s "
-                "rms_delay=%.1f µs adsb=%s lat=%.3f lon=%.3f",
-                gs, position_source, ac_hex, node_cfg.get("node_id"),
-                rms_delay or 0, bool(has_adsb), lat, lon,
-            )
+    # No velocity-plausibility flag here: supersonic targets are in scope,
+    # so a high ground speed is reported as-is rather than marked anomalous.
     _is_anom = (
         bool(getattr(track, "is_anomalous", False))
         or _position_jump
-        or _implausible_v
     )
     _max_vel = getattr(track, "max_velocity_ms", 0.0)
     _flag_hex = ac_hex

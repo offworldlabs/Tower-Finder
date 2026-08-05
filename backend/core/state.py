@@ -199,14 +199,6 @@ coverage_rebuilds: int = 0
 coverage_rebuild_nodes: int = 0
 solver_queue_drops: int = 0
 
-# Velocity-plausibility counters.  The solver has RMS gates on delay and
-# Doppler but none on the resulting velocity, and staging showed 11 of 42
-# tracks reporting above the simulator's fastest aircraft (522 kt), peaking at
-# 824 kt.  These count rather than correct: the speeds stay on the wire, and
-# these make the rate measurable while the cause is tracked down.
-implausible_velocity_count: int = 0   # solves whose speed exceeded the bound
-arc_velocity_rejects: int = 0         # arc-motion estimates rejected as absurd
-
 # Solver end-to-end latency (seconds from queue submission to solve completion)
 solver_last_latency_s: float = 0.0
 solver_total_latency_s: float = 0.0
@@ -286,7 +278,7 @@ def _reset_for_tests() -> None:
     global latest_storage_bytes, simulation_config
     global frames_dropped, frames_processed, solver_successes, solver_failures
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
-    global solver_queue_drops, implausible_velocity_count, arc_velocity_rejects
+    global solver_queue_drops
     global solver_last_latency_s, solver_total_latency_s, solver_total_solved
     global peak_connected_nodes
 
@@ -335,7 +327,6 @@ def _reset_for_tests() -> None:
         frames_dropped = frames_processed = 0
         solver_successes = solver_failures = n2_unconfirmed = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
-        implausible_velocity_count = arc_velocity_rejects = 0
         solver_total_solved = 0
         solver_last_latency_s = solver_total_latency_s = 0.0
         peak_connected_nodes = 0

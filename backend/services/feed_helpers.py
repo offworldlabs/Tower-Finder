@@ -9,7 +9,6 @@ feed module can depend on them without cycles.
 import math
 from collections import deque
 
-from config.constants import ARC_MOTION_MAX_SPEED_MS
 from core import state
 from services.geo import enu_km, haversine_km
 from services.id_utils import normalize_hex_key
@@ -20,8 +19,12 @@ position_distance_km = haversine_km
 
 
 def _reset_for_tests() -> None:
-    """Restore this module's private state to boot values.  Tests only."""
-    _implausible_last_log.clear()
+    """Restore this module's private state to boot values.  Tests only.
+
+    Currently a no-op: this module keeps no private mutable state (the
+    arc-motion log lives on core.state).  Kept so conftest's autouse reset
+    doesn't need to special-case the module.
+    """
 
 
 # ── Aircraft de-duplication ───────────────────────────────────────────────────
@@ -155,27 +158,6 @@ def _record_arc_motion(ac_hex: str, lat: float, lon: float, ts: float) -> None:
         log.pop(0)
 
 
-# Per-track throttle for the implausible-velocity warning.  The feed rebuilds
-# several times a second, so an unthrottled warning emits the same line dozens
-# of times for one aircraft and buries the very signal it exists to surface.
-# One line per track per interval keeps each distinct offender visible.
-_IMPLAUSIBLE_LOG_INTERVAL_S = 30.0
-_implausible_last_log: dict[str, float] = {}
-
-
-def _should_log_implausible(ac_hex: str, now: float) -> bool:
-    last = _implausible_last_log.get(ac_hex, 0.0)
-    if now - last < _IMPLAUSIBLE_LOG_INTERVAL_S:
-        return False
-    _implausible_last_log[ac_hex] = now
-    # Bound the dict to the live fleet; entries outlive their tracks otherwise.
-    if len(_implausible_last_log) > 512:
-        cutoff = now - _IMPLAUSIBLE_LOG_INTERVAL_S * 10
-        for k in [k for k, v in _implausible_last_log.items() if v < cutoff]:
-            del _implausible_last_log[k]
-    return True
-
-
 def _estimate_velocity_ms_from_motion(
     ac_hex: str, lat: float, lon: float, now: float,
 ) -> tuple[float, float] | None:
@@ -184,9 +166,10 @@ def _estimate_velocity_ms_from_motion(
     Searches the per-track motion log for the oldest sample 15–120 s old
     that's > 200 m from the current position; uses that displacement to
     derive an averaged east/north velocity.  Returns None if no sample is
-    recent-enough-but-old-enough or the displacement is too small to trust
-    or the implied speed exceeds the ARC_MOTION_MAX_SPEED_MS sanity bound
-    (340 m/s ≈ 661 kt; the inline comment below records why 800 kt was wrong).
+    recent-enough-but-old-enough or the displacement is too small to trust.
+
+    No upper speed bound: supersonic targets are in scope, so a fast
+    displacement is reported as-is rather than rejected as implausible.
     """
     log = state.track_arc_motion.get(ac_hex)
     if not log:
@@ -201,13 +184,6 @@ def _estimate_velocity_ms_from_motion(
         dist_m = math.hypot(east_m, north_m)
         if dist_m < 200:
             continue  # essentially still — can't infer velocity
-        # Sanity bound.  This was 411 m/s (799 kt), which accepted a few km of
-        # arc-midpoint jitter over 15 s as a legitimate 500-800 kt reading —
-        # not a sanity bound so much as a formality.  Rejections are counted
-        # rather than silently absorbed so the rate stays visible.
-        if dist_m / dt > ARC_MOTION_MAX_SPEED_MS:
-            state.bump_counter("arc_velocity_rejects")
-            continue
         return east_m / dt, north_m / dt
     return None
 
