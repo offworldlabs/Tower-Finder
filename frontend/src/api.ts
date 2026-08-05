@@ -38,14 +38,18 @@ export async function fetchElevation(lat, lon, signal?: AbortSignal) {
   return data.elevation_m;
 }
 
-export async function fetchRadar3Verification(signal?: AbortSignal) {
-  const res = await fetch(`${API_BASE}/test/radar3/verification`, { signal });
+export async function fetchNodeVerification(nodeId: string, signal?: AbortSignal) {
+  if (!nodeId) return null;
+  const res = await fetch(
+    `${API_BASE}/test/node/${encodeURIComponent(nodeId)}/verification`, { signal });
   if (!res.ok) return null;
   return res.json();
 }
 
-export async function fetchRadar3DetectionRange(signal?: AbortSignal) {
-  const res = await fetch(`${API_BASE}/test/radar3/detection-range`, { signal });
+export async function fetchNodeDetectionRange(nodeId: string, signal?: AbortSignal) {
+  if (!nodeId) return null;
+  const res = await fetch(
+    `${API_BASE}/test/node/${encodeURIComponent(nodeId)}/detection-range`, { signal });
   if (!res.ok) return null;
   return res.json();
 }

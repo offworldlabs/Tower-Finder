@@ -527,18 +527,24 @@ def _mlat_verification_summary() -> dict:
         return {}
 
 
-# ── Radar3 solver verification ────────────────────────────────────────────────
+# ── Per-node solver verification ──────────────────────────────────────────────
 
 _RADAR3_NODE_ID = "radar3-retnode"
 
 
-@router.get("/api/test/radar3/verification")
-async def radar3_verification():
-    """Return pre-computed radar3 solver-vs-ADS-B verification stats."""
+@router.get("/api/test/node/{node_id}/verification")
+async def node_verification(node_id: str):
+    """Return pre-computed solver-vs-ADS-B verification stats for one node."""
     return Response(
-        content=state.latest_radar3_verification_bytes,
+        content=state.latest_node_verification_bytes.get(node_id, b"{}"),
         media_type="application/json",
     )
+
+
+@router.get("/api/test/radar3/verification")
+async def radar3_verification():
+    """Back-compat alias for the radar3 node's verification stats."""
+    return await node_verification(_RADAR3_NODE_ID)
 
 
 @router.get("/api/test/mlat-verification")
@@ -564,13 +570,13 @@ async def mlat_accuracy():
     )
 
 
-@router.get("/api/test/radar3/detection-range")
-async def radar3_detection_range():
-    """Return radar3 empirical detection range and furthest detections."""
-    area = state.node_analytics.detection_areas.get(_RADAR3_NODE_ID)
+@router.get("/api/test/node/{node_id}/detection-range")
+async def node_detection_range(node_id: str):
+    """Return one node's empirical detection range and furthest detections."""
+    area = state.node_analytics.detection_areas.get(node_id)
     if not area:
         return Response(
-            content=orjson.dumps({"error": "radar3 node not registered"}),
+            content=orjson.dumps({"error": f"node {node_id} not registered"}),
             media_type="application/json",
             status_code=404,
         )
@@ -578,7 +584,7 @@ async def radar3_detection_range():
     summary = area.summary()
 
     # Empirical coverage polygon
-    ecov = state.node_analytics.empirical_coverages.get(_RADAR3_NODE_ID)
+    ecov = state.node_analytics.empirical_coverages.get(node_id)
     polygon = None
     if ecov:
         polygon = ecov.to_polygon(
@@ -595,3 +601,9 @@ async def radar3_detection_range():
         ),
         media_type="application/json",
     )
+
+
+@router.get("/api/test/radar3/detection-range")
+async def radar3_detection_range():
+    """Back-compat alias for the radar3 node's detection range."""
+    return await node_detection_range(_RADAR3_NODE_ID)

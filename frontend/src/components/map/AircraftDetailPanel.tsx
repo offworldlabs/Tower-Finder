@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { fetchMlatAccuracy, fetchMlatVerification, fetchRadar3Verification } from "../../api";
+import { fetchMlatAccuracy, fetchMlatVerification, fetchNodeVerification } from "../../api";
 import { POSITION_SOURCE_ARC_ONLY } from "./constants";
 import { classifyHex, emergencySquawkLabel } from "./hexInfo";
 import { trailToCsv, downloadCsv } from "./trailExport";
@@ -251,9 +251,9 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
           </div>
         )}
 
-        {/* Radar3 solver verification — show when this is a radar3 detection */}
-        {ac.node_id === "radar3-retnode" && (
-          <Radar3VerificationSection hex={ac.hex} />
+        {/* Solver verification — renders only when this node has truth-matched data */}
+        {ac.node_id && (
+          <NodeVerificationSection hex={ac.hex} nodeId={ac.node_id} />
         )}
 
         {/* MLAT solver verification — show when this is a multinode solve */}
@@ -322,22 +322,25 @@ function Field({ label, value }) {
   );
 }
 
-function Radar3VerificationSection({ hex }) {
-  const [data, setData] = useState(null);
+function NodeVerificationSection({ hex, nodeId }) {
+  // Tagged with the node it came from, so selecting an aircraft on a different
+  // node never shows the previous node's numbers while the new fetch is in
+  // flight.
+  const [fetched, setFetched] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
-    fetchRadar3Verification().then((d) => {
-      if (!cancelled && d) setData(d);
-    });
-    const interval = setInterval(() => {
-      fetchRadar3Verification().then((d) => {
-        if (!cancelled && d) setData(d);
+    const load = () => {
+      fetchNodeVerification(nodeId).then((d) => {
+        if (!cancelled && d) setFetched({ nodeId, payload: d });
       });
-    }, 15000);
+    };
+    load();
+    const interval = setInterval(load, 15000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, []);
+  }, [nodeId]);
 
+  const data = fetched && fetched.nodeId === nodeId ? fetched.payload : null;
   if (!data || !data.n_matched) return null;
 
   // Find this aircraft's specific match
@@ -346,7 +349,7 @@ function Radar3VerificationSection({ hex }) {
   return (
     <div className="detail-section">
       <div className="detail-section-title" style={{ color: "#f97316" }}>
-        📡 Radar3 Verification
+        📡 {String(nodeId).replace(/-retnode$/, "")} Verification
       </div>
       {match && (
         <>

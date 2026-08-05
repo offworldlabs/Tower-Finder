@@ -66,7 +66,8 @@ from services.background import (
     track_flush_task,
     users_backup_task,
 )
-from services.blah2_bridge import blah2_bridge_task, load_nodes as load_blah2_nodes
+from services.blah2_bridge import blah2_bridge_task
+from services.blah2_bridge import load_nodes as load_blah2_nodes
 from services.runtime_coverage import start as _start_coverage
 from services.runtime_coverage import stop as _stop_coverage
 from services.state_snapshot import SAVE_INTERVAL_S, restore_snapshot, save_snapshot

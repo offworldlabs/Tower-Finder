@@ -28,8 +28,6 @@ _analytics_executor = concurrent.futures.ThreadPoolExecutor(
     thread_name_prefix="analytics-bg",
 )
 
-_RADAR3_NODE_ID = "radar3-retnode"
-
 
 def _percentile(vals: list, pct: float) -> float:
     """Return the pct-th percentile of a list using numpy. Returns 0.0 for empty input."""
@@ -145,11 +143,15 @@ def _refresh_analytics_and_nodes():
     except Exception:
         logging.exception("_refresh_missed_detections failed")
 
-    # Radar3 solver verification
-    try:
-        _refresh_radar3_verification()
-    except Exception:
-        logging.exception("_refresh_radar3_verification failed")
+    # Per-node solver verification (real nodes only — synthetic ones have no truth)
+    for _nid in real_node_ids:
+        try:
+            _refresh_node_verification(_nid)
+        except Exception:
+            logging.exception("_refresh_node_verification failed for %s", _nid)
+    # Drop nodes that are no longer connected so the payload can't go stale
+    for _nid in set(state.latest_node_verification_bytes) - real_node_ids:
+        state.latest_node_verification_bytes.pop(_nid, None)
 
     # MLAT (multinode) solver verification
     try:
@@ -466,24 +468,24 @@ def _velocity_accuracy() -> dict:
     return out
 
 
-def _refresh_radar3_verification():
-    """Compare radar3 detections to ADS-B truth via bistatic delay matching."""
-    radar3_tracks = []
+def _refresh_node_verification(node_id: str):
+    """Compare one node's detections to ADS-B truth via bistatic delay matching."""
+    node_tracks = []
     now = time.time()
     with state.geo_aircraft_lock:
         _geo_snapshot = list(state.active_geo_aircraft.items())
     for ac_hex, (track, cfg) in _geo_snapshot:
-        if not isinstance(cfg, dict) or cfg.get("node_id") != _RADAR3_NODE_ID:
+        if not isinstance(cfg, dict) or cfg.get("node_id") != node_id:
             continue
         wall_ts = getattr(track, "wall_clock_ts", 0)
         if (now - wall_ts) > 120:
             continue
-        radar3_tracks.append((ac_hex, track, cfg))
+        node_tracks.append((ac_hex, track, cfg))
 
-    if not radar3_tracks:
-        state.latest_radar3_verification_bytes = orjson.dumps(
+    if not node_tracks:
+        state.latest_node_verification_bytes[node_id] = orjson.dumps(
             {
-                "node_id": _RADAR3_NODE_ID,
+                "node_id": node_id,
                 "n_tracks": 0,
                 "n_matched": 0,
                 "tracks": [],
@@ -543,7 +545,7 @@ def _refresh_radar3_verification():
     matched_adsb_hexes: set = set()
     matched_detections = []
 
-    for ac_hex, track, cfg in radar3_tracks:
+    for ac_hex, track, cfg in node_tracks:
         measured_delay_us = getattr(track, "latest_delay_us", None)
         if not measured_delay_us or measured_delay_us <= 0:
             continue
@@ -641,7 +643,7 @@ def _refresh_radar3_verification():
         )
         matched_detections.append((truth_lat, truth_lon, best_adsb_hex))
 
-    area = state.node_analytics.detection_areas.get(_RADAR3_NODE_ID)
+    area = state.node_analytics.detection_areas.get(node_id)
     if area:
         for det_lat, det_lon, det_hex in matched_detections:
             area.record_verified_detection(det_lat, det_lon, det_hex)
@@ -652,8 +654,8 @@ def _refresh_radar3_verification():
     n = len(matches)
 
     result = {
-        "node_id": _RADAR3_NODE_ID,
-        "n_tracks": len(radar3_tracks),
+        "node_id": node_id,
+        "n_tracks": len(node_tracks),
         "n_matched": n,
         "position": {
             "mean_km": round(sum(pos_errors) / n, 3) if n else 0,
@@ -676,7 +678,7 @@ def _refresh_radar3_verification():
         },
         "tracks": matches[:50],
     }
-    state.latest_radar3_verification_bytes = orjson.dumps(result, option=orjson.OPT_SERIALIZE_NUMPY)
+    state.latest_node_verification_bytes[node_id] = orjson.dumps(result, option=orjson.OPT_SERIALIZE_NUMPY)
 
 
 # ── MLAT (multinode) solver verification ─────────────────────────────────────
@@ -947,7 +949,7 @@ def _refresh_mlat_verification():
         n_truth_live_adsb += 1
 
     # Fallback 2: OpenSky / external ADS-B snapshot — same pattern as
-    # _refresh_radar3_verification().  Useful when the live ADS-B injector
+    # _refresh_node_verification().  Useful when the live ADS-B injector
     # is in its rate-limit backoff window (up to 300 s).
     for adsb_hex, entry in list(state.external_adsb_cache.items()):
         if not _valid_latlon(entry.get("lat"), entry.get("lon")):

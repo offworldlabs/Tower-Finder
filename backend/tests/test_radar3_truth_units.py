@@ -1,4 +1,4 @@
-"""Stage-1 regression: ground-truth altitude units in radar3 verification.
+"""Stage-1 regression: ground-truth altitude units in per-node verification.
 
 The GT candidate used to pack metres (trail index 2) under the tar1090 key
 ``alt_baro``; the consumer then multiplied by 0.3048 as if it were feet, so
@@ -18,10 +18,9 @@ os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
 from core import state  # noqa: E402
 from services.geo import bistatic_delay_us  # noqa: E402
-from services.tasks.analytics_refresh import (  # noqa: E402
-    _RADAR3_NODE_ID,
-    _refresh_radar3_verification,
-)
+from services.tasks.analytics_refresh import _refresh_node_verification  # noqa: E402
+
+_RADAR3_NODE_ID = "radar3-retnode"
 
 RX = (34.85, -82.40)
 TX = (34.90, -82.20)
@@ -67,8 +66,8 @@ class TestGroundTruthAltitudeUnits:
         )
         delay = bistatic_delay_us(TX[0], TX[1], RX[0], RX[1], TARGET[0], TARGET[1])
         state.active_geo_aircraft["r3trk"] = (_track(delay), _radar3_cfg())
-        _refresh_radar3_verification()
-        return orjson.loads(state.latest_radar3_verification_bytes)
+        _refresh_node_verification(_RADAR3_NODE_ID)
+        return orjson.loads(state.latest_node_verification_bytes[_RADAR3_NODE_ID])
 
     def test_gt_altitude_is_metres_not_reconverted_feet(self):
         data = self._run_with_gt(speed_ms=189.7)

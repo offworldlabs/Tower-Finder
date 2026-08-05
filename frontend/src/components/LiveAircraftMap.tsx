@@ -46,7 +46,7 @@ import {
   InBeamDiagnostic,
 } from "./map";
 
-import { fetchRadar3Verification, fetchRadar3DetectionRange, fetchMlatVerification } from "../api";
+import { fetchNodeVerification, fetchNodeDetectionRange, fetchMlatVerification } from "../api";
 import { defaultsGroundTruthOff } from "../utils/domains";
 import { usePersistedState } from "./map/usePersistedState";
 import { parseHash, useHashWriter, encodeLayers, decodeLayers } from "./map/useUrlHashState";
@@ -228,17 +228,17 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
   return null;
 });
 
-/* ── Radar3VerificationLayer: shows solver tracks vs ADS-B truth for radar3 node.
+/* ── NodeVerificationLayer: shows solver tracks vs ADS-B truth for one node.
       Fetches verification data every 15s and renders cyan truth dots,
-      yellow error lines, and distance labels. ── */
-const _r3Canvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
+      yellow error lines, and distance labels.  Pass nodeId=null to hide. ── */
+const _verifyCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
 
-const Radar3VerificationLayer = memo(function Radar3VerificationLayer({ visible }) {
+const NodeVerificationLayer = memo(function NodeVerificationLayer({ nodeId }) {
   const map = useMap();
   const markersRef = useRef(new Map());
 
   useEffect(() => {
-    if (!visible) {
+    if (!nodeId) {
       // Clean up when hidden
       for (const entry of markersRef.current.values()) {
         entry.dot.remove();
@@ -252,7 +252,7 @@ const Radar3VerificationLayer = memo(function Radar3VerificationLayer({ visible 
 
     const refresh = async () => {
       try {
-        const data = await fetchRadar3Verification();
+        const data = await fetchNodeVerification(nodeId);
         if (cancelled || !data) return;
 
         const markers = markersRef.current;
@@ -265,7 +265,7 @@ const Radar3VerificationLayer = memo(function Radar3VerificationLayer({ visible 
           let entry = markers.get(t.hex);
           if (!entry) {
             const dot = L.circleMarker([t.truth_lat, t.truth_lon], {
-              renderer: _r3Canvas,
+              renderer: _verifyCanvas,
               radius: 5,
               color: "#22d3ee",
               weight: 2,
@@ -311,13 +311,14 @@ const Radar3VerificationLayer = memo(function Radar3VerificationLayer({ visible 
       }
       markersRef.current.clear();
     };
-  }, [map, visible]);
+  }, [map, nodeId]);
 
   return null;
 });
 
-/* ── Radar3RangeLayer: dashed range circle + furthest detection markers ── */
-const Radar3RangeLayer = memo(function Radar3RangeLayer({ visible }) {
+/* ── NodeRangeLayer: dashed range circle + furthest detection markers.
+      Pass nodeId=null to hide. ── */
+const NodeRangeLayer = memo(function NodeRangeLayer({ nodeId }) {
   const map = useMap();
   const layersRef = useRef([]);
 
@@ -326,13 +327,13 @@ const Radar3RangeLayer = memo(function Radar3RangeLayer({ visible }) {
     for (const l of layersRef.current) l.remove();
     layersRef.current = [];
 
-    if (!visible) return;
+    if (!nodeId) return;
 
     let cancelled = false;
 
     const refresh = async () => {
       try {
-        const data = await fetchRadar3DetectionRange();
+        const data = await fetchNodeDetectionRange(nodeId);
         if (cancelled || !data || data.error) return;
         // Clean previous
         for (const l of layersRef.current) l.remove();
@@ -383,7 +384,7 @@ const Radar3RangeLayer = memo(function Radar3RangeLayer({ visible }) {
       for (const l of layersRef.current) l.remove();
       layersRef.current = [];
     };
-  }, [map, visible]);
+  }, [map, nodeId]);
 
   return null;
 });
@@ -1314,6 +1315,15 @@ export default function LiveAircraftMap() {
     [nodes, viewport],
   );
 
+  /* The verification/range overlays only mean anything for real nodes —
+     synthetic simulation nodes have no ADS-B truth to compare against.
+     Null hides both layers. */
+  const verificationNodeId = useMemo(() => {
+    if (!selectedNodeId) return null;
+    const node = nodes.find((n) => n.node_id === selectedNodeId);
+    return node && !node.is_synthetic ? selectedNodeId : null;
+  }, [nodes, selectedNodeId]);
+
   /* ── Derived: trail for selected aircraft ───────────────────── */
   const visibleTrailEntries = useMemo(() => {
     if (!selectedHex) return [];
@@ -1964,10 +1974,10 @@ export default function LiveAircraftMap() {
             )}
 
             {/* Radar3 solver verification overlay — truth dots + error lines + km labels */}
-            <Radar3VerificationLayer visible={selectedNodeId === "radar3-retnode"} />
+            <NodeVerificationLayer nodeId={verificationNodeId} />
 
             {/* Radar3 detection range circle + furthest detection markers */}
-            <Radar3RangeLayer visible={selectedNodeId === "radar3-retnode"} />
+            <NodeRangeLayer nodeId={verificationNodeId} />
 
             {/* MLAT (multinode) solver verification — magenta truth dots + pink error lines */}
             {/* Gated like the Radar3 layers: this polls /api/test/

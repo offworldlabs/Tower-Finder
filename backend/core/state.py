@@ -239,8 +239,9 @@ latest_accuracy_bytes: bytes = b"{}"
 # {node_id: {in_range, detected, missed, miss_rate, missed_aircraft: [...]}}
 latest_missed_detections: dict[str, dict] = {}
 
-# Pre-serialised radar3 solver verification (refreshed by background task)
-latest_radar3_verification_bytes: bytes = b"{}"
+# Pre-serialised per-node solver verification, {node_id: json bytes}
+# (refreshed by background task, one entry per real node)
+latest_node_verification_bytes: dict[str, bytes] = {}
 
 # Rolling sample buffer for MLAT (multinode) solver accuracy — one entry per
 # matched track per 30-s refresh cycle, for long-term trend monitoring.
@@ -273,7 +274,7 @@ def _reset_for_tests() -> None:
     global aircraft_dirty, latest_aircraft_json, latest_aircraft_json_bytes
     global latest_real_aircraft_json_bytes, latest_analytics_bytes
     global latest_analytics_real_bytes, latest_nodes_bytes, latest_overlaps_bytes
-    global latest_accuracy_bytes, latest_radar3_verification_bytes
+    global latest_accuracy_bytes
     global latest_mlat_accuracy_bytes, latest_mlat_verification_bytes
     global latest_storage_bytes, simulation_config
     global frames_dropped, frames_processed, solver_successes, solver_failures
@@ -317,7 +318,7 @@ def _reset_for_tests() -> None:
     latest_nodes_bytes = b'{"nodes":{},"connected":0,"total":0,"synthetic":0}'
     latest_overlaps_bytes = b'{"overlaps":[],"registered_nodes":[]}'
     latest_accuracy_bytes = b"{}"
-    latest_radar3_verification_bytes = b"{}"
+    latest_node_verification_bytes.clear()
     latest_mlat_accuracy_bytes = b"{}"
     latest_mlat_verification_bytes = b"{}"
     latest_storage_bytes = b"{}"
