@@ -1,5 +1,6 @@
 // @ts-nocheck — gradual TS migration
 import { groundTruthKey } from "./constants";
+import { forgetTrack } from "./trackStores";
 
 /* ── Ground-truth objects in the frontend animation stores.
  *
@@ -60,16 +61,19 @@ export function applyGroundTruthFixes(fixes, snapshot, meta, now) {
 }
 
 /**
- * Drop truth entries the latest snapshot no longer vouches for, from `fixes`
- * and every companion store.  Radar entries are left alone — they have their
- * own staleness rule.
+ * Drop truth entries the latest snapshot no longer vouches for, from every
+ * per-object store.  Radar entries are left alone — they have their own
+ * staleness rule (trackStores.sweepStaleRadar).
+ *
+ * Takes the trackStores bundle rather than varargs companions: the varargs
+ * form made a forgotten store silent, which is the exact bug class the
+ * bundle exists to close.
  */
-export function pruneGroundTruthFixes(fixes, activeKeys, ...companions) {
-  for (const key of Object.keys(fixes)) {
-    if (!fixes[key]._isTruth) continue;
+export function pruneGroundTruthFixes(stores, activeKeys) {
+  for (const key of Object.keys(stores.fixes)) {
+    if (!stores.fixes[key]._isTruth) continue;
     if (activeKeys.has(key)) continue;
-    delete fixes[key];
-    for (const store of companions) delete store[key];
+    forgetTrack(key, stores);
   }
 }
 
@@ -83,13 +87,10 @@ export function pruneGroundTruthFixes(fixes, activeKeys, ...companions) {
  * the equivalent for truth, driven from the render loop so it runs even when
  * no data is arriving.
  */
-export function sweepStaleGroundTruthFixes(fixes, now, ttlMs, ...companions) {
-  for (const key of Object.keys(fixes)) {
-    const f = fixes[key];
+export function sweepStaleGroundTruthFixes(stores, now, ttlMs) {
+  for (const key of Object.keys(stores.fixes)) {
+    const f = stores.fixes[key];
     if (!f._isTruth) continue;
-    if (now - (f._updatedAt ?? 0) > ttlMs) {
-      delete fixes[key];
-      for (const store of companions) delete store[key];
-    }
+    if (now - (f._updatedAt ?? 0) > ttlMs) forgetTrack(key, stores);
   }
 }

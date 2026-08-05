@@ -146,7 +146,7 @@ export function yagiSectorPositions(
   const baselineKm = useBistatic
     ? haversineDistanceKm(rxLat, rxLon, txLat, txLon)
     : 0;
-  const bearingToTx = useBistatic ? _bearingDeg(rxLat, rxLon, txLat, txLon) : 0;
+  const bearingToTx = useBistatic ? bearingDeg(rxLat, rxLon, txLat, txLon) : 0;
 
   // The elliptical edge curves faster than a circular one, so it needs more
   // vertices to stay smooth over a wide sector.
@@ -165,15 +165,6 @@ export function yagiSectorPositions(
   return points;
 }
 
-function _bearingDeg(lat1, lon1, lat2, lon2) {
-  const lat1r = lat1 * Math.PI / 180;
-  const lat2r = lat2 * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const x = Math.sin(dLon) * Math.cos(lat2r);
-  const y = Math.cos(lat1r) * Math.sin(lat2r)
-    - Math.sin(lat1r) * Math.cos(lat2r) * Math.cos(dLon);
-  return ((Math.atan2(x, y) * 180 / Math.PI) % 360 + 360) % 360;
-}
 
 const EARTH_RADIUS_KM = 6371;
 

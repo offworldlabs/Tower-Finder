@@ -2,11 +2,10 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { MapContainer, TileLayer, CircleMarker, Tooltip } from "react-leaflet";
 import "./PhysicsSettings.css";
 
-const API = "/api";
+// One plane path — imported from the icon module the map itself uses.
+import { PLANE_PATH } from "./map/icons";
 
-// Same plane path used by LiveAircraftMap for pixel-perfect icon matching
-const PLANE_PATH =
-  "M16,2 C15.3,5.5 14.7,9 14.7,13 L3,20 L3,23 L14.7,19 L14.7,26 L11.5,28 L11.5,30.5 L16,29 L20.5,30.5 L20.5,28 L17.3,26 L17.3,19 L29,23 L29,20 L17.3,13 C17.3,9 16.7,5.5 16,2Z";
+const API = "/api";
 
 // SVG icon components — colours match map rendering exactly
 function PlaneIcon({ color = "#38bdf8", size = 26 }) {

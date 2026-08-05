@@ -45,6 +45,7 @@ from routes.auth import router as auth_router
 from routes.custody import router as custody_router
 from routes.output import router as output_router
 from routes.radar import router as radar_router
+from routes.sim_ingest import router as sim_ingest_router
 from routes.stats import router as stats_router
 from routes.streaming import router as streaming_router
 from routes.test import router as test_router
@@ -226,4 +227,17 @@ for router in (
     auth_router, admin_router, output_router,
 ):
     app.include_router(router)
+
+# Simulation ingest is a WRITE path (state.adsb_aircraft /
+# ground_truth_trails) that only the fleet orchestrator uses.  Production has
+# no orchestrator, so mounting it there was pure attack surface; staging/test
+# keep it, and SIM_INGEST_ENABLED=1 can force it on anywhere.
+_SIM_INGEST_ENABLED = (
+    os.getenv("RETINA_ENV", "").lower() != "production"
+    or os.getenv("SIM_INGEST_ENABLED", "") == "1"
+)
+if _SIM_INGEST_ENABLED:
+    app.include_router(sim_ingest_router)
+else:
+    logging.info("Simulation ingest endpoints not mounted (RETINA_ENV=production)")
 

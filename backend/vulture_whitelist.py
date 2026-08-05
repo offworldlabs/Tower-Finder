@@ -153,3 +153,10 @@ tag
 # Registered with SQLAlchemy via @event.listens_for(engine.sync_engine, "connect").
 # Vulture doesn't follow the decorator's dynamic dispatch.
 _set_sqlite_pragmas
+
+
+# ── services/tasks/solver.py ──────────────────────────────────────────────────
+# Public alias consumed by scripts/association_bench.py (scripts/ is excluded
+# from the vulture scan) — the bench resolves chi2 through the worker's own
+# code path rather than a copy.
+resolve_n2_chi2

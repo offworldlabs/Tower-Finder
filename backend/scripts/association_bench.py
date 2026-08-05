@@ -61,8 +61,11 @@ from retina_simulation.world import (  # noqa: E402
     SimulationWorld,
     waypoints_for_metro,
 )
-from retina_tracker.track import TrackState  # noqa: E402
 from retina_tracker.tracker import Tracker  # noqa: E402
+
+from services.frame_processor import confirmed_track_views  # noqa: E402
+from services.geo import haversine_km as _haversine_km  # noqa: E402
+from services.tasks.solver import claim_decision, resolve_n2_chi2  # noqa: E402
 
 # A solve is credited to an aircraft if it lands within this radius.  Matches
 # resolve_ground_truth_hex's display radius so results line up with the staging
@@ -97,31 +100,6 @@ def _frame_to_detections(frame: dict) -> list[dict]:
     return dets
 
 
-def _confirmed_tracks(tracker: Tracker, history_n: int) -> list[dict]:
-    """Confirmed single-node tracks, in the shape submit_tracks wants.
-
-    TENTATIVE tracks are excluded — the same filter the arc builder applies in
-    frame_processor.  They have too little history to fit and may yet be
-    deleted, so admitting them would put the M-of-N clutter rejection back on
-    the association layer, which is most of what track-level association buys.
-    """
-    out = []
-    for tr in tracker.tracks:
-        if tr.state_status == TrackState.TENTATIVE:
-            continue
-        hist = tr.get_recent_detections(history_n)
-        if len(hist) < 2:
-            continue
-        out.append({
-            "track_id": tr.id or f"tmp-{id(tr)}",
-            "history": [{"t_s": h["timestamp"] / 1000.0,
-                         "delay_us": h["delay"],
-                         "doppler_hz": h["doppler"],
-                         "snr": h["snr"]} for h in hist],
-        })
-    return out
-
-
 def _strip_adsb(frame: dict) -> dict:
     """Return the frame as a real receiver would see it.
 
@@ -146,15 +124,6 @@ def _strip_adsb(frame: dict) -> dict:
     return {k: v for k, v in frame.items() if k != "adsb"}
 
 
-def _haversine_km(lat1, lon1, lat2, lon2):
-    r = 6371.0
-    p1, p2 = math.radians(lat1), math.radians(lat2)
-    dp = math.radians(lat2 - lat1)
-    dl = math.radians(lon2 - lon1)
-    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
-    return 2 * r * math.asin(math.sqrt(a))
-
-
 class DeferredN2Gate:
     """The solver-side n=2 gate, replayed against simulated time.
 
@@ -162,7 +131,8 @@ class DeferredN2Gate:
     associator with cv_fit=None, so chi2_per_dof is never set inside
     _pair_tracks, `fitted` stays empty and stage-2 selection never executes.
     The pairings travel to the solver worker carrying cv_epochs, and *this* is
-    the gate that decides publication — see solver.py:607-632.
+    the gate that decides publication — solver._claim_track_pair over
+    claim_decision, which the strict policy here imports directly.
 
     The bench measured the inline path instead, which is why its numbers
     described a configuration that does not ship.  This mirrors the shipped one:
@@ -186,8 +156,13 @@ class DeferredN2Gate:
         #                truncates to [:1], so a 3-node cluster leaves its third
         #                track unclaimed and free to seed a competing target.
         self.claim_policy = claim_policy
-        # track_id → (chi2, at, pairing_key)
-        self._claims: dict[str, tuple[float, float, tuple]] = {}
+        # strict: track_id → (chi2, at) — the exact shape solver._TRACK_CLAIMS
+        # holds, operated on by the imported claim_decision.
+        self._claims: dict[str, tuple[float, float]] = {}
+        # non-production policies: track_id → (chi2, at, pairing_key)
+        self._claims3: dict[str, tuple[float, float, tuple]] = {}
+        # attribution shadow (all policies): track_id → (chi2, at, pairing_key)
+        self._pairing_of: dict[str, tuple[float, float, tuple]] = {}
         # Attribution: a refusal by the *same* pairing is a self-lockout — the
         # gate suppressing the hypothesis it already agreed with — and is a
         # different failure from losing to a genuine competitor.
@@ -206,26 +181,9 @@ class DeferredN2Gate:
         return [tid for pair in (s_in.get("track_pair_ids") or []) for tid in pair]
 
     def resolve_chi2(self, s_in: dict, node_cfgs: dict) -> float | None:
-        chi2 = s_in.get("chi2_per_dof")
-        if chi2 is not None:
-            return chi2
-        epochs = s_in.get("cv_epochs")
-        if not epochs:
-            return None
-        fit = fit_constant_velocity(
-            {
-                "initial_guess": s_in.get("initial_guess"),
-                "initial_velocity": s_in.get("initial_velocity"),
-                "epochs": epochs,
-                "timestamp_ms": s_in.get("timestamp_ms", 0),
-            },
-            node_cfgs,
-        )
-        if not fit or not fit.get("success"):
-            return None
-        s_in["chi2_per_dof"] = fit["chi2_per_dof"]
-        s_in["n_epochs"] = fit["n_epochs"]
-        return fit["chi2_per_dof"]
+        # The worker's own resolver — the bench used to carry a copy of the
+        # fit plumbing, which is the drift this class exists to rule out.
+        return resolve_n2_chi2(s_in, node_cfgs)
 
     def claim(self, s_in: dict, chi2: float, now_s: float) -> bool:
         pairs = s_in.get("track_pair_ids") or []
@@ -235,27 +193,54 @@ class DeferredN2Gate:
             return True
         key = self._pairing_key(s_in)
         track_ids = self._claimed_track_ids(s_in)
-        for tid, (_c, held_at, _k) in list(self._claims.items()):
+        # Attribution pass — observational only, mirroring the decision's
+        # first-refusal order.  A refusal by the SAME pairing is a
+        # self-lockout (the gate suppressing the hypothesis it already
+        # agreed with); losing to a genuine competitor is a different fact.
+        for tid, (_c, held_at, _k) in list(self._pairing_of.items()):
             if now_s - held_at > self.claim_ttl_s:
-                del self._claims[tid]
+                del self._pairing_of[tid]
         for tid in track_ids:
-            held = self._claims.get(tid)
+            held = self._pairing_of.get(tid)
             if held is None or held[0] >= chi2:
                 continue
             if held[2] == key:
-                # The holder *is* this pairing.  Its chi2 has drifted upward as
-                # the epoch set grew, and the strictly-better test then locks a
-                # track out of its own winning hypothesis.  The production
-                # comment anticipates only the identical-score case.
                 self.refused_self += 1
                 self.claim_chi2_drift.append(chi2 - held[0])
                 if self.claim_policy in ("self-refresh", "all-tracks"):
                     continue
-                return False
-            self.refused_other += 1
+            else:
+                self.refused_other += 1
+            break
+
+        if self.claim_policy == "strict":
+            # Production's rule, imported — services.tasks.solver.claim_decision
+            # is the exact function _claim_track_pair runs under its lock, so
+            # the strict policy measures shipped code by construction.  (The
+            # bench used to carry a copy; its docstring even cited solver line
+            # numbers that had gone stale.)
+            ok = claim_decision(self._claims, list(track_ids), chi2, now_s,
+                                self.claim_ttl_s)
+            if ok:
+                for tid in track_ids:
+                    self._pairing_of[tid] = (chi2, now_s, key)
+            return ok
+
+        # Non-production policies (self-refresh / all-tracks) — deliberate
+        # alternatives, kept for the A/B they exist to measure.
+        for tid, (_c, held_at, _k) in list(self._claims3.items()):
+            if now_s - held_at > self.claim_ttl_s:
+                del self._claims3[tid]
+        for tid in track_ids:
+            held = self._claims3.get(tid)
+            if held is None or held[0] >= chi2:
+                continue
+            if held[2] == key:
+                continue
             return False
         for tid in track_ids:
-            self._claims[tid] = (chi2, now_s, key)
+            self._claims3[tid] = (chi2, now_s, key)
+            self._pairing_of[tid] = (chi2, now_s, key)
         return True
 
 
@@ -528,7 +513,7 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
             # frame is what association pairs against — but only let a node
             # *trigger* a round on its own cadence.
             if mode == "track":
-                assoc._pending_tracks[nid] = _confirmed_tracks(trackers[nid], history_n)
+                assoc._pending_tracks[nid] = confirmed_track_views(trackers[nid], history_n)
             else:
                 assoc._pending_frames[nid] = frame
             if (t - last_assoc.get(nid, -1e9)) < assoc_interval:

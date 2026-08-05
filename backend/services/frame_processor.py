@@ -197,8 +197,8 @@ _prof_pipeline = 0.0
 _prof_save = 0.0
 
 
-def _node_track_views(pipeline: PassiveRadarPipeline) -> list[dict]:
-    """This node's confirmed tracks, in the shape submit_tracks takes.
+def confirmed_track_views(tracker, history_n: int = N2_TRACK_HISTORY_MAX) -> list[dict]:
+    """A tracker's confirmed tracks, in the shape submit_tracks takes.
 
     TENTATIVE tracks are excluded, the same filter the arc builder applies: they
     have too little history to fit and may yet be deleted, and admitting them
@@ -206,12 +206,15 @@ def _node_track_views(pipeline: PassiveRadarPipeline) -> list[dict]:
     most of what track-level association buys.  COASTING is kept for the same
     reason arcs keep it — at 22 fps a single missed frame flips ACTIVE →
     COASTING and the next flips it back.
+
+    Shared with scripts/association_bench.py (which carried a near-verbatim
+    copy) so the bench feeds association exactly what production does.
     """
     views = []
-    for tr in pipeline.tracker.tracks:
+    for tr in tracker.tracks:
         if tr.state_status == TrackState.TENTATIVE:
             continue
-        hist = tr.get_recent_detections(N2_TRACK_HISTORY_MAX)
+        hist = tr.get_recent_detections(history_n)
         if len(hist) < 2:
             continue
         views.append({
@@ -222,6 +225,10 @@ def _node_track_views(pipeline: PassiveRadarPipeline) -> list[dict]:
                          "snr": h["snr"]} for h in hist],
         })
     return views
+
+
+def _node_track_views(pipeline: PassiveRadarPipeline) -> list[dict]:
+    return confirmed_track_views(pipeline.tracker)
 
 
 def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarPipeline):

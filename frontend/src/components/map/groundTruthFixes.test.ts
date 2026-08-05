@@ -83,27 +83,42 @@ describe("applyGroundTruthFixes", () => {
   });
 });
 
+// Minimal trackStores bundle for tests — every store the map keeps.
+function makeStores(fixes = {}, extra = {}) {
+  return {
+    fixes,
+    smooth: {}, svgElems: {}, svgMiss: {}, latLng: {},
+    trails: {}, lastTrailSample: {},
+    markerRegistry: new Map(),
+    ...extra,
+  };
+}
+
 describe("pruneGroundTruthFixes", () => {
   it("drops truth entries the snapshot no longer vouches for, across every store", () => {
     const fixes = {};
     applyGroundTruthFixes(
       fixes, { "652600": trail(34.61, -82.4996), "218b6d": trail(34.85, -81.67) }, META, 1000,
     );
-    const smooth = { [groundTruthKey("652600")]: {}, [groundTruthKey("218b6d")]: {} };
-    const trails = { [groundTruthKey("218b6d")]: [] };
+    const stores = makeStores(fixes, {
+      smooth: { [groundTruthKey("652600")]: {}, [groundTruthKey("218b6d")]: {} },
+      trails: { [groundTruthKey("218b6d")]: [] },
+    });
+    stores.markerRegistry.set(groundTruthKey("218b6d"), {});
 
     const keys = applyGroundTruthFixes(fixes, { "652600": trail(34.62, -82.4996) }, META, 2000);
-    pruneGroundTruthFixes(fixes, keys, smooth, trails);
+    pruneGroundTruthFixes(stores, keys);
 
     expect(Object.keys(fixes)).toEqual([groundTruthKey("652600")]);
-    expect(smooth[groundTruthKey("218b6d")]).toBeUndefined();
-    expect(trails[groundTruthKey("218b6d")]).toBeUndefined();
-    expect(smooth[groundTruthKey("652600")]).toBeDefined();
+    expect(stores.smooth[groundTruthKey("218b6d")]).toBeUndefined();
+    expect(stores.trails[groundTruthKey("218b6d")]).toBeUndefined();
+    expect(stores.markerRegistry.has(groundTruthKey("218b6d"))).toBe(false);
+    expect(stores.smooth[groundTruthKey("652600")]).toBeDefined();
   });
 
   it("leaves radar entries alone — they have their own staleness rule", () => {
     const fixes = { "652600": { hex: "652600", _key: "652600", position_source: "x" } };
-    pruneGroundTruthFixes(fixes, new Set(), {});
+    pruneGroundTruthFixes(makeStores(fixes), new Set());
 
     expect(fixes["652600"]).toBeDefined();
   });
@@ -115,19 +130,21 @@ describe("sweepStaleGroundTruthFixes", () => {
     const now = 1_000_000;
     applyGroundTruthFixes(fixes, { abc: [[34.8, -82.4, 3000, 999]] }, {}, now - 40_000);
     const key = groundTruthKey("abc");
-    const smooth: any = { [key]: { lat: 34.8, lon: -82.4, track: 0 } };
-    const trails: any = { [key]: [[34.8, -82.4, 999]] };
-    sweepStaleGroundTruthFixes(fixes, now, 30_000, smooth, trails);
+    const stores = makeStores(fixes, {
+      smooth: { [key]: { lat: 34.8, lon: -82.4, track: 0 } },
+      trails: { [key]: [[34.8, -82.4, 999]] },
+    });
+    sweepStaleGroundTruthFixes(stores, now, 30_000);
     expect(fixes[key]).toBeUndefined();
-    expect(smooth[key]).toBeUndefined();
-    expect(trails[key]).toBeUndefined();
+    expect(stores.smooth[key]).toBeUndefined();
+    expect(stores.trails[key]).toBeUndefined();
   });
 
   it("keeps fresh truth and never touches radar entries", () => {
     const fixes: any = { r1: { hex: "r1", _updatedAt: 0 } };  // radar, ancient
     const now = 1_000_000;
     applyGroundTruthFixes(fixes, { abc: [[34.8, -82.4, 3000, 999]] }, {}, now - 1_000);
-    sweepStaleGroundTruthFixes(fixes, now, 30_000);
+    sweepStaleGroundTruthFixes(makeStores(fixes), now, 30_000);
     expect(fixes[groundTruthKey("abc")]).toBeDefined();
     expect(fixes.r1).toBeDefined();  // radar staleness is someone else's rule
   });

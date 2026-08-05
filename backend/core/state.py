@@ -21,7 +21,6 @@ from config.constants import (
     ASSOC_MAX_PAIRS_PER_ROUND,
     ASSOC_MIN_INTERVAL_S,
     GROUND_TRUTH_MAX,  # noqa: F401 — re-exported, used via state.GROUND_TRUTH_MAX
-    N2_CONFIRM_CHI2_MAX,
     N2_CONFIRM_MIN_EPOCHS,
     N2_CONFIRM_MIN_SPAN_S,
     TRACK_HISTORY_MAX,  # noqa: F401 — re-exported, used via state.TRACK_HISTORY_MAX
@@ -55,8 +54,12 @@ node_associator = InterNodeAssociator(
     # No inline fit: the epochs travel with the candidate and the solver
     # worker runs the fit on its own threads.  An 86 ms LM solve on the
     # frame path is frame latency.
+    # cv_chi2_max is deliberately NOT passed: with cv_fit=None the associator
+    # never scores anything, so the parameter is inert here — passing
+    # N2_CONFIRM_CHI2_MAX made it a live-looking dead wire.  The threshold
+    # that actually gates n=2 publication is the solver worker's
+    # _N2_CONFIRM_CHI2_MAX, bound from the same constant.
     cv_fit=None,
-    cv_chi2_max=N2_CONFIRM_CHI2_MAX,
     cv_min_epochs=N2_CONFIRM_MIN_EPOCHS,
     cv_min_span_s=N2_CONFIRM_MIN_SPAN_S,
     # Both were dead config in the same way assoc_interval_s had been: defined

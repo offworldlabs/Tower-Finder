@@ -49,13 +49,14 @@ import {
 import { fetchRadar3Verification, fetchRadar3DetectionRange, fetchMlatVerification } from "../api";
 import { defaultsGroundTruthOff } from "../utils/domains";
 import { usePersistedState } from "./map/usePersistedState";
-import { parseHash, useHashWriter, encodeLayers } from "./map/useUrlHashState";
+import { parseHash, useHashWriter, encodeLayers, decodeLayers } from "./map/useUrlHashState";
 import { useKeyboardShortcuts } from "./map/useKeyboardShortcuts";
 import { trailToCsv, trailsToBulkCsv, downloadCsv } from "./map/trailExport";
 import { toast, copyToClipboard } from "./map/toast";
 import { checkEmergencySquawks, resetEmergencyAlertCache } from "./map/emergencyAudio";
 import { distanceKm } from "./map/distance";
 import { validLatLon } from "./map/geo";
+import { snapTrack, sweepStaleRadar } from "./map/trackStores";
 import StatsOverlay from "./map/StatsOverlay";
 import ShortcutHelp from "./map/ShortcutHelp";
 
@@ -954,21 +955,12 @@ export default function LiveAircraftMap() {
   // overrides the user's persisted preferences, so a teammate sharing a
   // link sees the exact view that was sent.
   const initialHash = useMemo(() => parseHash(), []);
-  const initialLayers = useMemo(() => {
-    const s = initialHash.layers;
-    if (!s) return null;
-    return {
-      coverage:     s.includes("c"),
-      labels:       s.includes("l"),
-      trails:       s.includes("t"),
-      groundTruth:  s.includes("g"),
-      illuminators: s.includes("i"),
-      colorByAlt:   s.includes("a"),
-      stats:        s.includes("s"),
-      rangeRings:   s.includes("r"),
-      inBeamDiag:   s.includes("b"),
-    };
-  }, [initialHash]);
+  // Single-sourced from useUrlHashState — this was a character-for-character
+  // inline copy of decodeLayers, maintained twice.
+  const initialLayers = useMemo(
+    () => (initialHash.layers ? decodeLayers(initialHash.layers) : null),
+    [initialHash],
+  );
 
   const [displayAircraft, setDisplayAircraft] = useState([]);
   const [showCoverage, setShowCoverage] = usePersistedState("tf.layer.coverage", initialLayers?.coverage ?? false);
@@ -1045,18 +1037,29 @@ export default function LiveAircraftMap() {
   // without needing backend changes.  Bounded to 60 samples per hex (30 s).
   const frontendTrailsRef = useRef({});  // hex → Array<[lat, lon, ts_sec]>
   const lastTrailSampleRef = useRef({}); // hex → last sample timestamp (ms)
+  // One bundle over all eight per-object stores, so the prune paths are
+  // three callers of trackStores.forgetTrack instead of three hand-kept
+  // subsets (see map/trackStores.ts for the history).
+  const allStoresRef = useRef(null);
+  if (!allStoresRef.current) {
+    allStoresRef.current = {
+      get fixes() { return fixesRef.current; },
+      get smooth() { return smoothRef.current; },
+      get svgElems() { return svgElemsRef.current; },
+      get svgMiss() { return svgMissRef.current; },
+      get latLng() { return latLngCacheRef.current; },
+      get trails() { return frontendTrailsRef.current; },
+      get lastTrailSample() { return lastTrailSampleRef.current; },
+      get markerRegistry() { return markerRegistryRef.current; },
+    };
+  }
 
   /* ── Record server fixes when new WS data arrives ───────────── */
   useEffect(() => {
     const now = Date.now();
-    // Equirect distance approximation (km) — good enough for the
-    // "is this jump plausible?" test (< 1% error inside a metro area).
-    const distKm = (lat1, lon1, lat2, lon2) => {
-      const cosLat = Math.cos(((lat1 + lat2) / 2) * (Math.PI / 180));
-      const dx = (lon2 - lon1) * 111.32 * cosLat;
-      const dy = (lat2 - lat1) * 111.32;
-      return Math.hypot(dx, dy);
-    };
+    // Shared spherical helper — this held one of the map's five distance
+    // implementations (equirect at 111.32); <1% apart, but one is enough.
+    const distKm = distanceKm;
     for (const ac of aircraft) {
       if (!validLatLon(ac.lat, ac.lon)) continue;
       const prev = fixesRef.current[ac.hex];
@@ -1080,27 +1083,7 @@ export default function LiveAircraftMap() {
         const refLon = sm?.lon ?? prev._fixLon;
         const jumpKm = distKm(refLat, refLon, ac.lat, ac.lon);
         if (jumpKm > maxPlausibleKm) {
-          if (sm) {
-            sm.lat = ac.lat;
-            sm.lon = ac.lon;
-          } else {
-            smoothRef.current[ac.hex] = {
-              lat: ac.lat,
-              lon: ac.lon,
-              track: ac.track || 0,
-            };
-          }
-          // Reset the cached Leaflet LatLng so the marker.update() in the
-          // tick loop renders at the new position on the next frame.
-          const cachedLL = latLngCacheRef.current[ac.hex];
-          if (cachedLL) {
-            cachedLL.lat = ac.lat;
-            cachedLL.lng = ac.lon;
-          }
-          // Drop the trail so the polyline doesn't draw a straight line
-          // through the discontinuity.
-          delete frontendTrailsRef.current[ac.hex];
-          delete lastTrailSampleRef.current[ac.hex];
+          snapTrack(ac.hex, allStoresRef.current, ac.lat, ac.lon, ac.track);
         }
       }
 
@@ -1117,18 +1100,7 @@ export default function LiveAircraftMap() {
       };
     }
     // Drop stale entries no longer in the feed (skip truth-only — managed by their own effect)
-    for (const hex of Object.keys(fixesRef.current)) {
-      if (fixesRef.current[hex]._isTruth) continue;
-      if (now - (fixesRef.current[hex]._updatedAt ?? 0) > STALE_AIRCRAFT_MS) {
-        delete fixesRef.current[hex];
-        delete smoothRef.current[hex];
-        delete svgElemsRef.current[hex];
-        delete svgMissRef.current[hex];
-        delete latLngCacheRef.current[hex];
-        delete frontendTrailsRef.current[hex];
-        delete lastTrailSampleRef.current[hex];
-      }
-    }
+    sweepStaleRadar(allStoresRef.current, now, STALE_AIRCRAFT_MS);
   }, [aircraft]);
 
   /* ── Continuous 60fps glide loop (dead-reckoning + exponential smoothing) ── */
@@ -1248,12 +1220,7 @@ export default function LiveAircraftMap() {
         // Truth objects age out here (render-loop driven) because their
         // arrival-driven prune never fires once the feed stops — stale blue
         // dots dead-reckoned forever.
-        sweepStaleGroundTruthFixes(
-          fixes, now, GT_FEED_STALE_MS,
-          smoothRef.current, svgElemsRef.current, svgMissRef.current,
-          latLngCacheRef.current, frontendTrailsRef.current,
-          lastTrailSampleRef.current,
-        );
+        sweepStaleGroundTruthFixes(allStoresRef.current, now, GT_FEED_STALE_MS);
         const arr = [];
         const dispMap = {};
         for (const fix of Object.values(fixes)) {
@@ -1316,12 +1283,7 @@ export default function LiveAircraftMap() {
     const activeGtKeys = applyGroundTruthFixes(
       fixesRef.current, groundTruthRef.current, groundTruthMetaRef.current, Date.now(),
     );
-    pruneGroundTruthFixes(
-      fixesRef.current, activeGtKeys,
-      smoothRef.current, svgElemsRef.current, svgMissRef.current,
-      latLngCacheRef.current, frontendTrailsRef.current,
-      lastTrailSampleRef.current,
-    );
+    pruneGroundTruthFixes(allStoresRef.current, activeGtKeys);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groundTruthTick]);
 

@@ -459,17 +459,36 @@ def _claim_track_pair(s_in: dict, chi2: float) -> bool:
     # the third unclaimed.  s_in["track_ids"] carries the full set if that is
     # ever worth closing — see --claim-policy all-tracks.
     track_ids = [tid for pair in pairs for tid in pair]
-    now = time.time()
     with _TRACK_CLAIMS_LOCK:
-        for tid, (_held_chi2, held_at) in list(_TRACK_CLAIMS.items()):
-            if now - held_at > _TRACK_CLAIM_TTL_S:
-                del _TRACK_CLAIMS[tid]
-        for tid in track_ids:
-            held = _TRACK_CLAIMS.get(tid)
-            if held is not None and held[0] < chi2:
-                return False
-        for tid in track_ids:
-            _TRACK_CLAIMS[tid] = (chi2, now)
+        return claim_decision(
+            _TRACK_CLAIMS, track_ids, chi2, time.time(), _TRACK_CLAIM_TTL_S
+        )
+
+
+def claim_decision(
+    claims: dict[str, tuple[float, float]],
+    track_ids: list[str],
+    chi2: float,
+    now: float,
+    ttl_s: float,
+) -> bool:
+    """The claim rule itself, pure and clock-free: expire, compare, record.
+
+    Extracted so the offline bench measures the SHIPPED rule by construction
+    (association_bench.DeferredN2Gate used to carry its own copy — the exact
+    drift the bench exists to rule out).  Caller holds whatever lock guards
+    `claims`; production passes _TRACK_CLAIMS under _TRACK_CLAIMS_LOCK, the
+    bench passes its own dict on simulated time.
+    """
+    for tid, (_held_chi2, held_at) in list(claims.items()):
+        if now - held_at > ttl_s:
+            del claims[tid]
+    for tid in track_ids:
+        held = claims.get(tid)
+        if held is not None and held[0] < chi2:
+            return False
+    for tid in track_ids:
+        claims[tid] = (chi2, now)
     return True
 
 
@@ -512,6 +531,11 @@ def _resolve_n2_chi2(s_in: dict, node_cfgs) -> float | None:
     s_in["chi2_per_dof"] = fit["chi2_per_dof"]
     s_in["n_epochs"] = fit["n_epochs"]
     return fit["chi2_per_dof"]
+
+
+# Public alias: the offline bench resolves chi2 through the same code path the
+# worker uses, rather than carrying a copy of the fit plumbing.
+resolve_n2_chi2 = _resolve_n2_chi2
 
 
 def _process_solver_item(item: tuple, solve_fn) -> dict | None:
