@@ -64,7 +64,15 @@ services:
     # runtime environment matches its former self.
     env_file: !override []
     environment:
-      - FLEET_NODES=50
+      # 200 nodes: staging is where a prod-scale node count gets exercised, now
+      # that the prod base itself runs 50 concentrated ones (see docker-compose.yml).
+      - FLEET_NODES=200
+      # Metro layout is pinned rather than inherited. The base concentrates
+      # production on two rings (see docker-compose.yml); this environment keeps
+      # the single-ring shape it has always had, so a change aimed at production
+      # does not silently alter node geometry here too.
+      - FLEET_N_CLUSTERS=1
+      - FLEET_N_CLUSTER=8
       - FLEET_REGIONS=us
       - FLEET_MODE=adsb
       - FLEET_INTERVAL=40.0

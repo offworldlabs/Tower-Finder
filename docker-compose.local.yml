@@ -63,6 +63,16 @@ services:
       - path: backend/.env
         required: false
     environment:
+      # Pin the node count rather than inheriting it. The base dropped to 50
+      # concentrated nodes for production; a laptop run wants the denser stream it
+      # had before, and has the headroom for it since nothing else competes.
+      - FLEET_NODES=200
+      # Metro layout is pinned rather than inherited. The base concentrates
+      # production on two rings (see docker-compose.yml); this environment keeps
+      # the single-ring shape it has always had, so a change aimed at production
+      # does not silently alter node geometry here too.
+      - FLEET_N_CLUSTERS=1
+      - FLEET_N_CLUSTER=8
       # Enable the fleet's read-only accuracy self-check: every 30s it compares
       # the server's solved aircraft against the simulation's ground truth and
       # logs "VALIDATION: server=N aircraft, truth=M ...", handy on a local run.

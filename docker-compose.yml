@@ -83,7 +83,15 @@ services:
     env_file:
       - backend/.env
     environment:
-      - FLEET_NODES=200
+      # 50 nodes across two metro coverage rings (DFW + ORD). Was 200 on one
+      # ring: a wide sparse spread produced solo arcs that never pair into a
+      # fix, so fewer nodes concentrated into two rings is more useful traffic
+      # for the same server cost. FLEET_N_CLUSTER is the TOTAL ring receiver
+      # budget split across the rings, so 16/2 keeps 8 per metro, matching what
+      # the single ring had rather than halving it.
+      - FLEET_NODES=50
+      - FLEET_N_CLUSTERS=2
+      - FLEET_N_CLUSTER=16
       - FLEET_REGIONS=us
       - FLEET_MODE=adsb
       - FLEET_INTERVAL=40.0

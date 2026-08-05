@@ -94,6 +94,12 @@ services:
       # unwarranted. This is now the highest node count of any environment,
       # which is the point: it is the box we are free to push until it breaks.
       - FLEET_NODES=200
+      # Metro layout is pinned rather than inherited. The base concentrates
+      # production on two rings (see docker-compose.yml); this environment keeps
+      # the single-ring shape it has always had, so a change aimed at production
+      # does not silently alter node geometry here too.
+      - FLEET_N_CLUSTERS=1
+      - FLEET_N_CLUSTER=8
       - FLEET_INTERVAL=40.0
       # Log the read-only accuracy self-check every 30s: this droplet exists to be
       # measured, so the "VALIDATION: server=N aircraft, truth=M ..." line is worth
