@@ -39,7 +39,7 @@ else
         # BEFORE stopping the app. pre-deploy.sh tags each pre-deploy commit
         # `deploy-<timestamp>`, so the newest is the last-known-good. Without this
         # the box runs the good image over the bad commit, and the next
-        # `docker compose up --build` (a manual redeploy, or restart-fleet-prod.sh)
+        # `docker compose up --build` (a manual redeploy, or a fleet bounce)
         # silently rebuilds the bad code, undoing the rollback.
         # Ordering matters: doing this FIRST (before `down`) means a git failure —
         # e.g. a submodule fetch during a GitHub outage, which is exactly when

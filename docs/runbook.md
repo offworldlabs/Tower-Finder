@@ -366,15 +366,19 @@ hand. To manually bounce just the fleet (it loses its TCP connections and
 regenerates ~200 nodes, taking a minute+):
 ```bash
 ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 \
-  'bash /opt/tower-finder/deploy/restart-fleet-prod.sh'   # docker compose up -d --no-deps fleet
+  'cd /opt/tower-finder && docker compose up -d --build --force-recreate --no-deps fleet'
 ```
+`--no-deps` is the important flag: `fleet` declares `depends_on: tower-finder`, so
+without it Compose would also rebuild and recreate the running app, turning a fleet
+bounce into a full redeploy and an outage.
+
 Params (nodes/interval/mode/aircraft) live in the `fleet` service block in
 `docker-compose.yml` — edit them there, not on the command line.
 
-⚠️ Do NOT start the fleet with `systemd-run`/`python3 -m retina_simulation.orchestrator`
-by hand while the Compose `fleet` service is running — two fleets double-count nodes
-and aircraft on testmap. The host-process path exists only as the disabled fallback
-in `deploy/fleet.service` (see its header for the mutual-exclusion procedure).
+⚠️ Do NOT start the fleet as a host process (`systemd-run`, a systemd unit, or a bare
+`python3 -m retina_simulation.orchestrator`) while the Compose `fleet` service is
+running — two fleets both push synthetic traffic and double-count nodes and aircraft
+on testmap. Compose is the only supported way to run it.
 
 ### Quick fleet health snapshot
 ```bash

@@ -44,16 +44,13 @@ COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
 # Built dashboard
 COPY --from=dashboard-build /app/dashboard/dist /app/dashboard/dist
 
-# tar1090 static files
-COPY tar1090/html /app/tar1090/html
-
 # Nginx config (default: production domains)
 COPY deploy/nginx.conf /etc/nginx/sites-available/default
 COPY deploy/nginx-security.conf /etc/nginx/conf.d/security.conf
 
-# Deploy scripts + test nginx config (used when RETINA_ENV=test)
+# Deploy scripts
 COPY deploy/ /app/deploy/
-RUN chmod +x /app/deploy/start.sh /app/deploy/start-test.sh
+RUN chmod +x /app/deploy/start.sh
 
 # Save a pristine copy of source-controlled config files outside the
 # /app/backend/config volume so they always reflect the current image.
