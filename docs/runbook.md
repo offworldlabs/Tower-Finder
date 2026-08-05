@@ -133,7 +133,9 @@ curl -sk https://localhost/api/radar/nodes | jq '.nodes | keys'
 curl -sk https://localhost/api/test/node/radar3a-retnode/verification | jq '{n_tracks, n_matched, position}'
 ```
 
-A node missing from the first list failed validation — the reason is logged at error level, naming the offending field. Bad geometry passes validation but shows up in the second: `position.median_km` blows up when tx/rx or fc do not match the real hardware.
+A node missing from the first list failed validation — the reason is logged at error level, naming the offending field.
+
+Bad geometry passes validation, and `position.median_km` will *not* reliably catch it: that figure is dominated by the single-node solver's own ~25–35 km uncertainty. A deliberate 20 km TX error moved it by about 5 km, inside the run-to-run spread. To check tx/rx/fc against the hardware, compare the node's published `adsb[].expected_delay` with the bistatic delay computed from the configured geometry — correct config agrees to tens of metres, a 20 km TX error to tens of kilometres.
 
 ---
 
