@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { API_BASE, ARC_TOTAL_LIFE_MS, MAX_HISTORY } from "./constants";
 import { upsertArcEntries } from "./arcBuffer";
+import { updateDetections } from "./detections";
 import { mergeTrailPositions } from "./trails";
 import { validLatLon } from "./geo";
 import type { RadarNode } from "../../types";
@@ -106,7 +107,7 @@ export function useAircraftFeed(ownerOnly = false) {
 
   // Shared history + state update
   const ingestAircraft = useCallback(
-    (newAircraft, groundTruth, groundTruthMeta, anomalyHexes) => {
+    (newAircraft, groundTruth, groundTruthMeta, anomalyHexes, detectingNodes) => {
       historyRef.current.push({ aircraft: newAircraft, ts: Date.now() });
       if (historyRef.current.length > MAX_HISTORY) historyRef.current.shift();
 
@@ -134,26 +135,12 @@ export function useAircraftFeed(ownerOnly = false) {
       const ARC_MAX_AGE_MS = ARC_TOTAL_LIFE_MS;
       upsertArcEntries(arcsBufferRef.current, newAircraft, now, ARC_MAX_AGE_MS);
 
-      // Detection-presence oracle (consumed by InBeamDiagnostic). Record
-      // every (aircraft, node) pair that produced ANY detection this frame:
-      // single-node tracks via node_id, multinode solves via every
-      // contributing node. Key on ground_truth_hex when present, else hex —
-      // the same identity the ground-truth trail is keyed by, so a multinode
-      // track (whose own hex is synthetic) still joins to its aircraft.
-      const det = detectionsRef.current;
-      for (const ac of newAircraft) {
-        const hex = ac.ground_truth_hex || ac.hex;
-        if (!hex) continue;
-        if (ac.node_id) det[`${hex}|${ac.node_id}`] = now;
-        if (Array.isArray(ac.contributing_node_ids)) {
-          for (const nid of ac.contributing_node_ids) det[`${hex}|${nid}`] = now;
-        }
-      }
-      // Prune on the same TTL as the arc buffer, so a detection that only
-      // just expired still counts within the grace window.
-      for (const key of Object.keys(det)) {
-        if (now - det[key] > ARC_MAX_AGE_MS) delete det[key];
-      }
+      // Detection-presence oracle (consumed by InBeamDiagnostic and the
+      // GT debug panel).  Unions per-aircraft signals with the top-level
+      // detecting_nodes feed key — see detections.ts.
+      updateDetections(
+        detectionsRef.current, newAircraft, detectingNodes, now, ARC_MAX_AGE_MS,
+      );
 
       updateTrails(newAircraft);
     },
@@ -181,7 +168,7 @@ export function useAircraftFeed(ownerOnly = false) {
       lastMsgRef.current = Date.now(); // keep watchdog alive
       try {
         const data = JSON.parse(evt.data);
-        ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes);
+        ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes, data.detecting_nodes);
       } catch {
         /* ignore */
       }
@@ -253,7 +240,7 @@ export function useAircraftFeed(ownerOnly = false) {
         const res = await fetch(pollPath, { signal: controller.signal });
         if (res.ok) {
           const data = await res.json();
-          ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes);
+          ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes, data.detecting_nodes);
         }
       } catch (err) {
         if (err.name !== "AbortError") {

@@ -259,6 +259,44 @@ class TestMultinodeToAircraft:
         assert ac["is_anomalous"] is False
         assert ac["anomaly_types"] == []
 
+    def test_contributing_track_anomaly_propagates(self):
+        """A result stamped anomalous by the solver (_collect_track_anomalies
+        from its contributing tracker tracks) carries the flag into the feed
+        entry and anomaly_hexes — a dark anomalous target must not go quiet
+        the moment it graduates from arc to solve."""
+        r = {
+            "lat": 33.9, "lon": -84.6, "alt_m": 9000.0,
+            "vel_east": 350.0, "vel_north": 0.0,
+            "n_nodes": 2, "n_measurements": 10,
+            "rms_delay": 0.3, "rms_doppler": 0.8,
+            "is_anomalous": True, "anomaly_types": ["supersonic"],
+            "max_velocity_ms": 420.0,
+        }
+        ac = multinode_to_aircraft("mn-dark-4", r)
+        try:
+            assert ac["is_anomalous"] is True
+            assert ac["anomaly_types"] == ["supersonic"]
+            assert ac["max_velocity_ms"] == 420.0
+            assert ac["hex"] in state.anomaly_hexes
+        finally:
+            with state.anomaly_lock:
+                state.anomaly_hexes.discard(ac["hex"])
+
+    def test_clean_result_discards_hex(self):
+        r = {
+            "lat": 33.9, "lon": -84.6, "alt_m": 3000.0,
+            "vel_east": 100.0, "vel_north": 100.0,
+            "n_nodes": 2, "n_measurements": 8,
+            "rms_delay": 0.2, "rms_doppler": 0.5,
+        }
+        from services.id_utils import multinode_hex_from_key
+        mn_hex = multinode_hex_from_key("mn-key-5")
+        with state.anomaly_lock:
+            state.anomaly_hexes.add(mn_hex)
+        ac = multinode_to_aircraft("mn-key-5", r)
+        assert ac["is_anomalous"] is False
+        assert mn_hex not in state.anomaly_hexes
+
 
 # ── Build combined aircraft JSON ─────────────────────────────────────────────
 
@@ -270,6 +308,54 @@ class TestBuildCombinedAircraftJson:
         assert "aircraft" in result
         assert isinstance(result["aircraft"], list)
         assert "messages" in result
+
+    def test_detecting_nodes_lists_every_node_seeing_a_hex(self):
+        """The aircraft list is one-entry-per-hex (last writer wins), so
+        detecting_nodes is the only place the per-node fan-out is visible.
+        Fresh-ADS-B tracks emit no pending arc but are still detections."""
+        import types
+
+        from retina_tracker.track import TrackState
+
+        import services.aircraft_feed as af
+
+        def _track(hex_):
+            return types.SimpleNamespace(
+                state_status=TrackState.ACTIVE,
+                adsb_hex=hex_,
+                history={"measurements": []},
+            )
+
+        af._reset_for_tests()
+        default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        try:
+            state.node_pipelines["det-node-a"] = types.SimpleNamespace(
+                config={"node_id": "det-node-a"},
+                tracker=types.SimpleNamespace(tracks=[_track("ABCDEF")]),
+            )
+            state.node_pipelines["det-node-b"] = types.SimpleNamespace(
+                config={"node_id": "det-node-b"},
+                tracker=types.SimpleNamespace(tracks=[_track("abcdef")]),
+            )
+            # Fresh ADS-B for the hex: the arc is skipped, the detection isn't.
+            state.adsb_aircraft["abcdef"] = {
+                "hex": "abcdef", "lat": 33.9, "lon": -84.6,
+                "last_seen_ms": int(time.time() * 1000),
+            }
+            result = build_combined_aircraft_json(default)
+            assert result["detecting_nodes"] == {
+                "abcdef": ["det-node-a", "det-node-b"],
+            }
+
+            # Cached between refreshes; _reset_for_tests clears it.
+            af._reset_for_tests()
+            state.node_pipelines.clear()
+            result = build_combined_aircraft_json(default)
+            assert result["detecting_nodes"] == {}
+        finally:
+            af._reset_for_tests()
+            state.node_pipelines.clear()
+            state.adsb_aircraft.pop("abcdef", None)
 
     def test_adsb_only_excluded_from_map(self):
         """ADS-B-only aircraft (no radar detection) are intentionally excluded."""

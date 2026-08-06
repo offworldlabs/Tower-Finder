@@ -12,6 +12,7 @@ import math
 from config.constants import (
     ARC_ALT_BUCKET_M,
     ARC_MIN_DIFFERENTIAL_KM,
+    ARC_ONLY_ANOMALY_ALLOWLIST,
     DISPLAY_STALE_TRACK_S,
     FT_TO_M,
     GATE_MAX_HOLD_S,
@@ -705,24 +706,31 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
     rms_doppler = round(getattr(track, "rms_doppler", 0.0) or 0.0, 2)
 
     # Anomaly propagation: GeolocatedTrack → state.anomaly_hexes.
-    # Fold in the position-jump flag computed above so a teleporting
-    # track is marked anomalous even when the tracker itself saw nothing
-    # wrong (no ADS-B to contradict, doppler within Mach 1).
-    _anom_types = set(getattr(track, "anomaly_types", set()))
+    # position_jump is observability only — teleports are solver
+    # mis-association noise, not target behaviour, so a jump never marks
+    # the track anomalous.  The per-entry debug field and the
+    # position_jump_events counter keep it visible.
     if _position_jump:
-        _anom_types.add("position_jump")
+        state.bump_counter("position_jump_events")
+    _anom_types = set(getattr(track, "anomaly_types", set()))
     # No velocity-plausibility flag here: supersonic targets are in scope,
     # so a high ground speed is reported as-is rather than marked anomalous.
-    _is_anom = (
-        bool(getattr(track, "is_anomalous", False))
-        or _position_jump
-    )
+    _is_anom = bool(getattr(track, "is_anomalous", False)) or bool(_anom_types)
+    if position_source == "single_node_ellipse_arc" and not has_adsb:
+        # A lone delay measurement constrains almost nothing about
+        # behaviour — only physically loud signals may flag an arc-only
+        # track (supersonic Doppler, extreme acceleration).
+        _anom_types &= ARC_ONLY_ANOMALY_ALLOWLIST
+        _is_anom = bool(_anom_types)
     _max_vel = getattr(track, "max_velocity_ms", 0.0)
     _flag_hex = ac_hex
     with state.anomaly_lock:
         if _is_anom:
             state.anomaly_hexes.add(_flag_hex)
-        else:
+        elif not state.ground_truth_meta.get(_flag_hex, {}).get("is_anomalous"):
+            # sim_ingest owns hexes the simulator marked anomalous in ground
+            # truth; discarding them here made the 1 Hz feed silently wipe
+            # the GT flag for every aircraft that also had a clean track.
             state.anomaly_hexes.discard(_flag_hex)
 
     return {
@@ -759,4 +767,7 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
         "is_anomalous": _is_anom,
         "anomaly_types": sorted(_anom_types) if _anom_types else [],
         "max_velocity_ms": round(_max_vel, 1),
+        # Debug only, never an anomaly: a teleporting emit means the solver
+        # mis-associated, not that the target did anything.
+        "position_jump": _position_jump,
     }

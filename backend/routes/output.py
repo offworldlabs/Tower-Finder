@@ -126,6 +126,9 @@ async def ground_truth_aircraft():
             "is_anomalous": meta.get("is_anomalous", False),
             "speed_ms": meta.get("speed_ms"),
             "heading": meta.get("heading"),
+            "has_adsb": meta.get("has_adsb", False),
+            "adsb_callsign": meta.get("adsb_callsign"),
+            "anomaly_event": meta.get("anomaly_event"),
             "trail": list(trail)[-30:],
         })
 

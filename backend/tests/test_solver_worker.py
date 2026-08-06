@@ -871,3 +871,109 @@ class TestTrackPairExclusivity:
     def test_detection_level_input_is_unaffected(self):
         """No track ids means nothing to arbitrate."""
         assert solver_mod._claim_track_pair({"n_nodes": 2}, 9.9) is True
+
+
+class TestCollectTrackAnomalies:
+    """Contributing-track anomaly flags must be stamped onto multinode results
+    (and latched across solves at the write site) — before this, multinode
+    entries hardcoded is_anomalous False and a dark anomalous target went
+    quiet the moment it was solved."""
+
+    def _pipeline(self, node_id, tracks):
+        import types
+        return types.SimpleNamespace(
+            config={"node_id": node_id},
+            tracker=types.SimpleNamespace(tracks=tracks),
+        )
+
+    def _track(self, track_id, anomaly_types=(), is_anomalous=False, max_vel=0.0):
+        import types
+        return types.SimpleNamespace(
+            track_id=track_id,
+            anomaly_types=set(anomaly_types),
+            is_anomalous=is_anomalous,
+            max_velocity_ms=max_vel,
+        )
+
+    def test_dark_solve_allowlisted(self):
+        state.node_pipelines["na"] = self._pipeline("na", [
+            self._track("t1", {"supersonic", "sustained_orbit"}, True, 420.0),
+        ])
+        try:
+            result = {"contributing_node_ids": ["na"]}
+            s_in = {"track_ids": ["t1", "t2"]}
+            solver_mod._collect_track_anomalies(s_in, result)
+            # No adsb_hex → dark: only the physically loud types survive.
+            assert result["anomaly_types"] == ["supersonic"]
+            assert result["is_anomalous"] is True
+        finally:
+            state.node_pipelines.pop("na", None)
+
+    def test_dark_solve_disallowed_types_unflag(self):
+        state.node_pipelines["na"] = self._pipeline("na", [
+            self._track("t1", {"sustained_orbit"}, True),
+        ])
+        try:
+            result = {"contributing_node_ids": ["na"]}
+            solver_mod._collect_track_anomalies({"track_ids": ["t1"]}, result)
+            assert result["anomaly_types"] == []
+            assert result["is_anomalous"] is False
+        finally:
+            state.node_pipelines.pop("na", None)
+
+    def test_adsb_solve_keeps_all_types(self):
+        state.node_pipelines["na"] = self._pipeline("na", [
+            self._track("t1", {"identity_swap"}, True),
+        ])
+        try:
+            result = {"contributing_node_ids": ["na"], "adsb_hex": "abc123"}
+            solver_mod._collect_track_anomalies({"track_ids": ["t1"]}, result)
+            assert result["anomaly_types"] == ["identity_swap"]
+            assert result["is_anomalous"] is True
+        finally:
+            state.node_pipelines.pop("na", None)
+
+    def test_unrelated_tracks_ignored(self):
+        state.node_pipelines["na"] = self._pipeline("na", [
+            self._track("other", {"supersonic"}, True),
+        ])
+        try:
+            result = {"contributing_node_ids": ["na"]}
+            solver_mod._collect_track_anomalies({"track_ids": ["t1"]}, result)
+            assert result["is_anomalous"] is False
+        finally:
+            state.node_pipelines.pop("na", None)
+
+    def test_flag_latches_across_solves(self, monkeypatch):
+        """The write site ORs with the previous entry: a tracker flag raised
+        on one solve holds for the multinode track's lifetime even after the
+        contributing track goes quiet."""
+        _reset_state()
+        monkeypatch.setattr(state, "node_analytics", _StubAnalytics())
+        state.node_pipelines["na"] = self._pipeline("na", [
+            self._track("t1", {"supersonic"}, True, 400.0),
+        ])
+
+        def solve_fn(s_in, cfgs):
+            return {
+                "success": True, "lat": 37.5, "lon": -122.1,
+                "timestamp_ms": 1000, "contributing_node_ids": ["na"],
+            }
+
+        try:
+            item = ({**_CONFIRMED_N2, "track_ids": ["t1"]}, {}, time.time())
+            solver_mod._process_solver_item(item, solve_fn)
+            key = next(iter(state.multinode_tracks))
+            assert state.multinode_tracks[key]["is_anomalous"] is True
+
+            # Second solve: the contributing track is now clean, but the
+            # multinode track keeps its flag.
+            state.node_pipelines["na"] = self._pipeline("na", [
+                self._track("t1", set(), False),
+            ])
+            solver_mod._process_solver_item(item, solve_fn)
+            assert state.multinode_tracks[key]["is_anomalous"] is True
+            assert "supersonic" in state.multinode_tracks[key]["anomaly_types"]
+        finally:
+            state.node_pipelines.pop("na", None)
+            _reset_state()

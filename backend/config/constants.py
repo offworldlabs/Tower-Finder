@@ -90,6 +90,18 @@ ARC_MIN_DIFFERENTIAL_KM = 3.0
 # own resolution.
 ARC_ALT_BUCKET_M = 500.0
 
+# Anomaly types an arc-only (no fresh ADS-B) track may carry.  A single-node
+# delay measurement constrains almost nothing about behaviour, so most anomaly
+# streams are meaningless noise there — only physically loud signals survive:
+# supersonic Doppler and extreme acceleration.  Everything else (orbits,
+# identity swaps, position mismatches) needs either ADS-B truth or a
+# multi-node solve to mean anything.
+ARC_ONLY_ANOMALY_ALLOWLIST = frozenset({
+    "supersonic",
+    "instant_acceleration",
+    "anomalous_acceleration",
+})
+
 # ── Track & history limits ───────────────────────────────────────────────────
 TRACK_HISTORY_MAX = 60                # Rolling position buffer per aircraft
 GROUND_TRUTH_MAX = 120                # Ground truth trail length

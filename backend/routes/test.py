@@ -187,6 +187,9 @@ def _build_dashboard_data() -> bytes:
                 "coverage_rebuilds": state.coverage_rebuilds,
                 "coverage_rebuild_nodes": state.coverage_rebuild_nodes,
                 "queue_drops": state.solver_queue_drops,
+                # Teleporting emits (mis-association noise).  Debug counter
+                # only — jumps no longer mark tracks anomalous.
+                "position_jump_events": state.position_jump_events,
                 "last_latency_s": round(state.solver_last_latency_s, 3),
                 "avg_latency_s": round(state.solver_total_latency_s / max(state.solver_total_solved, 1), 3),
             },

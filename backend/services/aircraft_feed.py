@@ -26,7 +26,7 @@ from services.feed_helpers import (
     resolve_ground_truth_hex,
 )
 from services.geo import offset_latlon_m
-from services.id_utils import multinode_hex_from_key
+from services.id_utils import multinode_hex_from_key, normalize_hex_key
 from services.track_gates import (
     _build_single_node_arc,
     _single_node_arc_cache,
@@ -42,9 +42,10 @@ def _reset_for_tests() -> None:
     other used to receive the PREVIOUS test's detection_arcs and
     ground_truth verbatim.
     """
-    global _cached_pending_arcs, _arcs_last_ts
+    global _cached_pending_arcs, _cached_detecting_nodes, _arcs_last_ts
     global _cached_gt_snapshot, _cached_gt_meta, _gt_last_ts
     _cached_pending_arcs = []
+    _cached_detecting_nodes = {}
     _arcs_last_ts = 0.0
     _cached_gt_snapshot = {}
     _cached_gt_meta = {}
@@ -55,11 +56,21 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
     speed_ms = math.sqrt(r["vel_east"] ** 2 + r["vel_north"] ** 2)
     heading = math.degrees(math.atan2(r["vel_east"], r["vel_north"])) % 360
     # No velocity-plausibility flag: supersonic targets are in scope, so a
-    # high solved speed is reported as-is.  The discard clears any hex left
-    # in the anomaly set by an earlier release.
+    # high solved speed is reported as-is.  Anomaly flags come from the
+    # contributing tracker tracks, stamped onto the result by the solver
+    # (_collect_track_anomalies) — a dark anomalous target must not go
+    # quiet the moment it graduates from arc to solve.
     _mn_hex = multinode_hex_from_key(key)
+    _is_anom = bool(r.get("is_anomalous"))
+    _anom_types = r.get("anomaly_types") or []
     with state.anomaly_lock:
-        state.anomaly_hexes.discard(_mn_hex)
+        if _is_anom:
+            state.anomaly_hexes.add(_mn_hex)
+        else:
+            # The discard also clears any hex left by an earlier release.
+            # (No GT-meta guard needed: mn* hexes are solver-minted and never
+            # appear in ground_truth_meta.)
+            state.anomaly_hexes.discard(_mn_hex)
     return {
         "hex": _mn_hex,
         "type": "multinode_solve",
@@ -83,9 +94,11 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
         "rms_delay": round(r["rms_delay"], 3),
         "rms_doppler": round(r["rms_doppler"], 2),
         "position_source": "multinode_solve",
-        "is_anomalous": False,
-        "anomaly_types": [],
-        "max_velocity_ms": round(speed_ms, 1),
+        "is_anomalous": _is_anom,
+        "anomaly_types": sorted(_anom_types),
+        "max_velocity_ms": round(
+            max(speed_ms, r.get("max_velocity_ms", 0.0) or 0.0), 1
+        ),
     }
 
 
@@ -95,6 +108,7 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
 _ARC_REFRESH_S = ARC_REFRESH_S
 _GT_REFRESH_S = GT_REFRESH_S
 _cached_pending_arcs: list[dict] = []
+_cached_detecting_nodes: dict[str, list[str]] = {}
 _arcs_last_ts: float = 0.0
 _cached_gt_snapshot: dict = {}
 _cached_gt_meta: dict = {}
@@ -194,10 +208,15 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     # Recompute only every _ARC_REFRESH_S seconds — iterating 915 pipelines
     # × ~5000 tracks per second is a GIL-heavy operation that starves frame
     # workers.  Cached arcs are good enough for the 1-Hz map refresh.
-    global _cached_pending_arcs, _arcs_last_ts
+    global _cached_pending_arcs, _cached_detecting_nodes, _arcs_last_ts
     if now - _arcs_last_ts >= _ARC_REFRESH_S:
         _arcs_last_ts = now
         pending_arcs = []
+        # hex → nodes currently holding a promoted track for it.  The feed's
+        # aircraft entries are one-per-hex (last writer wins), so this is the
+        # only place the full per-node fan-out is visible — the debug map's
+        # "detected by" list reads it.
+        detecting: dict[str, set[str]] = {}
         for pipeline in list(state.node_pipelines.values()):
             node_cfg = pipeline.config
             for track in list(pipeline.tracker.tracks):
@@ -213,6 +232,14 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
                 if track.state_status == TrackState.TENTATIVE:
                     continue
                 if track.adsb_hex:
+                    # A fresh-ADS-B track produces no pending arc below, but
+                    # the node is still detecting the aircraft — record it
+                    # before the skip.
+                    _nid = node_cfg.get("node_id")
+                    if _nid:
+                        detecting.setdefault(
+                            normalize_hex_key(track.adsb_hex), set()
+                        ).add(_nid)
                     _ae = state.adsb_aircraft.get(track.adsb_hex)
                     if _ae and now - _ae.get("last_seen_ms", 0) / 1000 < 60:
                         continue
@@ -235,6 +262,9 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
                     "target_class": getattr(track, "target_class", None),
                 })
         _cached_pending_arcs = pending_arcs
+        _cached_detecting_nodes = {
+            h: sorted(nids) for h, nids in detecting.items()
+        }
     else:
         pending_arcs = _cached_pending_arcs
 
@@ -265,6 +295,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         "messages": len(aircraft),
         "aircraft": aircraft,
         "detection_arcs": pending_arcs,
+        "detecting_nodes": _cached_detecting_nodes,
         "ground_truth": _cached_gt_snapshot,
         "ground_truth_meta": _cached_gt_meta,
         "anomaly_hexes": sorted(state.anomaly_hexes),

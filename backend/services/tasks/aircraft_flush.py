@@ -43,6 +43,9 @@ def filter_payload_to_nodes(aircraft_data: dict, node_ids: set[str]) -> bytes:
         "messages": len(matched_aircraft),
         "aircraft": matched_aircraft,
         "detection_arcs": matched_arcs,
+        # Debug/simulation surfaces stay off the filtered feeds, same as
+        # ground truth: detecting_nodes reveals the synthetic fleet's view.
+        "detecting_nodes": {},
         "ground_truth": {},
         "ground_truth_meta": {},
         "anomaly_hexes": [],

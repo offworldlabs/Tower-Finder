@@ -8,7 +8,11 @@ import threading
 import time
 from collections import deque
 
-from config.constants import N2_CONFIRM_CHI2_MAX, N2_TRACK_ASSOCIATION
+from config.constants import (
+    ARC_ONLY_ANOMALY_ALLOWLIST,
+    N2_CONFIRM_CHI2_MAX,
+    N2_TRACK_ASSOCIATION,
+)
 from core import state
 
 # Beam-coverage geometry, used to reject solver results whose position falls
@@ -336,6 +340,46 @@ _MN_ASSOC_MAX_AGE_S = 60.0
 # aircraft at once would each miss the other's entry and mint two tracks — the
 # very duplication this exists to prevent.
 _MN_TRACKS_LOCK = threading.Lock()
+
+
+def _collect_track_anomalies(s_in, result: dict) -> None:
+    """Stamp contributing-track anomaly flags onto a multinode result.
+
+    A multinode solve is built from per-node tracker tracks; if any of them
+    flagged an anomaly (supersonic Doppler for dark targets, the ADS-B streams
+    otherwise), the solved track should carry it — before this, multinode
+    entries hardcoded is_anomalous False, so a dark anomalous target went
+    quiet the moment it was solved.  Dark solves are restricted to the same
+    physically-loud allowlist as arc-only tracks.  The caller latches the
+    flags with the previous entry under _MN_TRACKS_LOCK so a one-frame tracker
+    flag survives for the multinode track's lifetime.
+    """
+    track_ids = set(s_in.get("track_ids") or []) if isinstance(s_in, dict) else set()
+    anom_types: set[str] = set()
+    is_anom = False
+    max_vel = 0.0
+    if track_ids:
+        for nid in result.get("contributing_node_ids", []):
+            pipeline = state.node_pipelines.get(nid)
+            if pipeline is None:
+                continue
+            try:
+                tracks = list(pipeline.tracker.tracks)
+            except Exception:
+                continue
+            for t in tracks:
+                if getattr(t, "track_id", None) not in track_ids:
+                    continue
+                anom_types |= set(getattr(t, "anomaly_types", None) or ())
+                is_anom = is_anom or bool(getattr(t, "is_anomalous", False))
+                max_vel = max(max_vel, getattr(t, "max_velocity_ms", 0.0) or 0.0)
+    if not result.get("adsb_hex"):
+        anom_types &= ARC_ONLY_ANOMALY_ALLOWLIST
+        is_anom = bool(anom_types)
+    result["anomaly_types"] = sorted(anom_types)
+    result["is_anomalous"] = is_anom or bool(anom_types)
+    if max_vel:
+        result["max_velocity_ms"] = round(max_vel, 1)
 
 
 def _multinode_track_key(result: dict, adsb_hex: str | None) -> str:
@@ -721,8 +765,21 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                 _cal.get("lat"), _cal.get("lon"),
                 age_s=time.time() - _cal.get("last_seen_ms", 0) / 1000.0,
             )
+        _collect_track_anomalies(s_in, result)
         with _MN_TRACKS_LOCK:
             key = _multinode_track_key(result, _adsb_hex)
+            prev = state.multinode_tracks.get(key)
+            if prev:
+                # Latch: a tracker flag raised on an earlier solve holds for
+                # the multinode track's lifetime (≤60 s expiry) even if the
+                # contributing track has since despawned or gone quiet.
+                result["is_anomalous"] = bool(
+                    result.get("is_anomalous")
+                ) or bool(prev.get("is_anomalous"))
+                result["anomaly_types"] = sorted(
+                    set(result.get("anomaly_types", []))
+                    | set(prev.get("anomaly_types", []))
+                )
             state.multinode_tracks[key] = result
         # Append a snapshot to the track-archive buffer for Parquet persistence.
         # solve_ts_ms records when the solve completed (server wallclock) so

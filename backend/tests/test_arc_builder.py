@@ -965,14 +965,13 @@ class TestArcMotionVelocityFallback:
         assert track_deg == pytest.approx(0.0, abs=2.0)
 
 
-# ─── Regression: position-jump (teleport) anomaly ────────────────────────────
+# ─── Regression: position-jump (teleport) is debug-only, never an anomaly ────
 
 class TestPositionJumpAnomaly:
-    """A track whose emitted position teleports across the map must be flagged
-    is_anomalous with a "position_jump" type — even without ADS-B and even
-    when the tracker itself saw nothing wrong.  The speed gate only reverts
-    arc-track positions (silently) and is skipped at dt ≥ 60 s; multinode
-    tracks have no gate at all.
+    """A track whose emitted position teleports across the map must NOT be
+    flagged anomalous — teleports are solver mis-association noise, not target
+    behaviour.  The jump stays observable as the per-entry position_jump debug
+    field and the state.position_jump_events counter.
     """
 
     HEX = "jmptst"
@@ -1017,26 +1016,119 @@ class TestPositionJumpAnomaly:
         result = build_combined_aircraft_json(pipeline)
         return next((a for a in result["aircraft"] if a["hex"] == self.HEX), None)
 
-    def test_teleport_flagged(self):
+    def test_teleport_not_flagged_but_observable(self):
         # Previous emit ~200 km south, 90 s ago (dt ≥ 60 so the speed gate is
-        # skipped → the jump is emitted, not reverted).  Current arc midpoint
-        # lands SW of the Atlanta RX.  Absolute leap >> 30 km → flagged.
+        # skipped → the jump is emitted, not reverted).  Absolute leap >> 30 km
+        # → detected, but debug-only: no anomaly flag, no anomaly_hexes entry.
+        before = state.position_jump_events
         self._setup(now_lat=33.70, now_lon=-84.85,
                     prev_lat=31.90, prev_lon=-84.85, prev_age_s=90.0)
         ac = self._build()
         assert ac is not None
-        assert ac["is_anomalous"] is True
-        assert "position_jump" in ac["anomaly_types"]
-        assert self.HEX in state.anomaly_hexes
+        assert ac["is_anomalous"] is False
+        assert "position_jump" not in (ac["anomaly_types"] or [])
+        assert ac["position_jump"] is True
+        assert self.HEX not in state.anomaly_hexes
+        assert state.position_jump_events == before + 1
 
     def test_normal_motion_not_flagged(self):
         # Previous emit ~1 km away, 3 s ago → ~330 kt, well within normal.
+        before = state.position_jump_events
         self._setup(now_lat=33.70, now_lon=-84.85,
                     prev_lat=33.691, prev_lon=-84.85, prev_age_s=3.0)
         ac = self._build()
         assert ac is not None
         assert "position_jump" not in (ac["anomaly_types"] or [])
+        assert ac["position_jump"] is False
         assert self.HEX not in state.anomaly_hexes
+        assert state.position_jump_events == before
+
+
+class TestArcOnlyAnomalyAllowlist:
+    """Arc-only (no fresh ADS-B) tracks may only carry physically loud anomaly
+    types: supersonic Doppler or extreme acceleration.  Everything else from
+    the tracker is noise at single-node fidelity and must be stripped.
+    """
+
+    HEX = "allowtst"
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        for d in (state.active_geo_aircraft, state.track_last_emit,
+                  state.track_arc_motion, state.adsb_aircraft,
+                  state.external_adsb_cache, state.multinode_tracks,
+                  state.track_histories, state.ground_truth_meta):
+            d.clear()
+        state.anomaly_hexes.discard(self.HEX)
+        yield
+        for d in (state.active_geo_aircraft, state.track_last_emit,
+                  state.track_arc_motion, state.adsb_aircraft,
+                  state.external_adsb_cache, state.multinode_tracks,
+                  state.track_histories, state.ground_truth_meta):
+            d.clear()
+        state.anomaly_hexes.discard(self.HEX)
+
+    def _setup(self, anomaly_types, is_anomalous=True):
+        import time as _time
+
+        from pipeline.passive_radar import GeolocatedTrack
+        track = GeolocatedTrack(
+            track_id=f"track-{self.HEX}",
+            lat=34.70, lon=-84.85, alt_m=3000,
+            vel_east=0.0, vel_north=0.0, vel_up=0.0,
+            rms_delay=1.0, rms_doppler=1.0, n_detections=10,
+            timestamp_ms=int(_time.time() * 1000),
+            adsb_hex=None, latest_delay_us=80.0, target_class="aircraft",
+        )
+        track.wall_clock_ts = _time.time()
+        track.is_anomalous = is_anomalous
+        track.anomaly_types = set(anomaly_types)
+        state.active_geo_aircraft[self.HEX] = (track, dict(_NODE_CFG))
+
+    def _build(self):
+        import types
+
+        from services.frame_processor import build_combined_aircraft_json
+        pipeline = types.SimpleNamespace(geolocated_tracks={}, config=dict(_NODE_CFG))
+        result = build_combined_aircraft_json(pipeline)
+        return next((a for a in result["aircraft"] if a["hex"] == self.HEX), None)
+
+    def test_disallowed_types_stripped_supersonic_survives(self):
+        self._setup({"sustained_orbit", "supersonic"})
+        ac = self._build()
+        assert ac is not None
+        assert ac["position_source"] == "single_node_ellipse_arc"
+        assert ac["anomaly_types"] == ["supersonic"]
+        assert ac["is_anomalous"] is True
+        assert self.HEX in state.anomaly_hexes
+
+    def test_only_disallowed_types_unflags(self):
+        self._setup({"sustained_orbit", "long_hover"})
+        ac = self._build()
+        assert ac is not None
+        assert ac["anomaly_types"] == []
+        assert ac["is_anomalous"] is False
+        assert self.HEX not in state.anomaly_hexes
+
+    def test_bare_flag_without_types_dropped(self):
+        # Tracker is_anomalous with no surviving type is not evidence at
+        # arc-only fidelity.
+        self._setup(set(), is_anomalous=True)
+        ac = self._build()
+        assert ac is not None
+        assert ac["is_anomalous"] is False
+
+    def test_gt_flagged_hex_survives_clean_emit(self):
+        # sim_ingest owns hexes the simulator marked anomalous in ground
+        # truth: a clean radar emit for the same hex must not wipe them.
+        state.ground_truth_meta[self.HEX] = {"is_anomalous": True}
+        with state.anomaly_lock:
+            state.anomaly_hexes.add(self.HEX)
+        self._setup(set(), is_anomalous=False)
+        ac = self._build()
+        assert ac is not None
+        assert ac["is_anomalous"] is False
+        assert self.HEX in state.anomaly_hexes
 
 
 # ─── Single-node arc cache ───────────────────────────────────────────────────

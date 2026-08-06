@@ -55,6 +55,9 @@ async def push_ground_truth_snapshot(body: dict = Body(...), _key=Depends(_verif
             "is_anomalous": ac.get("is_anomalous", False),
             "speed_ms": ac.get("speed_ms", 0),
             "heading": ac.get("heading", 0),
+            "has_adsb": ac.get("has_adsb", False),
+            "adsb_callsign": ac.get("adsb_callsign"),
+            "anomaly_event": ac.get("anomaly_event"),
         }
         # Flag anomalous objects and log events
         if ac.get("is_anomalous"):

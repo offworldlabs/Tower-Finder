@@ -149,3 +149,32 @@ describe("sweepStaleGroundTruthFixes", () => {
     expect(fixes.r1).toBeDefined();  // radar staleness is someone else's rule
   });
 });
+
+describe("simulated debug parameters on fixes", () => {
+  it("carries has_adsb / adsb_callsign / anomaly_event from meta", () => {
+    const fixes: Record<string, any> = {};
+    const meta = {
+      "652600": {
+        speed_ms: 148.8, heading: 217.3, object_type: "aircraft",
+        has_adsb: true, adsb_callsign: "ABC1234", anomaly_event: "hijack",
+        is_anomalous: true,
+      },
+    };
+    applyGroundTruthFixes(fixes, { "652600": trail(34.61, -82.4996) }, meta, 1000);
+    const fix = fixes[groundTruthKey("652600")];
+    expect(fix.has_adsb).toBe(true);
+    expect(fix.adsb_callsign).toBe("ABC1234");
+    expect(fix.anomaly_event).toBe("hijack");
+    expect(fix.speed_ms).toBeCloseTo(148.8);
+    expect(fix.heading).toBeCloseTo(217.3);
+  });
+
+  it("leaves the debug fields undefined when meta lacks them (old server)", () => {
+    const fixes: Record<string, any> = {};
+    applyGroundTruthFixes(fixes, { "652600": trail(34.61, -82.4996) }, META, 1000);
+    const fix = fixes[groundTruthKey("652600")];
+    expect(fix.has_adsb).toBeUndefined();
+    expect(fix.adsb_callsign).toBeUndefined();
+    expect(fix.anomaly_event).toBeUndefined();
+  });
+});

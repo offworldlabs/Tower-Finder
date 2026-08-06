@@ -210,6 +210,11 @@ solver_fail_rms_doppler: int = 0
 solver_fail_beam: int = 0
 solver_fail_displacement: int = 0
 
+# Position-jump detections (teleporting emits).  Observability only: jumps are
+# solver mis-association noise, not target behaviour, so they no longer mark
+# tracks anomalous — but a rising rate here still means association regressed.
+position_jump_events: int = 0
+
 # Solver end-to-end latency (seconds from queue submission to solve completion)
 solver_last_latency_s: float = 0.0
 solver_total_latency_s: float = 0.0
@@ -293,6 +298,7 @@ def _reset_for_tests() -> None:
     global solver_queue_drops
     global solver_fail_exception, solver_fail_unconverged, solver_fail_rms_delay
     global solver_fail_rms_doppler, solver_fail_beam, solver_fail_displacement
+    global position_jump_events
     global solver_last_latency_s, solver_total_latency_s, solver_total_solved
     global peak_connected_nodes
 
@@ -343,6 +349,7 @@ def _reset_for_tests() -> None:
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
         solver_fail_exception = solver_fail_unconverged = solver_fail_rms_delay = 0
         solver_fail_rms_doppler = solver_fail_beam = solver_fail_displacement = 0
+        position_jump_events = 0
         solver_total_solved = 0
         solver_last_latency_s = solver_total_latency_s = 0.0
         peak_connected_nodes = 0

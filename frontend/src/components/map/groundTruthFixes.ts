@@ -47,8 +47,15 @@ export function applyGroundTruthFixes(fixes, snapshot, meta, now) {
       alt_baro: Math.round(mToFt(last[2])),
       gs: Math.round(msToKnots(m.speed_ms || 0) * 10) / 10,
       track: m.heading || 0,
+      speed_ms: m.speed_ms,
+      heading: m.heading,
       object_type: m.object_type,
       is_anomalous: m.is_anomalous,
+      // Simulated parameters for the debug detail panel.  "Dark" objects are
+      // object_type "aircraft" with has_adsb false.
+      has_adsb: m.has_adsb,
+      adsb_callsign: m.adsb_callsign,
+      anomaly_event: m.anomaly_event,
       points: positions.length,
       _isTruth: true,
       _fixLat: lat,

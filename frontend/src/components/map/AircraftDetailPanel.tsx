@@ -6,7 +6,7 @@ import { trailToCsv, downloadCsv } from "./trailExport";
 import { copyToClipboard, toast } from "./toast";
 import { M_PER_FT, KNOTS_PER_MS, MS_PER_KNOT } from "./units";
 
-export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError }) {
+export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError, detectingNodes = [] }) {
   if (!ac) return null;
 
   const err = computeError(ac.hex, ac);
@@ -278,6 +278,46 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
           )}
           {altErrFt !== null && <Field label="Alt Error" value={`${Math.round(altErrFt)} ft`} />}
         </div>
+
+        {/* Simulated parameters + live detection fan-out (debug) */}
+        {isTruthOnly && (
+          <div className="detail-section">
+            <div className="detail-section-title">Simulation (debug)</div>
+            <Field
+              label="ADS-B"
+              value={
+                ac.has_adsb
+                  ? <span style={{ color: "#34d399", fontWeight: 600 }}>yes</span>
+                  : <span style={{ color: "#64748b", fontWeight: 600 }}>no — dark target</span>
+              }
+            />
+            <Field label="Callsign" value={ac.adsb_callsign || "—"} />
+            <Field label="Object type" value={ac.object_type || "aircraft"} />
+            {ac.is_anomalous && (
+              <Field
+                label="Anomaly event"
+                value={
+                  <span style={{ color: "#f43f5e", fontWeight: 600 }}>
+                    {ac.anomaly_event || "anomalous"}
+                  </span>
+                }
+              />
+            )}
+            <Field
+              label="Detected by"
+              value={
+                detectingNodes.length
+                  ? (
+                    <span style={{ wordBreak: "break-word" }}>
+                      {detectingNodes.join(", ")}
+                      <span style={{ color: "#64748b" }}> ({detectingNodes.length})</span>
+                    </span>
+                  )
+                  : <span style={{ color: "#64748b" }}>no nodes right now</span>
+              }
+            />
+          </div>
+        )}
 
         {/* Truth-only trail count */}
         {isTruthOnly && (

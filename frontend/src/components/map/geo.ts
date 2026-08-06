@@ -198,6 +198,52 @@ export function isInBeam(rxLat, rxLon, azimuthDeg, beamWidthDeg, maxRangeKm, acL
 }
 
 
+/**
+ * Nearest point on a polyline to (lat, lon), with the distance in km.
+ *
+ * Projects the query point onto each segment in a local equirectangular
+ * frame centred on the query latitude — exact enough at arc scale (≤ 100 km,
+ * ≤ 73 vertices) where the flat-earth error is metres — then measures the
+ * final distance with the haversine so the number agrees with distanceKm
+ * elsewhere in the UI.  Returns null for an empty polyline.
+ */
+export function nearestPointOnPolyline(
+  lat: number,
+  lon: number,
+  pts: [number, number][] | null | undefined,
+): { lat: number; lon: number; distKm: number } | null {
+  if (!Array.isArray(pts) || pts.length === 0) return null;
+  const cosLat = Math.cos(lat * Math.PI / 180);
+  // Local planar coordinates in degrees-of-latitude units.
+  const px = (lon2: number) => (lon2 - lon) * cosLat;
+  const py = (lat2: number) => lat2 - lat;
+
+  let best: [number, number] = pts[0];
+  let bestD2 = px(pts[0][1]) ** 2 + py(pts[0][0]) ** 2;
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const [aLat, aLon] = pts[i];
+    const [bLat, bLon] = pts[i + 1];
+    const ax = px(aLon), ay = py(aLat);
+    const bx = px(bLon), by = py(bLat);
+    const dx = bx - ax, dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    // Query point is at the local origin: project (0,0)−a onto a→b.
+    const t = len2 > 0 ? Math.min(1, Math.max(0, -(ax * dx + ay * dy) / len2)) : 0;
+    const qx = ax + t * dx, qy = ay + t * dy;
+    const d2 = qx * qx + qy * qy;
+    if (d2 < bestD2) {
+      bestD2 = d2;
+      best = [aLat + t * (bLat - aLat), aLon + t * (bLon - aLon)];
+    }
+  }
+  return {
+    lat: best[0],
+    lon: best[1],
+    distKm: haversineDistanceKm(lat, lon, best[0], best[1]),
+  };
+}
+
+
 /** True when both coordinates are usable.  null/undefined and the (0, 0)
  *  broken-config sentinel are invalid, but a legitimate 0 on a single axis
  *  (equator / prime meridian) is not — the widespread `!lat || !lon` form

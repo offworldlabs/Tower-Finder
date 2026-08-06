@@ -57,6 +57,9 @@ import { toast, copyToClipboard } from "./map/toast";
 import { checkEmergencySquawks, resetEmergencyAlertCache } from "./map/emergencyAudio";
 import { distanceKm } from "./map/distance";
 import { validLatLon } from "./map/geo";
+import { arcNearestPoint } from "./map/arcErrors";
+import { detectingNodeIdsFor } from "./map/detections";
+import { ARC_TOTAL_LIFE_MS } from "./map/constants";
 import { snapTrack, sweepStaleRadar } from "./map/trackStores";
 import StatsOverlay from "./map/StatsOverlay";
 import ShortcutHelp from "./map/ShortcutHelp";
@@ -75,7 +78,7 @@ L.Icon.Default.mergeOptions({
       WS update (~1Hz). L.canvas() draws everything in one canvas tile — O(1) DOM. ── */
 const _gtCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
 
-const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, onSelect }) {
+const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, onSelect, selectedHex }) {
   const map = useMap();
   const markerMapRef = useRef(new Map()); // hex → L.circleMarker — incremental diff
   const onSelectRef  = useRef(onSelect);
@@ -89,9 +92,13 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
       seen.add(ac.hex);
       const isAnom  = ac.is_anomalous;
       const isDrone = ac.object_type === "drone";
+      const isSel   = ac.hex === selectedHex;
       const color   = isAnom ? "#f43f5e" : isDrone ? "#f59e0b" : "#22d3ee";
-      const border  = isAnom ? "#e11d48" : isDrone ? "#d97706" : "#67e8f9";
-      const radius  = isDrone ? 6 : isAnom ? 8 : 9;
+      // Selection ring is white so it reads against all three fill colors.
+      const border  = isSel ? "#f8fafc" : isAnom ? "#e11d48" : isDrone ? "#d97706" : "#67e8f9";
+      const baseR   = isDrone ? 6 : isAnom ? 8 : 9;
+      const radius  = isSel ? baseR + 4 : baseR;
+      const weight  = isSel ? 4 : 3;
 
       let m = markerMap.get(ac.hex);
       if (!m) {
@@ -99,7 +106,7 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
           renderer: _gtCanvas,
           radius,
           color: border,
-          weight: 3,
+          weight,
           fillColor: color,
           fillOpacity: 0.7,
         });
@@ -108,7 +115,7 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
         markerMap.set(ac.hex, m);
       } else {
         m.setLatLng([ac.lat, ac.lon]);
-        m.setStyle({ color: border, fillColor: color });
+        m.setStyle({ color: border, fillColor: color, weight });
         if (m.options.radius !== radius) m.setRadius(radius);
       }
     }
@@ -120,7 +127,7 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
         markerMap.delete(hex);
       }
     }
-  }, [aircraft, map]);
+  }, [aircraft, map, selectedHex]);
 
   // Full cleanup on unmount
   useEffect(() => {
@@ -141,7 +148,7 @@ const _mgCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : n
 // Ref-driven like DetectionArcs: data is read INSIDE the tick, so the effect
 // mounts once instead of keying on the 2 Hz radarAircraft array identity —
 // which tore down and recreated every dot and line twice a second.
-const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAircraftRef, groundTruthRef, smoothRef }) {
+const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAircraftRef, groundTruthRef, smoothRef, nodesByIdRef }) {
   const map = useMap();
   const markersRef = useRef(new Map());  // gtHex → { dot: L.circleMarker, line: L.polyline }
 
@@ -172,10 +179,27 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
 
         // Radar position from smoothRef
         const radarSmooth = smoothRef.current[ac.hex];
-        const rLat = radarSmooth ? radarSmooth.lat : ac.lat;
-        const rLon = radarSmooth ? radarSmooth.lon : ac.lon;
+        let rLat = radarSmooth ? radarSmooth.lat : ac.lat;
+        let rLon = radarSmooth ? radarSmooth.lon : ac.lon;
 
         if (!validLatLon(gtLat, gtLon) || !validLatLon(rLat, rLon)) continue;
+
+        // Arc-only tracks: their lat/lon is the arc MIDPOINT — a convention,
+        // not an estimate — so the honest error vector runs from GT to the
+        // nearest point of the measured locus, not to the midpoint.
+        let errKm;
+        if (ac.position_source === POSITION_SOURCE_ARC_ONLY) {
+          const near = arcNearestPoint(
+            ac, nodesByIdRef?.current?.[ac.node_id], gtLat, gtLon,
+          );
+          if (near) {
+            rLat = near.lat;
+            rLon = near.lon;
+            errKm = near.distKm;
+          }
+        }
+        if (errKm == null) errKm = distanceKm(gtLat, gtLon, rLat, rLon);
+        const label = `${errKm.toFixed(1)} km`;
 
         seen.add(gtHex);
         let entry = markers.get(gtHex);
@@ -194,6 +218,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
             opacity: 0.6,
             dashArray: "3 4",
           });
+          line.bindTooltip(label, { direction: "center", className: "radar3-error-label" });
           dot.addTo(map);
           line.addTo(map);
           entry = { dot, line };
@@ -201,6 +226,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
         } else {
           entry.dot.setLatLng([gtLat, gtLon]);
           entry.line.setLatLngs([[gtLat, gtLon], [rLat, rLon]]);
+          entry.line.setTooltipContent(label);
         }
       }
 
@@ -1308,6 +1334,18 @@ export default function LiveAircraftMap() {
     ? radarAircraft.find((ac) => ac.hex === selectedHex) || truthOnlyAircraft.find((ac) => ac.hex === selectedHex)
     : null;
 
+  // Nodes with a live detection of the selected simulated object — read from
+  // the detection-presence oracle (per-aircraft signals ∪ the detecting_nodes
+  // feed key).  trailTick advances on every ingest, so this refreshes at the
+  // feed cadence without its own timer.
+  const selectedTruthDetectingNodes = useMemo(() => {
+    if (!selectedAc?._isTruth) return [];
+    return detectingNodeIdsFor(
+      detectionsRef.current, selectedAc.hex, Date.now(), ARC_TOTAL_LIFE_MS,
+    );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAc, trailTick]);
+
   /* ── Side-effects ───────────────────────────────────────────── */
   useEffect(() => {
     if (!showGroundTruth && selectedHex && truthOnlyAircraft.some((ac) => ac.hex === selectedHex)) {
@@ -1495,11 +1533,27 @@ export default function LiveAircraftMap() {
     // last GT point added up to ~0.25 km of pure timing skew at 480 kt, and
     // used a third flat-earth constant (111.0) 0.3% off the shared helper.
     const sm = smoothRef.current?.[groundTruthKey(gtHex)];
-    if (sm) return distanceKm(ac.lat, ac.lon, sm.lat, sm.lon);
-    const gtTrail = groundTruthRef.current[gtHex];
-    if (!gtTrail || !gtTrail.length) return null;
-    const last = gtTrail[gtTrail.length - 1];
-    return distanceKm(ac.lat, ac.lon, last[0], last[1]);
+    let gtLat, gtLon;
+    if (sm) {
+      gtLat = sm.lat;
+      gtLon = sm.lon;
+    } else {
+      const gtTrail = groundTruthRef.current[gtHex];
+      if (!gtTrail || !gtTrail.length) return null;
+      const last = gtTrail[gtTrail.length - 1];
+      gtLat = last[0];
+      gtLon = last[1];
+    }
+    // Arc-only tracks: shortest distance from GT to the measured locus (the
+    // same rule MatchedGroundTruthLayer draws) — the midpoint is a display
+    // convention, not a position estimate.
+    if (ac.position_source === POSITION_SOURCE_ARC_ONLY) {
+      const near = arcNearestPoint(
+        ac, nodesByIdRef.current?.[ac.node_id], gtLat, gtLon,
+      );
+      if (near) return near.distKm;
+    }
+    return distanceKm(ac.lat, ac.lon, gtLat, gtLon);
   }
 
   function formatSecondsAgo(ts) {
@@ -1788,6 +1842,30 @@ export default function LiveAircraftMap() {
               })
             }
 
+            {/* GT debug — when a simulated (ground-truth) object is selected,
+                 ring every node currently detecting it and link them to the
+                 object.  Mirrors the multinode contributing-node treatment;
+                 amber to match the single-node detection highlight. */}
+            {selectedAc?._isTruth && validLatLon(selectedAc.lat, selectedAc.lon) &&
+              selectedTruthDetectingNodes.map((nid) => {
+                const dn = nodes.find((n) => n.node_id === nid);
+                if (!dn) return null;
+                return (
+                  <React.Fragment key={`gt-det-${nid}`}>
+                    <CircleMarker
+                      center={[dn.rx_lat, dn.rx_lon]}
+                      radius={14}
+                      pathOptions={{ color: "#fbbf24", weight: 3, fillColor: "#fbbf24", fillOpacity: 0.25 }}
+                    />
+                    <Polyline
+                      positions={[[selectedAc.lat, selectedAc.lon], [dn.rx_lat, dn.rx_lon]]}
+                      pathOptions={{ color: "#fbbf24", weight: 1.5, opacity: 0.6, dashArray: "6 4" }}
+                    />
+                  </React.Fragment>
+                );
+              })
+            }
+
             {/* Single-node selection — highlight the source node + connect to
                  aircraft.  Mirrors the multinode block above but for the
                  90 % of tracks that come from a single radar node. */}
@@ -1899,6 +1977,7 @@ export default function LiveAircraftMap() {
               <GroundTruthCanvasLayer
                 aircraft={visibleTruthOnlyAircraft}
                 onSelect={handleSelectAircraft}
+                selectedHex={selectedHex}
               />
             )}
 
@@ -1908,6 +1987,7 @@ export default function LiveAircraftMap() {
                 radarAircraftRef={radarAircraftRef}
                 groundTruthRef={groundTruthRef}
                 smoothRef={smoothRef}
+                nodesByIdRef={nodesByIdRef}
               />
             )}
 
@@ -1943,6 +2023,7 @@ export default function LiveAircraftMap() {
               groundTruth={groundTruthRef.current}
               trails={trailsRef.current}
               computeError={computeError}
+              detectingNodes={selectedTruthDetectingNodes}
             />
           )}
 
