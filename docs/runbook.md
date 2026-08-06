@@ -4,7 +4,61 @@
 
 ---
 
+## Environments
+
+Three droplets. Each holds a gitignored `./.env` in `/opt/tower-finder` carrying
+`COMPOSE_FILE`, which selects that host's overlay, so a bare `docker compose up -d
+--build` / `logs` / `ps` resolves correctly on all three and every command below is
+identical everywhere.
+
+On prod and staging the deploy writes that file itself each run, so it cannot be
+missing, stale or wrong — if you find one naming the wrong environment, the deploy
+stops before touching anything rather than deploying one environment onto
+another's hostnames. retina-test has no CI, so its `.env` is placed by hand once:
+`cp deploy/env.test.example .env`.
+
+| | prod | staging | test |
+|---|---|---|---|
+| **SSH** | `ssh retina-prod` | `ssh retina-staging` | `ssh retina-test` |
+| **Overlay** | `docker-compose.prod.yml` | `docker-compose.staging.yml` | `docker-compose.test.yml` |
+| **Deployed by** | CI, on push to `main` | CI, on push to `main` | `just deploy-test` (rsync from a working tree) |
+| **Hostnames** | `*.retina.fm` | `staging-*.retina.fm` | `test-*.retina.fm` |
+| **RAM / swap** | 7941 MB / 4 GB | 3915 MB / none | 3915 MB / 2 GB |
+| **Fleet** | 25 nodes @ 2.0s (12.5 fps) | 50 @ 1.0s (50 fps) | 50 @ 1.0s (50 fps) |
+| **TCP 3012** | published (real nodes) | closed | closed |
+
+prod is the reference environment: `deploy/check-env-parity.py` compares the other
+two against it in CI and fails on any difference not listed in its
+`ALLOWED_DIVERGENCE`. staging and test differ from prod deliberately on fleet
+scale, hostnames, container names and resource limits, and on nothing else.
+
+staging and test run the fleet 4x faster than production, on **half the cores** —
+production has 4, they have 2 — so per core it is 8x. The frame path copes (41 of
+50 fps sustained, nothing dropped, frame queue at zero); the solver does not.
+Expect per-solve times of 45-52s against production's 17s, a solver queue
+oscillating to ~28% where production sits at 0%, and a much lower solve success
+rate. Nothing drops, so it is a usable environment, but a solver measurement taken
+there does not transfer to production.
+
+Do not raise the fleet without measuring on retina-test first: at 200 nodes / 0.5s
+the solver never reached steady state at all. And read `solver_avg_latency_s` over
+minutes rather than seconds — it is a cumulative mean that starts low after a boot
+and takes several minutes to converge. `solver_last_latency_s` is the honest
+per-solve figure.
+
+Note when reading alerts from any environment: production currently reports
+`degraded` with `geolocated_tracks` at 0, so seeing that on staging or test is not
+evidence of a problem with the fleet size or with a branch under test.
+
+Only `test-towers`, `test-api`, `test-map` and `test-dash` have DNS and certificate
+coverage on the test droplet. Its other three vhosts render but are unreachable by
+design.
+
+---
+
 ## Server basics
+
+Production unless stated otherwise.
 
 | | |
 |---|---|
