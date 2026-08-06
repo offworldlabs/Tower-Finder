@@ -21,9 +21,9 @@ Usage:
     python run_test_network.py \\
         --config nodes_config_test.json --steps 30
 
-    # testapi endpoint
+    # Against a non-default server
     python run_test_network.py --nodes 100 --steps 30 \\
-        --server https://testapi.retina.fm \\
+        --server https://api.retina.fm \\
         --api-key YOUR_KEY
 """
 

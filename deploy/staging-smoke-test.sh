@@ -7,7 +7,7 @@
 # Exit code: 0 = all checks passed, 1 = failure
 set -euo pipefail
 
-BASE_URL="https://staging.retina.fm"
+BASE_URL="https://staging-towers.retina.fm"
 API_URL="https://staging-api.retina.fm"
 DASH_URL="https://staging-dash.retina.fm"
 CURL="curl -s --connect-timeout 10 --max-time 30"

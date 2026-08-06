@@ -19,23 +19,28 @@ services:
   tower-finder:
     container_name: retina-staging-server
     environment:
-      - RETINA_ENV=staging
-      - CORS_ORIGINS=https://staging.retina.fm,https://staging-api.retina.fm,https://staging-map.retina.fm,https://staging-dash.retina.fm,https://staging-admin.retina.fm
+      # Deliberately `test`, not `production`/`staging`, while admin access stays
+      # open during the build-out. This leaves four backend auth/secret guards
+      # inactive — JWT_SECRET stops being required, AUTH_BYPASS applies when no
+      # OAuth is configured, and the missing-key warnings in radar.py and
+      # tcp_handler.py downgrade. Tracked in ClickUp 86cb1emcx; revert to the
+      # real environment name there, not here.
+      - RETINA_ENV=test
+      - CORS_ORIGINS=https://staging-towers.retina.fm,https://staging-api.retina.fm,https://staging-map.retina.fm,https://staging-dash.retina.fm,https://staging-admin.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
       # at boot to render deploy/nginx/nginx.conf.template. One template serves
       # both environments; only these values change.
       #
       # Every vhost is defined here even where no DNS record exists yet
-      # (staging-admin, staging-testapi): the Cloudflare origin cert is
+      # (staging-admin): the Cloudflare origin cert is
       # *.retina.fm, so an unresolved name costs nothing, and keeping the two
       # variable sets the same shape is what lets the parity check assert the
       # rendered configs are identical.
-      - HOST_MAIN=staging.retina.fm
+      - HOST_MAIN=staging-towers.retina.fm
       - HOST_API=staging-api.retina.fm
       - HOST_MAP=staging-map.retina.fm
       - HOST_DASH=staging-dash.retina.fm
       - HOST_ADMIN=staging-admin.retina.fm
-      - HOST_TESTAPI=staging-testapi.retina.fm
       - HOST_TESTMAP=staging-testmap.retina.fm
       - HOST_LEGACY_REDIRECT=staging-tower-finder.retina.fm
       # The only host-naming part of the CSP. wss://*.retina.fm already covers

@@ -36,7 +36,7 @@ OVERLAYS = {"production": "docker-compose.prod.yml", "staging": "docker-compose.
 
 # Every vhost the template defines must be TLS in a deployed environment. Update
 # this alongside the template if a vhost is added or removed.
-EXPECTED_TLS_VHOSTS = 8
+EXPECTED_TLS_VHOSTS = 7
 
 # Key paths permitted to differ between the environments, as regexes matched
 # against the dotted path into the merged compose tree.
@@ -76,7 +76,6 @@ HOST_VARS = (
     "HOST_MAP",
     "HOST_DASH",
     "HOST_ADMIN",
-    "HOST_TESTAPI",
     "HOST_TESTMAP",
     "HOST_LEGACY_REDIRECT",
     "CSP_CONNECT_SRC",
@@ -174,9 +173,10 @@ def check_nginx(tmp: Path) -> list[str]:
             values["TLS_ENABLED"] = service_env["TLS_ENABLED"]
         text = render(values, tmp / f"{env}.conf")
         # Replace each environment's hostnames with a role token so only
-        # structural differences survive. Longest first: `staging.retina.fm` is
-        # a substring of nothing, but `api.retina.fm` IS a substring of
-        # `testapi.retina.fm`, which would corrupt the comparison.
+        # structural differences survive. Longest first: a short hostname can be
+        # a substring of a longer one (`map.retina.fm` inside
+        # `staging-map.retina.fm`), and replacing the short one first would
+        # corrupt the comparison.
         for var, value in sorted(values.items(), key=lambda kv: len(kv[1]), reverse=True):
             text = text.replace(value, f"<{var}>")
         rendered[env] = text

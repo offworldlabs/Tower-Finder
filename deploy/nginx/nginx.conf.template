@@ -19,7 +19,7 @@
 # Redirect all HTTP → HTTPS
 server {
     listen 80;
-    server_name ${HOST_MAIN} ${HOST_API} ${HOST_MAP} ${HOST_DASH} ${HOST_ADMIN} ${HOST_TESTAPI} ${HOST_TESTMAP} ${HOST_LEGACY_REDIRECT} _;
+    server_name ${HOST_MAIN} ${HOST_API} ${HOST_MAP} ${HOST_DASH} ${HOST_ADMIN} ${HOST_TESTMAP} ${HOST_LEGACY_REDIRECT} _;
     return 301 https://$host$request_uri;
 }
 # RETINA_ENDIF
@@ -117,29 +117,6 @@ server {
     }
 
     # RETINA_INCLUDE snippets/spa.conf
-}
-
-# ${HOST_TESTAPI} — test network API (same backend as ${HOST_API})
-server {
-    # RETINA_IF TLS
-    listen 443 ssl;
-    # RETINA_ELSE
-    listen 80;
-    # RETINA_ENDIF
-    server_name ${HOST_TESTAPI};
-
-    # RETINA_IF TLS
-    # RETINA_INCLUDE snippets/tls.conf
-    # RETINA_ENDIF
-    # RETINA_INCLUDE snippets/security-headers-api.conf
-
-    location /ws/ {
-        # RETINA_INCLUDE snippets/ws.conf
-    }
-
-    location / {
-        # RETINA_INCLUDE snippets/api.conf
-    }
 }
 
 # ${HOST_TESTMAP} — test network live radar map (React frontend)

@@ -4,7 +4,7 @@ import { defineConfig, devices } from "@playwright/test";
  * Playwright E2E test configuration.
  *
  * Environments (set via E2E_ENV):
- *   staging  → staging.retina.fm / staging-api.retina.fm / staging-testmap.retina.fm (default)
+ *   staging  → staging-towers.retina.fm / staging-api.retina.fm / staging-testmap.retina.fm (default)
  *   prod     → towers.retina.fm / api.retina.fm / testmap.retina.fm
  *   local    → localhost:5173 / localhost:8000
  */
@@ -13,7 +13,7 @@ const ENV = (process.env.E2E_ENV ?? "staging") as "staging" | "prod" | "local";
 
 const HOSTS = {
   staging: {
-    frontend:  "https://staging.retina.fm",
+    frontend:  "https://staging-towers.retina.fm",
     api:       "https://staging-api.retina.fm",
     map:       "https://staging-map.retina.fm",
     testmap:   "https://staging-testmap.retina.fm",
