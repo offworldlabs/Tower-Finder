@@ -38,36 +38,42 @@ setup:
     echo "✓ setup complete — now: just up"
 
 # Bring up backend + synthetic fleet + frontend (background). Open http://testmap.localhost:5173/
-# Fleet profile: `just up` (local, dense) · `just up testmap` (8s) · `just up prod` (40s).
-# testmap/prod read their fleet params LIVE from the real deploy configs so they can't drift.
+# Fleet profile: `just up` (local, dense) · `just up test` (50 fps) · `just up prod` (12.5 fps).
+# test/prod read their fleet params LIVE from the real deploy configs so they can't drift.
 up profile="local":
     #!/usr/bin/env bash
     set -euo pipefail
     [ -x "{{py}}" ] || { echo "no backend venv — run: just setup"; exit 1; }
     [ -d "{{fe}}/node_modules" ] || { echo "no frontend deps — run: just setup"; exit 1; }
     # ── Resolve fleet params by profile ────────────────────────────────────────
-    #  local   — dev-only dense stream (~1 ellipse/s); no deployed equivalent.
-    #  testmap — sourced from docker-compose.test.yml   (the testmap.retina.fm test stack).
-    #  prod    — sourced from docker-compose.prod.yml's `fleet` service (the
-    #            Compose service that actually serves the live
-    #            testmap.retina.fm + map.retina.fm). The FLEET_* sizing lives in
-    #            the prod overlay rather than the shared base: fleet scale is the
-    #            one thing staging is meant to differ on.
+    #  local — dev-only dense stream (~1 ellipse/s); no deployed equivalent.
+    #  test  — the retina-test droplet's fleet: 50 nodes at a 1.0s per-node
+    #          detection rate, so 50 frames/s reach the server. staging runs the
+    #          same shape; there is no separate profile for it.
+    #  prod  — docker-compose.prod.yml's `fleet` service, the one that actually
+    #          serves live testmap.retina.fm + map.retina.fm: 25 nodes at 2.0s,
+    #          12.5 fps.
+    #
+    # Both read the overlay PLUS docker-compose.yml, because the connection
+    # settings the environments share live in the base. The extraction matches
+    # only list entries (`- FLEET_X=y`), never prose: the overlays discuss
+    # variables like FLEET_METRO="" in their comments, and an unanchored grep
+    # would eval those too.
+    fleet_env() {
+        grep -hoE '^[[:space:]]*-[[:space:]]*FLEET_[A-Z_]+=[^[:space:]]+' "$@" \
+            | sed -E 's/^[[:space:]]*-[[:space:]]*//'
+    }
     case "{{profile}}" in
       local)
         FLEET_NODES=200; FLEET_MODE=detection; FLEET_INTERVAL=0.5
         FLEET_TIME_SCALE=1.0; FLEET_MIN_AIRCRAFT=40; FLEET_MAX_AIRCRAFT=60
         FLEET_METRO=gvl; FLEET_N_CLUSTER=30; FLEET_N_CLUSTERS=1 ;;
-      testmap)
-        # every FLEET_* value comes straight from the compose file's fleet-simulator block
-        eval "$(grep -oE 'FLEET_[A-Z_]+=[^[:space:]]+' "{{root}}/docker-compose.test.yml")" ;;
+      test)
+        eval "$(fleet_env "{{root}}/docker-compose.yml" "{{root}}/docker-compose.test.yml")" ;;
       prod)
-        # every FLEET_* value comes straight from docker-compose.prod.yml's
-        # `fleet` block, plus the connection settings it shares with staging in
-        # docker-compose.yml (same extraction the testmap profile uses)
-        eval "$(grep -hoE 'FLEET_[A-Z_]+=[^[:space:]]+' "{{root}}/docker-compose.yml" "{{root}}/docker-compose.prod.yml")" ;;
+        eval "$(fleet_env "{{root}}/docker-compose.yml" "{{root}}/docker-compose.prod.yml")" ;;
       *)
-        echo "✗ unknown profile '{{profile}}' — use: local | testmap | prod"; exit 1 ;;
+        echo "✗ unknown profile '{{profile}}' — use: local | test | prod"; exit 1 ;;
     esac
     # fail loudly if extraction ever silently breaks, rather than launch a wrong fleet
     : "${FLEET_INTERVAL:?could not resolve fleet params for profile '{{profile}}'}"
@@ -91,7 +97,7 @@ up profile="local":
         exit 1
     fi
 
-    # Metro scoping must be forwarded too, or the testmap/prod profiles would
+    # Metro scoping must be forwarded too, or the test/prod profiles would
     # silently run a nationwide fleet while claiming to mirror the compose files.
     METRO_ARGS=()
     if [ -n "${FLEET_METRO:-}" ]; then METRO_ARGS+=(--metro "${FLEET_METRO}"); fi
@@ -114,7 +120,7 @@ up profile="local":
     echo
     echo "✓ up [{{profile}}].  Open →  http://testmap.localhost:5173/"
     echo "  (plain localhost shows tower search — the testmap.* host selects the live map)"
-    echo "  fleet [{{profile}}]: ${FLEET_NODES} nodes @ ${FLEET_INTERVAL}s.  Profiles: local | testmap (8s) | prod (40s)"
+    echo "  fleet [{{profile}}]: ${FLEET_NODES} nodes @ ${FLEET_INTERVAL}s/node.  Profiles: local | test (50 fps) | prod (12.5 fps)"
     echo "  logs: just logs    status: just status    stop: just down"
 
 # Stop everything (by port for the servers, by pattern for the portless fleet client)
