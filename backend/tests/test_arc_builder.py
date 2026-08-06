@@ -203,6 +203,124 @@ class TestBuildSingleNodeArc:
             assert mean_range(arc_large) > mean_range(arc_small)
 
 
+# ─── New contract: arc spans the entire detection area ───────────────────────
+
+
+def _arc_bearings(arc, rx_lat=_NODE_CFG["rx_lat"], rx_lon=_NODE_CFG["rx_lon"]):
+    """Bearings (deg from RX) of every arc point."""
+    return [_bearing_deg(rx_lat, rx_lon, lat, lon) for lat, lon in arc]
+
+
+def _angular_spread_deg(bearings):
+    """Widest angular extent covered by a bearing list (wrap-safe)."""
+    spread = 0.0
+    for a in bearings:
+        for b in bearings:
+            d = abs((a - b + 180.0) % 360.0 - 180.0)
+            spread = max(spread, d)
+    return spread
+
+
+class TestArcSpansDetectionArea:
+    """The emitted arc is the delay ellipse clipped to the node's detection
+    area — NOT trimmed to a blip around the track's own position estimate,
+    and NOT clipped to anything narrower than the beam the node genuinely has.
+    """
+
+    # Broadside boresight for _NODE_CFG (RX→TX bearing + 90°).
+    BORESIGHT = (_bearing_deg(
+        _NODE_CFG["rx_lat"], _NODE_CFG["rx_lon"],
+        _NODE_CFG["tx_lat"], _NODE_CFG["tx_lon"]) + 90.0) % 360.0
+
+    def test_known_position_no_longer_trims_the_arc(self):
+        """A track with a known position used to get a ~25 km blip; the arc
+        must now span the full 90° wedge regardless."""
+        cfg, touched = dict(_NODE_CFG), set()
+        track = _ArcTrack(80.0, 33.65, -84.95)
+        arc = _fp._cached_single_node_arc("spanhex", track, cfg, touched)
+        assert arc is not None
+        spread = _angular_spread_deg(_arc_bearings(arc))
+        # Old behaviour: min(90°, ~36°) ≈ 36° sweep.  New: the whole wedge.
+        assert spread > 80.0
+
+    def test_omni_node_spans_beyond_any_wedge(self):
+        """beam_width >= 360 means omnidirectional: the arc is the full closed
+        ellipse, including bearings far outside the old broadside wedge."""
+        cfg = {**_NODE_CFG, "beam_width_deg": 360,
+               "max_bistatic_range_km": 100.0}
+        arc = _build_single_node_arc(80.0, cfg)
+        assert arc is not None
+        assert len(arc) == 73  # 72 steps + closing point
+        # Ring closes on itself.
+        assert arc[0][0] == pytest.approx(arc[-1][0], abs=1e-6)
+        assert arc[0][1] == pytest.approx(arc[-1][1], abs=1e-6)
+        # Points exist well outside the old default wedge around boresight.
+        offsets = [abs((b - self.BORESIGHT + 180.0) % 360.0 - 180.0)
+                   for b in _arc_bearings(arc)]
+        assert max(offsets) > 150.0
+
+    def test_wedge_arc_stays_inside_genuine_beam(self):
+        """A genuinely directional node still yields a wedge-clipped arc —
+        the detection area itself is a wedge there."""
+        cfg = {**_NODE_CFG, "beam_width_deg": 48,
+               "max_bistatic_range_km": 100.0}
+        arc = _build_single_node_arc(80.0, cfg)
+        assert arc is not None
+        offsets = [abs((b - self.BORESIGHT + 180.0) % 360.0 - 180.0)
+                   for b in _arc_bearings(arc)]
+        assert max(offsets) <= 24.0 + 0.5
+
+    def test_delay_beyond_differential_limit_returns_none(self):
+        """80 µs is ~24 km of differential range — past a 20 km limit the
+        node cannot have made this detection, so there is no arc."""
+        cfg = {**_NODE_CFG, "max_bistatic_range_km": 20.0}
+        assert _build_single_node_arc(80.0, cfg) is None
+
+    def test_arc_points_lie_on_measured_differential_within_limit(self):
+        """Every emitted point sits on the measured-delay ellipse, hence
+        inside the declared differential-range limit."""
+        from services.geo import C_KM_US, bistatic_differential_km
+        limit = 40.0
+        cfg = {**_NODE_CFG, "beam_width_deg": 360,
+               "max_bistatic_range_km": limit}
+        delay_us = 80.0
+        arc = _build_single_node_arc(delay_us, cfg)
+        assert arc is not None
+        expected_km = delay_us * C_KM_US
+        for lat, lon in arc:
+            d = bistatic_differential_km(
+                cfg["tx_lat"], cfg["tx_lon"], cfg["rx_lat"], cfg["rx_lon"],
+                lat, lon)
+            # ENU-vs-spherical mismatch stays well under 1 km at these ranges.
+            assert d == pytest.approx(expected_km, abs=1.0)
+            assert d <= limit
+
+    def test_monostatic_range_excludes_out_of_reach_bearings(self):
+        """Without a bistatic limit the monostatic circle clips the locus:
+        bearings whose ellipse crossing lies beyond max_range_km are dropped,
+        the rest survive."""
+        cfg = {**_NODE_CFG, "max_range_km": 25}
+        arc = _build_single_node_arc(80.0, cfg)
+        assert arc is not None
+        # Part of the wedge is out of reach — the arc must be a strict subset…
+        assert 2 <= len(arc) < 37
+        # …and every surviving point is inside the circle.
+        for lat, lon in arc:
+            dlat = (lat - cfg["rx_lat"]) * 111.0
+            dlon = (lon - cfg["rx_lon"]) * 111.0 * math.cos(math.radians(lat))
+            assert math.hypot(dlat, dlon) <= 25.0 + 1.0
+
+    def test_point_budget_is_bounded(self):
+        """The arc ships every feed tick: <= 37 points for a wedge, <= 73 for
+        the full closed ellipse."""
+        wedge = _build_single_node_arc(80.0, dict(_NODE_CFG))
+        assert wedge is not None and len(wedge) <= 37
+        omni = _build_single_node_arc(
+            80.0, {**_NODE_CFG, "beam_width_deg": 360,
+                   "max_bistatic_range_km": 100.0})
+        assert omni is not None and len(omni) <= 73
+
+
 # ─── Aircraft JSON builder path (single_node_ellipse_arc) ───────────────────
 
 class TestTrackEntryPaths:
@@ -723,19 +841,23 @@ class TestSingleNodeArcCache:
         _fp._cached_single_node_arc("abc", _ArcTrack(85.0, 33.65, -84.95), cfg, touched)
         assert calls["n"] == 2
 
-    def test_position_change_rebuilds(self, monkeypatch):
+    def test_position_change_hits_cache(self, monkeypatch):
+        # The arc is the full detection-area locus of the measured delay; it
+        # no longer depends on where the track estimate sits on that locus,
+        # so a moving track with an unchanged delay must be a cache hit.
         calls = _spy_build_count(monkeypatch)
         cfg, touched = dict(_NODE_CFG), set()
-        _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.6500, -84.95), cfg, touched)
-        _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.6502, -84.95), cfg, touched)
-        assert calls["n"] == 2
+        a1 = _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.6500, -84.95), cfg, touched)
+        a2 = _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.6502, -84.95), cfg, touched)
+        assert calls["n"] == 1
+        assert a1 == a2
 
     def test_jitter_within_epsilon_hits(self, monkeypatch):
         calls = _spy_build_count(monkeypatch)
         cfg, touched = dict(_NODE_CFG), set()
         _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95), cfg, touched)
-        # delay jitter < 5e-4 and position jitter < 5e-7 round to the same
-        # fingerprint, so this is a hit, not a rebuild.
+        # delay jitter < 5e-4 rounds to the same fingerprint, so this is a
+        # hit, not a rebuild.
         _fp._cached_single_node_arc("abc", _ArcTrack(80.0004, 33.6500001, -84.9500001), cfg, touched)
         assert calls["n"] == 1
 
@@ -752,7 +874,7 @@ class TestSingleNodeArcCache:
         cfg, touched = dict(_NODE_CFG), set()
         track = _ArcTrack(80.0, 33.65, -84.95)
         cached = _fp._cached_single_node_arc("abc", track, cfg, touched)
-        fresh = _fp._build_single_node_arc(track, cfg, target_lat=track.lat, target_lon=track.lon)
+        fresh = _fp._build_single_node_arc(track, cfg)
         assert cached == fresh
         assert cached is not None  # sanity: these inputs produce a real arc
 

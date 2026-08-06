@@ -63,7 +63,7 @@ N2_TRACK_HISTORY_MAX = 20             # Per-node track samples fed to the fit
 CAL_MAX_ADSB_AGE_S = 10.0
 
 # ── Default antenna parameters ───────────────────────────────────────────────
-YAGI_BEAM_WIDTH_DEG = 41.0            # Default half-power beamwidth (°)
+YAGI_BEAM_WIDTH_DEG = 42.0            # Half-power beamwidth (°) of the fleet Yagis
 YAGI_MAX_RANGE_KM = 50.0             # Default Yagi max range (km)
 
 # ── Track & history limits ───────────────────────────────────────────────────

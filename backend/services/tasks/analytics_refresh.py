@@ -932,8 +932,13 @@ def _refresh_mlat_verification():
         age_s = now - entry.get("last_seen_ms", 0) / 1000
         if age_s > 60:
             continue
-        gs_ms = (entry.get("gs", 0) or 0) * 0.514444
-        alt_m = (entry.get("alt_baro", 0) or 0) * 0.3048
+        # tar1090 convention: alt_baro is the string "ground" for aircraft on
+        # the ground — a bare multiply raised TypeError and killed the whole
+        # refresh cycle, leaving /api/test/mlat-accuracy permanently empty.
+        _gs_raw = entry.get("gs", 0) or 0
+        _alt_raw = entry.get("alt_baro", 0) or 0
+        gs_ms = (_gs_raw if isinstance(_gs_raw, (int, float)) else 0.0) * 0.514444
+        alt_m = (_alt_raw if isinstance(_alt_raw, (int, float)) else 0.0) * 0.3048
         adsb_truth_pool.append(
             (
                 adsb_hex,

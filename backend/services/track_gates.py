@@ -27,6 +27,7 @@ from services.geo import (
     bearing_deg,
     enu_km,
     haversine_km,
+    node_beam_params,
     offset_latlon,
     offset_latlon_m,
 )
@@ -56,22 +57,29 @@ def _enu_to_lla(rx_lat: float, rx_lon: float, east_km: float, north_km: float) -
 def _build_single_node_arc(
     track_or_delay,
     node_cfg: dict,
-    *,
-    target_lat: float | None = None,
-    target_lon: float | None = None,
 ) -> list[list[float]] | None:
     """Build the bistatic-ambiguity arc for one detection.
 
-    When `target_lat`/`target_lon` are provided (i.e. we know roughly where
-    the aircraft actually is, via ADS-B or a prior solve), the arc is
-    trimmed to a short segment around the known position. This makes the
-    frontend trail of successive arcs readable as a chain of distinct
-    blips tracing the target's path through the beam, instead of one fat
-    smudge of overlapping full-beam loci.
+    The measured delay constrains the target to a bistatic ellipse (foci at
+    TX and RX); the aircraft can be anywhere on it that the node could
+    actually detect.  The arc is therefore the full ellipse clipped to the
+    node's *detection area* — the same region the coverage layer draws and
+    ``point_in_beam`` gates on (``node_beam_params`` semantics):
 
-    Without a known position (true unknowns like raw radar-only detections)
-    the full beam-spanning locus is returned so the operator can see the
-    full ambiguity.
+    * the differential-range limit when the node declares
+      ``max_bistatic_range_km`` (every point of the ellipse shares the
+      measured differential, so this is a single yes/no for the whole
+      locus), else the monostatic ``max_range_km`` circle per bearing;
+    * the beam wedge when the node genuinely has one — an explicit
+      ``beam_azimuth_deg`` or the broadside-of-baseline default, clipped to
+      ``beam_width_deg``.  A declared width >= 360° means omnidirectional
+      and yields the full closed ellipse.
+
+    Earlier revisions additionally trimmed the arc to a ~25 km blip around
+    the track's own position.  That made the drawn segment unrepresentative
+    of the actual ambiguity — the aircraft could equally be anywhere else
+    on the in-area locus — so the trim is gone: the emitted arc always
+    spans the entire detection-area-constrained ellipse.
     """
     if isinstance(track_or_delay, (int, float)):
         delay_us = track_or_delay
@@ -87,11 +95,13 @@ def _build_single_node_arc(
     if None in (rx_lat, rx_lon, tx_lat, tx_lon):
         return None
 
-    beam_width_deg = float(node_cfg.get("beam_width_deg", 41.0) or 41.0)
-    max_range_km = float(node_cfg.get("max_range_km", 50.0) or 50.0)
-    beam_azimuth_deg = node_cfg.get("beam_azimuth_deg")
-    if beam_azimuth_deg is None:
-        beam_azimuth_deg = (_bearing_deg(rx_lat, rx_lon, tx_lat, tx_lon) + 90.0) % 360.0
+    # One source of truth for what the node can see — the same resolution
+    # rules (broadside default, zero-width means missing, bistatic limit)
+    # that point_in_beam and the coverage layer use.
+    beam = node_beam_params(node_cfg)
+    beam_width_deg = beam["beam_width_deg"]
+    max_range_km = beam["max_range_km"]
+    beam_azimuth_deg = beam["beam_azimuth_deg"]
 
     tx_east_km, tx_north_km = enu_km(rx_lat, rx_lon, tx_lat, tx_lon)
     baseline_km = math.hypot(tx_east_km, tx_north_km)
@@ -112,7 +122,7 @@ def _build_single_node_arc(
     # bearing, the triangle inequality gives D(r) >= 2r - 2*baseline, so the
     # range satisfying a measured differential D is at most D/2 + baseline.
     # That is a tight ceiling that provably never clips the locus.
-    max_bistatic_km = node_cfg.get("max_bistatic_range_km")
+    max_bistatic_km = beam["max_bistatic_range_km"]
     if max_bistatic_km is not None:
         max_bistatic_km = float(max_bistatic_km)
         if differential_range_km > max_bistatic_km:
@@ -123,21 +133,16 @@ def _build_single_node_arc(
     else:
         search_max_km = max_range_km
 
-    # When we have a known target position, centre the sweep on the bearing
-    # from RX to that position and aim for an arc whose ground length is
-    # roughly the same regardless of range — short enough to look like a
-    # radar blip near the aircraft, long enough to remain visible at
-    # continental zoom. Pure angular trimming (e.g. fixed 6°) collapses
-    # below 1 pixel at low zooms; targeting an arc length in km solves it.
-    if target_lat is not None and target_lon is not None:
-        centre_bearing = _bearing_deg(rx_lat, rx_lon, target_lat, target_lon)
-        target_range_km = max(
-            haversine_km(rx_lat, rx_lon, target_lat, target_lon), 5.0)
-        # ~25 km arc length keeps the blip visible at zoom ≥4 and short
-        # enough to read as a chain at zoom ≥7 — verified on staging.
-        BLIP_ARC_LENGTH_KM = 25.0
-        sweep_width_deg = min(beam_width_deg, math.degrees(BLIP_ARC_LENGTH_KM / target_range_km))
-        steps = 18
+    # Sweep exactly the in-area bearing interval.  Centre on the boresight
+    # even when omnidirectional, so the midpoint (which becomes the track's
+    # displayed lat/lon) is deterministic and sits on the boresight crossing.
+    # Point budget: 37 points for a wedge (same as the historical full-beam
+    # arc), 73 for a closed full-circle locus — the arc is cached and shipped
+    # every feed tick, so this stays within ~2x of the previous payload.
+    if beam_azimuth_deg is None or beam_width_deg >= 360.0:
+        centre_bearing = beam_azimuth_deg if beam_azimuth_deg is not None else 0.0
+        sweep_width_deg = 360.0
+        steps = 72
     else:
         centre_bearing = beam_azimuth_deg
         sweep_width_deg = beam_width_deg
@@ -147,10 +152,6 @@ def _build_single_node_arc(
     points: list[list[float]] = []
     for step in range(steps + 1):
         bearing_deg = centre_bearing - half_sweep + sweep_width_deg * (step / steps)
-        # Stay within the antenna beam — drop bearings that fall outside.
-        delta_from_axis = abs(((bearing_deg - beam_azimuth_deg + 180.0) % 360.0) - 180.0)
-        if delta_from_axis > beam_width_deg / 2.0:
-            continue
         lo = 0.0
         hi = search_max_km
         if _differential_at(hi, bearing_deg) < differential_range_km:
@@ -176,11 +177,11 @@ def _build_single_node_arc(
 
 
 # Per-track single-node arc memo.  _build_single_node_arc is a pure function
-# of (delay_us, target position, node geometry); the flush loop rebuilds it
-# every cycle even when the detection is unchanged, which is the compute the
-# ~4s map pulse traces back to.  Key by (ac_hex, node_id) -- the identity the
-# rest of the pipeline and the frontend already use -- with a fingerprint of
-# the non-static inputs, so a miss happens exactly when a new detection changes
+# of (delay_us, node geometry); the flush loop rebuilds it every cycle even
+# when the detection is unchanged, which is the compute the ~4s map pulse
+# traces back to.  Key by (ac_hex, node_id) -- the identity the rest of the
+# pipeline and the frontend already use -- with a fingerprint of the
+# non-static inputs, so a miss happens exactly when a new detection changes
 # them (invalidate on arrival, no timer).  node_cfg is treated as static per
 # node_id.  The fingerprint is None-safe: latest_delay_us is None for ADS-B-only
 # tracks and rounding None would raise.
@@ -190,12 +191,12 @@ _single_node_arc_cache: dict[tuple[str, str | None], tuple[tuple, list | None]] 
 def _cached_single_node_arc(ac_hex, track, node_cfg, touched_keys):
     """Memoised _build_single_node_arc for the per-geolocated-track arc.
 
-    Returns exactly what
-        _build_single_node_arc(track, node_cfg,
-                               target_lat=track.lat, target_lon=track.lon)
-    returns, but recomputes only when the detection's inputs change.  The arc is
-    a pure function of those inputs, so this is transparent to callers and the
-    wire format.  ``touched_keys`` accumulates the keys visited this build so the
+    Returns exactly what ``_build_single_node_arc(track, node_cfg)`` returns,
+    but recomputes only when the detection's delay changes.  The arc is the
+    detection-area-constrained delay locus — a pure function of the delay and
+    the (static) node geometry, independent of where on the locus the track
+    estimate currently sits — so this is transparent to callers and the wire
+    format.  ``touched_keys`` accumulates the keys visited this build so the
     caller can evict everything else, bounding the cache to the live fleet.
     """
     node_id = node_cfg.get("node_id")
@@ -205,19 +206,12 @@ def _cached_single_node_arc(ac_hex, track, node_cfg, touched_keys):
     delay_us = getattr(track, "latest_delay_us", None)
     fingerprint = (
         None if delay_us is None else round(delay_us, 3),
-        round(track.lat, 6),
-        round(track.lon, 6),
     )
     cached = _single_node_arc_cache.get(key)
     if cached is not None and cached[0] == fingerprint:
         return cached[1]
 
-    arc = _build_single_node_arc(
-        track,
-        node_cfg,
-        target_lat=track.lat,
-        target_lon=track.lon,
-    )
+    arc = _build_single_node_arc(track, node_cfg)
     _single_node_arc_cache[key] = (fingerprint, arc)
     return arc
 
@@ -323,13 +317,10 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
     # arcs fade independently. Without arcs for ADS-B aircraft, the
     # synthetic fleet (where almost every target has ADS-B) gives the
     # impression that nodes are idle, which they're not.
-    # Always centre on the bistatic-solved position (track.lat/lon), not
-    # on the raw ADS-B GPS fix.  When the ADS-B fix is stale or sits
-    # outside the beam (e.g. an aircraft near the TX tower), centering on
-    # adsb.lat/lon sweeps the wrong beam sector, yields few or no valid
-    # arc points, and the position falls back to an unstable raw solver
-    # output that jumps tens of km between frames.  track.lat/lon is
-    # always the bistatic-constrained estimate — correct sector, stable arc.
+    # The arc is the full detection-area-constrained delay locus — it does
+    # not depend on the track's own position estimate, only on the measured
+    # delay and the node geometry, so it is honest for stale-ADS-B and
+    # raw-solver tracks alike.
     ambiguity_arc = _cached_single_node_arc(
         ac_hex, track, node_cfg, touched_arc_keys,
     )
@@ -340,6 +331,11 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
     raw_midpoint_lat = None
     raw_midpoint_lon = None
     if ambiguity_arc and position_source in ("solver_single_node", "solver_adsb_seed"):
+        # The arc spans the whole detection area, so its midpoint is the
+        # locus's boresight crossing — a canonical point on the ambiguity
+        # curve, not an estimate of where on the curve the aircraft sits.
+        # It moves radially as the measured delay changes and is stable
+        # between detections.
         midpoint = ambiguity_arc[len(ambiguity_arc) // 2]
         lat = round(midpoint[0], 6)
         lon = round(midpoint[1], 6)

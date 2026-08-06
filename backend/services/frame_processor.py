@@ -171,6 +171,15 @@ def get_or_create_node_pipeline(
             "doppler_min": cfg.get("doppler_min", -300),
             "doppler_max": cfg.get("doppler_max", 300),
             "min_doppler": cfg.get("min_doppler", 15),
+            # Beam/range geometry: track_gates builds display arcs from
+            # pipeline.config, so dropping these regressed every node with a
+            # non-broadside azimuth to a default 41-degree broadside wedge
+            # (12 of 15 fleet nodes; up to 178 degrees off) — arcs clipped to
+            # the wrong sector or suppressed outright.
+            "beam_azimuth_deg": cfg.get("beam_azimuth_deg"),
+            "beam_width_deg": cfg.get("beam_width_deg"),
+            "max_range_km": cfg.get("max_range_km"),
+            "max_bistatic_range_km": cfg.get("max_bistatic_range_km"),
         }
         pipeline = PassiveRadarPipeline(pipeline_cfg)
         state.node_pipelines[node_id] = pipeline

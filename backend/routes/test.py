@@ -171,6 +171,16 @@ def _build_dashboard_data() -> bytes:
                 # Only observable here — the per-solve reason is logged at DEBUG,
                 # which staging does not emit.
                 "n2_unconfirmed": state.n2_unconfirmed,
+                # Per-reason breakdown of solver_failures (same aggregate as
+                # above): which gate is eating the solves.
+                "failures_by_reason": {
+                    "exception": state.solver_fail_exception,
+                    "unconverged": state.solver_fail_unconverged,
+                    "rms_delay": state.solver_fail_rms_delay,
+                    "rms_doppler": state.solver_fail_rms_doppler,
+                    "beam": state.solver_fail_beam,
+                    "displacement": state.solver_fail_displacement,
+                },
                 # Overlap grids rebuilt because a node's observed coverage
                 # tightened, and how many nodes triggered it.  Zero against
                 # populated polygons means the prior is not reaching the grids.

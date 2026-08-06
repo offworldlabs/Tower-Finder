@@ -199,6 +199,17 @@ coverage_rebuilds: int = 0
 coverage_rebuild_nodes: int = 0
 solver_queue_drops: int = 0
 
+# Per-reason solver rejection counters.  solver_failures is the aggregate; the
+# per-solve reason was only ever logged at DEBUG, which staging does not emit —
+# 301 failures in one 66-minute window were unattributable.  One counter per
+# reject gate makes the breakdown observable at /api/test/dashboard.
+solver_fail_exception: int = 0
+solver_fail_unconverged: int = 0
+solver_fail_rms_delay: int = 0
+solver_fail_rms_doppler: int = 0
+solver_fail_beam: int = 0
+solver_fail_displacement: int = 0
+
 # Solver end-to-end latency (seconds from queue submission to solve completion)
 solver_last_latency_s: float = 0.0
 solver_total_latency_s: float = 0.0
@@ -280,6 +291,8 @@ def _reset_for_tests() -> None:
     global frames_dropped, frames_processed, solver_successes, solver_failures
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
     global solver_queue_drops
+    global solver_fail_exception, solver_fail_unconverged, solver_fail_rms_delay
+    global solver_fail_rms_doppler, solver_fail_beam, solver_fail_displacement
     global solver_last_latency_s, solver_total_latency_s, solver_total_solved
     global peak_connected_nodes
 
@@ -328,6 +341,8 @@ def _reset_for_tests() -> None:
         frames_dropped = frames_processed = 0
         solver_successes = solver_failures = n2_unconfirmed = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
+        solver_fail_exception = solver_fail_unconverged = solver_fail_rms_delay = 0
+        solver_fail_rms_doppler = solver_fail_beam = solver_fail_displacement = 0
         solver_total_solved = 0
         solver_last_latency_s = solver_total_latency_s = 0.0
         peak_connected_nodes = 0

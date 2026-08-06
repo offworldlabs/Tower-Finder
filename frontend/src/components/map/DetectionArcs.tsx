@@ -81,8 +81,11 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
         } else {
           // First creation: compute the effective bistatic delay from the
           // current dead-reckoned icon position (sm) so the arc passes
-          // through the icon.  Falls back to the backend arc when we don't
-          // have node geometry yet (useNodes still loading).
+          // through the icon.  The rebuilt locus spans the node's whole
+          // detection area (same semantics as the backend arc) — only the
+          // delay is refreshed from the icon position.  Falls back to the
+          // backend arc when we don't have node geometry yet (useNodes
+          // still loading).
           let arcPoints = entry.ambiguity_arc;
           if (entry.hex && entry.node_id) {
             const node = nodesByIdRef?.current?.[entry.node_id];
@@ -92,7 +95,7 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
               const rxLon = node.rx_lon_real ?? node.rx_lon;
               const effectiveDelay = computeBistaticDelayUs(sm.lat, sm.lon, rxLat, rxLon, node.tx_lat, node.tx_lon);
               if (effectiveDelay > 0) {
-                const rebuilt = buildBistaticArc(effectiveDelay, node, sm.lat, sm.lon);
+                const rebuilt = buildBistaticArc(effectiveDelay, node);
                 if (rebuilt && rebuilt.length >= 2) arcPoints = rebuilt;
               }
             }

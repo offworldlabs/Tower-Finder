@@ -569,6 +569,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
     except Exception:
         state.task_error_counts["solver"] += 1
         state.bump_counter("solver_failures")
+        state.bump_counter("solver_fail_exception")
         logging.exception("Multinode solver failed")
         result = None
     if result and result.get("success"):
@@ -581,6 +582,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                 result.get("n_nodes", 0), result.get("lat", 0), result.get("lon", 0),
             )
             state.bump_counter("solver_failures")
+            state.bump_counter("solver_fail_rms_delay")
             return result
         rms_doppler = result.get("rms_doppler", 0) or 0
         if rms_doppler > _SOLVER_RMS_DOPPLER_MAX_HZ:
@@ -591,6 +593,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                 result.get("n_nodes", 0), result.get("lat", 0), result.get("lon", 0),
             )
             state.bump_counter("solver_failures")
+            state.bump_counter("solver_fail_rms_doppler")
             return result
         # Reject solutions outside the beam coverage of contributing nodes.
         # For n=2 the solver has two geometric solutions (two bistatic ellipse
@@ -611,6 +614,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                         float(cfg.get("max_range_km") or 50),
                     )
                     state.bump_counter("solver_failures")
+                    state.bump_counter("solver_fail_beam")
                     return None
         # Reject if the solution drifted more than _MAX_DISPLACEMENT_KM from
         # the ADS-B initial_guess. For N=2 this catches mirror-point ghosts
@@ -636,6 +640,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                         n_nodes, _disp_km, result["lat"], result["lon"],
                     )
                     state.bump_counter("solver_failures")
+                    state.bump_counter("solver_fail_displacement")
                     return None
         # n=2 publication gate.  The pairing must have been fitted and passed;
         # an unfitted one (chi2_per_dof None — too short an observation span so
@@ -725,6 +730,12 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
         archive_record = dict(result)
         archive_record["solve_ts_ms"] = int(time.time() * 1000)
         state.track_archive_buffer.append(archive_record)
+    elif result is not None:
+        # The LM ran but did not converge (success=False).  Previously this
+        # path incremented nothing — staging showed hundreds of solves
+        # vanishing with no observable reason.
+        state.bump_counter("solver_failures")
+        state.bump_counter("solver_fail_unconverged")
     return result
 
 

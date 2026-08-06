@@ -176,7 +176,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
           )}
           {isAmbiguityArc && (
             <>
-              <Field label="Display mode" value="Delay ellipse clipped to beam" />
+              <Field label="Display mode" value="Delay ellipse across detection area" />
               <Field label="Latest delay" value={ac.delay_us != null ? `${ac.delay_us} μs` : "\u2014"} />
             </>
           )}

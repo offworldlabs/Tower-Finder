@@ -1028,7 +1028,7 @@ export default function LiveAircraftMap() {
   // For arc-only tracks the backend's recent_positions stays at 1 point
   // (append_track_history dedupes positions < 5 m apart, and the arc midpoint
   // doesn't change between detections).  Sampling smoothRef into a frontend
-  // buffer at ~2 Hz lets us draw a trail behind the dead-reckoned icon
+  // buffer at ~2 Hz lets us draw a trail behind the dead-reckoned position
   // without needing backend changes.  Bounded to 60 samples per hex (30 s).
   const frontendTrailsRef = useRef({});  // hex → Array<[lat, lon, ts_sec]>
   const lastTrailSampleRef = useRef({}); // hex → last sample timestamp (ms)
@@ -1159,10 +1159,12 @@ export default function LiveAircraftMap() {
         // Ground-truth objects render on a canvas layer with no divIcon, and
         // their store key (gt:<hex>) never matches the ac-hex-<hex> class —
         // querying for them every frame was a permanent document-wide
-        // selector miss, ~30k/s on testmap.  Misses for real markers are
-        // negative-cached briefly: an aircraft outside the viewport or
-        // filtered out has no DOM node until it re-enters.
-        if (!fix._isTruth) {
+        // selector miss, ~30k/s on testmap.  Arc-only tracks are skipped for
+        // the same reason: they render no plane marker at all, so the lookup
+        // could never succeed.  Misses for real markers are negative-cached
+        // briefly: an aircraft outside the viewport or filtered out has no
+        // DOM node until it re-enters.
+        if (!fix._isTruth && fix.position_source !== POSITION_SOURCE_ARC_ONLY) {
           let svgEl = svgElemsRef.current[key];
           if (!svgEl || !svgEl.isConnected) {
             svgEl = null;
@@ -1914,13 +1916,16 @@ export default function LiveAircraftMap() {
             {showInBeamDiag && (
               <InBeamDiagnostic detectionsRef={detectionsRef} groundTruthRef={groundTruthRef} nodesByIdRef={nodesByIdRef} smoothRef={smoothRef} />
             )}
-            {/* Aircraft position markers — all radar-detected aircraft rendered as airplane icons.
+            {/* Aircraft position markers — radar-detected aircraft rendered as airplane icons.
                  Color encodes confidence: purple=multinode, teal=ADS-B aided, cyan=single-node.
-                 Single-node arc-only tracks are rendered smaller / dashed / semi-transparent to
-                 communicate that their position is approximate (the aircraft is somewhere along
-                 the visible arc, not exactly at the midpoint). */}
+                 Single-node arc-only tracks get NO plane marker: their lat/lon is just the
+                 arc-midpoint estimate (the aircraft is somewhere along the visible arc), and
+                 users mistook the icon position for the actual location.  The detection arc
+                 rendered by DetectionArcs is their only map presence; selecting them from the
+                 list still highlights the arc and centers the map on the midpoint. */}
             {visibleAircraft.map((ac) => {
               if (!validLatLon(ac.lat, ac.lon)) return null;
+              if (ac.position_source === POSITION_SOURCE_ARC_ONLY) return null;
               const isSelected = ac.hex === selectedHex;
               return (
                 <AircraftMarker

@@ -100,7 +100,10 @@ class TestProcessSolverItem:
 
         assert state.solver_successes == 0
         assert not state.multinode_tracks
-        assert state.solver_failures == 0  # not counted as failure
+        # Unconverged solves used to vanish uncounted — staging showed
+        # hundreds with no observable reason.  They are failures.
+        assert state.solver_failures == 1
+        assert state.solver_fail_unconverged == 1
 
     def test_high_latency_triggers_alert(self, monkeypatch):
         _reset_state()
