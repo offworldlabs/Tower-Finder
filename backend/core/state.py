@@ -354,12 +354,18 @@ simulation_config: dict = {
     # Physics tab) to turn them back on; note this dict is not persisted in the
     # state snapshot, so a backend restart returns it to these defaults.
     "frac_anomalous": 0.0,
-    "frac_drone": 0.10,
+    # Drones off by default (user call, 2026-08: fixed-wing scene only);
+    # raise via the Physics tab / PUT when a drone scenario is wanted.
+    "frac_drone": 0.0,
     "frac_dark": 0.15,
     # aircraft (commercial) fraction = 1 - sum of above
-    "max_range_km": 140,
-    "min_aircraft": 60,
-    "max_aircraft": 100,
+    #
+    # Deliberately NO defaults for max_range_km / min_aircraft / max_aircraft:
+    # the fleet orchestrator applies those keys only when present, falling back
+    # to its own deployment env (FLEET_MIN_AIRCRAFT etc.).  Defaults here are a
+    # footgun — the whole dict ships on the first PUT that stamps _updated_at,
+    # so a stale default scale (this dict once said 60-100 aircraft) silently
+    # overrode the deployed 20-40 the moment anyone touched an unrelated knob.
     "_updated_at": 0.0,
 }
 _SIMULATION_CONFIG_DEFAULTS: dict = dict(simulation_config)

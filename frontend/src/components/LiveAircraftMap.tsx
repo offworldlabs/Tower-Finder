@@ -46,7 +46,7 @@ import {
   InBeamDiagnostic,
 } from "./map";
 
-import { fetchNodeVerification, fetchNodeDetectionRange, fetchMlatVerification } from "../api";
+import { fetchNodeVerification, fetchMlatVerification } from "../api";
 import { defaultsGroundTruthOff } from "../utils/domains";
 import { usePersistedState } from "./map/usePersistedState";
 import { parseHash, useHashWriter, encodeLayers, decodeLayers } from "./map/useUrlHashState";
@@ -310,79 +310,6 @@ const NodeVerificationLayer = memo(function NodeVerificationLayer({ nodeId }) {
         entry.line.remove();
       }
       markersRef.current.clear();
-    };
-  }, [map, nodeId]);
-
-  return null;
-});
-
-/* ── NodeRangeLayer: dashed range circle + furthest detection markers.
-      Pass nodeId=null to hide. ── */
-const NodeRangeLayer = memo(function NodeRangeLayer({ nodeId }) {
-  const map = useMap();
-  const layersRef = useRef([]);
-
-  useEffect(() => {
-    // Clean up previous layers
-    for (const l of layersRef.current) l.remove();
-    layersRef.current = [];
-
-    if (!nodeId) return;
-
-    let cancelled = false;
-
-    const refresh = async () => {
-      try {
-        const data = await fetchNodeDetectionRange(nodeId);
-        if (cancelled || !data || data.error) return;
-        // Clean previous
-        for (const l of layersRef.current) l.remove();
-        layersRef.current = [];
-
-        const rx = data.rx;
-        if (!rx) return;
-
-        // Max range circle (dashed)
-        const rangeKm = data.estimated_max_range_km;
-        if (rangeKm > 0) {
-          const circle = L.circle([rx.lat, rx.lon], {
-            radius: rangeKm * 1000,
-            color: "#f97316",
-            weight: 2,
-            fillOpacity: 0,
-            dashArray: "8 6",
-          });
-          circle.bindTooltip(`Max range: ${rangeKm.toFixed(1)} km`, { direction: "top" });
-          circle.addTo(map);
-          layersRef.current.push(circle);
-        }
-
-        // Furthest detections markers
-        for (const det of data.furthest_detections || []) {
-          const marker = L.circleMarker([det.lat, det.lon], {
-            radius: 7,
-            color: "#f97316",
-            weight: 2,
-            fillColor: "#f97316",
-            fillOpacity: 0.6,
-          });
-          marker.bindTooltip(
-            `${det.distance_km.toFixed(1)} km${det.hex ? ` (${det.hex})` : ""}`,
-            { direction: "top" },
-          );
-          marker.addTo(map);
-          layersRef.current.push(marker);
-        }
-      } catch {
-        // Silently ignore
-      }
-    };
-
-    refresh();
-    return () => {
-      cancelled = true;
-      for (const l of layersRef.current) l.remove();
-      layersRef.current = [];
     };
   }, [map, nodeId]);
 
@@ -1317,9 +1244,9 @@ export default function LiveAircraftMap() {
     [nodes, viewport],
   );
 
-  /* The verification/range overlays only mean anything for real nodes —
+  /* The verification overlay only means anything for real nodes —
      synthetic simulation nodes have no ADS-B truth to compare against.
-     Null hides both layers. */
+     Null hides the layer. */
   const verificationNodeId = useMemo(() => {
     if (!selectedNodeId) return null;
     const node = nodes.find((n) => n.node_id === selectedNodeId);
@@ -1980,9 +1907,6 @@ export default function LiveAircraftMap() {
 
             {/* Radar3 solver verification overlay — truth dots + error lines + km labels */}
             <NodeVerificationLayer nodeId={verificationNodeId} />
-
-            {/* Radar3 detection range circle + furthest detection markers */}
-            <NodeRangeLayer nodeId={verificationNodeId} />
 
             {/* MLAT (multinode) solver verification — magenta truth dots + pink error lines */}
             {/* Gated like the Radar3 layers: this polls /api/test/
