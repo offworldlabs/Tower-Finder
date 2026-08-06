@@ -10,7 +10,10 @@ the memoised single-node ambiguity arc.
 import math
 
 from config.constants import (
+    ARC_ALT_BUCKET_M,
+    ARC_MIN_DIFFERENTIAL_KM,
     DISPLAY_STALE_TRACK_S,
+    FT_TO_M,
     GATE_MAX_HOLD_S,
 )
 from core import state
@@ -57,6 +60,7 @@ def _enu_to_lla(rx_lat: float, rx_lon: float, east_km: float, north_km: float) -
 def _build_single_node_arc(
     track_or_delay,
     node_cfg: dict,
+    alt_m: float | None = None,
 ) -> list[list[float]] | None:
     """Build the bistatic-ambiguity arc for one detection.
 
@@ -80,11 +84,37 @@ def _build_single_node_arc(
     of the actual ambiguity — the aircraft could equally be anywhere else
     on the in-area locus — so the trim is gone: the emitted arc always
     spans the entire detection-area-constrained ellipse.
+
+    Altitude correction: the measured delay is a *3-D* differential — the
+    simulator computes it from full ENU including the target's up-component
+    (retina_simulation.world._bistatic_delay) — but this builder used to
+    solve a 2-D ground-plane ellipse.  Ground truth sits on the 3-D
+    ellipsoid (staging: median residual 0.46 km) but median 2.48 km INSIDE
+    the drawn 2-D arc — a 3.6 km median (14.9 km worst-case) systematic
+    bias.  When the target altitude is known (``alt_m`` argument, or the
+    track's ``alt_m``; metres ASL), the per-bearing solve therefore uses
+    the 3-D differential for a candidate ground point P at ground-range g
+    from RX, ground-range g_tx from TX (all lengths km):
+
+        differential_3d(P) = sqrt(g² + (h − h_rx)²)
+                           + sqrt(g_tx² + (h − h_tx)²) − baseline_3d
+        baseline_3d        = sqrt(ground_baseline² + (h_tx − h_rx)²)
+
+    with h_rx / h_tx from the node config's ``rx_alt_ft`` / ``tx_alt_ft``
+    (feet, converted; absent means sea level).  A track with no altitude
+    (None/0 — radar-only pr* tracks) keeps the previous 2-D behaviour
+    rather than inventing an altitude.
+
+    Differentials below ARC_MIN_DIFFERENTIAL_KM yield no arc at all: a
+    near-baseline sliver conveys no positional information and renders as
+    a misleading blob (see the constant's comment for the measurement).
     """
     if isinstance(track_or_delay, (int, float)):
         delay_us = track_or_delay
     else:
         delay_us = getattr(track_or_delay, "latest_delay_us", None)
+        if alt_m is None:
+            alt_m = getattr(track_or_delay, "alt_m", None)
     if delay_us is None or delay_us <= 0:
         return None
 
@@ -106,13 +136,69 @@ def _build_single_node_arc(
     tx_east_km, tx_north_km = enu_km(rx_lat, rx_lon, tx_lat, tx_lon)
     baseline_km = math.hypot(tx_east_km, tx_north_km)
     differential_range_km = delay_us * C_KM_US
+    if differential_range_km < ARC_MIN_DIFFERENTIAL_KM:
+        # Near-baseline sliver — no positional information, renders as a
+        # misleading blob.  The caller still emits the track itself (see
+        # the floor exemption in track_entry).
+        return None
 
-    def _differential_at(range_km: float, bearing_deg: float) -> float:
-        bearing_rad = math.radians(bearing_deg)
-        east_km = math.sin(bearing_rad) * range_km
-        north_km = math.cos(bearing_rad) * range_km
-        tx_dist_km = math.hypot(east_km - tx_east_km, north_km - tx_north_km)
-        return tx_dist_km + range_km - baseline_km
+    # Altitude-corrected (3-D) vs ground-plane (2-D) per-bearing solve.
+    # See the docstring for the formula and the staging bias it removes.
+    try:
+        _use_alt = alt_m is not None and float(alt_m) > 0.0
+    except (TypeError, ValueError):
+        _use_alt = False
+
+    if _use_alt:
+        alt_km = float(alt_m) / 1000.0
+        rx_alt_km = float(node_cfg.get("rx_alt_ft") or 0.0) * FT_TO_M / 1000.0
+        tx_alt_km = float(node_cfg.get("tx_alt_ft") or 0.0) * FT_TO_M / 1000.0
+        dh_rx_km = alt_km - rx_alt_km
+        dh_tx_km = alt_km - tx_alt_km
+        # 3-D baseline: the direct TX→RX path the differential is measured
+        # against includes the stations' height difference.
+        solve_baseline_km = math.hypot(baseline_km, tx_alt_km - rx_alt_km)
+
+        def _differential_at(range_km: float, bearing_deg: float) -> float:
+            bearing_rad = math.radians(bearing_deg)
+            east_km = math.sin(bearing_rad) * range_km
+            north_km = math.cos(bearing_rad) * range_km
+            tx_ground_km = math.hypot(east_km - tx_east_km, north_km - tx_north_km)
+            return (
+                math.hypot(range_km, dh_rx_km)
+                + math.hypot(tx_ground_km, dh_tx_km)
+                - solve_baseline_km
+            )
+
+        def _dip_range_at(bearing_deg: float) -> float:
+            """Ground range minimising the 3-D differential along a bearing.
+
+            Closed form via the reflection construction: minimising
+            sqrt(g² + a²) + sqrt((g − p)² + d²) over g — with p the
+            along-bearing projection of TX, a = |h − h_rx| and d the
+            invariant part of the TX leg (cross-bearing offset and
+            altitude) — gives g* = p·a / (a + d).  Exact, so the bracket
+            restart below misses no bearing the ellipsoid actually reaches.
+            """
+            bearing_rad = math.radians(bearing_deg)
+            p = tx_east_km * math.sin(bearing_rad) + tx_north_km * math.cos(bearing_rad)
+            if p <= 0.0:
+                return 0.0  # TX behind this bearing: differential only grows with g
+            a = abs(dh_rx_km)
+            d = math.sqrt(max(0.0, baseline_km**2 - p**2) + dh_tx_km**2)
+            if a + d <= 0.0:
+                return 0.0
+            return p * a / (a + d)
+    else:
+        solve_baseline_km = baseline_km
+        _dip_range_at = None
+
+        def _differential_at(range_km: float, bearing_deg: float) -> float:
+            bearing_rad = math.radians(bearing_deg)
+            east_km = math.sin(bearing_rad) * range_km
+            north_km = math.cos(bearing_rad) * range_km
+            tx_dist_km = math.hypot(east_km - tx_east_km, north_km - tx_north_km)
+            return tx_dist_km + range_km - baseline_km
 
     # Ceiling for the per-bearing binary search below.  Note this is a
     # *monostatic* RX-range bound, so a node's bistatic limit cannot be
@@ -129,7 +215,11 @@ def _build_single_node_arc(
             # The measured delay puts the target beyond what this node can
             # physically detect — there is no arc to draw.
             return None
-        search_max_km = differential_range_km / 2.0 + baseline_km
+        # In the 3-D solve the same triangle-inequality argument holds with
+        # every length replaced by its 3-D counterpart, and the 3-D ranges
+        # only exceed their ground projections — so D/2 + baseline_3d is
+        # still a provably safe ceiling (baseline_3d >= ground baseline).
+        search_max_km = differential_range_km / 2.0 + solve_baseline_km
     else:
         search_max_km = max_range_km
 
@@ -156,6 +246,24 @@ def _build_single_node_arc(
         hi = search_max_km
         if _differential_at(hi, bearing_deg) < differential_range_km:
             continue
+        if _differential_at(lo, bearing_deg) > differential_range_km:
+            # 3-D solve only: unlike the 2-D case (where the differential at
+            # range 0 is exactly 0, so RX's ground point is always inside
+            # the locus), the ellipsoid's altitude-plane cross-section can
+            # exclude the point above RX when the measured differential is
+            # small relative to the altitude.  Along a bearing the 3-D
+            # differential then dips before rising again.  Restart the
+            # bracket at the dip so the bisection keeps its
+            # D(lo) < D_meas <= D(hi) invariant and converges to the outer
+            # crossing; if even the dip exceeds the measurement, this
+            # bearing never reaches the ellipsoid at the target's altitude
+            # and contributes no point.
+            if _dip_range_at is None:
+                continue  # unreachable in the 2-D solve; defensive
+            _g_dip = _dip_range_at(bearing_deg)
+            if _differential_at(_g_dip, bearing_deg) > differential_range_km:
+                continue
+            lo = _g_dip
         for _ in range(32):
             mid = (lo + hi) / 2.0
             if _differential_at(mid, bearing_deg) < differential_range_km:
@@ -184,7 +292,10 @@ def _build_single_node_arc(
 # non-static inputs, so a miss happens exactly when a new detection changes
 # them (invalidate on arrival, no timer).  node_cfg is treated as static per
 # node_id.  The fingerprint is None-safe: latest_delay_us is None for ADS-B-only
-# tracks and rounding None would raise.
+# tracks and rounding None would raise.  Since the altitude-corrected solve the
+# fingerprint also carries the track's altitude, quantised to ARC_ALT_BUCKET_M
+# (500 m) buckets so cache hits survive small climbs; the solve itself uses the
+# bucket centre, keeping the cached arc an exact function of the fingerprint.
 _single_node_arc_cache: dict[tuple[str, str | None], tuple[tuple, list | None]] = {}
 
 
@@ -204,14 +315,30 @@ def _cached_single_node_arc(ac_hex, track, node_cfg, touched_keys):
     touched_keys.add(key)
 
     delay_us = getattr(track, "latest_delay_us", None)
+    # Altitude bucket for the altitude-corrected solve (see ARC_ALT_BUCKET_M).
+    # ``or None`` folds bucket 0 (< 250 m, incl. the None/0 no-altitude case)
+    # into the 2-D ground-plane fingerprint — the builder treats them the same.
+    alt_m = getattr(track, "alt_m", None)
+    try:
+        alt_bucket = (round(float(alt_m) / ARC_ALT_BUCKET_M) or None) if alt_m else None
+    except (TypeError, ValueError):
+        alt_bucket = None
     fingerprint = (
         None if delay_us is None else round(delay_us, 3),
+        alt_bucket,
     )
     cached = _single_node_arc_cache.get(key)
     if cached is not None and cached[0] == fingerprint:
         return cached[1]
 
-    arc = _build_single_node_arc(track, node_cfg)
+    # alt_m=0.0 (not None) when there is no bucket: None would make the
+    # builder fall back to the track's own raw alt_m, bypassing the
+    # quantisation the fingerprint just promised.  0.0 pins the 2-D
+    # ground-plane solve.
+    arc = _build_single_node_arc(
+        track, node_cfg,
+        alt_m=0.0 if alt_bucket is None else alt_bucket * ARC_ALT_BUCKET_M,
+    )
     _single_node_arc_cache[key] = (fingerprint, arc)
     return arc
 
@@ -390,9 +517,20 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
 
         # RMS gate: persistently high rms_delay means the Kalman filter
         # cannot fit the current measurement — the track is in a
-        # mis-association state and the icon's midpoint is unreliable.
-        # Revert the icon to the last emitted position; keep the arc as
-        # the honest "radar saw a detection along this curve" signal.
+        # mis-association state, and *both* geometries derived from this
+        # frame are unreliable: the icon's midpoint AND the arc, which is
+        # drawn from the very delay the filter is rejecting.  Revert the
+        # icon to the last emitted position and suppress this frame's arc.
+        # (Staging diagnosis: mis-associated delays carried rms_delay
+        # 11–21 µs against this 7 µs gate, and 42% of ground-truth checks
+        # failed the on-ellipse test — the position was being reverted but
+        # the wrong-target arc still drew.)
+        # Deliberately narrower than the speed gate above, which KEEPS its
+        # arc: a speed-gate revert distrusts the midpoint-to-track
+        # association, not the measurement itself, so "radar saw something
+        # along this curve" stays honest there — and nulling it left the
+        # testmap looking like every node was idle.  Here the pipeline has
+        # flagged the measurement, so no geometry from it should draw.
         # Threshold 7 µs: median rms is ~2 µs for clean tracks; bad
         # actors observed at 8–11 µs over dozens of consecutive frames.
         # Inside the outer `if ambiguity_arc and position_source in (...)`
@@ -404,6 +542,7 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
             if not _hold_expired:
                 lat = _last_emit[0]
                 lon = _last_emit[1]
+                ambiguity_arc = None
 
         # Maintain the hold window, and dead-reckon while held.  A held
         # position is otherwise *stationary* while the aircraft flies, which
@@ -443,8 +582,16 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
         # the solver position is outside the antenna beam and is unreliable.
         # If delay is 0/None the track has no bistatic measurement data and
         # should pass through rather than disappearing due to a missing arc.
+        # Exemption: a differential below ARC_MIN_DIFFERENTIAL_KM has its
+        # arc withheld by design (near-baseline sliver renders as a
+        # misleading blob) — the measurement itself is fine, so the track
+        # still emits: position, no arc.
         _arc_delay = getattr(track, "latest_delay_us", None)
-        if _arc_delay and _arc_delay > 0:
+        if (
+            _arc_delay
+            and _arc_delay > 0
+            and _arc_delay * C_KM_US >= ARC_MIN_DIFFERENTIAL_KM
+        ):
             return None
 
     # Dead-reckon non-arc tracks (multinode, solver_adsb_seed) from the

@@ -19,6 +19,7 @@ import {
   STALE_AIRCRAFT_MS,
   GT_FEED_STALE_MS,
   POSITION_SOURCE_ARC_ONLY,
+  ARC_DR_MAX_S,
   groundTruthKey,
   applyGroundTruthFixes,
   pruneGroundTruthFixes,
@@ -1052,7 +1053,12 @@ export default function LiveAircraftMap() {
         // Store key, not the display hex — ground-truth objects are namespaced
         // so a radar track sharing their ICAO hex can't overwrite them.
         const key = fix._key || fix.hex;
-        const elapsed = Math.min((now - fix._fixTs) / 1000, 60);
+        // Arc-only tracks get a much shorter dead-reckoning window: their
+        // backend position is the arc midpoint, so a 60 s glide walks them
+        // 7–11 km off the measured locus (see ARC_DR_MAX_S in constants.ts).
+        const drCapS =
+          fix.position_source === POSITION_SOURCE_ARC_ONLY ? ARC_DR_MAX_S : 60;
+        const elapsed = Math.min((now - fix._fixTs) / 1000, drCapS);
         const gs = fix.gs || 0;
 
         // 1. Dead-reckon the physics target
@@ -1837,7 +1843,7 @@ export default function LiveAircraftMap() {
             })()}
 
             {/* Detection arcs — imperative Leaflet layer, 4Hz opacity fade, sourced from raw WS buffer */}
-            <DetectionArcs arcsBufferRef={arcsBufferRef} selectedHex={selectedHex} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} smoothRef={smoothRef} nodesByIdRef={nodesByIdRef} />
+            <DetectionArcs arcsBufferRef={arcsBufferRef} selectedHex={selectedHex} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} nodesByIdRef={nodesByIdRef} />
             {/* In-beam-no-detection diagnostic — red dashed lines from a node's RX to any
                  ADS-B aircraft sitting inside its beam that the node is NOT currently detecting. */}
             {showInBeamDiag && (

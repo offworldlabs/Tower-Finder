@@ -66,6 +66,30 @@ CAL_MAX_ADSB_AGE_S = 10.0
 YAGI_BEAM_WIDTH_DEG = 42.0            # Half-power beamwidth (°) of the fleet Yagis
 YAGI_MAX_RANGE_KM = 50.0             # Default Yagi max range (km)
 
+# ── Single-node ambiguity arcs ───────────────────────────────────────────────
+# Floor on the measured differential range (delay_us * C_KM_US) below which no
+# ambiguity arc is emitted.  A near-zero differential means the delay ellipse
+# collapses onto the TX–RX baseline, so the "arc" renders as a tiny sliver
+# hugging the baseline — a misleading blob that conveys no positional
+# information.  Staging arc-UX diagnosis (2026-08): 36 of 415 emitted arcs
+# were such <5 km blob stubs, median differential 2.6 km, many traced to
+# clutter returns.  3.0 km clears that measured stub population.  The track
+# itself still emits below the floor (position only, no arc) — see the
+# floor exemption in services/track_gates.py's track_entry.
+ARC_MIN_DIFFERENTIAL_KM = 3.0
+
+# Altitude quantisation for the altitude-corrected arc solve and its cache
+# key.  The arc builder solves the 3-D delay ellipsoid at the target's known
+# altitude, rounded to the nearest multiple of this bucket, and the cache
+# fingerprint carries the bucket index — so a target climbing or descending
+# within one bucket keeps hitting the cache instead of rebuilding a 37-point
+# arc every frame.  500 m caps the quantisation error at 250 m of altitude,
+# negligible against the 3.6 km median (14.9 km worst-case) ground-plane bias
+# the correction removes.  Altitudes that quantise to bucket 0 (< 250 m) use
+# the 2-D ground-plane solve, whose error at that height is below the arc's
+# own resolution.
+ARC_ALT_BUCKET_M = 500.0
+
 # ── Track & history limits ───────────────────────────────────────────────────
 TRACK_HISTORY_MAX = 60                # Rolling position buffer per aircraft
 GROUND_TRUTH_MAX = 120                # Ground truth trail length

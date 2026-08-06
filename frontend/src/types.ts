@@ -101,6 +101,13 @@ export interface RadarNode {
   rx_lon_real: number;
   tx_lat: number;
   tx_lon: number;
+  /**
+   * RX/TX altitudes (m ASL) for the altitude-corrected arc rebuild.  Null
+   * when the analytics feed doesn't carry them (it currently emits rx/tx as
+   * {lat, lon} only); consumers then fall back to 0 m.
+   */
+  rx_alt_m: number | null;
+  tx_alt_m: number | null;
   beam_azimuth_deg: number;
   beam_width_deg: number;
   max_range_km: number;

@@ -29,6 +29,17 @@ export const groundTruthKey = (hex) => GT_KEY_PREFIX + hex;
 // with the backend constant if it ever moves.
 export const POSITION_SOURCE_ARC_ONLY = "single_node_ellipse_arc";
 
+// Dead-reckoning elapsed cap (seconds) for arc-only tracks.  Their backend
+// position is pinned to the arc midpoint between delay updates, so a long
+// glide walks the anchor straight off the measured locus: with the generic
+// 60 s cap, staging measured 26/415 displayed arc-only positions outside
+// their own node's beam wedge, median 5.9 km from their own arc (7–11 km
+// after a full 60 s glide).  10 s keeps short gaps smooth while bounding the
+// divergence.  Other position sources keep the 60 s cap.  (Arc-only tracks
+// render no plane icon, but the DR position still drives arc-rebuild
+// anchoring, list centering, and the smooth store.)
+export const ARC_DR_MAX_S = 10;
+
 // Doppler colour gradient — dark blue (approaching) → light blue → cyan → light red → dark red (receding)
 // Centre stop is bright cyan so near-zero-doppler arcs are always visible on light basemaps.
 // t ∈ [-1, +1] maps linearly across the 5 stops.

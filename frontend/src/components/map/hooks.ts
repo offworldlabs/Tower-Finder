@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { API_BASE, ARC_TOTAL_LIFE_MS, MAX_HISTORY } from "./constants";
+import { upsertArcEntries } from "./arcBuffer";
 import { mergeTrailPositions } from "./trails";
 import { validLatLon } from "./geo";
 import type { RadarNode } from "../../types";
@@ -42,8 +43,12 @@ export function useAircraftFeed(ownerOnly = false) {
   // where the server has dropped us but onclose never fires (dead TCP, no FIN)
   const lastMsgRef = useRef(Date.now());
 
-  // Detection arc accumulation buffer: key → {hex, node_id, arc, doppler_hz, target_class, ts}
-  // Arcs persist for ARC_MAX_AGE_MS after last update, enabling fade-out per detection.
+  // Detection arc accumulation buffer: key → ArcBufferEntry (see arcBuffer.ts:
+  // {hex, node_id, ambiguity_arc, delay_us, alt_baro, doppler_hz,
+  // target_class, ts}).  Keyed by hex + node + measured delay (quantized to
+  // 0.1 µs) so an unchanged measurement refreshes one entry's fade clock
+  // rather than stacking parallel strokes.  Entries persist for
+  // ARC_TOTAL_LIFE_MS after last refresh, enabling fade-out per detection.
   const arcsBufferRef = useRef({});
 
   // Detection-presence oracle: "hex|node_id" → ts of last time that node
@@ -117,45 +122,17 @@ export function useAircraftFeed(ownerOnly = false) {
         anomalyHexesRef.current = new Set(anomalyHexes);
       }
 
-      // Accumulate detection arcs as a radar-style afterglow trail. Each
-      // ingest of new data from the backend lays down a new ellipse per
-      // (aircraft, node) pair; each ellipse fades on its own clock.  Keying
-      // by the ingest timestamp (rather than a measurement value like
-      // delay_us) means a stationary aircraft, whose measurement values do
-      // not change, still gets a fresh ellipse per backend update — keeping
-      // it visibly bright rather than strobing — and a moving aircraft lays
-      // down one ellipse per snapshot at slightly different geometry, which
-      // is the trail.
+      // Accumulate detection arcs as a radar-style afterglow trail.  Keyed
+      // by hex + node + MEASURED delay (see arcBuffer.ts): re-ingesting an
+      // unchanged measurement refreshes the one existing ellipse's fade
+      // clock — a stationary aircraft stays visibly bright as a single
+      // stroke instead of stacking five parallel offset strokes — while a
+      // changed delay lays a new ellipse at new geometry, which is the
+      // trail.  Also prunes entries older than ARC_MAX_AGE_MS (already
+      // faded to zero opacity in the renderer) to keep the buffer bounded.
       const now = Date.now();
       const ARC_MAX_AGE_MS = ARC_TOTAL_LIFE_MS;
-      const buf = arcsBufferRef.current;
-      for (const ac of newAircraft) {
-        if (Array.isArray(ac.ambiguity_arc) && ac.ambiguity_arc.length >= 2 && ac.node_id) {
-          const key = `${ac.hex}-${ac.node_id}-${now}`;
-          // Defensive: if two ingests landed in the same millisecond they
-          // would collide on key.  Skip rather than overwrite so the
-          // existing ellipse keeps fading from its original ts.
-          if (key in buf) continue;
-          buf[key] = {
-            hex: ac.hex,
-            node_id: ac.node_id,
-            ambiguity_arc: ac.ambiguity_arc,
-            // delay_us is the only bistatic parameter we need to rebuild
-            // the locus client-side at the icon's current dead-reckoned
-            // position; geometry comes from useNodes.
-            delay_us: ac.delay_us ?? null,
-            doppler_hz: ac.doppler_hz ?? 0,
-            target_class: ac.target_class,
-            ts: now,
-          };
-        }
-      }
-      // Prune arcs older than ARC_MAX_AGE_MS — they will already have
-      // faded to zero opacity in the renderer; this keeps the buffer
-      // bounded.
-      for (const key of Object.keys(buf)) {
-        if (now - buf[key].ts > ARC_MAX_AGE_MS) delete buf[key];
-      }
+      upsertArcEntries(arcsBufferRef.current, newAircraft, now, ARC_MAX_AGE_MS);
 
       // Detection-presence oracle (consumed by InBeamDiagnostic). Record
       // every (aircraft, node) pair that produced ANY detection this frame:
@@ -402,6 +379,14 @@ export function useNodes() {
               rx_lon_real: rxLon,
               tx_lat: da.tx.lat,
               tx_lon: da.tx.lon,
+              // Node altitudes (m ASL) for the altitude-corrected arc
+              // rebuild.  The analytics detection_area payload currently
+              // emits rx/tx as {lat, lon} only (no alt field), so these
+              // resolve to null and buildBistaticArc falls back to
+              // h_rx = h_tx = 0.  Read defensively so the values are picked
+              // up automatically if the backend starts emitting them.
+              rx_alt_m: da.rx.alt ?? null,
+              tx_alt_m: da.tx.alt ?? null,
               beam_azimuth_deg: da.beam_azimuth_deg,
               beam_width_deg: da.beam_width_deg,
               max_range_km: da.max_range_km,

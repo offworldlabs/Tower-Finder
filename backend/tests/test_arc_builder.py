@@ -10,15 +10,20 @@ import math
 import pytest
 
 import services.frame_processor as _fp
-from config.constants import DISPLAY_STALE_TRACK_S, GATE_MAX_HOLD_S
+from config.constants import (
+    ARC_MIN_DIFFERENTIAL_KM,
+    DISPLAY_STALE_TRACK_S,
+    GATE_MAX_HOLD_S,
+)
 from core import state
 from services.frame_processor import _bearing_deg, _build_single_node_arc, _enu_to_lla
 
 # ─── Minimal fake track ─────────────────────────────────────────────────────
 
 class _FakeTrack:
-    def __init__(self, delay_us):
+    def __init__(self, delay_us, alt_m=None):
         self.latest_delay_us = delay_us
+        self.alt_m = alt_m
 
 
 # ─── Minimal node config (Atlanta-area bistatic geometry) ───────────────────
@@ -321,6 +326,157 @@ class TestArcSpansDetectionArea:
         assert omni is not None and len(omni) <= 73
 
 
+# ─── Altitude-corrected delay→locus conversion ───────────────────────────────
+
+
+def _differential_3d_km(lat, lon, alt_m, cfg):
+    """Ground-truth-style 3-D differential for a point at altitude alt_m.
+
+    Same ENU frame the builder uses; RX/TX altitudes from the node config
+    (feet ASL, absent means sea level).
+    """
+    from services.geo import enu_km
+    e_km, n_km = enu_km(cfg["rx_lat"], cfg["rx_lon"], lat, lon)
+    te_km, tn_km = enu_km(cfg["rx_lat"], cfg["rx_lon"], cfg["tx_lat"], cfg["tx_lon"])
+    rx_alt_km = float(cfg.get("rx_alt_ft") or 0.0) * 0.3048 / 1000.0
+    tx_alt_km = float(cfg.get("tx_alt_ft") or 0.0) * 0.3048 / 1000.0
+    h_km = alt_m / 1000.0
+    r_rx = math.sqrt(e_km**2 + n_km**2 + (h_km - rx_alt_km) ** 2)
+    r_tx = math.sqrt((e_km - te_km) ** 2 + (n_km - tn_km) ** 2 + (h_km - tx_alt_km) ** 2)
+    baseline_3d = math.sqrt(te_km**2 + tn_km**2 + (tx_alt_km - rx_alt_km) ** 2)
+    return r_rx + r_tx - baseline_3d
+
+
+def _range_from_rx_km(lat, lon, cfg):
+    from services.geo import enu_km
+    e_km, n_km = enu_km(cfg["rx_lat"], cfg["rx_lon"], lat, lon)
+    return math.hypot(e_km, n_km)
+
+
+class TestAltitudeCorrectedArc:
+    """FIX A: the measured delay is a 3-D differential (the simulator computes
+    it from full ENU including target altitude), so solving a 2-D ground-plane
+    ellipse drew the arc median 3.6 km too far out (up to 14.9 km); ground
+    truth sat median 2.48 km inside it.  With the track's altitude known, the
+    per-bearing solve now uses the 3-D differential at that altitude.
+    """
+
+    CFG = {**_NODE_CFG, "rx_alt_ft": 1000.0, "tx_alt_ft": 1600.0}
+    DELAY_US = 80.0
+    ALT_M = 9000.0
+
+    def test_high_altitude_arc_lies_inside_2d_arc(self):
+        """The 3-D arc must sit closer to RX than the equivalent 2-D arc, by
+        roughly the altitude geometry (~2 km for 9 km ASL at this baseline)."""
+        from services.geo import C_KM_US
+        arc_2d = _build_single_node_arc(self.DELAY_US, self.CFG)
+        arc_3d = _build_single_node_arc(self.DELAY_US, self.CFG, alt_m=self.ALT_M)
+        assert arc_2d is not None and arc_3d is not None
+        assert len(arc_2d) == len(arc_3d) == 37  # same bearing sweep
+        shrinks = []
+        for (lat2, lon2), (lat3, lon3) in zip(arc_2d, arc_3d):
+            r2 = _range_from_rx_km(lat2, lon2, self.CFG)
+            r3 = _range_from_rx_km(lat3, lon3, self.CFG)
+            assert r3 < r2  # strictly inside on every bearing
+            shrinks.append(r2 - r3)
+        # Altitude geometry: each leg shortens by ~h²/2R → ~2 km total here.
+        assert min(shrinks) > 0.5 and max(shrinks) < 8.0
+        # Sanity: the delay still describes a real locus.
+        assert self.DELAY_US * C_KM_US > ARC_MIN_DIFFERENTIAL_KM
+
+    def test_arc_points_satisfy_3d_differential(self):
+        """Ground-truth-style check: every point of the altitude-corrected
+        arc, lifted to the target altitude, reproduces the measured
+        differential."""
+        from services.geo import C_KM_US
+        measured_km = self.DELAY_US * C_KM_US
+        arc = _build_single_node_arc(self.DELAY_US, self.CFG, alt_m=self.ALT_M)
+        assert arc is not None
+        for lat, lon in arc:
+            d = _differential_3d_km(lat, lon, self.ALT_M, self.CFG)
+            assert d == pytest.approx(measured_km, abs=0.02)
+
+    def test_2d_arc_fails_3d_differential(self):
+        """The bias being fixed: the old 2-D arc's points, lifted to the
+        target altitude, overshoot the measured differential (staging: by
+        2.4–3.3 km at this geometry) — they are NOT on the 3-D ellipse."""
+        from services.geo import C_KM_US
+        measured_km = self.DELAY_US * C_KM_US
+        arc_2d = _build_single_node_arc(self.DELAY_US, self.CFG)
+        assert arc_2d is not None
+        for lat, lon in arc_2d:
+            d = _differential_3d_km(lat, lon, self.ALT_M, self.CFG)
+            assert d > measured_km + 1.0
+
+    def test_track_altitude_is_used(self):
+        """A track carrying alt_m must solve identically to the explicit
+        alt_m argument."""
+        via_track = _build_single_node_arc(_FakeTrack(self.DELAY_US, alt_m=self.ALT_M), self.CFG)
+        via_arg = _build_single_node_arc(self.DELAY_US, self.CFG, alt_m=self.ALT_M)
+        assert via_track == via_arg
+        assert via_track is not None
+
+    def test_no_altitude_falls_back_to_2d(self):
+        """A track with no altitude (None/0 — radar-only pr* tracks) must get
+        exactly the old 2-D ground-plane arc, not an invented altitude."""
+        arc_2d = _build_single_node_arc(self.DELAY_US, self.CFG)
+        assert arc_2d is not None
+        assert _build_single_node_arc(_FakeTrack(self.DELAY_US), self.CFG) == arc_2d
+        assert _build_single_node_arc(_FakeTrack(self.DELAY_US, alt_m=0.0), self.CFG) == arc_2d
+        assert _build_single_node_arc(self.DELAY_US, self.CFG, alt_m=None) == arc_2d
+
+    def test_inconsistent_delay_and_altitude_yield_no_arc(self):
+        """A differential smaller than the 3-D minimum any point at the
+        claimed altitude can produce (12 µs ≈ 3.6 km at 12 km ASL) means the
+        delay and altitude are mutually inconsistent — no honest arc exists."""
+        cfg = {**self.CFG, "beam_width_deg": 360, "max_bistatic_range_km": 100.0}
+        assert _build_single_node_arc(12.0, cfg, alt_m=12000.0) is None
+
+    def test_small_differential_high_altitude_outer_crossing(self):
+        """When the sub-RX point falls outside the ellipsoid's altitude-plane
+        cross-section (small differential, high altitude) the per-bearing
+        bisection must restart its bracket at the dip and still land exactly
+        on the 3-D locus for the bearings that reach it."""
+        from services.geo import C_KM_US
+        cfg = {**self.CFG, "beam_width_deg": 360, "max_bistatic_range_km": 100.0}
+        delay_us, alt_m = 20.0, 10000.0
+        arc = _build_single_node_arc(delay_us, cfg, alt_m=alt_m)
+        assert arc is not None and len(arc) >= 2
+        for lat, lon in arc:
+            d = _differential_3d_km(lat, lon, alt_m, cfg)
+            assert d == pytest.approx(delay_us * C_KM_US, abs=0.02)
+
+
+# ─── Differential-range floor (blob-stub suppression) ────────────────────────
+
+
+class TestArcDifferentialFloor:
+    """FIX C: a differential range below ARC_MIN_DIFFERENTIAL_KM means the
+    delay ellipse collapses onto the TX–RX baseline and the "arc" renders as
+    a misleading blob stub (staging: 36/415 emitted arcs were <5 km stubs,
+    median differential 2.6 km, many from clutter).  No arc is emitted below
+    the floor; the track itself still emits (position, no arc) — see
+    TestFloorTrackStillEmits.
+    """
+
+    def test_below_floor_returns_none(self):
+        # 8 µs ≈ 2.40 km differential — under the 3.0 km floor.
+        assert _build_single_node_arc(8.0, _NODE_CFG) is None
+        assert _build_single_node_arc(_FakeTrack(8.0), _NODE_CFG) is None
+
+    def test_above_floor_builds(self):
+        # 11 µs ≈ 3.30 km — clear of the floor; full wedge arc.
+        arc = _build_single_node_arc(11.0, _NODE_CFG)
+        assert arc is not None
+        assert len(arc) >= 2
+
+    def test_floor_boundary(self):
+        from services.geo import C_KM_US
+        floor_delay_us = ARC_MIN_DIFFERENTIAL_KM / C_KM_US
+        assert _build_single_node_arc(floor_delay_us * 0.999, _NODE_CFG) is None
+        assert _build_single_node_arc(floor_delay_us * 1.001, _NODE_CFG) is not None
+
+
 # ─── Aircraft JSON builder path (single_node_ellipse_arc) ───────────────────
 
 class TestTrackEntryPaths:
@@ -370,14 +526,20 @@ class TestTrackEntryPaths:
 # ─── Regression: gates revert position but preserve arc ──────────────────────
 
 class TestGatePreservesArc:
-    """Speed and RMS gates must keep ambiguity_arc on the wire.
+    """The two gates treat the arc differently — deliberately.
 
-    On a previous iteration both gates set ambiguity_arc = None when the
-    measurement looked noisy.  That made the testmap look like every node
-    had gone idle whenever a single bad frame came through (~90% of
-    synthetic single-node tracks routinely sit above the 7 µs RMS threshold).
-    The gates now revert only the displayed lat/lon to the last good emit;
-    the arc itself is still emitted so the user can see what the radar saw.
+    Speed gate: keeps ambiguity_arc on the wire.  A speed-gate revert
+    distrusts the association of the arc midpoint to *this track*, not the
+    measurement itself, so "radar saw something along this curve" stays
+    honest.  (Nulling it on a previous iteration made the testmap look like
+    every node had gone idle whenever a single bad frame came through.)
+
+    RMS gate: suppresses the arc for the frame.  rms_delay above the gate is
+    the pipeline itself flagging the measurement as unfittable — staging
+    diagnosis: mis-associated delays carried rms_delay 11–21 µs against the
+    7 µs gate and their wrong-target arcs still drew (42% of ground-truth
+    checks failed the on-ellipse test).  The position-revert behaviour is
+    unchanged; only the arc is withheld.
     """
 
     HEX = "rgtest"
@@ -452,15 +614,21 @@ class TestGatePreservesArc:
     PREV_LAT, PREV_LON = 33.70, -84.85
     NOW_LAT, NOW_LON = 33.65, -84.95
 
-    def test_rms_gate_keeps_arc_and_reverts_lat_lon(self):
+    def test_rms_gate_suppresses_arc_and_reverts_lat_lon(self):
+        """Superseded intent: this test originally asserted the RMS gate
+        keeps the arc.  FIX B inverted that on the staging diagnosis quoted
+        in the class docstring — an rms_delay past the gate means the
+        pipeline distrusts the measurement itself, so emitting geometry
+        built from that measurement drew wrong-target arcs.  The gate now
+        suppresses the arc for the frame while reverting the position
+        exactly as before."""
         self._setup_state(rms_delay=12.5, prev_lat=self.PREV_LAT, prev_lon=self.PREV_LON,
                           now_lat=self.NOW_LAT, now_lon=self.NOW_LON)
         ac = self._build()
         assert ac is not None, "aircraft must still appear in feed"
-        # Arc preserved — the whole point of this regression test.
-        assert ac["ambiguity_arc"] is not None
-        assert len(ac["ambiguity_arc"]) >= 2
-        # Position reverted to last good emit.
+        # Arc suppressed — the measurement is the thing the gate distrusts.
+        assert ac["ambiguity_arc"] is None
+        # Position reverted to last good emit, unchanged from before.
         assert ac["lat"] == self.PREV_LAT
         assert ac["lon"] == self.PREV_LON
         assert ac["position_source"] == "single_node_ellipse_arc"
@@ -486,8 +654,11 @@ class TestGatePreservesArc:
                           prev_age_s=1.0)
         ac = self._build()
         assert ac is not None
-        # Arc preserved even though the gate fired.
+        # Arc preserved even though the gate fired — the speed gate distrusts
+        # the midpoint association, not the measurement, so unlike the RMS
+        # gate it must NOT suppress the arc.
         assert ac["ambiguity_arc"] is not None
+        assert len(ac["ambiguity_arc"]) >= 2
         # Position reverted to last good emit.
         assert ac["lat"] == self.PREV_LAT
         assert ac["lon"] == self.PREV_LON
@@ -601,6 +772,16 @@ class TestGateHoldIsBounded:
         assert ac is not None
         assert (ac["lat"], ac["lon"]) != (self.PREV_LAT, self.PREV_LON)
 
+    def test_expired_hold_also_restores_arc(self):
+        # FIX B ties arc suppression to the same condition that reverts the
+        # position (RMS distrust while the hold is live).  Past
+        # GATE_MAX_HOLD_S the measurement is accepted — position AND arc —
+        # for the same reason: noisy beats confidently absent.
+        self._setup(rms_delay=12.5, hold_age_s=GATE_MAX_HOLD_S + 5.0)
+        ac = self._build()
+        assert ac is not None
+        assert ac["ambiguity_arc"] is not None
+
     def test_held_position_coasts_instead_of_freezing(self):
         # Mid-hold the icon must advance along the track's velocity rather
         # than sit still while the aircraft flies away.
@@ -643,6 +824,75 @@ class TestGateHoldIsBounded:
         ac = self._build()
         assert ac is not None
         assert 5.0 <= ac["seen"] <= 7.5
+
+
+# ─── Below-floor differential: track emits, arc does not ─────────────────────
+
+
+class TestFloorTrackStillEmits:
+    """FIX C, feed side: a track whose differential sits under the arc floor
+    keeps emitting — position only, no arc.  The pre-existing 'valid delay
+    but no arc → suppress track' rule is for solves outside the antenna
+    beam; a below-floor measurement is fine, only its arc is withheld.
+    """
+
+    HEX = "flrtst"
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        for d in (state.active_geo_aircraft, state.track_last_emit,
+                  state.track_gate_hold, state.adsb_aircraft,
+                  state.external_adsb_cache, state.multinode_tracks,
+                  state.track_histories):
+            d.clear()
+        yield
+        for d in (state.active_geo_aircraft, state.track_last_emit,
+                  state.track_gate_hold, state.adsb_aircraft,
+                  state.external_adsb_cache, state.multinode_tracks,
+                  state.track_histories):
+            d.clear()
+
+    def _setup(self, delay_us):
+        import time as _time
+
+        from pipeline.passive_radar import GeolocatedTrack
+        track = GeolocatedTrack(
+            track_id=f"track-{self.HEX}",
+            lat=33.65, lon=-84.95, alt_m=3000,
+            vel_east=0.0, vel_north=0.0, vel_up=0.0,
+            rms_delay=1.0, rms_doppler=1.0, n_detections=10,
+            timestamp_ms=int(_time.time() * 1000),
+            adsb_hex=None, latest_delay_us=delay_us, target_class="aircraft",
+        )
+        track.wall_clock_ts = _time.time()
+        state.active_geo_aircraft[self.HEX] = (track, dict(_NODE_CFG))
+
+    def _build(self):
+        import types
+
+        from services.frame_processor import build_combined_aircraft_json
+        pipeline = types.SimpleNamespace(geolocated_tracks={}, config=dict(_NODE_CFG))
+        result = build_combined_aircraft_json(pipeline)
+        return next((a for a in result["aircraft"] if a["hex"] == self.HEX), None)
+
+    def test_below_floor_track_emits_without_arc(self):
+        # 8 µs ≈ 2.40 km differential < 3.0 km floor.
+        self._setup(delay_us=8.0)
+        ac = self._build()
+        assert ac is not None, "below-floor track must still emit"
+        assert ac["ambiguity_arc"] is None
+        # No arc midpoint to snap to → the solver position is displayed.
+        assert ac["position_source"] == "solver_single_node"
+        assert ac["lat"] == pytest.approx(33.65, abs=1e-4)
+        assert ac["lon"] == pytest.approx(-84.95, abs=1e-4)
+
+    def test_above_floor_track_gets_arc(self):
+        # Same track, honest differential — arc present, midpoint displayed.
+        self._setup(delay_us=80.0)
+        ac = self._build()
+        assert ac is not None
+        assert ac["ambiguity_arc"] is not None
+        assert ac["position_source"] == "single_node_ellipse_arc"
 
 
 # ─── Regression: arc-motion gs/heading fallback ──────────────────────────────
@@ -795,10 +1045,11 @@ class TestPositionJumpAnomaly:
 class _ArcTrack:
     """Minimal track exposing the fields the arc cache fingerprints."""
 
-    def __init__(self, delay_us, lat, lon):
+    def __init__(self, delay_us, lat, lon, alt_m=None):
         self.latest_delay_us = delay_us
         self.lat = lat
         self.lon = lon
+        self.alt_m = alt_m
 
 
 def _spy_build_count(monkeypatch):
@@ -877,6 +1128,48 @@ class TestSingleNodeArcCache:
         fresh = _fp._build_single_node_arc(track, cfg)
         assert cached == fresh
         assert cached is not None  # sanity: these inputs produce a real arc
+
+    # ── Altitude bucket in the fingerprint (FIX A cache correctness) ────────
+
+    def test_alt_bucket_change_rebuilds(self, monkeypatch):
+        # 3000 m and 3600 m land in different ARC_ALT_BUCKET_M (500 m)
+        # buckets — the altitude-corrected arc differs, so it must rebuild.
+        calls = _spy_build_count(monkeypatch)
+        cfg, touched = dict(_NODE_CFG), set()
+        a1 = _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95, alt_m=3000.0), cfg, touched)
+        a2 = _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95, alt_m=3600.0), cfg, touched)
+        assert calls["n"] == 2
+        assert a1 != a2
+
+    def test_alt_within_bucket_hits(self, monkeypatch):
+        # A climb inside one 500 m bucket (3000 → 3200 m) must stay a cache
+        # hit — that is the whole point of quantising the altitude.
+        calls = _spy_build_count(monkeypatch)
+        cfg, touched = dict(_NODE_CFG), set()
+        a1 = _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95, alt_m=3000.0), cfg, touched)
+        a2 = _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95, alt_m=3200.0), cfg, touched)
+        assert calls["n"] == 1
+        assert a1 == a2
+
+    def test_cached_solve_uses_bucket_centre(self):
+        # The solve runs at the bucket centre, keeping the cached arc an
+        # exact function of the fingerprint: 3200 m quantises to 3000 m.
+        cfg, touched = dict(_NODE_CFG), set()
+        cached = _fp._cached_single_node_arc(
+            "abc", _ArcTrack(80.0, 33.65, -84.95, alt_m=3200.0), cfg, touched)
+        fresh = _fp._build_single_node_arc(80.0, cfg, alt_m=3000.0)
+        assert cached == fresh
+        assert cached is not None
+
+    def test_low_altitude_folds_into_ground_plane(self, monkeypatch):
+        # Bucket 0 (< 250 m) is the 2-D ground-plane solve, sharing its
+        # fingerprint with the no-altitude case — one entry, one build.
+        calls = _spy_build_count(monkeypatch)
+        cfg, touched = dict(_NODE_CFG), set()
+        a1 = _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95, alt_m=200.0), cfg, touched)
+        a2 = _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95), cfg, touched)
+        assert calls["n"] == 1
+        assert a1 == a2 == _fp._build_single_node_arc(80.0, cfg)
 
 
 # ─── Arc cache wired into build_combined_aircraft_json ──────────────────────
