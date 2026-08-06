@@ -54,6 +54,11 @@ ALLOWED_DIVERGENCE = (
     r"^services\.tower-finder\.environment\.CORS_ORIGINS$",
     r"^services\.tower-finder\.environment\.CSP_CONNECT_SRC$",
     r"^services\.tower-finder\.environment\.HOST_[A-Z_]+$",
+    # Published ports. Production exposes 3012 for real receiver nodes; staging
+    # has none and closes it, so the two legitimately differ here. Recorded rather
+    # than silently allowed: if staging ever needs node ingest, it should be
+    # opened deliberately and this entry revisited.
+    r"^services\.tower-finder\.ports(\..*)?$",
     # Simulation scale — the one thing staging is *meant* to differ on.
     r"^services\.fleet\.environment\.FLEET_[A-Z_]+$",
     # Production alone joins the external edge network that fronts

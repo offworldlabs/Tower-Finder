@@ -18,6 +18,16 @@
 services:
   tower-finder:
     container_name: retina-staging-server
+    # No TCP ingest on staging. The base publishes 3012 for real receiver nodes;
+    # staging has none, and its own fleet reaches the server as tower-finder:3012
+    # over the compose network, never via the host port. Verified with `ss`: zero
+    # established connections on it. Publishing it was therefore pure exposure —
+    # and worse than it looks, because RETINA_ENV=test silences the missing
+    # RADAR_NODE_TOKEN warning, so anything on the internet could have registered
+    # itself as a node here. Production keeps 3012; that is where real nodes land.
+    ports: !override
+      - "80:80"
+      - "443:443"
     environment:
       # Deliberately `test`, not `production`/`staging`, while admin access stays
       # open during the build-out. This leaves four backend auth/secret guards
