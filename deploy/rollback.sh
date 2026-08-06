@@ -26,6 +26,57 @@ FLEET_IMAGE_NAME="tower-finder-fleet"
 
 cd "$APP_DIR"
 
+# ── Keep ./.env consistent with the tree we roll back to ─────────────────────
+# ./.env is gitignored, so moving the source tree does NOT move it. Every compose
+# command in this script resolves through the COMPOSE_FILE it holds, so rolling
+# back to a commit whose overlay this .env names but which does not exist there
+# leaves every one of them failing on a missing file — the recovery path breaking
+# at exactly the moment it is needed, with the app already stopped.
+#
+# That is reachable today, not hypothetically: production is checked out at a
+# commit predating docker-compose.prod.yml, so the first deploy's rollback tag
+# points at a tree that has no overlay at all while the deploy has just written
+# an .env naming one.
+#
+# So re-derive it after each tree move. Prefer the rolled-back tree's own example
+# file; if that tree predates the overlay mechanism entirely, drop .env so compose
+# resolves docker-compose.yml alone — which is precisely what those commits' base
+# file was, a complete standalone production config.
+resync_env_to_tree() {
+    [ -f .env ] || return 0
+
+    local spec overlay env_name missing=0 f
+    spec=$(sed -n 's/^COMPOSE_FILE=//p' .env | tail -1)
+    [ -n "$spec" ] || return 0
+
+    local IFS=':'
+    for f in $spec; do
+        [ -f "$f" ] || missing=1
+    done
+    unset IFS
+    [ "$missing" = 1 ] || return 0
+
+    # `|| true` is load-bearing under the `set -euo pipefail` at the top: a
+    # non-matching grep exits 1, and a bare `var=$(... | grep ...)` takes the
+    # pipeline's status as the assignment's, so the script would abort here —
+    # silently, mid-rollback, with the tree already moved and the app not yet
+    # back up. It also keeps the empty-`overlay` case reachable: the else branch
+    # below is still entered when the example file is missing, but without this
+    # it could never be entered with no name in hand, so the `${overlay:-overlay}`
+    # default in its message was dead.
+    overlay=$(printf '%s' "$spec" | grep -oE 'docker-compose\.[a-z]+\.yml' | tail -1 || true)
+    env_name=${overlay#docker-compose.}
+    env_name=${env_name%.yml}
+
+    if [ -n "$env_name" ] && [ -f "deploy/env.${env_name}.example" ]; then
+        cp "deploy/env.${env_name}.example" .env
+        echo "  ./.env re-derived from deploy/env.${env_name}.example for the rolled-back tree"
+    else
+        rm -f .env
+        echo "  Rolled-back tree has no ${overlay:-overlay}; removed ./.env so compose resolves the base alone"
+    fi
+}
+
 # ── Determine rollback target ────────────────────────────────────────────────
 TARGET="${1:-}"
 
@@ -34,6 +85,7 @@ if [ -n "$TARGET" ]; then
     git fetch --tags
     git checkout "$TARGET"
     git submodule update --init --recursive
+    resync_env_to_tree
     docker compose up -d --build
 else
     # Rollback using the saved Docker image
@@ -56,6 +108,7 @@ else
             echo "Reverting source tree to last-good tag: ${LAST_GOOD}"
             git reset --hard "$LAST_GOOD"
             git submodule update --init --recursive
+            resync_env_to_tree
         else
             echo "WARNING: no deploy-* tag found; restoring image only, source tree left as-is."
         fi
@@ -78,6 +131,7 @@ else
         # Note: this creates a detached HEAD. After recovery, re-attach with:
         #   git checkout main && git pull
         git checkout HEAD~1
+        resync_env_to_tree
         git submodule update --init --recursive
         docker compose up -d --build
     fi
