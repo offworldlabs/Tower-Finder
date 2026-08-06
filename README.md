@@ -22,9 +22,13 @@ Given geographic coordinates, the system queries the [Maprad.io](https://maprad.
 backend/          Python API (FastAPI)
 frontend/         React SPA (Vite)
 dashboard/        Admin dashboard (React/Vite)
+docs/             Architecture, pipeline, runbook, simulation, arc-display
 libs/             Git submodules
   retina-geolocator/   Bistatic passive radar geolocation solver
   retina-tracker/      Multi-target Kalman tracker with anomaly detection
+  retina-analytics/    Inter-node association, coverage, trust/reputation
+  retina-simulation/   Synthetic fleet generator (testmap + CI)
+  retina-custody/      Node custody protocol
 ```
 
 ## Quick Start
@@ -45,7 +49,8 @@ git submodule update --init --recursive
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-pip install -e ../libs/retina-geolocator -e ../libs/retina-tracker
+pip install -e ../libs/retina-geolocator -e ../libs/retina-tracker \
+            -e ../libs/retina-analytics -e ../libs/retina-simulation -e ../libs/retina-custody
 cp .env.example .env    # add your Maprad.io API key
 uvicorn main:app --reload
 ```
