@@ -445,7 +445,7 @@ The fleet is a Compose service (`fleet` in `/opt/tower-finder/docker-compose.yml
 `restart: unless-stopped`). It starts automatically on deploy (CI `docker compose
 up -d --build`) and on reboot (docker is enabled) — you normally do NOT start it by
 hand. To manually bounce just the fleet (it loses its TCP connections and
-regenerates ~200 nodes, taking a minute+):
+regenerates its nodes — 25 on production — taking up to a minute):
 ```bash
 ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 \
   'cd /opt/tower-finder && docker compose up -d --build --force-recreate --no-deps fleet'
