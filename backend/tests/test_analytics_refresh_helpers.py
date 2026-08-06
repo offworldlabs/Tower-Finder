@@ -390,8 +390,12 @@ class TestCoverageConstraintRefresh:
 
     def setup_method(self):
         analytics_refresh._COVERAGE_DIGESTS.clear()
+        analytics_refresh._COVERAGE_NEXT_CHECK.clear()
 
     def _stub(self, monkeypatch, digests, rebuilt_calls):
+        # Most tests exercise the digest comparison, not the recheck floor;
+        # zero it so consecutive refreshes in one test are not skipped.
+        monkeypatch.setattr(analytics_refresh, "_COVERAGE_RECHECK_MIN_S", 0.0)
         class _Assoc:
             node_geometries = {"n1": object(), "n2": object()}
 
@@ -428,10 +432,45 @@ class TestCoverageConstraintRefresh:
 
     def test_a_later_change_triggers_another_rebuild(self, monkeypatch):
         calls = []
-        digests = {"n1": (1.0, None), "n2": None}
+        digests = {"n1": (10.0, None), "n2": None}
         self._stub(monkeypatch, digests, calls)
         analytics_refresh._refresh_coverage_constraints()
-        digests["n1"] = (0.5, None)          # polygon tightened further
+        digests["n1"] = (30.0, None)         # polygon moved a quantum bucket
         calls.clear()
+        assert analytics_refresh._refresh_coverage_constraints() == 1
+        assert calls == ["n1"]
+
+    def test_sub_bucket_drift_does_not_rebuild(self, monkeypatch):
+        calls = []
+        digests = {"n1": (10.0, None), "n2": None}
+        self._stub(monkeypatch, digests, calls)
+        analytics_refresh._refresh_coverage_constraints()
+        digests["n1"] = (10.9, None)         # p85 crept, same 2 km bucket
+        calls.clear()
+        assert analytics_refresh._refresh_coverage_constraints() == 0
+        assert calls == []
+
+    def test_recheck_floor_skips_known_nodes(self, monkeypatch):
+        calls = []
+        digests = {"n1": (10.0, None), "n2": None}
+        self._stub(monkeypatch, digests, calls)
+        monkeypatch.setattr(analytics_refresh, "_COVERAGE_RECHECK_MIN_S", 3600.0)
+        analytics_refresh._refresh_coverage_constraints()
+        digests["n1"] = (30.0, None)         # real change, inside the window
+        calls.clear()
+        assert analytics_refresh._refresh_coverage_constraints() == 0
+        assert calls == []
+        # Window expiry re-enables the check and the change lands.
+        analytics_refresh._COVERAGE_NEXT_CHECK["n1"] = 0.0
+        assert analytics_refresh._refresh_coverage_constraints() == 1
+        assert calls == ["n1"]
+
+    def test_first_build_is_never_delayed_by_the_floor(self, monkeypatch):
+        calls = []
+        digests = {"n1": None, "n2": None}
+        self._stub(monkeypatch, digests, calls)
+        monkeypatch.setattr(analytics_refresh, "_COVERAGE_RECHECK_MIN_S", 3600.0)
+        analytics_refresh._refresh_coverage_constraints()   # no polygon yet
+        digests["n1"] = (10.0, None)                        # polygon appears
         assert analytics_refresh._refresh_coverage_constraints() == 1
         assert calls == ["n1"]

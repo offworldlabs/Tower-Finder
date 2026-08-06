@@ -1,12 +1,15 @@
 """Multinode solver worker threads — drain state.solver_queue → solve_multinode."""
 
+import concurrent.futures
 import logging
 import math
+import multiprocessing
 import os
 import queue
 import threading
 import time
 from collections import deque
+from concurrent.futures.process import BrokenProcessPool
 
 from config.constants import (
     ARC_ONLY_ANOMALY_ALLOWLIST,
@@ -25,6 +28,69 @@ from services.geo import in_node_beam as _in_node_beam
 from services.geo import offset_latlon_m
 
 _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
+
+# ── Solver process pool ──────────────────────────────────────────────────────
+# The LM solves are pure CPU on picklable dicts, and running them on worker
+# *threads* meant competing for the GIL with frame processing and the
+# analytics refresh: py-spy on staging showed the two solver threads getting
+# ~25% of interpreter time between them, the queue draining at ~0.8 items/s,
+# and burst tails aging past the 45 s staleness drop.  The threads remain —
+# they own the gates, the track claims and the counters, which live in this
+# process — but the solve_multinode / fit_constant_velocity calls are shipped
+# to child processes so the optimizer runs on its own core.
+#
+# spawn, not fork: this process is full of threads holding locks, and a forked
+# child would inherit them mid-flight.  A spawn child imports only
+# retina_geolocator (the submitted functions' module), none of the backend.
+#
+# The pool is created by start_solver_workers, never at import: tests and the
+# offline bench reach the compute inline through the same helper (pool is
+# None → direct call), so they pay no child startup and need no teardown.  If
+# the pool breaks mid-flight (a child OOM-killed, say) the affected call runs
+# inline and the first thread to notice rebuilds the pool for the rest.
+_solver_pool: concurrent.futures.ProcessPoolExecutor | None = None
+_solver_pool_lock = threading.Lock()
+
+# Never under pytest: route tests boot the whole app via TestClient, so the
+# lifespan's start_solver_workers would hang a real pool off the test process
+# — and any later test that monkeypatches the compute functions would ship an
+# unpicklable closure to a child.  Pool transport has its own tests, which
+# build the pool explicitly.
+_POOL_ENABLED = os.getenv("RETINA_ENV", "").lower() != "test"
+
+
+def _make_solver_pool() -> concurrent.futures.ProcessPoolExecutor:
+    return concurrent.futures.ProcessPoolExecutor(
+        max_workers=_N_SOLVER_WORKERS,
+        mp_context=multiprocessing.get_context("spawn"),
+    )
+
+
+def _pool_call(fn, *args):
+    """Run fn in the solver process pool; inline when there is no pool."""
+    global _solver_pool
+    pool = _solver_pool
+    if pool is None:
+        return fn(*args)
+    try:
+        return pool.submit(fn, *args).result()
+    except BrokenProcessPool:
+        with _solver_pool_lock:
+            if _solver_pool is pool:
+                try:
+                    pool.shutdown(wait=False)
+                except Exception:
+                    pass
+                try:
+                    _solver_pool = _make_solver_pool()
+                    logging.warning("Solver process pool broke — recreated")
+                except Exception:
+                    _solver_pool = None
+                    logging.exception(
+                        "Solver process pool broke and could not be recreated"
+                        " — solving inline on worker threads from now on"
+                    )
+        return fn(*args)
 
 # Altitude layers (km) tried when n_nodes ≥ 3.  For an overdetermined system
 # (3+ delay equations, 2 unknowns after altitude pinning) only the correct
@@ -557,7 +623,8 @@ def _resolve_n2_chi2(s_in: dict, node_cfgs) -> float | None:
         return None
     try:
         from retina_geolocator.multinode_solver import fit_constant_velocity
-        fit = fit_constant_velocity(
+        fit = _pool_call(
+            fit_constant_velocity,
             {
                 "initial_guess": s_in.get("initial_guess"),
                 "initial_velocity": s_in.get("initial_velocity"),
@@ -595,6 +662,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
     # entry will be immediately pruned from multinode_tracks — wasting CPU.
     age_s = time.time() - enqueued_at if enqueued_at is not None else 0.0
     if enqueued_at is not None and age_s > _SOLVER_MAX_QUEUE_AGE_S:
+        state.bump_counter("solver_stale_drops")
         logging.debug(
             "Solver: dropping stale item (age=%.1fs > %.1fs, n_nodes=%d)",
             age_s,
@@ -796,22 +864,50 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
     return result
 
 
+def _pool_solve_multinode(s_in, node_cfgs):
+    """solve_multinode via the process pool (inline when no pool exists)."""
+    from retina_geolocator.multinode_solver import solve_multinode
+    return _pool_call(solve_multinode, s_in, node_cfgs)
+
+
 def _run_solver_worker():
     """Drain state.solver_queue and run solve_multinode. Runs as a daemon thread."""
-    from retina_geolocator.multinode_solver import solve_multinode
     while True:
         try:
             item = state.solver_queue.get(timeout=1.0)
         except queue.Empty:
             continue
-        _process_solver_item(item, solve_multinode)
+        _process_solver_item(item, _pool_solve_multinode)
 
 
 def start_solver_workers():
-    """Start N daemon threads that continuously drain the solver queue."""
+    """Start the solve process pool and N daemon threads draining the queue."""
+    global _solver_pool
+    from retina_geolocator.multinode_solver import solve_multinode
+    with _solver_pool_lock:
+        if _solver_pool is None and _POOL_ENABLED:
+            try:
+                _solver_pool = _make_solver_pool()
+            except Exception:
+                _solver_pool = None
+                logging.exception(
+                    "Solver process pool unavailable — solving inline on"
+                    " worker threads"
+                )
+    if _solver_pool is not None:
+        # Fire-and-forget prewarm: spin the children up and have them import
+        # scipy now, not under the first association burst.  (<2 measurements
+        # returns None before any solving.)
+        _noop = {"initial_guess": {"lat": 0.0, "lon": 0.0}, "measurements": []}
+        for _ in range(_N_SOLVER_WORKERS):
+            _solver_pool.submit(solve_multinode, _noop, {})
     for i in range(_N_SOLVER_WORKERS):
         t = threading.Thread(
             target=_run_solver_worker, daemon=True, name=f"solver-{i}",
         )
         t.start()
-    logging.info("Started %d multinode solver worker(s)", _N_SOLVER_WORKERS)
+    logging.info(
+        "Started %d multinode solver worker(s) (process pool: %s)",
+        _N_SOLVER_WORKERS,
+        "on" if _solver_pool is not None else "off",
+    )

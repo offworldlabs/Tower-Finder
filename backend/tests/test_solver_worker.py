@@ -35,6 +35,7 @@ def _reset_state():
     state.solver_total_latency_s = 0.0
     state.solver_last_latency_s = 0.0
     state.n2_unconfirmed = 0
+    state.solver_stale_drops = 0
     state.multinode_tracks.clear()
     state.task_last_success.clear()
 
@@ -293,6 +294,10 @@ class TestStaleItemSkip:
         assert not solve_called, "solver must not be invoked for stale items"
         assert state.solver_successes == 0
         assert state.solver_failures == 0
+        # Observable as its own counter, not a failure: the queue-full and
+        # drain-too-slow modes are distinct and this is the only trace of the
+        # latter (the per-item reason is DEBUG, which staging does not emit).
+        assert state.solver_stale_drops == 1
         assert not state.multinode_tracks
 
     def test_fresh_item_is_solved(self, monkeypatch):
@@ -977,3 +982,57 @@ class TestCollectTrackAnomalies:
         finally:
             state.node_pipelines.pop("na", None)
             _reset_state()
+
+
+def _marker_fn(x):
+    return {"marker": x}
+
+
+class TestSolverProcessPool:
+    """The pure LM compute ships to child processes; everything else stays put.
+
+    The pool exists only after start_solver_workers, so tests and the offline
+    bench run the same helpers inline.  A broken pool must degrade to inline
+    solving, not to dropped items.
+    """
+
+    def test_pool_call_is_inline_without_a_pool(self, monkeypatch):
+        monkeypatch.setattr(solver_mod, "_solver_pool", None)
+        assert solver_mod._pool_call(_marker_fn, 7) == {"marker": 7}
+
+    def test_round_trip_through_a_real_spawn_pool(self, monkeypatch):
+        """Spawn a real pool once: proves the child can import the lib and the
+        submitted functions/arguments survive pickling in this image."""
+        from retina_geolocator.multinode_solver import solve_multinode
+
+        pool = solver_mod._make_solver_pool()
+        try:
+            monkeypatch.setattr(solver_mod, "_solver_pool", pool)
+            # <2 measurements short-circuits to None inside the child — the
+            # assertion is about transport, not solving.
+            noop = {"initial_guess": {"lat": 0.0, "lon": 0.0}, "measurements": []}
+            assert solver_mod._pool_call(solve_multinode, noop, {}) is None
+        finally:
+            pool.shutdown(wait=True)
+
+    def test_broken_pool_falls_back_inline_and_recreates(self, monkeypatch):
+        from concurrent.futures.process import BrokenProcessPool
+
+        events = []
+
+        class _BrokenPool:
+            def submit(self, fn, *args):
+                raise BrokenProcessPool("child died")
+
+            def shutdown(self, wait=False):
+                events.append("shutdown")
+
+        replacement = object()
+        broken = _BrokenPool()
+        monkeypatch.setattr(solver_mod, "_solver_pool", broken)
+        monkeypatch.setattr(solver_mod, "_make_solver_pool", lambda: replacement)
+
+        assert solver_mod._pool_call(_marker_fn, 9) == {"marker": 9}
+        assert events == ["shutdown"]
+        assert solver_mod._solver_pool is replacement
+        monkeypatch.setattr(solver_mod, "_solver_pool", None)

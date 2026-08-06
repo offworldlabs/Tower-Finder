@@ -41,10 +41,31 @@ def _percentile(vals: list, pct: float) -> float:
 # without this the constraint would only ever take effect on a restart.
 _COVERAGE_DIGESTS: dict[str, tuple] = {}
 
+# The raw digest is per-bin p85 at 0.1 km resolution, so while calibration
+# points accumulate it moves with nearly every point and "only acts when the
+# digest moves" degenerated into rebuilding every node's grids on every cycle
+# (py-spy on staging: the analytics thread at ~23% of process CPU with the
+# solver queue starving behind it, 50k pair rebuilds since boot).  Two dampers:
+# compare at 2 km granularity — sub-bucket drift cannot meaningfully change
+# which 3 km association grid cells the constraint excludes — and re-check a
+# node at most every 150 s, which also skips the per-bin p85 recompute for
+# nodes inside the window.  A node's first build is never delayed.
+_COVERAGE_DIGEST_QUANT_KM = 2.0
+_COVERAGE_RECHECK_MIN_S = 150.0
+_COVERAGE_NEXT_CHECK: dict[str, float] = {}
+
 
 def _reset_for_tests() -> None:
     """Restore this module's private state to boot values.  Tests only."""
     _COVERAGE_DIGESTS.clear()
+    _COVERAGE_NEXT_CHECK.clear()
+
+
+def _quantize_digest(digest: tuple) -> tuple:
+    return tuple(
+        None if v is None else round(v / _COVERAGE_DIGEST_QUANT_KM)
+        for v in digest
+    )
 
 
 def _refresh_coverage_constraints() -> int:
@@ -52,13 +73,21 @@ def _refresh_coverage_constraints() -> int:
 
     Runs on the analytics cadence, not the frame path: each rebuild costs one
     grid computation per neighbour.  Only acts when a node's constraint digest
-    actually moves, so a settled fleet pays nothing.
+    moves a 2 km bucket, re-checked at most every _COVERAGE_RECHECK_MIN_S per
+    node, so a settled fleet pays nothing and an accumulating one pays a
+    bounded rate instead of a rebuild per calibration point.
     """
     rebuilt = 0
+    now = time.monotonic()
     for node_id in list(state.node_associator.node_geometries):
+        if (node_id in _COVERAGE_DIGESTS
+                and now < _COVERAGE_NEXT_CHECK.get(node_id, 0.0)):
+            continue
         digest = state.node_analytics.coverage_digest(node_id)
         if digest is None:
             continue
+        _COVERAGE_NEXT_CHECK[node_id] = now + _COVERAGE_RECHECK_MIN_S
+        digest = _quantize_digest(digest)
         if _COVERAGE_DIGESTS.get(node_id) == digest:
             continue
         # Record before rebuilding: a failure mid-rebuild should not spin.

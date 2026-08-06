@@ -199,6 +199,12 @@ n2_unconfirmed: int = 0
 coverage_rebuilds: int = 0
 coverage_rebuild_nodes: int = 0
 solver_queue_drops: int = 0
+# Queue items discarded unsolved because they aged past _SOLVER_MAX_QUEUE_AGE_S
+# waiting for a worker.  Was only a DEBUG log, which staging does not emit —
+# the drain-rate collapse behind the August latency incident was invisible in
+# every counter (solver_queue_drops stayed 0: the queue never overflowed, it
+# just drained too slowly).
+solver_stale_drops: int = 0
 
 # Per-reason solver rejection counters.  solver_failures is the aggregate; the
 # per-solve reason was only ever logged at DEBUG, which staging does not emit —
@@ -296,7 +302,7 @@ def _reset_for_tests() -> None:
     global latest_storage_bytes, simulation_config
     global frames_dropped, frames_processed, solver_successes, solver_failures
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
-    global solver_queue_drops
+    global solver_queue_drops, solver_stale_drops
     global solver_fail_exception, solver_fail_unconverged, solver_fail_rms_delay
     global solver_fail_rms_doppler, solver_fail_beam, solver_fail_displacement
     global position_jump_events
@@ -348,6 +354,7 @@ def _reset_for_tests() -> None:
         frames_dropped = frames_processed = 0
         solver_successes = solver_failures = n2_unconfirmed = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
+        solver_stale_drops = 0
         solver_fail_exception = solver_fail_unconverged = solver_fail_rms_delay = 0
         solver_fail_rms_doppler = solver_fail_beam = solver_fail_displacement = 0
         position_jump_events = 0
