@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail if staging and production have diverged anywhere they shouldn't.
+"""Fail if a deployed environment has diverged from production anywhere it shouldn't.
 
 Staging exists to catch problems before production sees them, which only works
 while the two are the same everywhere that matters. They were not: staging had
@@ -8,6 +8,12 @@ permanently empty), no Content-Security-Policy on any vhost, no /api/auth/ rate
 limit, and no API key on the fleet's ingest — none of it deliberate, all of it
 accumulated by editing two hand-maintained copies of the same config.
 
+Production is the reference and every other deployed environment is compared
+against it, rather than the environments being compared pairwise. That keeps one
+answer to "what should this look like?" and means adding an environment costs one
+line in OVERLAYS. The laptop overlay is deliberately absent: it has no
+certificate, so it renders the template's plain-HTTP branch and could never match.
+
 Two checks:
 
 1. **Compose.** Merge base + each overlay via `docker compose config`, then walk
@@ -15,7 +21,7 @@ Two checks:
    Anything else fails, naming the exact key path.
 
 2. **nginx.** Render the shared template with each environment's HOST_* values,
-   then rewrite every hostname back to a per-role token. The two results must be
+   then rewrite every hostname back to a per-role token. The results must be
    byte-identical: same vhosts, same headers, same rate limits, same locations.
 
 Run locally with:  python3 deploy/check-env-parity.py
@@ -32,7 +38,17 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 BASE = "docker-compose.yml"
-OVERLAYS = {"production": "docker-compose.prod.yml", "staging": "docker-compose.staging.yml"}
+OVERLAYS = {
+    "production": "docker-compose.prod.yml",
+    "staging": "docker-compose.staging.yml",
+    "test": "docker-compose.test.yml",
+}
+
+# The environment every other one is measured against.
+REFERENCE = "production"
+
+# Widest name in OVERLAYS, so the two sides of a reported difference line up.
+_LABEL_WIDTH = max(len(env) for env in OVERLAYS)
 
 # Every vhost the template defines must be TLS in a deployed environment. Update
 # this alongside the template if a vhost is added or removed.
@@ -134,14 +150,21 @@ def allowed(path: str) -> bool:
 
 def check_compose() -> list[str]:
     trees = {env: flatten(compose_config(overlay)) for env, overlay in OVERLAYS.items()}
-    prod, staging = trees["production"], trees["staging"]
+    reference = trees[REFERENCE]
 
     problems = []
-    for path in sorted(set(prod) | set(staging)):
-        in_prod, in_staging = prod.get(path, "<absent>"), staging.get(path, "<absent>")
-        if in_prod == in_staging or allowed(path):
+    for env, tree in trees.items():
+        if env == REFERENCE:
             continue
-        problems.append(f"  {path}\n      production: {in_prod!r}\n      staging:    {in_staging!r}")
+        for path in sorted(set(reference) | set(tree)):
+            in_ref, in_env = reference.get(path, "<absent>"), tree.get(path, "<absent>")
+            if in_ref == in_env or allowed(path):
+                continue
+            problems.append(
+                f"  {path}\n"
+                f"      {REFERENCE:<{_LABEL_WIDTH}}: {in_ref!r}\n"
+                f"      {env:<{_LABEL_WIDTH}}: {in_env!r}"
+            )
     return problems
 
 
@@ -207,22 +230,21 @@ def check_nginx(tmp: Path) -> list[str]:
     if problems:
         return problems
 
-    if rendered["production"] == rendered["staging"]:
-        return []
-
     import difflib
 
-    diff = list(
-        difflib.unified_diff(
-            rendered["production"].splitlines(),
-            rendered["staging"].splitlines(),
-            "production (hostnames tokenised)",
-            "staging (hostnames tokenised)",
+    for env, text in rendered.items():
+        if env == REFERENCE or text == rendered[REFERENCE]:
+            continue
+        diff = difflib.unified_diff(
+            rendered[REFERENCE].splitlines(),
+            text.splitlines(),
+            f"{REFERENCE} (hostnames tokenised)",
+            f"{env} (hostnames tokenised)",
             lineterm="",
             n=1,
         )
-    )
-    return ["  " + line for line in diff]
+        problems.extend("  " + line for line in diff)
+    return problems
 
 
 def main() -> int:
@@ -231,9 +253,9 @@ def main() -> int:
     compose_problems = check_compose()
     if compose_problems:
         failures.append(
-            "Compose: staging and production differ at key paths that are not in\n"
-            "ALLOWED_DIVERGENCE. Either move the setting into docker-compose.yml so both\n"
-            "environments share it, or — if the difference is genuinely intended — add the\n"
+            "Compose: an environment differs from production at key paths that are not\n"
+            "in ALLOWED_DIVERGENCE. Either move the setting into docker-compose.yml so every\n"
+            "environment shares it, or — if the difference is genuinely intended — add the\n"
             "key to ALLOWED_DIVERGENCE in this file, in the same commit.\n\n"
             + "\n".join(compose_problems)
         )
@@ -242,7 +264,7 @@ def main() -> int:
         nginx_problems = check_nginx(Path(tmpdir))
     if nginx_problems:
         failures.append(
-            "nginx: the shared template renders differently for the two environments once\n"
+            "nginx: the shared template renders differently across environments once\n"
             "hostnames are normalised. Every vhost, header, rate limit and location must\n"
             "match — that is what makes staging a valid rehearsal for production.\n\n"
             + "\n".join(nginx_problems)
@@ -252,7 +274,8 @@ def main() -> int:
         print("\n\n".join(failures), file=sys.stderr)
         return 1
 
-    print("staging and production are in parity (compose + nginx)")
+    print(f"in parity with {REFERENCE} (compose + nginx): "
+          f"{', '.join(e for e in OVERLAYS if e != REFERENCE)}")
     return 0
 
 
