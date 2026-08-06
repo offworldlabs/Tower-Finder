@@ -1,11 +1,17 @@
 #!/bin/bash
 # ── Tower Finder: Full Server Setup + Security Hardening ──────────────────────
 # Run this on a fresh Ubuntu 24.04 DigitalOcean droplet as root.
-# Usage: MAPRAD_API_KEY=... RADAR_API_KEY=... bash setup-server.sh
+#
+# Usage:
+#   MAPRAD_API_KEY=... RADAR_API_KEY=... bash setup-server.sh                      # prod
+#   RETINA_TARGET_ENV=test MAPRAD_API_KEY=... RADAR_API_KEY=... bash setup-server.sh
 #
 # Prerequisites:
 #   - SSH access as root
-#   - The repo should be copied to the server (via git clone or scp)
+#   - The repo should be copied to the server (via git clone, scp or the rsync
+#     that `just deploy-test` does)
+#   - A Cloudflare Origin cert at /etc/ssl/cloudflare/{cert,key}.pem BEFORE the
+#     compose bring-up below, or nginx cannot bind 443 and the app crash-loops
 set -euo pipefail
 
 # Secrets come from the environment, not argv: keeps them out of `ps` output and
@@ -14,8 +20,31 @@ set -euo pipefail
 : "${MAPRAD_API_KEY:?set MAPRAD_API_KEY (Maprad tower API key)}"
 : "${RADAR_API_KEY:?set RADAR_API_KEY (ingest key: the prod backend enforces X-API-Key on ingest and the fleet reads it from backend/.env, so its pushes 401 without a match)}"
 
+# Which environment this box becomes. It selects nothing but the compose overlay
+# (see the `cp deploy/env.*.example` below); hardening, docker and log rotation
+# are identical everywhere. Defaults to prod so an unqualified run behaves as it
+# always has. Validated here rather than left to `cp` to fail, so a typo names
+# the valid values instead of reporting a missing file.
+RETINA_TARGET_ENV="${RETINA_TARGET_ENV:-prod}"
+case "$RETINA_TARGET_ENV" in
+    prod|staging|test) ;;
+    *)
+        echo "Unknown RETINA_TARGET_ENV=$RETINA_TARGET_ENV (use: prod | staging | test)" >&2
+        exit 1
+        ;;
+esac
+
+# Name the box after the environment it is becoming. The deploy workflow asserts
+# this before it touches anything, because it is the one identity signal that
+# still holds on a droplet with no ./.env yet — precisely the state a freshly
+# provisioned box is in. Setting it here means a rebuild satisfies that check
+# without anyone having to remember; skipping it would leave the next deploy to
+# fail on a name the operator never knew mattered. Idempotent, like the rest.
+hostnamectl set-hostname "retina-${RETINA_TARGET_ENV}"
+
 echo "══════════════════════════════════════════════════"
 echo "  Tower Finder — Server Setup & Hardening"
+echo "  Target environment: ${RETINA_TARGET_ENV}"
 echo "══════════════════════════════════════════════════"
 
 # ── 1. System updates ────────────────────────────────────────────────────────
@@ -92,6 +121,13 @@ if [ -d "$APP_DIR/.git" ]; then
     cd "$APP_DIR"
     git pull
     git submodule update --init --recursive
+elif [ -f "$APP_DIR/docker-compose.yml" ]; then
+    # A tree with no .git but with the app in it: `just deploy-test` rsync'd it
+    # here. That is the supported git-free workflow for retina-test, so use what
+    # is already on disk rather than cloning over the top of it — which git
+    # refuses to do into a non-empty directory anyway.
+    echo "  Existing non-git tree found (rsync'd); using it as-is..."
+    cd "$APP_DIR"
 else
     echo "  Cloning repository..."
     # Canonical org repo. (The live boxes use the SSH remote
@@ -108,23 +144,102 @@ fi
 # the same commands work identically on staging and production. Without it a
 # bare `docker compose up` starts the shared base alone, which start.sh refuses
 # to boot because RETINA_ENV is unset.
-cp deploy/env."${RETINA_TARGET_ENV:-prod}".example .env
+cp deploy/env."${RETINA_TARGET_ENV}".example .env
 
 # Create backend/.env with API keys. Hostnames, CORS and every other
 # per-environment value now live in the compose overlay (docker-compose.prod.yml
-# / docker-compose.staging.yml), not here — keeping them out of a hand-edited
-# per-host file is what stops the two environments drifting apart.
-# NOTE: this writes the minimum to boot the app + fleet. The live box also
-# carries deploy-specific secrets not set here (R2_* archive storage,
-# TOWER_API_URL, JWT_SECRET, COVERAGE_ENABLED); add those manually if needed.
-{
-    echo "MAPRAD_API_KEY=${MAPRAD_API_KEY}"
-    echo "RADAR_API_KEY=${RADAR_API_KEY}"
-} > backend/.env
+# / docker-compose.staging.yml / docker-compose.test.yml), not here — keeping
+# them out of a hand-edited per-host file is what stops the environments drifting
+# apart.
+#
+# This writes only the minimum to boot the app + fleet. A live box carries more
+# that this script does not know about: R2_* archive storage, TOWER_API_URL,
+# JWT_SECRET, COVERAGE_ENABLED — and production's RETINA_ENV, which exists ONLY
+# in its backend/.env. So refuse to clobber an existing file: on a fresh droplet
+# there is nothing to lose, and on an existing one a blind overwrite would
+# silently drop values that change how the backend gates auth. The operator
+# should merge by hand, knowing what is already there.
+if [ -f backend/.env ]; then
+    echo "  backend/.env already exists — leaving it untouched."
+    echo "  If this box needs the keys passed to this script, merge them yourself."
+else
+    {
+        echo "MAPRAD_API_KEY=${MAPRAD_API_KEY}"
+        echo "RADAR_API_KEY=${RADAR_API_KEY}"
+    } > backend/.env
+    chmod 600 backend/.env
+fi
 
-chmod 600 backend/.env
+# Fail before the build rather than crash-loop afterwards: every environment this
+# script provisions serves TLS, so nginx cannot start without a certificate.
+if [ ! -f /etc/ssl/cloudflare/cert.pem ] || [ ! -f /etc/ssl/cloudflare/key.pem ]; then
+    echo "  ✗ No Cloudflare Origin cert at /etc/ssl/cloudflare/{cert,key}.pem." >&2
+    echo "    Create one at Cloudflare → SSL/TLS → Origin Server and install it" >&2
+    echo "    there, then re-run. Nothing else in this script needs redoing." >&2
+    exit 1
+fi
 
-# Build and start
+# Permissions, not just presence. nginx runs as appuser (uid 999) inside the
+# image, NOT as root, so a cert installed root-owned 600 in a 700 directory is
+# invisible to it and the container crash-loops on
+#   [emerg] cannot load certificate ... Permission denied
+# which reads like a missing file rather than a permissions problem.
+#
+# Check first, repair only if the check fails. A box whose cert already works is
+# left exactly as it is: this script's default target is prod, so an
+# unconditional chown/chmod would silently rewrite the ownership of production's
+# live TLS private key on any re-run. Changing permissions on live key material
+# should be a deliberate act, not a side effect of re-running provisioning.
+CONTAINER_UID=999
+_readable_as() {
+    setpriv --reuid "$1" --regid "$1" --clear-groups \
+        head -c 1 "$2" >/dev/null 2>&1
+}
+_cert_readable() {
+    _readable_as "$1" /etc/ssl/cloudflare/cert.pem \
+        && _readable_as "$1" /etc/ssl/cloudflare/key.pem
+}
+
+# Positive control before trusting any negative result. The probe answers "uid 999
+# cannot read this" and "the probe did not run" with the same exit status, and the
+# repair below acts on that answer — so a missing setpriv, or one blocked by a
+# seccomp/AppArmor profile, would chmod and chown production's live TLS private
+# key on a box where nothing was wrong. That is exactly what checking first is
+# supposed to prevent, so a broken probe must fail loudly rather than "repair".
+if ! command -v setpriv >/dev/null 2>&1; then
+    echo "  ✗ setpriv not found (util-linux) — cannot verify the container user" >&2
+    echo "    can read the certificate, and will not guess. Install util-linux." >&2
+    exit 1
+fi
+if ! _readable_as "${CONTAINER_UID}" /etc/hostname; then
+    echo "  ✗ Readability probe is broken: uid ${CONTAINER_UID} cannot read" >&2
+    echo "    /etc/hostname, which is world-readable. setpriv is being blocked." >&2
+    echo "    Refusing to touch the certificate on the strength of a probe that" >&2
+    echo "    does not work — it would rewrite live key material for no reason." >&2
+    exit 1
+fi
+
+if _cert_readable "${CONTAINER_UID}"; then
+    echo "  ✓ cert already readable by the container user (uid ${CONTAINER_UID}); left untouched"
+else
+    echo "  → cert not readable by uid ${CONTAINER_UID}; repairing permissions"
+    chmod 755 /etc/ssl/cloudflare
+    chmod 644 /etc/ssl/cloudflare/cert.pem
+    # The key gets the narrower grant: owned by the container uid, 640, so it is
+    # not world-readable. Production predates this and has it 644; tightening
+    # that is ClickUp 86cb1kru4 and is not done implicitly from here.
+    chown "${CONTAINER_UID}:${CONTAINER_UID}" /etc/ssl/cloudflare/key.pem
+    chmod 640 /etc/ssl/cloudflare/key.pem
+    if ! _cert_readable "${CONTAINER_UID}"; then
+        echo "  ✗ uid ${CONTAINER_UID} still cannot read /etc/ssl/cloudflare/{cert,key}.pem." >&2
+        echo "    nginx runs as that uid in the container and will crash-loop." >&2
+        exit 1
+    fi
+    echo "  ✓ cert readable by the container user (uid ${CONTAINER_UID})"
+fi
+
+# Build and start. The ./.env written above selects the overlay, so this bare
+# form resolves to base + this environment's overlay.
 docker compose up -d --build
 
 echo ""
