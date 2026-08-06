@@ -12,8 +12,11 @@
 # outside the shared template, and so the last place a header, rate limit or
 # route could differ from what production serves without anything noticing.
 #
-# What this environment is for is load. staging rehearses production's shape;
-# retina-test runs the same stack at 400 fps to find where it breaks.
+# What this environment is for is trying a branch under load before it is
+# reviewed. It runs the same fleet shape staging does, so a change measured here
+# means something about what staging will then see; it is deployed by rsync from a
+# working tree (`just deploy-test`) rather than from main, which is the difference
+# that matters.
 
 services:
   tower-finder:
@@ -51,12 +54,14 @@ services:
       - HOST_TESTMAP=test-testmap.retina.fm
       - HOST_LEGACY_REDIRECT=test-tower-finder.retina.fm
       - CSP_CONNECT_SRC=https://test-api.retina.fm https://test-admin.retina.fm wss://*.retina.fm
-    # 3915 MB and 2 cores, but unlike staging it has 2 GB of swap, which is what
-    # makes a deliberate overcommit survivable. ~1.7 GB is spoken for by dockerd,
-    # the DigitalOcean agent and journald, leaving ~2.2 GB resident plus the swap.
-    # 2400M is a ceiling rather than a reservation: at 400 fps the bounded frame
-    # queue (FRAME_QUEUE_SIZE=10000) is the largest thing that grows, and the
-    # point of this box is to reach a limit and see which one it is.
+    # Matched to staging deliberately, so a measurement here transfers. Same
+    # droplet size (3915 MB, 2 cores); this one also has 2 GB of swap, which is
+    # slack rather than something the limits are sized to use.
+    #
+    # Measured under a fleet four times heavier than the one below, the app sat at
+    # 152 MiB and the fleet at 25 MiB, with swap untouched. Memory is not what
+    # constrains these boxes — CPU is, and the solver holds the GIL — so these are
+    # ceilings with an order of magnitude of headroom, not a calculated fit.
     #
     # CPU is deliberately overcommitted (1.5 + 1.0 on 2 cores). Limits are
     # ceilings, so this lets the solver take what it needs while the fleet is
@@ -65,30 +70,47 @@ services:
       resources:
         limits:
           cpus: "1.5"
-          memory: 2400M
+          memory: 1600M
 
   fleet:
     container_name: retina-test-fleet
     environment:
-      # 200 nodes at a 0.5s per-node detection rate. FLEET_INTERVAL is per node —
+      # 50 nodes at a 1.0s per-node detection rate. FLEET_INTERVAL is per node —
       # orchestrator.py staggers each node's first send by interval/n_nodes and
       # re-arms at +interval — so the aggregate the server sees is
-      # n_nodes / interval = 400 frames/s.
+      # n_nodes / interval = 50 frames/s, 4x production's 12.5.
       #
-      # That is 32x production's 12.5 fps, and the reason this droplet exists.
-      # Expect it to be solver-bound: the solver holds the GIL and is the measured
-      # bottleneck, so on 2 cores the fleet will very likely generate frames
-      # faster than the server retires them. Frames dropped at that point are the
-      # measurement, not a fault.
-      - FLEET_NODES=200
+      # Kept identical to staging on purpose. This droplet's value is telling you
+      # what staging will do before main does, which only works while the two run
+      # the same fleet.
+      #
+      # 4x production's frame rate, but 8x its per-core load: production has 4
+      # cores and these droplets have 2, so this is 25 fps/core against prod's 3.1.
+      #
+      # Measured here at this size: the frame path copes (41 of 50 fps, nothing
+      # dropped, frame queue at zero) while the solver does not. Per-solve cost is
+      # 45-52s against production's 17s, the solver queue oscillates to ~28% where
+      # production sits at 0%, and the success rate is 8% against production's 80%.
+      # Usable, but not a faithful rehearsal of production's solver.
+      #
+      # 200 nodes at 0.5s was tried first and was much worse: 178 of a notional 400
+      # fps, latency past 30s and still climbing. If you want that overload again,
+      # set it here, watch it, and set it back — do not leave it on, and do not put
+      # it on staging.
+      #
+      # Watch solver_avg_latency_s over minutes, not seconds: it is a cumulative
+      # mean, so a fresh boot reads low and climbs for several minutes while it
+      # converges. solver_last_latency_s is the honest per-solve number. Reading
+      # the average at 50s is how this was first, wrongly, called healthy.
+      - FLEET_NODES=50
       - FLEET_REGIONS=us
       - FLEET_METRO=gvl
-      # Held at prod's 16/25 proportion of the node count, so the share of nodes
-      # with designed coverage geometry (shared illuminator, aimed antennas, low
-      # GDOP) does not change just because the fleet got bigger. FLEET_METRO
-      # already forces all 200 into the one metro; this only decides how many of
-      # them get the coverage-cluster treatment rather than an ordinary tower.
-      - FLEET_N_CLUSTER=128
+      # Held at prod's 16/25 proportion of the node count, so changing the fleet
+      # size does not change the share of nodes with designed coverage geometry
+      # (shared illuminator, aimed antennas, low GDOP). FLEET_METRO already forces
+      # all 50 into the one metro; this only decides how many of them get the
+      # coverage-cluster treatment rather than an ordinary tower.
+      - FLEET_N_CLUSTER=32
       - FLEET_N_CLUSTERS=1
       # Same reasoning as staging: the ring surrounds the core with receivers that
       # all share one illuminator and all aim inward, which is geometry a real
@@ -97,24 +119,25 @@ services:
       - FLEET_LAYOUT=scatter
       - FLEET_METRO_TRAFFIC_FRAC=0.85
       - FLEET_MODE=adsb
-      # 200 nodes / 0.5s = 400 fps
-      - FLEET_INTERVAL=0.5
+      # 50 nodes / 1.0s = 50 fps
+      - FLEET_INTERVAL=1.0
       - FLEET_TIME_SCALE=1.0
-      - FLEET_MIN_AIRCRAFT=40
-      - FLEET_MAX_AIRCRAFT=60
+      # Above prod's 15-30, below the 40-60 the overload run used. Aircraft count
+      # is independent of node count, but it multiplies solver work: pairing cost
+      # goes as nodes x aircraft, so it is the other half of the load knob.
+      - FLEET_MIN_AIRCRAFT=25
+      - FLEET_MAX_AIRCRAFT=40
       - FLEET_BEAM_WIDTH_DEG=0
       - FLEET_MAX_RANGE_KM=0
       # Gates concurrent connection *establishment* only, not the steady-state
-      # send rate. At 200 nodes prod's 20 would ramp in ten batches; 50 (the
-      # orchestrator's own default, chosen for fleets this size) reconnects the
-      # whole fleet promptly after a deploy.
-      - FLEET_CONCURRENCY=50
+      # send rate. Half the node count, so the fleet reconnects in two batches
+      # after a deploy.
+      - FLEET_CONCURRENCY=25
       - FLEET_CONNECT_RETRIES=30
-    # 200 nodes rather than staging's 15, so the per-node state scales with it.
-    # Generous against the ~27 MB the 15-node fleet actually uses; the swap is
-    # here to absorb the app's spikes, not the fleet's.
+    # Measured at 25 MiB running four times these nodes, so 400M is generous.
+    # Matched to staging so the two stay comparable.
     deploy:
       resources:
         limits:
           cpus: "1.0"
-          memory: 900M
+          memory: 400M
