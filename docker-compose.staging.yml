@@ -46,11 +46,21 @@ services:
       # The only host-naming part of the CSP. wss://*.retina.fm already covers
       # both environments, so only the two explicit origins vary.
       - CSP_CONNECT_SRC=https://staging-api.retina.fm https://staging-admin.retina.fm wss://*.retina.fm
+    # Sized to the droplet, which is the point of an overlay. staging has 3915 MB
+    # and NO swap, of which ~1.7 GB is already spoken for (dockerd ~460 MB, the
+    # DigitalOcean agent ~760 MB, journald), leaving ~2.2 GB actually available.
+    # The previous 3G + the fleet's 1G committed 4096 MB — more than the machine
+    # physically has, and nearly double what is free. Limits are ceilings rather
+    # than reservations so it does not fail at boot; it means the OOM killer picks
+    # the victim under load, and with no swap there is no slack to absorb a spike.
+    # The dangerous moment is a deploy: `docker compose up --build` runs the Vite
+    # and dashboard builds on-box while the previous containers are still up.
+    # Real usage is ~136 MB, so 1600 MB is still an order of magnitude of headroom.
     deploy:
       resources:
         limits:
-          cpus: "2"
-          memory: 3G
+          cpus: "1.5"
+          memory: 1600M
 
   fleet:
     container_name: retina-staging-fleet
@@ -81,8 +91,10 @@ services:
       - FLEET_MAX_RANGE_KM=0
       - FLEET_CONCURRENCY=10
       - FLEET_CONNECT_RETRIES=10
+    # See the app's limits above for the arithmetic. The fleet sits at ~27 MB with
+    # 15 nodes, so 400 MB is generous; the app should get the larger share.
     deploy:
       resources:
         limits:
-          cpus: "1"
-          memory: 1G
+          cpus: "0.5"
+          memory: 400M
