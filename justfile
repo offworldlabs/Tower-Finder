@@ -165,3 +165,157 @@ status:
 # Tail all three logs (Ctrl-C to stop tailing; services keep running)
 logs:
     tail -n +1 -f "{{run}}/backend.log" "{{run}}/fleet.log" "{{run}}/frontend.log"
+
+# ── retina-test droplet ──────────────────────────────────────────────────────
+# The test droplet is deployed by rsync from the working tree, not by git. That is
+# deliberate: staging and production deploy from `main` through CI precisely so
+# nothing unreviewed reaches them, and the whole point of retina-test is to run a
+# branch under load BEFORE it is reviewed. Giving it a git remote would either
+# duplicate that pipeline or invite pushing to it directly.
+#
+# The consequence is that what runs there is whatever was in your tree, including
+# uncommitted edits, so `deploy-test-status` prints the local HEAD it was cut from
+# and whether that tree was dirty. Read it as a label, not a guarantee.
+
+host_test := "retina-test"
+app_test  := "/opt/tower-finder"
+
+# rsync the working tree to retina-test and rebuild the stack there
+deploy-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "→ syncing working tree to {{host_test}}:{{app_test}}"
+    # --delete so a file removed here is removed there: without it the droplet
+    # accumulates the very stale configs this branch spent its time deleting.
+    # (Excluded paths are NOT deleted on the receiver — no --delete-excluded — so
+    # the droplet's own .env, secrets and data volumes survive every sync.)
+    #
+    # Rules are evaluated in the order given and the first match wins, which is
+    # what makes the three groups below meaningful:
+    #
+    # 1. Protect the receiver's state and keep .git out — there deliberately is
+    #    not one there, and rsync must not create one.
+    # 2. Force back in the things git IGNORES but the build needs. rsync has no
+    #    notion of "tracked anyway", which git does: a tracked file still ships
+    #    even when a pattern matches it. Without these the gitignore filter below
+    #    silently drops them and --delete removes them from the droplet.
+    #      tar1090/          — gitignored, but the Dockerfile COPYs it
+    #      metro_tower_cache — tracked in retina-simulation, whose own .gitignore
+    #                          says *.json; it is what spares fleet generation the
+    #                          Tower API round-trips
+    #      .gitkeep          — tracked placeholders inside ignored data dirs
+    # 3. Honour .gitignore. This is a REMOTE host, and .gitignore marks paths as
+    #    local-only precisely because they must not leave the machine —
+    #    .github/instructions/, .github/prompts/ and .claude/ are labelled
+    #    "server credentials, ops, private prompts — never push" in it. A
+    #    hand-maintained exclude list silently ships every one of them the day
+    #    someone creates it; deferring to .gitignore cannot go stale that way.
+    rsync_rules=(
+        --exclude '.git'
+        --exclude '.env'
+        --exclude 'backend/.env'
+        --exclude 'backend/data'
+        --exclude 'backend/coverage_data'
+        --include 'tar1090/'
+        --include 'tar1090/**'
+        --include '**/metro_tower_cache.json'
+        --include '**/.gitkeep'
+        --filter=':- .gitignore'
+        --exclude '.venv'
+        --exclude 'node_modules'
+        --exclude '__pycache__'
+        --exclude '.testmap-run'
+    )
+    # Preflight: prove the rules above do not drop anything git tracks. The two
+    # systems disagree by design — git keeps tracked files regardless of ignore
+    # rules, rsync does not — so every new ignore pattern is a chance to silently
+    # stop shipping a source file and then delete it on the far side. Assert it
+    # instead of trusting the include list to stay complete.
+    #
+    # Two deliberate omissions are allowed through:
+    #   .claude/      tracked inside a submodule; agent config, no business on a
+    #                 server, and .gitignore marks it never-push anyway
+    #   backend/data/ excluded above to protect the droplet's live users.db and
+    #                 archive; its tracked README is collateral and not needed
+    dropped=$(comm -23 \
+        <({ git -C "{{root}}" ls-files; \
+            git -C "{{root}}" submodule --quiet foreach --recursive 'git ls-files | sed "s#^#$sm_path/#"'; \
+          } | sort -u) \
+        <(rsync -an --out-format='%n' "${rsync_rules[@]}" "{{root}}/" "{{root}}/.rsync-check/" 2>/dev/null \
+            | sed 's#/$##' | sort -u) \
+        | grep -vE '/\.claude/|^backend/data/' || true)
+    rmdir "{{root}}/.rsync-check" 2>/dev/null || true
+    if [ -n "$dropped" ]; then
+        echo "✗ these tracked files would NOT reach the droplet — fix the rsync rules:"
+        printf '    %s\n' $dropped
+        exit 1
+    fi
+    rsync -az --delete "${rsync_rules[@]}" "{{root}}/" "{{host_test}}:{{app_test}}/"
+    # Record what was sent, so deploy-test-status can report it. Written after the
+    # rsync rather than before, or --delete would remove it again. Built with
+    # printf rather than a heredoc: just indents every recipe line, and an indented
+    # terminator does not close a <<EOF (nor does <<- strip spaces, only tabs).
+    if git -C "{{root}}" diff --quiet && git -C "{{root}}" diff --cached --quiet; then
+        dirty=no
+    else
+        dirty=YES
+    fi
+    printf 'commit=%s\nbranch=%s\ndirty=%s\ndeployed=%s\n' \
+        "$(git -C "{{root}}" rev-parse --short HEAD)" \
+        "$(git -C "{{root}}" rev-parse --abbrev-ref HEAD)" \
+        "$dirty" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        | ssh "{{host_test}}" "cat > {{app_test}}/.deployed-from"
+    # Select the test overlay, from the tree we just synced — the same thing the
+    # CI deploys do for prod and staging, and for the same reason. This is the one
+    # box with no CI, so it was also the one box where a missing ./.env stayed a
+    # silent, hand-fixed failure: compose would resolve the base alone, start.sh
+    # would abort on the unset RETINA_ENV, and the only symptom would be the
+    # health gate below timing out after 120s saying nothing about the cause.
+    # The example file is already on the droplet by now, so just use it.
+    echo "→ rebuilding on {{host_test}}"
+    ssh "{{host_test}}" "cd {{app_test}} && cp deploy/env.test.example .env && docker compose up -d --build"
+    # Ask uvicorn directly, inside the container, exactly as the compose
+    # healthcheck does. Going through nginx on plain HTTP would only prove the
+    # template's HTTP->HTTPS redirect works: it answers 301, and curl -sf treats a
+    # 301 as success, so a crash-looping app would still have reported healthy.
+    #
+    # The retry loop runs HERE rather than on the far side, so the remote command
+    # stays a single-quoting-level string. A loop sent through ssh would need the
+    # python source escaped through both shells, which is how this went wrong the
+    # first time.
+    echo "→ waiting for health..."
+    healthy=no
+    for _ in $(seq 1 24); do
+        if ssh "{{host_test}}" "cd {{app_test}} && docker compose exec -T tower-finder python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/api/health\")'" >/dev/null 2>&1; then
+            healthy=yes; break
+        fi
+        sleep 5
+    done
+    if [ "$healthy" != yes ]; then
+        echo "  ✗ not healthy after 120s — inspect: just deploy-test-logs tower-finder"
+        exit 1
+    fi
+    echo "  ✓ healthy"
+    just --justfile "{{justfile()}}" deploy-test-status
+
+# What retina-test is running, and what it was cut from
+deploy-test-status:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    echo "── {{host_test}} ──"
+    ssh "{{host_test}}" "cat {{app_test}}/.deployed-from 2>/dev/null || echo '(no deploy marker — provisioned by hand?)'"
+    # Four opening braces is just's escape for two literal ones; the closing pair
+    # needs no escaping. Do not put backticks in a recipe comment — just evaluates
+    # them as shell substitution even inside a comment, and the recipe dies.
+    ssh "{{host_test}}" "cd {{app_test}} && docker compose ps --format 'table {{{{.Name}}\t{{{{.Status}}'"
+    # Same reason as the health gate above: in-container, straight to uvicorn, so
+    # this reports the app rather than nginx's redirect. Single-quoted python
+    # inside a double-quoted remote command — one level of escaping, no heredoc
+    # (just indents every recipe line, so a heredoc terminator never closes).
+    echo "── fleet ──"
+    ssh "{{host_test}}" "cd {{app_test}} && docker compose exec -T tower-finder python3 -c 'import json,urllib.request; d=json.load(urllib.request.urlopen(\"http://localhost:8000/api/radar/nodes\")); n=d[\"nodes\"]; print(\"  nodes:\", len(n), \"total,\", sum(1 for v in n.values() if v.get(\"is_synthetic\")), \"synthetic,\", d.get(\"connected\"), \"connected\")'" 2>/dev/null || echo "  (nodes endpoint unreachable)"
+
+# Tail retina-test's container logs (Ctrl-C to stop; the stack keeps running)
+deploy-test-logs service="":
+    ssh "{{host_test}}" "cd {{app_test}} && docker compose logs -f --tail 100 {{service}}"
