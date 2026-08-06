@@ -662,3 +662,9 @@
 .radar3-error-label::before {
   display: none; /* no pointer arrow */
 }
+/* The Labels toolbar button hides these together with the callsign labels.
+   CSS toggle rather than a prop: the owning layers are mount-once/ref-driven,
+   and the tooltips live in Leaflet's tooltipPane, outside our custom panes. */
+.live-map-container.tf-hide-error-labels .radar3-error-label {
+  display: none;
+}

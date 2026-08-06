@@ -311,8 +311,7 @@ class TestBuildCombinedAircraftJson:
 
     def test_detecting_nodes_lists_every_node_seeing_a_hex(self):
         """The aircraft list is one-entry-per-hex (last writer wins), so
-        detecting_nodes is the only place the per-node fan-out is visible.
-        Fresh-ADS-B tracks emit no pending arc but are still detections."""
+        detecting_nodes is the only place the per-node fan-out is visible."""
         import types
 
         from retina_tracker.track import TrackState
@@ -356,6 +355,93 @@ class TestBuildCombinedAircraftJson:
             af._reset_for_tests()
             state.node_pipelines.clear()
             state.adsb_aircraft.pop("abcdef", None)
+
+    def test_pending_arcs_cover_adsb_tracks_with_buffer_key_fields(self):
+        """Every promoted single-node track emits its measured-delay arc into
+        detection_arcs — ADS-B-correlated tracks included (they used to be
+        skipped, which left them arc-less once dedup collapsed their
+        per-node aircraft entries).  Entries carry hex/delay_us so the
+        frontend arc buffer can key them exactly like per-aircraft arcs."""
+        import types
+        from unittest.mock import patch
+
+        from retina_tracker.track import TrackState
+
+        import services.aircraft_feed as af
+        from services.id_utils import passive_track_hex
+
+        def _track(hex_, track_id, delay):
+            return types.SimpleNamespace(
+                id=track_id,
+                state_status=TrackState.ACTIVE,
+                adsb_hex=hex_,
+                target_class="aircraft",
+                history={"measurements": [{"delay": delay, "doppler": -12.345}]},
+            )
+
+        af._reset_for_tests()
+        default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        try:
+            state.node_pipelines["det-node-a"] = types.SimpleNamespace(
+                config={"node_id": "det-node-a"},
+                tracker=types.SimpleNamespace(tracks=[
+                    _track("ABCDEF", "trk-adsb", 55.5),
+                    _track(None, "trk-dark", 44.25),
+                ]),
+            )
+            state.adsb_aircraft["abcdef"] = {
+                "hex": "abcdef", "lat": 33.9, "lon": -84.6, "alt_baro": 32000,
+                "last_seen_ms": int(time.time() * 1000),
+            }
+            with patch.object(af, "_build_single_node_arc",
+                              return_value=[[33.9, -84.6], [33.95, -84.55]]):
+                result = build_combined_aircraft_json(default)
+
+            arcs = {a["hex"]: a for a in result["detection_arcs"]}
+            adsb_arc = arcs["abcdef"]
+            assert adsb_arc["node_id"] == "det-node-a"
+            assert adsb_arc["delay_us"] == 55.5
+            assert adsb_arc["doppler_hz"] == -12.35
+            assert adsb_arc["alt_baro"] == 32000
+            assert len(adsb_arc["ambiguity_arc"]) == 2
+
+            dark_arc = arcs[passive_track_hex("trk-dark")]
+            assert dark_arc["hex"].startswith("pr")
+            assert dark_arc["delay_us"] == 44.25
+            assert dark_arc["alt_baro"] is None
+        finally:
+            af._reset_for_tests()
+            state.node_pipelines.pop("det-node-a", None)
+            state.adsb_aircraft.pop("abcdef", None)
+
+    def test_pending_arcs_still_skip_tentative_tracks(self):
+        import types
+        from unittest.mock import patch
+
+        from retina_tracker.track import TrackState
+
+        import services.aircraft_feed as af
+
+        af._reset_for_tests()
+        default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        try:
+            state.node_pipelines["det-node-a"] = types.SimpleNamespace(
+                config={"node_id": "det-node-a"},
+                tracker=types.SimpleNamespace(tracks=[types.SimpleNamespace(
+                    id="trk-tent",
+                    state_status=TrackState.TENTATIVE,
+                    adsb_hex=None,
+                    target_class="aircraft",
+                    history={"measurements": [{"delay": 60.0, "doppler": 5.0}]},
+                )]),
+            )
+            with patch.object(af, "_build_single_node_arc",
+                              return_value=[[33.9, -84.6], [33.95, -84.55]]):
+                result = build_combined_aircraft_json(default)
+            assert result["detection_arcs"] == []
+        finally:
+            af._reset_for_tests()
+            state.node_pipelines.pop("det-node-a", None)
 
     def test_adsb_only_excluded_from_map(self):
         """ADS-B-only aircraft (no radar detection) are intentionally excluded."""

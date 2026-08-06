@@ -112,3 +112,68 @@ class TestGroundTruthPush:
         r = client.post("/api/test/ground-truth/push",
                         json={"aircraft": [_ac()]})
         assert r.status_code == 401
+
+
+class TestStationaryPush:
+    """Sub-5.5 m movement must refresh liveness/meta, not vanish the object.
+
+    The old code `continue`d before both the trail append AND the meta update,
+    so a hovering object's last trail timestamp aged past the 10 s display GC
+    while it was still being pushed every 2 s — the dot blinked out until the
+    object cleared 5.5 m, and anomaly transitions during the hover were lost.
+    """
+
+    T0_MS = 1_700_000_000_000
+
+    def test_refreshes_liveness_without_duplicate_point(self, client):
+        client.post("/api/test/ground-truth/push", headers=_KEY,
+                    json={"ts_ms": self.T0_MS, "aircraft": [_ac()]})
+        trail = state.ground_truth_trails["a1b2c3"]
+        assert len(trail) == 1
+
+        client.post("/api/test/ground-truth/push", headers=_KEY,
+                    json={"ts_ms": self.T0_MS + 2000, "aircraft": [_ac()]})
+        assert len(trail) == 1  # geometry unchanged — no duplicate point
+        assert trail[-1][3] == round((self.T0_MS + 2000) / 1000.0, 1)
+
+    def test_meta_and_anomaly_update_while_stationary(self, client):
+        client.post("/api/test/ground-truth/push", headers=_KEY,
+                    json={"ts_ms": self.T0_MS, "aircraft": [_ac()]})
+        client.post("/api/test/ground-truth/push", headers=_KEY,
+                    json={"ts_ms": self.T0_MS + 2000,
+                          "aircraft": [_ac(is_anomalous=True,
+                                           anomaly_event="hijack")]})
+        meta = state.ground_truth_meta["a1b2c3"]
+        assert meta["is_anomalous"] is True
+        assert meta["anomaly_event"] == "hijack"
+        assert "a1b2c3" in state.anomaly_hexes
+
+    def test_moved_push_still_appends(self, client):
+        client.post("/api/test/ground-truth/push", headers=_KEY,
+                    json={"ts_ms": self.T0_MS, "aircraft": [_ac()]})
+        client.post("/api/test/ground-truth/push", headers=_KEY,
+                    json={"ts_ms": self.T0_MS + 2000,
+                          "aircraft": [_ac(lat=34.86)]})
+        assert len(state.ground_truth_trails["a1b2c3"]) == 2
+
+
+class TestSimulationConfig:
+    def test_defaults_are_boot_stamped(self, client):
+        # 0.0 meant "never pushed": the orchestrator only applies fractions
+        # when _updated_at strictly exceeds its last-seen value (starts 0.0),
+        # so the world silently ran its own constructor defaults instead.
+        r = client.get("/api/simulation/config")
+        assert r.status_code == 200
+        assert r.json()["_updated_at"] > 0
+
+    def test_counts_split_out_dark_aircraft(self, client):
+        state.ground_truth_meta.update({
+            "aaa111": {"object_type": "aircraft", "has_adsb": True},
+            "obj-00001": {"object_type": "aircraft", "has_adsb": False},
+            "bbb222": {"object_type": "drone", "has_adsb": False},
+            "ccc333": {"object_type": "anomalous", "has_adsb": True,
+                       "is_anomalous": True},
+        })
+        counts = client.get("/api/simulation/config").json()["ground_truth_counts"]
+        assert counts == {"anomalous": 1, "drone": 1, "aircraft": 1,
+                          "dark": 1, "total": 4}

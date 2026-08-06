@@ -7,6 +7,7 @@ lives here so imports are unambiguous and circular-dependency-free.
 import asyncio
 import os
 import threading
+import time
 from collections import defaultdict, deque
 
 from retina_analytics.association import InterNodeAssociator
@@ -370,9 +371,15 @@ simulation_config: dict = {
     # Deliberately NO defaults for max_range_km / min_aircraft / max_aircraft:
     # the fleet orchestrator applies those keys only when present, falling back
     # to its own deployment env (FLEET_MIN_AIRCRAFT etc.).  Defaults here are a
-    # footgun — the whole dict ships on the first PUT that stamps _updated_at,
-    # so a stale default scale (this dict once said 60-100 aircraft) silently
-    # overrode the deployed 20-40 the moment anyone touched an unrelated knob.
-    "_updated_at": 0.0,
+    # footgun — the whole dict ships on the first poll after boot, so a stale
+    # default scale (this dict once said 60-100 aircraft) silently overrode
+    # the deployed 20-40.
+    #
+    # Boot-stamped, not 0.0: the orchestrator applies the fractions only when
+    # _updated_at strictly exceeds its last-seen value (which starts at 0.0),
+    # so a 0.0 stamp meant these defaults were NEVER pushed — the simulation
+    # world silently ran its own constructor defaults (drones 0.10!) until
+    # someone touched the Physics tab, and reverted to them on every rebuild.
+    "_updated_at": time.time(),
 }
 _SIMULATION_CONFIG_DEFAULTS: dict = dict(simulation_config)

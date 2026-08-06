@@ -45,6 +45,7 @@ from config.constants import (
     GEO_INTERVAL_S,
     PRUNE_INTERVAL_S,
 )
+from services.id_utils import passive_track_hex
 
 # ─── Node Configuration ─────────────────────────────────────────────
 DEFAULT_NODE_CONFIG = {
@@ -165,7 +166,7 @@ class GeolocatedTrack:
                  latest_doppler_hz=None,
                  is_anomalous=False, anomaly_types=None, max_velocity_ms=0.0):
         self.track_id = track_id
-        self.hex_id = f"pr{abs(hash(track_id)) % 0xFFFF:04x}"
+        self.hex_id = passive_track_hex(track_id)
         self.lat = lat
         self.lon = lon
         self.alt_m = alt_m
@@ -496,22 +497,28 @@ class PassiveRadarPipeline:
             adsb_hex = event.get("adsb_hex")
             existing = self.geolocated_tracks.get(track_id)
 
+            # Newest measurement carried by this event (detections are stored
+            # newest-first).  Used to keep the published delay fresh below and
+            # to seed the ADS-B bootstrap path so a first-encounter entry
+            # never publishes delay_us=0.
+            _dets = event.get("detections")
+            if _dets:
+                _newest = _dets[0]  # newest-first
+            else:
+                _ref = event.get("_track_ref")
+                _recent = _ref.get_recent_detections(n=1) if _ref is not None else []
+                _newest = _recent[0] if _recent else None
+            if _newest is not None and (_newest.get("delay") or 0) <= 0:
+                _newest = None
+
             # Keep the published measurement fresh on EVERY event, for every
             # track type.  latest_delay_us is what the ambiguity arc is
             # rebuilt from; refreshing it only on the (rate-limited, and
             # sometimes failing) solver cadence froze the published locus for
             # tens of seconds while the target's true delay slid ~1 µs/s.
-            if existing is not None:
-                _dets = event.get("detections")
-                if _dets:
-                    _newest = _dets[0]  # newest-first
-                else:
-                    _ref = event.get("_track_ref")
-                    _recent = _ref.get_recent_detections(n=1) if _ref is not None else []
-                    _newest = _recent[0] if _recent else None
-                if _newest is not None and (_newest.get("delay") or 0) > 0:
-                    existing.latest_delay_us = _newest["delay"]
-                    existing.latest_doppler_hz = _newest.get("doppler")
+            if existing is not None and _newest is not None:
+                existing.latest_delay_us = _newest["delay"]
+                existing.latest_doppler_hz = _newest.get("doppler")
 
             # Between solver runs: keep ADS-B kinematic data fresh so the
             # frontend dead-reckoning has current velocity and altitude even
@@ -587,8 +594,8 @@ class PassiveRadarPipeline:
                             n_detections=event.get("length", 1),
                             timestamp_ms=event["timestamp"],
                             adsb_hex=adsb_hex,
-                            latest_delay_us=None,
-                            latest_doppler_hz=None,
+                            latest_delay_us=_newest["delay"] if _newest is not None else None,
+                            latest_doppler_hz=_newest.get("doppler") if _newest is not None else None,
                             target_class="aircraft",
                             is_anomalous=bool(_fb_anomaly_types),
                             anomaly_types=_fb_anomaly_types,

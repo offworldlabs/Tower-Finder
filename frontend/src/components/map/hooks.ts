@@ -107,7 +107,7 @@ export function useAircraftFeed(ownerOnly = false) {
 
   // Shared history + state update
   const ingestAircraft = useCallback(
-    (newAircraft, groundTruth, groundTruthMeta, anomalyHexes, detectingNodes) => {
+    (newAircraft, groundTruth, groundTruthMeta, anomalyHexes, detectingNodes, detectionArcs) => {
       historyRef.current.push({ aircraft: newAircraft, ts: Date.now() });
       if (historyRef.current.length > MAX_HISTORY) historyRef.current.shift();
 
@@ -133,7 +133,18 @@ export function useAircraftFeed(ownerOnly = false) {
       // faded to zero opacity in the renderer) to keep the buffer bounded.
       const now = Date.now();
       const ARC_MAX_AGE_MS = ARC_TOTAL_LIFE_MS;
-      upsertArcEntries(arcsBufferRef.current, newAircraft, now, ARC_MAX_AGE_MS);
+      // Aircraft entries carry at most ONE arc per hex (the feed dedups to a
+      // single winner); the top-level detection_arcs channel carries every
+      // node's measured-delay arc, ADS-B tracks included.  Same measurement
+      // via both channels lands on one buffer key (hex + node + quantized
+      // delay), so ingesting both never double-draws.  The hex filter drops
+      // entries from a backend too old to stamp them (rolling deploy).
+      upsertArcEntries(
+        arcsBufferRef.current,
+        [...newAircraft, ...(detectionArcs || []).filter((a) => a.hex)],
+        now,
+        ARC_MAX_AGE_MS,
+      );
 
       // Detection-presence oracle (consumed by InBeamDiagnostic and the
       // GT debug panel).  Unions per-aircraft signals with the top-level
@@ -168,7 +179,7 @@ export function useAircraftFeed(ownerOnly = false) {
       lastMsgRef.current = Date.now(); // keep watchdog alive
       try {
         const data = JSON.parse(evt.data);
-        ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes, data.detecting_nodes);
+        ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes, data.detecting_nodes, data.detection_arcs);
       } catch {
         /* ignore */
       }
@@ -240,7 +251,7 @@ export function useAircraftFeed(ownerOnly = false) {
         const res = await fetch(pollPath, { signal: controller.signal });
         if (res.ok) {
           const data = await res.json();
-          ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes, data.detecting_nodes);
+          ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes, data.detecting_nodes, data.detection_arcs);
         }
       } catch (err) {
         if (err.name !== "AbortError") {

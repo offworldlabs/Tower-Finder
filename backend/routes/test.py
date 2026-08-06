@@ -369,13 +369,17 @@ async def get_anomaly_log():
 @router.get("/api/simulation/config")
 async def get_simulation_config():
     """Return current simulation physics configuration plus live object-type counts."""
-    counts: dict[str, int] = {"anomalous": 0, "drone": 0, "aircraft": 0, "total": 0}
+    counts: dict[str, int] = {"anomalous": 0, "drone": 0, "aircraft": 0, "dark": 0, "total": 0}
     for meta in list(state.ground_truth_meta.values()):
         counts["total"] += 1
         if meta.get("is_anomalous"):
             counts["anomalous"] += 1
         elif meta.get("object_type") == "drone":
             counts["drone"] += 1
+        elif not meta.get("has_adsb"):
+            # Dark: an aircraft flying without a transponder.  Counted apart
+            # from "aircraft" so the frac_dark knob is verifiable in one call.
+            counts["dark"] += 1
         else:
             counts["aircraft"] += 1
     return Response(

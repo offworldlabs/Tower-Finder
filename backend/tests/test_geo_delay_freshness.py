@@ -118,3 +118,32 @@ class TestDelayRefreshBetweenSolves:
             "trk-4", 7000, 1, [_det(7000, 0.0)])
         pipe._run_geolocation()
         assert pipe.geolocated_tracks["trk-4"].latest_delay_us == 60.0
+
+
+class TestAdsbBootstrapCarriesDelay:
+    def test_first_encounter_fallback_seeds_delay_from_newest_detection(self, pipe):
+        """Solver fails on first encounter (single detection, below the
+        min-detections gate) → the ADS-B bootstrap entry must still publish
+        the measured delay.  It used to hardcode latest_delay_us=None, so the
+        track emitted delay_us=0 (no arc, broken buffer keying) until the
+        next refresh interval."""
+        from core import state
+
+        state.adsb_aircraft["afh001"] = {
+            "hex": "afh001", "lat": 34.0, "lon": -82.0,
+            "alt_baro": 30000, "gs": 250, "track": 90,
+            "last_seen_ms": 8000,
+        }
+        try:
+            pipe.event_writer.write_event(
+                "trk-5", 8000, 1, [_det(8000, 42.5, doppler_hz=3.0)],
+                adsb_hex="afh001", adsb_initialized=True)
+            pipe._run_geolocation()
+            entry = pipe.geolocated_tracks["trk-5"]
+            assert entry.adsb_hex == "afh001"
+            assert entry.latest_delay_us == 42.5
+            assert entry.latest_doppler_hz == 3.0
+        finally:
+            state.adsb_aircraft.pop("afh001", None)
+            with state.geo_aircraft_lock:
+                state.active_geo_aircraft.pop("afh001", None)

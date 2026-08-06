@@ -107,7 +107,8 @@ describe("pruneGroundTruthFixes", () => {
     stores.markerRegistry.set(groundTruthKey("218b6d"), {});
 
     const keys = applyGroundTruthFixes(fixes, { "652600": trail(34.62, -82.4996) }, META, 2000);
-    pruneGroundTruthFixes(stores, keys);
+    // 218b6d last vouched at 1000; well past the grace window by now=20000.
+    pruneGroundTruthFixes(stores, keys, 20_000, 10_000);
 
     expect(Object.keys(fixes)).toEqual([groundTruthKey("652600")]);
     expect(stores.smooth[groundTruthKey("218b6d")]).toBeUndefined();
@@ -116,9 +117,27 @@ describe("pruneGroundTruthFixes", () => {
     expect(stores.smooth[groundTruthKey("652600")]).toBeDefined();
   });
 
+  it("keeps a missing key through the grace window, then forgets it", () => {
+    // One absent snapshot is not despawn evidence: the backend GT snapshot is
+    // rebuilt every 5 s against a 10 s GC, so a hex can drop out and return.
+    const fixes: Record<string, any> = {};
+    applyGroundTruthFixes(
+      fixes, { "652600": trail(34.61, -82.4996), "218b6d": trail(34.85, -81.67) }, META, 1000,
+    );
+    const stores = makeStores(fixes);
+
+    const keys = applyGroundTruthFixes(fixes, { "652600": trail(34.62, -82.4996) }, META, 2000);
+    pruneGroundTruthFixes(stores, keys, 2000, 10_000);
+    expect(fixes[groundTruthKey("218b6d")]).toBeDefined(); // within grace — survives
+
+    pruneGroundTruthFixes(stores, keys, 12_000, 10_000);
+    expect(fixes[groundTruthKey("218b6d")]).toBeUndefined(); // grace expired
+    expect(fixes[groundTruthKey("652600")]).toBeDefined(); // vouched — always kept
+  });
+
   it("leaves radar entries alone — they have their own staleness rule", () => {
     const fixes = { "652600": { hex: "652600", _key: "652600", position_source: "x" } };
-    pruneGroundTruthFixes(makeStores(fixes), new Set());
+    pruneGroundTruthFixes(makeStores(fixes), new Set(), 999_999, 0);
 
     expect(fixes["652600"]).toBeDefined();
   });

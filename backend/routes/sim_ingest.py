@@ -43,12 +43,22 @@ async def push_ground_truth_snapshot(body: dict = Body(...), _key=Depends(_verif
         if hex_code not in state.ground_truth_trails:
             state.ground_truth_trails[hex_code] = deque(maxlen=state.GROUND_TRUTH_MAX)
         trail = state.ground_truth_trails[hex_code]
+        moved = True
         if trail:
             dlat = abs(trail[-1][0] - lat)
             dlon = abs(trail[-1][1] - lon)
-            if dlat < 0.00005 and dlon < 0.00005:
-                continue
-        trail.append([round(lat, 6), round(lon, 6), round(alt_m, 0), round(ts, 1)])
+            moved = not (dlat < 0.00005 and dlon < 0.00005)
+        if moved:
+            trail.append([round(lat, 6), round(lon, 6), round(alt_m, 0), round(ts, 1)])
+        else:
+            # Sub-5.5 m movement: don't append a duplicate point, but DO
+            # refresh the liveness timestamp and fall through to the meta /
+            # anomaly update.  The old `continue` here starved slow or
+            # hovering objects: their last trail timestamp aged past the
+            # GT_DISPLAY_STALE_S GC while they were still being pushed every
+            # 2 s, so the dot blinked out until they cleared 5.5 m — and
+            # anomaly transitions during a hover were silently dropped.
+            trail[-1][3] = round(ts, 1)
         # Store/update metadata for this ground truth object
         state.ground_truth_meta[hex_code] = {
             "object_type": ac.get("object_type", "aircraft"),

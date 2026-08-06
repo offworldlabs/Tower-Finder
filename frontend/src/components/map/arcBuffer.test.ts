@@ -94,6 +94,36 @@ describe("upsertArcEntries", () => {
     expect(buf[keys[0]].doppler_hz).toBe(16); // style fields refreshed
   });
 
+  it("collapses the same measurement arriving via both feed channels", () => {
+    // The per-aircraft entry (dedup winner) and the top-level detection_arcs
+    // entry for the same (hex, node, delay) are ingested in one batch — they
+    // must land on ONE buffer key, not double-draw.
+    const buf = {};
+    const aircraftEntry = mkAc({ delay_us: 46.2 });
+    const topLevelArc = {
+      hex: "abc123",
+      node_id: "node-1",
+      ambiguity_arc: ARC,
+      delay_us: 46.2,
+      doppler_hz: 12,
+      alt_baro: null,
+      target_class: "aircraft",
+    };
+    upsertArcEntries(buf, [aircraftEntry, topLevelArc], 1000, MAX_AGE);
+    expect(Object.keys(buf)).toHaveLength(1);
+  });
+
+  it("keeps per-node arcs for one hex as separate entries", () => {
+    // Multi-node detection: same aircraft, different nodes and delays — one
+    // arc per detecting node (the whole point of the top-level channel).
+    const buf = {};
+    upsertArcEntries(buf, [
+      { hex: "abc123", node_id: "node-1", ambiguity_arc: ARC, delay_us: 46.2, doppler_hz: 3 },
+      { hex: "abc123", node_id: "node-2", ambiguity_arc: ARC, delay_us: 61.7, doppler_hz: -8 },
+    ], 1000, MAX_AGE);
+    expect(Object.keys(buf)).toHaveLength(2);
+  });
+
   it("refreshes target_class and alt_baro on re-ingest", () => {
     const buf = {};
     upsertArcEntries(buf, [mkAc()], 1000, MAX_AGE);

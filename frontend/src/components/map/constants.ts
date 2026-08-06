@@ -21,6 +21,12 @@ export const ARC_TOTAL_LIFE_MS = ARC_HOLD_MS + ARC_FADE_MS;
 // so labels, selection and error computation are unaffected.
 // TTL for truth objects when the feed stops (pushes arrive every ~2 s).
 export const GT_FEED_STALE_MS = 30_000;
+// Grace before a truth object missing from a snapshot is forgotten.  The
+// backend can legitimately drop a hex from one snapshot and bring it back:
+// the GT snapshot is rebuilt only every 5 s (GT_REFRESH_S) while the trail GC
+// runs on a 10 s staleness rule, so a push hiccup or a single dropped WS
+// frame produced a visible blink when the prune fired on first absence.
+export const GT_PRUNE_GRACE_MS = 10_000;
 export const GT_KEY_PREFIX = "gt:";
 export const groundTruthKey = (hex) => GT_KEY_PREFIX + hex;
 

@@ -26,7 +26,11 @@ from services.feed_helpers import (
     resolve_ground_truth_hex,
 )
 from services.geo import offset_latlon_m
-from services.id_utils import multinode_hex_from_key, normalize_hex_key
+from services.id_utils import (
+    multinode_hex_from_key,
+    normalize_hex_key,
+    passive_track_hex,
+)
 from services.track_gates import (
     _build_single_node_arc,
     _single_node_arc_cache,
@@ -231,18 +235,20 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
                 # is what stops the arc when the aircraft truly leaves the beam.
                 if track.state_status == TrackState.TENTATIVE:
                     continue
+                _ae = None
                 if track.adsb_hex:
-                    # A fresh-ADS-B track produces no pending arc below, but
-                    # the node is still detecting the aircraft — record it
-                    # before the skip.
                     _nid = node_cfg.get("node_id")
                     if _nid:
                         detecting.setdefault(
                             normalize_hex_key(track.adsb_hex), set()
                         ).add(_nid)
-                    _ae = state.adsb_aircraft.get(track.adsb_hex)
-                    if _ae and now - _ae.get("last_seen_ms", 0) / 1000 < 60:
-                        continue
+                    _ae = state.adsb_aircraft.get(normalize_hex_key(track.adsb_hex))
+                    # ADS-B tracks used to `continue` here (no pending arc) —
+                    # the single-node measurement is real regardless of the
+                    # transponder, and skipping it left ADS-B-correlated
+                    # aircraft with no arc at all once dedup collapsed their
+                    # per-node entries.  Every promoted track now emits its
+                    # measured-delay arc.
                 meas = track.history.get("measurements")
                 if not meas:
                     continue
@@ -258,7 +264,17 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
                 pending_arcs.append({
                     "ambiguity_arc": arc,
                     "node_id": node_cfg.get("node_id"),
+                    # hex + delay_us make the entry ingestible by the
+                    # frontend arc buffer, which keys by (hex, node,
+                    # quantized delay).  delay_us rounding must match the
+                    # per-aircraft track_entry emission so the same
+                    # measurement arriving via both channels collides onto
+                    # one buffer key instead of double-drawing.
+                    "hex": normalize_hex_key(track.adsb_hex)
+                    if track.adsb_hex else passive_track_hex(track.id),
+                    "delay_us": round(delay_us, 3),
                     "doppler_hz": round(latest.get("doppler", 0), 2),
+                    "alt_baro": _ae.get("alt_baro") if _ae else None,
                     "target_class": getattr(track, "target_class", None),
                 })
         _cached_pending_arcs = pending_arcs

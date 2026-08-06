@@ -18,6 +18,7 @@ import "./LiveAircraftMap.css";
 import {
   STALE_AIRCRAFT_MS,
   GT_FEED_STALE_MS,
+  GT_PRUNE_GRACE_MS,
   POSITION_SOURCE_ARC_ONLY,
   ARC_DR_MAX_S,
   groundTruthKey,
@@ -731,7 +732,10 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
             Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
             {n.max_bistatic_range_km != null
               ? <>Bistatic range: {n.max_bistatic_range_km} km<br /></>
-              : <>Range: {n.max_range_km} km</>}
+              : <>Range: {n.max_range_km} km<br /></>}
+            {n.empirical_polygon && n.empirical_polygon.length >= 3
+              ? <>Coverage: empirical, {n.empirical_n_points} calibration pts</>
+              : <>Coverage: theoretical ({n.empirical_n_points || 0} calibration pts)</>}
           </Popup>
         </CircleMarker>
       );
@@ -749,7 +753,10 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
           Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
           {n.max_bistatic_range_km != null
             ? <>Bistatic range: {n.max_bistatic_range_km} km<br /></>
-            : <>Range: {n.max_range_km} km</>}
+            : <>Range: {n.max_range_km} km<br /></>}
+          {n.empirical_polygon && n.empirical_polygon.length >= 3
+            ? <>Coverage: empirical, {n.empirical_n_points} calibration pts</>
+            : <>Coverage: theoretical ({n.empirical_n_points || 0} calibration pts)</>}
         </Popup>
       </Marker>
     );
@@ -1258,10 +1265,11 @@ export default function LiveAircraftMap() {
   /* ── Derived: truth-only aircraft ───────────────────────────── */
   /* ── Feed ground-truth objects into fixesRef so the 60fps loop dead-reckons them ── */
   useEffect(() => {
+    const now = Date.now();
     const activeGtKeys = applyGroundTruthFixes(
-      fixesRef.current, groundTruthRef.current, groundTruthMetaRef.current, Date.now(),
+      fixesRef.current, groundTruthRef.current, groundTruthMetaRef.current, now,
     );
-    pruneGroundTruthFixes(allStoresRef.current, activeGtKeys);
+    pruneGroundTruthFixes(allStoresRef.current, activeGtKeys, now, GT_PRUNE_GRACE_MS);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groundTruthTick]);
 
@@ -1597,7 +1605,7 @@ export default function LiveAircraftMap() {
 
   /* ── Render ─────────────────────────────────────────────────── */
   return (
-    <div className="live-map-container">
+    <div className={"live-map-container" + (showLabels ? "" : " tf-hide-error-labels")}>
       <Toolbar
         connected={connected}
         paused={paused}
