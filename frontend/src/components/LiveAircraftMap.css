@@ -644,3 +644,21 @@
 .anomaly-ring {
   animation: anomaly-pulse 1.5s ease-in-out infinite;
 }
+
+/* km labels on truth-vs-track error lines.  Permanent tooltips (their lines
+   render on pointer-events:none canvases, so there is nothing to hover) —
+   restyle Leaflet's white tooltip box into a small unobtrusive chip. */
+.radar3-error-label {
+  background: rgba(15, 23, 42, 0.75);
+  border: none;
+  border-radius: 3px;
+  box-shadow: none;
+  color: #facc15;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 4px;
+  pointer-events: none;
+}
+.radar3-error-label::before {
+  display: none; /* no pointer arrow */
+}

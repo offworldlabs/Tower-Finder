@@ -59,6 +59,7 @@ import { distanceKm } from "./map/distance";
 import { validLatLon } from "./map/geo";
 import { arcNearestPoint } from "./map/arcErrors";
 import { detectingNodeIdsFor } from "./map/detections";
+import { ensureDebugPanes, DEBUG_PASSIVE_PANE, GT_CLICK_PANE } from "./map/panes";
 import { ARC_TOTAL_LIFE_MS } from "./map/constants";
 import { snapTrack, sweepStaleRadar } from "./map/trackStores";
 import StatsOverlay from "./map/StatsOverlay";
@@ -75,8 +76,10 @@ L.Icon.Default.mergeOptions({
 
 /* ── GroundTruthCanvasLayer: renders all truth-only dots on a single <canvas> element.
       With 500+ objects, React-managed SVG CircleMarkers cause severe lag on every
-      WS update (~1Hz). L.canvas() draws everything in one canvas tile — O(1) DOM. ── */
-const _gtCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
+      WS update (~1Hz). L.canvas() draws everything in one canvas tile — O(1) DOM.
+      This is the ONE canvas that keeps pointer events (see map/panes.ts) — its
+      dots carry the only canvas click handlers on the map. ── */
+const _gtCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: GT_CLICK_PANE }) : null;
 
 const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, onSelect, selectedHex }) {
   const map = useMap();
@@ -85,6 +88,7 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
   useEffect(() => { onSelectRef.current = onSelect; }, [onSelect]);
 
   useEffect(() => {
+    ensureDebugPanes(map);
     const markerMap = markerMapRef.current;
     const seen = new Set();
 
@@ -104,6 +108,10 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
       if (!m) {
         m = L.circleMarker([ac.lat, ac.lon], {
           renderer: _gtCanvas,
+          // Without this, the click also fires the map's click handler
+          // (MapClickClear), which deselects in the same React batch — the
+          // dot appeared dead even when the hit test found it.
+          bubblingMouseEvents: false,
           radius,
           color: border,
           weight,
@@ -142,8 +150,11 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
 
 /* ── MatchedGroundTruthLayer: shows GT positions for radar-matched aircraft + error line.
       Renders as imperative L.circleMarker (GT dot) + L.polyline (error vector) on a
-      single canvas.  Updated at 4Hz from smoothRef for dead-reckoned positions. ── */
-const _mgCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
+      single canvas.  Updated at 4Hz from smoothRef for dead-reckoned positions.
+      Purely visual — everything renders non-interactive in the passive pane so
+      it can't swallow clicks aimed at the GT dots underneath; the km label is a
+      permanent tooltip since there is no hover target anymore. ── */
+const _mgCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: DEBUG_PASSIVE_PANE }) : null;
 
 // Ref-driven like DetectionArcs: data is read INSIDE the tick, so the effect
 // mounts once instead of keying on the 2 Hz radarAircraft array identity —
@@ -153,6 +164,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
   const markersRef = useRef(new Map());  // gtHex → { dot: L.circleMarker, line: L.polyline }
 
   useEffect(() => {
+    ensureDebugPanes(map);
     const markers = markersRef.current;
 
     const tick = () => {
@@ -206,6 +218,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
         if (!entry) {
           const dot = L.circleMarker([gtLat, gtLon], {
             renderer: _mgCanvas,
+            interactive: false,
             radius: 5,
             color: "#22d3ee",
             weight: 2,
@@ -213,12 +226,14 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
             fillOpacity: 0.8,
           });
           const line = L.polyline([[gtLat, gtLon], [rLat, rLon]], {
+            renderer: _mgCanvas,
+            interactive: false,
             color: "#facc15",
             weight: 1.5,
             opacity: 0.6,
             dashArray: "3 4",
           });
-          line.bindTooltip(label, { direction: "center", className: "radar3-error-label" });
+          line.bindTooltip(label, { permanent: true, direction: "center", className: "radar3-error-label" });
           dot.addTo(map);
           line.addTo(map);
           entry = { dot, line };
@@ -227,6 +242,9 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
           entry.dot.setLatLng([gtLat, gtLon]);
           entry.line.setLatLngs([[gtLat, gtLon], [rLat, rLon]]);
           entry.line.setTooltipContent(label);
+          // A permanent tooltip is positioned once at open — walk it along
+          // with the line's midpoint or it stays where the line first drew.
+          entry.line.getTooltip()?.setLatLng([(gtLat + rLat) / 2, (gtLon + rLon) / 2]);
         }
       }
 
@@ -258,13 +276,14 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
 /* ── NodeVerificationLayer: shows solver tracks vs ADS-B truth for one node.
       Fetches verification data every 15s and renders cyan truth dots,
       yellow error lines, and distance labels.  Pass nodeId=null to hide. ── */
-const _verifyCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
+const _verifyCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: DEBUG_PASSIVE_PANE }) : null;
 
 const NodeVerificationLayer = memo(function NodeVerificationLayer({ nodeId }) {
   const map = useMap();
   const markersRef = useRef(new Map());
 
   useEffect(() => {
+    ensureDebugPanes(map);
     if (!nodeId) {
       // Clean up when hidden
       for (const entry of markersRef.current.values()) {
@@ -293,6 +312,7 @@ const NodeVerificationLayer = memo(function NodeVerificationLayer({ nodeId }) {
           if (!entry) {
             const dot = L.circleMarker([t.truth_lat, t.truth_lon], {
               renderer: _verifyCanvas,
+              interactive: false,
               radius: 5,
               color: "#22d3ee",
               weight: 2,
@@ -301,9 +321,9 @@ const NodeVerificationLayer = memo(function NodeVerificationLayer({ nodeId }) {
             });
             const line = L.polyline(
               [[t.truth_lat, t.truth_lon], [t.solver_lat, t.solver_lon]],
-              { color: "#facc15", weight: 1.5, opacity: 0.7, dashArray: "3 4" },
+              { renderer: _verifyCanvas, interactive: false, color: "#facc15", weight: 1.5, opacity: 0.7, dashArray: "3 4" },
             );
-            line.bindTooltip(`${t.position_error_km.toFixed(1)} km`, { direction: "center", className: "radar3-error-label" });
+            line.bindTooltip(`${t.position_error_km.toFixed(1)} km`, { permanent: true, direction: "center", className: "radar3-error-label" });
             dot.addTo(map);
             line.addTo(map);
             entry = { dot, line };
@@ -312,6 +332,9 @@ const NodeVerificationLayer = memo(function NodeVerificationLayer({ nodeId }) {
             entry.dot.setLatLng([t.truth_lat, t.truth_lon]);
             entry.line.setLatLngs([[t.truth_lat, t.truth_lon], [t.solver_lat, t.solver_lon]]);
             entry.line.setTooltipContent(`${t.position_error_km.toFixed(1)} km`);
+            entry.line.getTooltip()?.setLatLng([
+              (t.truth_lat + t.solver_lat) / 2, (t.truth_lon + t.solver_lon) / 2,
+            ]);
           }
         }
 
@@ -358,7 +381,7 @@ const NodeVerificationLayer = memo(function NodeVerificationLayer({ nodeId }) {
       is preserved — only its frame of reference moves — so the magenta dot
       sits on top of the cyan circle and the dashed line shows the actual
       solver-vs-truth offset at the current aircraft location. ── */
-const _mlatCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
+const _mlatCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: DEBUG_PASSIVE_PANE }) : null;
 
 const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthRef, smoothRef }) {
   const map = useMap();
@@ -413,6 +436,7 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
   // dot stays glued to the cyan circle as the aircraft moves between API
   // refreshes.
   useEffect(() => {
+    ensureDebugPanes(map);
     const markers = markersRef.current;
 
     const tick = () => {
@@ -459,6 +483,7 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
         if (!entry) {
           const dot = L.circleMarker([drTruthLat, drTruthLon], {
             renderer: _mlatCanvas,
+            interactive: false,
             radius: 4,
             color: "#e879f9",
             weight: 2,
@@ -467,11 +492,11 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
           });
           const line = L.polyline(
             [[drTruthLat, drTruthLon], [drSolverLat, drSolverLon]],
-            { color: "#f0abfc", weight: 1.5, opacity: 0.7, dashArray: "3 4" },
+            { renderer: _mlatCanvas, interactive: false, color: "#f0abfc", weight: 1.5, opacity: 0.7, dashArray: "3 4" },
           );
           line.bindTooltip(
             `${t.position_error_km.toFixed(1)} km`,
-            { direction: "center", className: "radar3-error-label" },
+            { permanent: true, direction: "center", className: "radar3-error-label" },
           );
           dot.addTo(map);
           line.addTo(map);
@@ -481,6 +506,9 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
           entry.dot.setLatLng([drTruthLat, drTruthLon]);
           entry.line.setLatLngs([[drTruthLat, drTruthLon], [drSolverLat, drSolverLon]]);
           entry.line.setTooltipContent(`${t.position_error_km.toFixed(1)} km`);
+          entry.line.getTooltip()?.setLatLng([
+            (drTruthLat + drSolverLat) / 2, (drTruthLon + drSolverLon) / 2,
+          ]);
         }
       }
 
@@ -553,7 +581,7 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels
       renderer so all trails draw on one canvas tile instead of N <path>
       elements.  Skips the selected aircraft (its prominent trail is rendered
       separately by the existing selectedTrailPositions block). ── */
-const _trailsCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
+const _trailsCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: DEBUG_PASSIVE_PANE }) : null;
 
 // Ref-driven (see MatchedGroundTruthLayer): keying the effect on the 2 Hz
 // visibleAircraft array identity destroyed and rebuilt every polyline twice a
@@ -563,6 +591,7 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftR
   const linesRef = useRef(new Map()); // hex → L.polyline
 
   useEffect(() => {
+    ensureDebugPanes(map);
     const lines = linesRef.current;
     const tick = () => {
       const trails = frontendTrailsRef.current || {};
@@ -579,6 +608,7 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftR
         } else {
           line = L.polyline(positions, {
             renderer: _trailsCanvas,
+            interactive: false,
             color: "#f59e0b",
             weight: 1.2,
             opacity: 0.5,
@@ -693,6 +723,7 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
           center={[n.rx_lat, n.rx_lon]}
           radius={5}
           pathOptions={{ color: "#facc15", fillColor: "#facc15", fillOpacity: 0.55, weight: 1.5 }}
+          bubblingMouseEvents={false}
           eventHandlers={{ click: () => onSelectNode(n.node_id) }}
         >
           <Popup>
@@ -735,6 +766,7 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
           key={`beam-${n.node_id}`}
           positions={n.empirical_polygon}
           pathOptions={{ color: "#22c55e", fillColor: "#22c55e", fillOpacity: 0.12, weight: 1.5 }}
+          interactive={false}
         />
       );
     }
@@ -750,6 +782,7 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
           n.max_bistatic_range_km,
         )}
         pathOptions={{ color: "#facc15", fillColor: "#facc15", fillOpacity: 0.1, weight: 1.5, dashArray: "4 4" }}
+        interactive={false}
       />
     );
   });
@@ -776,6 +809,7 @@ const IlluminatorsLayer = memo(function IlluminatorsLayer({ visibleNodes, showIl
       center={[tx.lat, tx.lon]}
       radius={6}
       pathOptions={{ color: "#f472b6", fillColor: "#f472b6", fillOpacity: 0.7, weight: 1.5 }}
+      bubblingMouseEvents={false}
     >
       <Popup>
         <strong>Illuminator</strong><br />
@@ -1742,6 +1776,7 @@ export default function LiveAircraftMap() {
                     <Polygon
                       positions={sn.empirical_polygon}
                       pathOptions={{ color: "#22c55e", fillColor: "#22c55e", fillOpacity: 0.22, weight: 2 }}
+                      interactive={false}
                     />
                   )}
                   {/* Theoretical Yagi cone — faint reference behind empirical; full highlight when no empirical data */}
@@ -1754,6 +1789,7 @@ export default function LiveAircraftMap() {
                       weight: hasEmpirical ? 1 : 2,
                       dashArray: "6 3",
                     }}
+                    interactive={false}
                   />
                   {/* TX tower marker */}
                   {sn.tx_lat && sn.tx_lon && (
@@ -1761,6 +1797,7 @@ export default function LiveAircraftMap() {
                       center={[sn.tx_lat, sn.tx_lon]}
                       radius={8}
                       pathOptions={{ color: "#f59e0b", weight: 2.5, fillColor: "#fbbf24", fillOpacity: 0.7 }}
+                      bubblingMouseEvents={false}
                     >
                       <Popup><strong>TX Tower</strong><br />{sn.tx_lat.toFixed(4)}, {sn.tx_lon.toFixed(4)}</Popup>
                     </CircleMarker>
@@ -1769,6 +1806,7 @@ export default function LiveAircraftMap() {
                   <Polyline
                     positions={[[sn.rx_lat, sn.rx_lon], [sn.tx_lat, sn.tx_lon]]}
                     pathOptions={{ color: "#f59e0b", weight: 1.5, opacity: 0.6, dashArray: "4 6" }}
+                    interactive={false}
                   />
                   {/* Highlight arcs/markers for aircraft detected by this node */}
                   {nodeAircraft.map((ac) => {
@@ -1778,6 +1816,7 @@ export default function LiveAircraftMap() {
                           key={`node-det-${ac.hex}`}
                           positions={ac.ambiguity_arc}
                           pathOptions={{ color: "#fbbf24", weight: 5, opacity: 0.55, lineCap: "round" }}
+                          interactive={false}
                         />
                       );
                     }
@@ -1788,6 +1827,7 @@ export default function LiveAircraftMap() {
                           center={[ac.lat, ac.lon]}
                           radius={12}
                           pathOptions={{ color: "#fbbf24", weight: 2, fillOpacity: 0, dashArray: "4 4" }}
+                          interactive={false}
                         />
                       );
                     }
@@ -1810,6 +1850,7 @@ export default function LiveAircraftMap() {
                       <Polygon
                         positions={cn.empirical_polygon}
                         pathOptions={{ color: "#a78bfa", fillColor: "#a78bfa", fillOpacity: 0.10, weight: 1.5 }}
+                        interactive={false}
                       />
                     ) : (
                       <Polygon
@@ -1822,6 +1863,7 @@ export default function LiveAircraftMap() {
                           cn.max_bistatic_range_km,
                         )}
                         pathOptions={{ color: "#a78bfa", fillColor: "#a78bfa", fillOpacity: 0.08, weight: 1.5, dashArray: "5 3" }}
+                        interactive={false}
                       />
                     )}
                     {/* Prominent node marker ring */}
@@ -1829,12 +1871,14 @@ export default function LiveAircraftMap() {
                       center={[cn.rx_lat, cn.rx_lon]}
                       radius={14}
                       pathOptions={{ color: "#a78bfa", weight: 3, fillColor: "#a78bfa", fillOpacity: 0.25 }}
+                      interactive={false}
                     />
                     {/* Connection line from aircraft to contributing node */}
                     {selectedAc.lat && selectedAc.lon && (
                       <Polyline
                         positions={[[selectedAc.lat, selectedAc.lon], [cn.rx_lat, cn.rx_lon]]}
                         pathOptions={{ color: "#a78bfa", weight: 1.5, opacity: 0.5, dashArray: "6 4" }}
+                        interactive={false}
                       />
                     )}
                   </React.Fragment>
@@ -1856,10 +1900,12 @@ export default function LiveAircraftMap() {
                       center={[dn.rx_lat, dn.rx_lon]}
                       radius={14}
                       pathOptions={{ color: "#fbbf24", weight: 3, fillColor: "#fbbf24", fillOpacity: 0.25 }}
+                      interactive={false}
                     />
                     <Polyline
                       positions={[[selectedAc.lat, selectedAc.lon], [dn.rx_lat, dn.rx_lon]]}
                       pathOptions={{ color: "#fbbf24", weight: 1.5, opacity: 0.6, dashArray: "6 4" }}
+                      interactive={false}
                     />
                   </React.Fragment>
                 );
@@ -1878,11 +1924,13 @@ export default function LiveAircraftMap() {
                     center={[sn.rx_lat, sn.rx_lon]}
                     radius={14}
                     pathOptions={{ color: "#fbbf24", weight: 3, fillColor: "#fbbf24", fillOpacity: 0.25 }}
+                    interactive={false}
                   />
                   {selectedAc.lat && selectedAc.lon && (
                     <Polyline
                       positions={[[selectedAc.lat, selectedAc.lon], [sn.rx_lat, sn.rx_lon]]}
                       pathOptions={{ color: "#fbbf24", weight: 1.5, opacity: 0.6, dashArray: "6 4" }}
+                      interactive={false}
                     />
                   )}
                 </>
@@ -1916,6 +1964,7 @@ export default function LiveAircraftMap() {
                     lineJoin: "round",
                     dashArray: isArcTrack ? "5 7" : undefined,
                   }}
+                  interactive={false}
                 />
               ));
             })()}
@@ -1969,6 +2018,7 @@ export default function LiveAircraftMap() {
                     dashArray: "5 5",
                     className: "anomaly-ring",
                   }}
+                  interactive={false}
                 />
               ))}
 

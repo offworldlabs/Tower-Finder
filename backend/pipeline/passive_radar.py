@@ -440,8 +440,12 @@ class PassiveRadarPipeline:
             n_detections=len(geo_detections),
             timestamp_ms=event["timestamp"],
             adsb_hex=event.get("adsb_hex"),
-            latest_delay_us=geo_detections[-1].delay if geo_detections else None,
-            latest_doppler_hz=geo_detections[-1].doppler if geo_detections else None,
+            # get_recent_detections() is newest-first, so the freshest
+            # measurement is [0] — [-1] was the OLDEST in the window, which
+            # published an ambiguity arc up to a full track-history behind
+            # the target.
+            latest_delay_us=geo_detections[0].delay if geo_detections else None,
+            latest_doppler_hz=geo_detections[0].doppler if geo_detections else None,
             target_class=target_class,
             is_anomalous=is_anomalous,
             anomaly_types=anomaly_types,
@@ -491,6 +495,23 @@ class PassiveRadarPipeline:
         for track_id, event in self.event_writer.get_new_events().items():
             adsb_hex = event.get("adsb_hex")
             existing = self.geolocated_tracks.get(track_id)
+
+            # Keep the published measurement fresh on EVERY event, for every
+            # track type.  latest_delay_us is what the ambiguity arc is
+            # rebuilt from; refreshing it only on the (rate-limited, and
+            # sometimes failing) solver cadence froze the published locus for
+            # tens of seconds while the target's true delay slid ~1 µs/s.
+            if existing is not None:
+                _dets = event.get("detections")
+                if _dets:
+                    _newest = _dets[0]  # newest-first
+                else:
+                    _ref = event.get("_track_ref")
+                    _recent = _ref.get_recent_detections(n=1) if _ref is not None else []
+                    _newest = _recent[0] if _recent else None
+                if _newest is not None and (_newest.get("delay") or 0) > 0:
+                    existing.latest_delay_us = _newest["delay"]
+                    existing.latest_doppler_hz = _newest.get("doppler")
 
             # Between solver runs: keep ADS-B kinematic data fresh so the
             # frontend dead-reckoning has current velocity and altitude even
