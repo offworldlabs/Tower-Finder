@@ -34,6 +34,10 @@ REPO = Path(__file__).resolve().parent.parent
 BASE = "docker-compose.yml"
 OVERLAYS = {"production": "docker-compose.prod.yml", "staging": "docker-compose.staging.yml"}
 
+# Every vhost the template defines must be TLS in a deployed environment. Update
+# this alongside the template if a vhost is added or removed.
+EXPECTED_TLS_VHOSTS = 8
+
 # Key paths permitted to differ between the environments, as regexes matched
 # against the dotted path into the merged compose tree.
 #
@@ -162,6 +166,12 @@ def check_nginx(tmp: Path) -> list[str]:
     for env, overlay in OVERLAYS.items():
         service_env = compose_config(overlay)["services"]["tower-finder"]["environment"]
         values = {k: service_env[k] for k in HOST_VARS}
+        # Pass TLS_ENABLED through when the overlay sets it, so the render below
+        # reflects what the environment would actually serve. Without this the
+        # renderer always takes its TLS-on default and the assertion further down
+        # could never fail, however badly an overlay was misconfigured.
+        if "TLS_ENABLED" in service_env:
+            values["TLS_ENABLED"] = service_env["TLS_ENABLED"]
         text = render(values, tmp / f"{env}.conf")
         # Replace each environment's hostnames with a role token so only
         # structural differences survive. Longest first: `staging.retina.fm` is
@@ -170,6 +180,27 @@ def check_nginx(tmp: Path) -> list[str]:
         for var, value in sorted(values.items(), key=lambda kv: len(kv[1]), reverse=True):
             text = text.replace(value, f"<{var}>")
         rendered[env] = text
+
+    # Absolute assertion, not a comparison. The parity diff below only proves the
+    # two environments match EACH OTHER, so a change that dropped TLS from both
+    # would sail through it. render-nginx-config.py can now render a plain-HTTP
+    # variant for the laptop (TLS_ENABLED=false), which makes that reachable for
+    # the first time — so pin the shape of the deployed environments directly.
+    problems: list[str] = []
+    for env, text in rendered.items():
+        listeners = text.count("listen 443 ssl;")
+        if listeners != EXPECTED_TLS_VHOSTS:
+            problems.append(
+                f"  {env}: {listeners} `listen 443 ssl` blocks, expected "
+                f"{EXPECTED_TLS_VHOSTS}. A deployed environment must not render "
+                f"plain HTTP; check TLS_ENABLED and the RETINA_IF TLS blocks."
+            )
+        if "ssl_certificate " not in text:
+            problems.append(f"  {env}: rendered config has no ssl_certificate directive.")
+        if "Strict-Transport-Security" not in text:
+            problems.append(f"  {env}: rendered config has no HSTS header.")
+    if problems:
+        return problems
 
     if rendered["production"] == rendered["staging"]:
         return []
