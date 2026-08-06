@@ -177,7 +177,11 @@ logs:
 # uncommitted edits, so `deploy-test-status` prints the local HEAD it was cut from
 # and whether that tree was dirty. Read it as a label, not a guarantee.
 
-host_test := "retina-test"
+# The ssh target for the test droplet. Overridable, and deliberately not a
+# hostname or an address: this repo is public, so it should not be where anyone
+# learns what the infrastructure is called or where it lives. Set RETINA_TEST_HOST
+# to whatever your own ~/.ssh/config calls it.
+host_test := env_var_or_default("RETINA_TEST_HOST", "retina-test")
 app_test  := "/opt/tower-finder"
 
 # rsync the working tree to retina-test and rebuild the stack there
