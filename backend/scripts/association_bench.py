@@ -258,6 +258,11 @@ class Result:
     ghost_tracks: set = None
     speed_err_ms: list = None
     err_by_n: dict = None
+    # Split by n for the same reason as err_by_n: the vz-bound question is
+    # specifically whether n=3's exactly-determined Doppler fit produces junk
+    # horizontal velocity, and the aggregate hides it under the n=2 bulk.
+    speed_err_by_n: dict = None
+    dopp_rms_by_n: dict = None
     # What the constant-velocity gate did, straight off the associator, so its
     # effect is observable rather than inferred from the ghost rate moving.
     gate_gated: int = 0
@@ -296,6 +301,8 @@ class Result:
         self.ghost_tracks = set()
         self.speed_err_ms = []
         self.err_by_n = defaultdict(list)
+        self.speed_err_by_n = defaultdict(list)
+        self.dopp_rms_by_n = defaultdict(list)
         self.claim_chi2_drift = []
         self.cluster_sizes = Counter()
         self.track_n = defaultdict(Counter)
@@ -366,6 +373,10 @@ class Result:
             self.track_n[(tag, k)].update(counts)
         for nn, v in other.err_by_n.items():
             self.err_by_n[nn].extend(v)
+        for nn, v in other.speed_err_by_n.items():
+            self.speed_err_by_n[nn].extend(v)
+        for nn, v in other.dopp_rms_by_n.items():
+            self.dopp_rms_by_n[nn].extend(v)
 
     @property
     def ghost_pct(self):
@@ -583,6 +594,8 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                     # targets; ghost rate is not.
                     if best_speed > 0:
                         res.speed_err_ms.append(abs(speed - best_speed))
+                        res.speed_err_by_n[nn].append(abs(speed - best_speed))
+                    res.dopp_rms_by_n[nn].append(out.get("rms_doppler", 0.0) or 0.0)
                 else:
                     res.ghosts += 1
                     res.ghost_dist_km.append(d)
@@ -645,6 +658,16 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
         e = sorted(r.speed_err_ms)
         print(f"  matched SPEED error: median {statistics.median(e):6.1f} m/s"
               f"  p90 {e[int(0.9 * (len(e) - 1))]:6.1f}  max {max(e):6.1f}")
+    if r.speed_err_by_n:
+        print("  speed error / doppler RMS by contributing-node count:")
+        for nn in sorted(r.speed_err_by_n):
+            v = sorted(r.speed_err_by_n[nn])
+            d = sorted(r.dopp_rms_by_n.get(nn, [])) or [0.0]
+            print(f"      n={nn}: {len(v):>4} solves   speed err median"
+                  f" {statistics.median(v):6.1f} m/s   p90"
+                  f" {v[int(0.9 * (len(v) - 1))]:6.1f}"
+                  f"   dopp rms median {statistics.median(d):6.2f} Hz"
+                  f" max {max(d):6.2f}")
     if r.speeds_kt and truth_max_kt:
         over = sum(1 for s in r.speeds_kt if s > truth_max_kt)
         print(f"  solves faster than any real aircraft ({truth_max_kt:.0f} kt): "

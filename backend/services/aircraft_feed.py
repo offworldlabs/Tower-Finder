@@ -176,9 +176,13 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             stale_mn.append(key)
             continue
         ac = multinode_to_aircraft(key, r)
-        # Dead-reckon position using solver velocity (vel_east/vel_north in m/s)
+        # Dead-reckon position using solver velocity (vel_east/vel_north in
+        # m/s), capped at 30 s: beyond that a velocity error dominates any
+        # solve accuracy (a 15 m/s error is already 450 m of drift at the
+        # cap), so an old solve holds its last dead-reckoned point until the
+        # 60 s entry expiry rather than drifting further.
         ts_fix = r.get("timestamp_ms", 0) / 1000.0
-        elapsed = min(now - ts_fix, 60.0)
+        elapsed = min(now - ts_fix, 30.0)
         vel_east_m_s = r.get("vel_east", 0.0)
         vel_north_m_s = r.get("vel_north", 0.0)
         if elapsed > 0.0 and (vel_east_m_s != 0.0 or vel_north_m_s != 0.0):

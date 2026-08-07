@@ -1036,3 +1036,100 @@ class TestSolverProcessPool:
         assert events == ["shutdown"]
         assert solver_mod._solver_pool is replacement
         monkeypatch.setattr(solver_mod, "_solver_pool", None)
+
+
+class TestDarkSolveSmoothing:
+    """Dark solves accumulate EWMA history under their track key.
+
+    The smoother used to require an ADS-B hex AND a live ADS-B entry — dark
+    targets, the one population whose only position source is MLAT, got raw
+    single-frame solves.  History is now keyed by the multinode track key and
+    dead-reckoned with the solved velocity when there is no ADS-B.
+    """
+
+    # A moving dark target: 100 m/s due north, solves 20 s apart.  20 s of
+    # motion is ~0.017965° of latitude.
+    LAT1, LON = 35.0, -82.0
+    _D20S_DEG = 2000.0 / 111_320.0
+
+    def setup_method(self):
+        _reset_state()
+        solver_mod._reset_for_tests()
+        state.adsb_aircraft.clear()
+
+    def teardown_method(self):
+        solver_mod._reset_for_tests()
+        state.adsb_aircraft.clear()
+
+    def _solve_fn(self, lat, lon, ts_ms, vel_east=0.0, vel_north=0.0):
+        def fn(s_in, cfgs):
+            return {
+                "success": True,
+                "lat": lat,
+                "lon": lon,
+                "timestamp_ms": ts_ms,
+                "vel_east": vel_east,
+                "vel_north": vel_north,
+                "contributing_node_ids": ["n1", "n2"],
+            }
+        return fn
+
+    def _stored(self):
+        assert len(state.multinode_tracks) == 1, (
+            f"expected one associated track, got {list(state.multinode_tracks)}"
+        )
+        return next(iter(state.multinode_tracks.values()))
+
+    def test_moving_dark_target_is_dead_reckoned_not_lagged(self):
+        """With the solved velocity matching the motion, the DR'd history
+        lands on the current position — the average tracks the target instead
+        of trailing at the midpoint."""
+        lat2 = self.LAT1 + self._D20S_DEG
+        item = (dict(_CONFIRMED_N2), {}, time.time())
+        solver_mod._process_solver_item(
+            item, self._solve_fn(self.LAT1, self.LON, 1_000, vel_north=100.0))
+        solver_mod._process_solver_item(
+            item, self._solve_fn(lat2, self.LON, 21_000, vel_north=100.0))
+
+        stored = self._stored()
+        assert stored["lat"] == pytest.approx(lat2, abs=2e-4)
+        # And decisively NOT the un-reckoned midpoint ~0.009° behind.
+        assert abs(stored["lat"] - (self.LAT1 + lat2) / 2) > 5e-3
+
+    def test_stationary_noise_is_averaged(self):
+        """Zero velocity: two noisy solves of a stationary target average to
+        the midpoint — the √K reduction dark targets used to be denied."""
+        item = (dict(_CONFIRMED_N2), {}, time.time())
+        solver_mod._process_solver_item(
+            item, self._solve_fn(self.LAT1, self.LON, 1_000))
+        solver_mod._process_solver_item(
+            item, self._solve_fn(self.LAT1 + 0.01, self.LON, 21_000))
+
+        stored = self._stored()
+        assert stored["lat"] == pytest.approx(self.LAT1 + 0.005, abs=1e-6)
+
+    def test_adsb_velocity_is_preferred_over_solved(self, monkeypatch):
+        """Tagged solve with a live ADS-B entry: DR follows ADS-B ground
+        speed/track even when the solved velocity is junk."""
+        monkeypatch.setattr(solver_mod, "record_adsb_calibration",
+                            lambda *a, **k: None)
+        state.adsb_aircraft["abc123"] = {
+            # 100 m/s = 194.384 kt, due north.
+            "gs": 194.384, "track": 0.0,
+            "lat": self.LAT1, "lon": self.LON,
+            "last_seen_ms": int(time.time() * 1000),
+        }
+        lat2 = self.LAT1 + self._D20S_DEG
+        s_in = {"n_nodes": 3, "adsb_hex": "abc123"}
+        # Solved velocity claims 200 m/s due EAST — junk that would drag the
+        # average ~0.02° of longitude if it were used for DR.
+        solver_mod._process_solver_item(
+            (dict(s_in), {}, time.time()),
+            self._solve_fn(self.LAT1, self.LON, 1_000, vel_east=200.0))
+        solver_mod._process_solver_item(
+            (dict(s_in), {}, time.time()),
+            self._solve_fn(lat2, self.LON, 21_000, vel_east=200.0))
+
+        stored = self._stored()
+        assert stored["lat"] == pytest.approx(lat2, abs=2e-4)
+        assert stored["lon"] == pytest.approx(self.LON, abs=1e-3)

@@ -272,10 +272,13 @@ def _solve_best_altitude_n2(s_in: dict, node_cfgs: dict, solve_fn) -> dict | Non
 # "N=2 better than N=3" inversion was an artefact of the smoother only being
 # applied to N=2; lifting the gate puts every solve on the same footing.
 #
-# Dead-reckoning uses ADS-B ground-speed + track (always available in
-# simulation; state.adsb_aircraft is populated by the frame processor for every
-# ADS-B-tagged detection).  If ADS-B velocity or hex is missing the smoother
-# returns the raw solver result unchanged.
+# Dead-reckoning prefers ADS-B ground-speed + track (independent of solver
+# error) and falls back to the solved velocity when the target is dark.  Dark
+# targets are the population where MLAT is the only position source — and they
+# used to be the only population excluded from this smoothing (the old code
+# required an ADS-B hex AND a live ADS-B entry, returning dark solves raw).
+# History is keyed by the multinode track key so identity is shared with
+# state.multinode_tracks by construction.
 
 # Per-hex rolling buffer: hex → deque of (lat, lon, timestamp_s)
 _MN_POS_HISTORY: dict[str, deque] = {}
@@ -312,44 +315,39 @@ def _sweep_mn_history(now_s: float) -> None:
         del _MN_POS_HISTORY[h]
 
 
-def _ewma_smooth_track(result: dict, adsb_hex: str | None) -> dict:
+def _ewma_smooth_track(result: dict, track_key: str, adsb_hex: str | None) -> dict:
     """Apply dead-reckoned multi-epoch averaging to a multinode solver result.
 
-    Dead-reckon previous solve positions to the current solve timestamp using
-    ADS-B ground-speed and track, then return the simple mean of the
-    dead-reckoned history and the current solve.  Thread-safe via lock.
+    Dead-reckon previous solve positions for the same track to the current
+    solve timestamp, then return the simple mean of the dead-reckoned history
+    and the current solve.  Thread-safe via lock.
 
-    N-agnostic — applied to every solve with a known ADS-B hex regardless of
-    n_nodes.  Returns the original result dict if hex is unknown, ADS-B
-    velocity is unavailable, or there is no prior history yet.
+    History is keyed by the multinode track key, so dark solves accumulate
+    and average exactly like ADS-B-tagged ones.  The DR velocity prefers live
+    ADS-B ground-speed/track (known independently of the solver) and falls
+    back to the solved velocity for dark targets — association-seeded and
+    CV-confirmed for n=2, and honest for n≥3 now that vz cannot absorb the
+    Doppler misfit.
     """
-    if not adsb_hex:
-        return result
-
     r_lat = result["lat"]
     r_lon = result["lon"]
     r_ts = result.get("timestamp_ms", 0) / 1000.0
 
-    # Retrieve ADS-B velocity for dead-reckoning.
-    adsb = state.adsb_aircraft.get(adsb_hex)
-    if not adsb:
-        with _MN_POS_HISTORY_LOCK:
-            _sweep_mn_history(r_ts)
-            _MN_POS_HISTORY.setdefault(adsb_hex, deque(maxlen=_MN_HISTORY_K)).append(
-                (r_lat, r_lon, r_ts)
-            )
-        return result
-
-    gs_knots = float(adsb.get("gs", 0) or 0)
-    track_deg = float(adsb.get("track", 0) or 0)
-    gs_kms = gs_knots * 0.514444 / 1000.0   # knots → km/s
-    # Geographic track: 0° = North, 90° = East.
-    vel_north_kms = gs_kms * math.cos(math.radians(track_deg))
-    vel_east_kms  = gs_kms * math.sin(math.radians(track_deg))
+    adsb = state.adsb_aircraft.get(adsb_hex) if adsb_hex else None
+    if adsb:
+        gs_knots = float(adsb.get("gs", 0) or 0)
+        track_deg = float(adsb.get("track", 0) or 0)
+        gs_kms = gs_knots * 0.514444 / 1000.0   # knots → km/s
+        # Geographic track: 0° = North, 90° = East.
+        vel_north_kms = gs_kms * math.cos(math.radians(track_deg))
+        vel_east_kms  = gs_kms * math.sin(math.radians(track_deg))
+    else:
+        vel_east_kms = float(result.get("vel_east") or 0.0) / 1000.0
+        vel_north_kms = float(result.get("vel_north") or 0.0) / 1000.0
 
     with _MN_POS_HISTORY_LOCK:
         _sweep_mn_history(r_ts)
-        hist = _MN_POS_HISTORY.setdefault(adsb_hex, deque(maxlen=_MN_HISTORY_K))
+        hist = _MN_POS_HISTORY.setdefault(track_key, deque(maxlen=_MN_HISTORY_K))
 
         # Dead-reckon each past position forward to the current solve time
         # and collect valid points (not too stale, not too far after dr).
@@ -379,8 +377,8 @@ def _ewma_smooth_track(result: dict, adsb_hex: str | None) -> dict:
     smoothed["lat"] = round(avg_lat, 6)
     smoothed["lon"] = round(avg_lon, 6)
     logging.debug(
-        "EWMA: hex=%s K=%d raw=(%.4f,%.4f) → smooth=(%.4f,%.4f)",
-        adsb_hex, len(positions), r_lat, r_lon, avg_lat, avg_lon,
+        "EWMA: key=%s K=%d raw=(%.4f,%.4f) → smooth=(%.4f,%.4f)",
+        track_key, len(positions), r_lat, r_lon, avg_lat, avg_lon,
     )
     return smoothed
 
@@ -454,9 +452,9 @@ def _multinode_track_key(result: dict, adsb_hex: str | None) -> str:
     Call under _MN_TRACKS_LOCK — it scans state.multinode_tracks and the caller
     writes back into it.
 
-    ADS-B-tagged solves key on the transponder hex, the same identity
-    _ewma_smooth_track already uses to accumulate cross-solve history, so the
-    smoother and the track store finally agree.
+    ADS-B-tagged solves key on the transponder hex.  This key is also the
+    smoother's history key (_ewma_smooth_track), so the smoother and the
+    track store agree by construction — dark tracks included.
 
     Dark targets have no such identity and are associated to the nearest recent
     dark track, dead-reckoned forward to this solve's timestamp.  This is the
@@ -798,14 +796,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                     {"latency_s": round(latency, 1), "n_nodes": s_in.get("n_nodes", 0)},
                 )
         state.task_last_success["solver"] = time.time()
-        # For every solve with a known ADS-B hex, apply dead-reckoned multi-epoch
-        # EWMA smoothing to reduce single-frame measurement noise (reduces mean
-        # position error by ~√K where K is the number of history frames used).
-        # Originally n_nodes == 2 only — production data showed the gate caused
-        # an apparent N=2 < N=3 inversion in /api/test/mlat-accuracy because
-        # only N=2 benefited from the noise reduction.
         _adsb_hex = s_in.get("adsb_hex") if isinstance(s_in, dict) else None
-        result = _ewma_smooth_track(result, _adsb_hex)
         # Propagate the input ADS-B hex into the result so verification can match
         # the solve back to the *aircraft that produced the measurements* rather
         # than guessing by proximity. Critical for spoofed targets: their solver
@@ -835,7 +826,19 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             )
         _collect_track_anomalies(s_in, result)
         with _MN_TRACKS_LOCK:
+            # Identity before smoothing: the track key is the smoother's
+            # history key, so dark targets accumulate history too.  Key
+            # association uses the raw solve position — the same position its
+            # own dead-reckoned 6 km gate was tuned against.  Both steps stay
+            # under this lock so two workers solving the same aircraft cannot
+            # each mint a fresh key.  Lock order _MN_TRACKS_LOCK →
+            # _MN_POS_HISTORY_LOCK (inside the smoother) is never taken in
+            # reverse anywhere.
             key = _multinode_track_key(result, _adsb_hex)
+            # Multi-epoch averaging cuts single-frame noise by ~√K.  Originally
+            # n=2-with-ADS-B only — production showed dark targets (where MLAT
+            # is the only position source) were the one population left raw.
+            result = _ewma_smooth_track(result, key, _adsb_hex)
             prev = state.multinode_tracks.get(key)
             if prev:
                 # Latch: a tracker flag raised on an earlier solve holds for
