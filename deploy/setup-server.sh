@@ -167,8 +167,15 @@ else
         echo "MAPRAD_API_KEY=${MAPRAD_API_KEY}"
         echo "RADAR_API_KEY=${RADAR_API_KEY}"
     } > backend/.env
-    chmod 600 backend/.env
 fi
+
+# Outside the branch above, so it applies to a file this script did not write.
+# The mode is not contents: correcting it does not undo the refusal to clobber,
+# and every live box already has a backend/.env, so a chmod that only ran on
+# files this script created would never reach any of them. That file holds the
+# ingest key and the archive credentials, and is about to hold a Mender token
+# that can deploy to the whole fleet, so it should not be world-readable.
+chmod 600 backend/.env
 
 # Fail before the build rather than crash-loop afterwards: every environment this
 # script provisions serves TLS, so nginx cannot start without a certificate.
