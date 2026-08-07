@@ -50,9 +50,11 @@ just setup
 
 That is the supported path: it initialises the submodules, builds the backend venv
 with `uv`, installs all five `libs/` packages editable, seeds `backend/.env` from
-the example, and installs the frontend dependencies. Install all five even if you
-only care about tower search: `retina-simulation` imports the other four, so a
-partial install fails at import time rather than at use.
+the example, applies the database migrations (`backend/data/users.db` does not
+exist yet on a fresh clone, and `create_all` no longer builds it outside the test
+suite), and installs the frontend dependencies. Install all five even if you only
+care about tower search: `retina-simulation` imports the other four, so a partial
+install fails at import time rather than at use.
 
 Then either run the whole local stack:
 
@@ -76,7 +78,8 @@ it.
 
 The schema is owned by Alembic (`backend/migrations/`). `create_all` runs only
 in the test suite, which sets `RETINA_SCHEMA_SOURCE=create_all`; everywhere else
-`deploy/start.sh` applies migrations on boot.
+`just setup` applies migrations on first clone and `deploy/start.sh` applies them
+on every boot.
 
 To change the schema, edit the models, then from `backend/`:
 

@@ -88,10 +88,20 @@ ssh retina-prod 'cd /opt/tower-finder && docker compose exec tower-finder \
     sh -c "cd /app/backend && python3 -m alembic current"'
 ```
 
-Redeploying an older image does not undo a migration. The older code's
-`upgrade head` stops at the revision it knows about and leaves anything newer in
-place, which is harmless for an additive revision and wrong for a destructive
-one. To actually roll back, downgrade first and then redeploy:
+Redeploying an older image does not undo a migration. `upgrade head` does not
+stop gracefully at the newest revision the older image recognises: it fails
+with `Can't locate revision identified by '<rev>'`, because that revision's
+file is not in this image's `migrations/versions/`. `start.sh` treats
+specifically that failure as tolerable and continues the boot rather than
+crash-looping the container: an additive revision the older code doesn't know
+about is harmless to leave in place, since the old code simply never touches
+the new column or table. Any other migration failure still aborts the boot as
+before.
+
+That tolerance only covers additive revisions. A destructive one (a dropped or
+renamed column, a changed constraint) is wrong to leave in place under older
+code, and boot succeeding is not a signal that it is safe. To roll back past a
+destructive revision, downgrade first and then redeploy:
 
 ```bash
 ssh retina-prod 'cd /opt/tower-finder && docker compose exec tower-finder \

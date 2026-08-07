@@ -86,9 +86,38 @@ echo "[start.sh] Rendered nginx config for RETINA_ENV=${RETINA_ENV} (${HOST_MAIN
 # The first run on an existing droplet finds tables but no alembic_version.
 # Revision 0001 detects that and records itself without recreating them, so no
 # `alembic stamp` is needed by hand.
+#
+# A rollback moves the source tree (and migrations/versions/ with it) back to an
+# older image while leaving the database exactly where the newer image left it.
+# Alembic does not stop at the newest revision it recognises: `upgrade head`
+# exits non-zero with "Can't locate revision identified by '<rev>'" the moment
+# the database is ahead of what this image ships. Treating that as a boot
+# failure would turn every rollback into a crash-loop, which defeats the point
+# of rolling back. An additive revision the older code doesn't know about is
+# harmless to leave in place — the old code just doesn't touch the new column —
+# so that specific failure is logged and swallowed; anything else (a broken
+# revision, a locked or corrupt database, an unreadable file) still aborts the
+# boot exactly as before. A destructive revision needs `alembic downgrade` run
+# by hand before deploying the older image; see docs/runbook.md.
+#
+# The `if !`-equivalent form below (testing the assignment itself) is required
+# to keep `set -e` from aborting on the very failure this block exists to
+# inspect: a failing command substitution used bare — `x=$(cmd)` outside a
+# conditional — still triggers errexit. Once inside the if/elif, the failure
+# branch must exit explicitly, since being the tested command is what silences
+# the automatic abort.
 echo "[start.sh] Applying database migrations..."
-(cd /app/backend && python3 -m alembic upgrade head)
-echo "[start.sh] Migrations applied"
+if MIGRATION_OUTPUT=$(cd /app/backend && python3 -m alembic upgrade head 2>&1); then
+    echo "[start.sh] Migrations applied"
+    printf '%s\n' "${MIGRATION_OUTPUT}"
+elif printf '%s\n' "${MIGRATION_OUTPUT}" | grep -q "Can't locate revision"; then
+    echo "[start.sh] Database is ahead of this image's migrations (rollback); continuing without downgrading"
+    printf '%s\n' "${MIGRATION_OUTPUT}"
+else
+    echo "[start.sh] Migration failed, refusing to boot:"
+    printf '%s\n' "${MIGRATION_OUTPUT}"
+    exit 1
+fi
 
 # ── uvicorn supervision: exit on a persistent fast crash-loop ────────────────
 # The fast in-process restart below absorbs *transient* uvicorn crashes without

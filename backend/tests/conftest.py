@@ -11,9 +11,11 @@ os.environ.setdefault("RETINA_ENV", "test")
 # Needed so the /api/radar/detections auth guard is active in tests.
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 # The suite truncates tables and creates schema, so it must never be pointed at
-# a real database. Without this it runs against backend/data/users.db, which is
-# the developer's own.
-os.environ.setdefault("RETINA_DB_PATH", str(Path(tempfile.gettempdir()) / "retina-test-users.db"))
+# a real database. A hard assignment, not setdefault: the README tells readers
+# to export RETINA_DB_PATH to try a migration against a scratch file, and a
+# setdefault would leave that value in place for a suite run in the same shell,
+# which would then truncate whatever database the developer just pointed at.
+os.environ["RETINA_DB_PATH"] = str(Path(tempfile.gettempdir()) / "retina-test-users.db")
 # The suite builds its schema with create_all rather than a migration run per
 # session. tests/test_migrations.py asserts the two agree.
 os.environ.setdefault("RETINA_SCHEMA_SOURCE", "create_all")
