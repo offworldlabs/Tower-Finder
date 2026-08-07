@@ -48,7 +48,11 @@ AUTH_BYPASS = not AUTH_ENABLED and _RETINA_ENV in ("dev", "test", "staging")
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
-DATABASE_URL = f"sqlite+aiosqlite:///{_DATA_DIR}/users.db"
+# RETINA_DB_PATH exists so tests and one-off migrations can point at a scratch
+# file. It is unset in every deployed environment, where the path derives from
+# this module's own location and lands inside the backend-data volume.
+_DB_PATH = Path(os.getenv("RETINA_DB_PATH") or _DATA_DIR / "users.db")
+DATABASE_URL = f"sqlite+aiosqlite:///{_DB_PATH}"
 
 # ── SQLAlchemy setup ─────────────────────────────────────────────────────────
 

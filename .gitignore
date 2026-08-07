@@ -52,3 +52,6 @@ backend/data/runtime/
 
 # local testmap runner (justfile) pids/logs
 .testmap-run/
+
+# uv regenerates this on every `uv run`; the pins live in requirements.txt
+backend/uv.lock
