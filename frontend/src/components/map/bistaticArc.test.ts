@@ -20,12 +20,7 @@ const NODE: NodeGeometry = {
  * point — mirrors the internal projection (equirect; tx offsets use the
  * midpoint latitude, point inversion uses the RX latitude per enuToLla).
  */
-function differentialsAt(
-  node: NodeGeometry,
-  lat: number,
-  lon: number,
-  altKm: number | null,
-): { d2: number; d3: number } {
+function differentialAt(node: NodeGeometry, lat: number, lon: number): number {
   const rxLat = node.rx_lat_real ?? node.rx_lat;
   const rxLon = node.rx_lon_real ?? node.rx_lon;
   const cosMid = Math.max(
@@ -40,16 +35,7 @@ function differentialsAt(
   const north = (lat - rxLat) * 111.32;
   const g = Math.hypot(east, north);
   const gTx = Math.hypot(east - txEast, north - txNorth);
-  const d2 = g + gTx - baseline;
-  if (altKm == null) return { d2, d3: d2 };
-  const rxAltKm = Number(node.rx_alt_m ?? 0) / 1000;
-  const txAltKm = Number(node.tx_alt_m ?? 0) / 1000;
-  const baseline3d = Math.hypot(baseline, txAltKm - rxAltKm);
-  const d3 =
-    Math.hypot(g, altKm - rxAltKm) +
-    Math.hypot(gTx, altKm - txAltKm) -
-    baseline3d;
-  return { d2, d3 };
+  return g + gTx - baseline;
 }
 
 describe("buildBistaticArc (2D, no altitude)", () => {
@@ -60,8 +46,7 @@ describe("buildBistaticArc (2D, no altitude)", () => {
     expect(arc!.length).toBeGreaterThanOrEqual(2);
     const target = delayUs * C_KM_PER_US;
     for (const [lat, lon] of arc!) {
-      const { d2 } = differentialsAt(NODE, lat, lon, null);
-      expect(d2).toBeCloseTo(target, 2);
+      expect(differentialAt(NODE, lat, lon)).toBeCloseTo(target, 2);
     }
   });
 
@@ -78,66 +63,16 @@ describe("buildBistaticArc (2D, no altitude)", () => {
     // 46.2 µs → 13.85 km differential > 10 km limit
     expect(buildBistaticArc(46.2, node)).toBeNull();
   });
-});
 
-describe("buildBistaticArc altitude correction", () => {
-  it("altitude 0 with zero node altitudes reproduces the 2D arc exactly", () => {
-    const arc2d = buildBistaticArc(46.2, NODE);
-    const arc3d = buildBistaticArc(46.2, NODE, 0);
-    expect(arc3d).toEqual(arc2d);
-  });
-
-  it("null / undefined altitude keeps the 2D behavior", () => {
-    const arc2d = buildBistaticArc(46.2, NODE);
-    expect(buildBistaticArc(46.2, NODE, null)).toEqual(arc2d);
-    expect(buildBistaticArc(46.2, NODE, undefined)).toEqual(arc2d);
-  });
-
-  it("matches the 3D differential on the returned ground locus", () => {
+  it("ignores altitude-ish fields on the node — the locus is unchanged", () => {
+    // rx_alt_m / tx_alt_m stay on NodeGeometry for other consumers (see
+    // hooks.ts / types.ts) but no longer feed this builder's geometry
+    // (2026-08 direction: arcs are altitude-agnostic by design).
     const delayUs = 46.2;
-    const altM = 10_000; // FL330-ish
-    const arc = buildBistaticArc(delayUs, NODE, altM);
-    expect(arc).not.toBeNull();
-    const target = delayUs * C_KM_PER_US;
-    for (const [lat, lon] of arc!) {
-      const { d3 } = differentialsAt(NODE, lat, lon, altM / 1000);
-      expect(d3).toBeCloseTo(target, 2);
-    }
-  });
-
-  it("pulls the ground locus inward versus the 2D arc (slant vs ground range)", () => {
-    const delayUs = 46.2;
-    const arc = buildBistaticArc(delayUs, NODE, 10_000);
-    expect(arc).not.toBeNull();
-    const target = delayUs * C_KM_PER_US;
-    for (const [lat, lon] of arc!) {
-      // At the 3D locus's ground point, the pure-2D differential must be
-      // strictly below the measured one — the altitude legs make up the rest.
-      const { d2 } = differentialsAt(NODE, lat, lon, null);
-      expect(d2).toBeLessThan(target);
-    }
-  });
-
-  it("uses node RX/TX altitudes when present", () => {
-    const node: NodeGeometry = { ...NODE, rx_alt_m: 300, tx_alt_m: 250 };
-    const delayUs = 46.2;
-    const altM = 10_000;
-    const arc = buildBistaticArc(delayUs, node, altM);
-    expect(arc).not.toBeNull();
-    const target = delayUs * C_KM_PER_US;
-    for (const [lat, lon] of arc!) {
-      const { d3 } = differentialsAt(node, lat, lon, altM / 1000);
-      expect(d3).toBeCloseTo(target, 2);
-    }
-    // And it differs from the sea-level-node solution.
-    expect(arc).not.toEqual(buildBistaticArc(delayUs, NODE, altM));
-  });
-
-  it("returns null when the delay is inconsistent with the altitude", () => {
-    // ~2 km differential can't be reached by a target 10 km up: even the
-    // point directly above the RX implies a far larger 3D differential.
-    const delayUs = 2 / C_KM_PER_US;
-    expect(buildBistaticArc(delayUs, NODE)).not.toBeNull(); // fine in 2D
-    expect(buildBistaticArc(delayUs, NODE, 10_000)).toBeNull();
+    const plain = buildBistaticArc(delayUs, NODE);
+    const withAlt = buildBistaticArc(delayUs, {
+      ...NODE, rx_alt_m: 300, tx_alt_m: 9500,
+    });
+    expect(withAlt).toEqual(plain);
   });
 });

@@ -326,125 +326,56 @@ class TestArcSpansDetectionArea:
         assert omni is not None and len(omni) <= 73
 
 
-# ─── Altitude-corrected delay→locus conversion ───────────────────────────────
+# ─── Altitude no longer feeds arc geometry (2026-08 direction) ───────────────
 
 
-def _differential_3d_km(lat, lon, alt_m, cfg):
-    """Ground-truth-style 3-D differential for a point at altitude alt_m.
-
-    Same ENU frame the builder uses; RX/TX altitudes from the node config
-    (feet ASL, absent means sea level).
-    """
-    from services.geo import enu_km
-    e_km, n_km = enu_km(cfg["rx_lat"], cfg["rx_lon"], lat, lon)
-    te_km, tn_km = enu_km(cfg["rx_lat"], cfg["rx_lon"], cfg["tx_lat"], cfg["tx_lon"])
-    rx_alt_km = float(cfg.get("rx_alt_ft") or 0.0) * 0.3048 / 1000.0
-    tx_alt_km = float(cfg.get("tx_alt_ft") or 0.0) * 0.3048 / 1000.0
-    h_km = alt_m / 1000.0
-    r_rx = math.sqrt(e_km**2 + n_km**2 + (h_km - rx_alt_km) ** 2)
-    r_tx = math.sqrt((e_km - te_km) ** 2 + (n_km - tn_km) ** 2 + (h_km - tx_alt_km) ** 2)
-    baseline_3d = math.sqrt(te_km**2 + tn_km**2 + (tx_alt_km - rx_alt_km) ** 2)
-    return r_rx + r_tx - baseline_3d
-
-
-def _range_from_rx_km(lat, lon, cfg):
-    from services.geo import enu_km
-    e_km, n_km = enu_km(cfg["rx_lat"], cfg["rx_lon"], lat, lon)
-    return math.hypot(e_km, n_km)
-
-
-class TestAltitudeCorrectedArc:
-    """FIX A: the measured delay is a 3-D differential (the simulator computes
-    it from full ENU including target altitude), so solving a 2-D ground-plane
-    ellipse drew the arc median 3.6 km too far out (up to 14.9 km); ground
-    truth sat median 2.48 km inside it.  With the track's altitude known, the
-    per-bearing solve now uses the 3-D differential at that altitude.
+class TestArcIgnoresAltitude:
+    """Arcs are a pure function of the node-reported delay-Doppler
+    measurement, deliberately — no target-altitude correction.  A track's
+    alt_m (LM solver output or correlated ADS-B) used to solve a 3-D
+    ellipsoid at that altitude (see git history); it no longer reaches the
+    geometry at all.  alt_baro keeps flowing in payloads as panel display
+    data — it just stops shaping the drawn locus, so a high-altitude
+    target's arc now sits a few km outside its ground position, on purpose.
     """
 
     CFG = {**_NODE_CFG, "rx_alt_ft": 1000.0, "tx_alt_ft": 1600.0}
     DELAY_US = 80.0
-    ALT_M = 9000.0
 
-    def test_high_altitude_arc_lies_inside_2d_arc(self):
-        """The 3-D arc must sit closer to RX than the equivalent 2-D arc, by
-        roughly the altitude geometry (~2 km for 9 km ASL at this baseline)."""
-        from services.geo import C_KM_US
-        arc_2d = _build_single_node_arc(self.DELAY_US, self.CFG)
-        arc_3d = _build_single_node_arc(self.DELAY_US, self.CFG, alt_m=self.ALT_M)
-        assert arc_2d is not None and arc_3d is not None
-        assert len(arc_2d) == len(arc_3d) == 37  # same bearing sweep
-        shrinks = []
-        for (lat2, lon2), (lat3, lon3) in zip(arc_2d, arc_3d):
-            r2 = _range_from_rx_km(lat2, lon2, self.CFG)
-            r3 = _range_from_rx_km(lat3, lon3, self.CFG)
-            assert r3 < r2  # strictly inside on every bearing
-            shrinks.append(r2 - r3)
-        # Altitude geometry: each leg shortens by ~h²/2R → ~2 km total here.
-        assert min(shrinks) > 0.5 and max(shrinks) < 8.0
-        # Sanity: the delay still describes a real locus.
-        assert self.DELAY_US * C_KM_US > ARC_MIN_DIFFERENTIAL_KM
-
-    def test_arc_points_satisfy_3d_differential(self):
-        """Ground-truth-style check: every point of the altitude-corrected
-        arc, lifted to the target altitude, reproduces the measured
-        differential."""
-        from services.geo import C_KM_US
-        measured_km = self.DELAY_US * C_KM_US
-        arc = _build_single_node_arc(self.DELAY_US, self.CFG, alt_m=self.ALT_M)
-        assert arc is not None
-        for lat, lon in arc:
-            d = _differential_3d_km(lat, lon, self.ALT_M, self.CFG)
-            assert d == pytest.approx(measured_km, abs=0.02)
-
-    def test_2d_arc_fails_3d_differential(self):
-        """The bias being fixed: the old 2-D arc's points, lifted to the
-        target altitude, overshoot the measured differential (staging: by
-        2.4–3.3 km at this geometry) — they are NOT on the 3-D ellipse."""
-        from services.geo import C_KM_US
-        measured_km = self.DELAY_US * C_KM_US
-        arc_2d = _build_single_node_arc(self.DELAY_US, self.CFG)
-        assert arc_2d is not None
-        for lat, lon in arc_2d:
-            d = _differential_3d_km(lat, lon, self.ALT_M, self.CFG)
-            assert d > measured_km + 1.0
-
-    def test_track_altitude_is_used(self):
-        """A track carrying alt_m must solve identically to the explicit
-        alt_m argument."""
-        via_track = _build_single_node_arc(_FakeTrack(self.DELAY_US, alt_m=self.ALT_M), self.CFG)
-        via_arg = _build_single_node_arc(self.DELAY_US, self.CFG, alt_m=self.ALT_M)
-        assert via_track == via_arg
+    def test_track_altitude_is_ignored(self):
+        """A track carrying alt_m solves identically to the plain
+        float-delay call — altitude never reaches the geometry."""
+        via_track = _build_single_node_arc(
+            _FakeTrack(self.DELAY_US, alt_m=9000.0), self.CFG,
+        )
+        via_delay = _build_single_node_arc(self.DELAY_US, self.CFG)
+        assert via_track == via_delay
         assert via_track is not None
 
-    def test_no_altitude_falls_back_to_2d(self):
-        """A track with no altitude (None/0 — radar-only pr* tracks) must get
-        exactly the old 2-D ground-plane arc, not an invented altitude."""
-        arc_2d = _build_single_node_arc(self.DELAY_US, self.CFG)
-        assert arc_2d is not None
-        assert _build_single_node_arc(_FakeTrack(self.DELAY_US), self.CFG) == arc_2d
-        assert _build_single_node_arc(_FakeTrack(self.DELAY_US, alt_m=0.0), self.CFG) == arc_2d
-        assert _build_single_node_arc(self.DELAY_US, self.CFG, alt_m=None) == arc_2d
-
-    def test_inconsistent_delay_and_altitude_yield_no_arc(self):
-        """A differential smaller than the 3-D minimum any point at the
-        claimed altitude can produce (12 µs ≈ 3.6 km at 12 km ASL) means the
-        delay and altitude are mutually inconsistent — no honest arc exists."""
-        cfg = {**self.CFG, "beam_width_deg": 360, "max_bistatic_range_km": 100.0}
-        assert _build_single_node_arc(12.0, cfg, alt_m=12000.0) is None
-
-    def test_small_differential_high_altitude_outer_crossing(self):
-        """When the sub-RX point falls outside the ellipsoid's altitude-plane
-        cross-section (small differential, high altitude) the per-bearing
-        bisection must restart its bracket at the dip and still land exactly
-        on the 3-D locus for the bearings that reach it."""
-        from services.geo import C_KM_US
-        cfg = {**self.CFG, "beam_width_deg": 360, "max_bistatic_range_km": 100.0}
-        delay_us, alt_m = 20.0, 10000.0
-        arc = _build_single_node_arc(delay_us, cfg, alt_m=alt_m)
-        assert arc is not None and len(arc) >= 2
+    def test_arc_points_satisfy_2d_differential(self):
+        """Every emitted point sits on the measured 2-D delay ellipse."""
+        from services.geo import C_KM_US, bistatic_differential_km
+        measured_km = self.DELAY_US * C_KM_US
+        arc = _build_single_node_arc(self.DELAY_US, self.CFG)
+        assert arc is not None
         for lat, lon in arc:
-            d = _differential_3d_km(lat, lon, alt_m, cfg)
-            assert d == pytest.approx(delay_us * C_KM_US, abs=0.02)
+            d = bistatic_differential_km(
+                self.CFG["tx_lat"], self.CFG["tx_lon"],
+                self.CFG["rx_lat"], self.CFG["rx_lon"],
+                lat, lon,
+            )
+            assert d == pytest.approx(measured_km, abs=1.0)
+
+    @pytest.mark.parametrize("alt_m", [None, 0.0, 9000.0, 40000.0])
+    def test_alt_none_zero_high_all_identical(self, alt_m):
+        """None, zero and a high altitude all produce the same arc — there
+        is no altitude branch left to diverge on."""
+        baseline = _build_single_node_arc(self.DELAY_US, self.CFG)
+        arc = _build_single_node_arc(
+            _FakeTrack(self.DELAY_US, alt_m=alt_m), self.CFG,
+        )
+        assert arc == baseline
+        assert arc is not None
 
 
 # ─── Differential-range floor (blob-stub suppression) ────────────────────────
@@ -1221,47 +1152,30 @@ class TestSingleNodeArcCache:
         assert cached == fresh
         assert cached is not None  # sanity: these inputs produce a real arc
 
-    # ── Altitude bucket in the fingerprint (FIX A cache correctness) ────────
+    # ── Altitude no longer feeds the fingerprint (2026-08 pure-delay arcs) ──
 
-    def test_alt_bucket_change_rebuilds(self, monkeypatch):
-        # 3000 m and 3600 m land in different ARC_ALT_BUCKET_M (500 m)
-        # buckets — the altitude-corrected arc differs, so it must rebuild.
+    def test_altitude_change_does_not_invalidate_cache(self, monkeypatch):
+        # Arcs are a pure function of the measured delay now — altitude
+        # plays no part in the fingerprint, so a track climbing between
+        # calls must be a cache hit: the exact same cached object comes
+        # back, not just an equal one.
         calls = _spy_build_count(monkeypatch)
         cfg, touched = dict(_NODE_CFG), set()
-        a1 = _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95, alt_m=3000.0), cfg, touched)
-        a2 = _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95, alt_m=3600.0), cfg, touched)
+        a1 = _fp._cached_single_node_arc(
+            "abc", _ArcTrack(80.0, 33.65, -84.95, alt_m=3000.0), cfg, touched)
+        a2 = _fp._cached_single_node_arc(
+            "abc", _ArcTrack(80.0, 33.65, -84.95, alt_m=9000.0), cfg, touched)
+        assert calls["n"] == 1
+        assert a1 is a2
+
+    def test_delay_change_still_rebuilds_regardless_of_altitude(self, monkeypatch):
+        calls = _spy_build_count(monkeypatch)
+        cfg, touched = dict(_NODE_CFG), set()
+        _fp._cached_single_node_arc(
+            "abc", _ArcTrack(80.0, 33.65, -84.95, alt_m=3000.0), cfg, touched)
+        _fp._cached_single_node_arc(
+            "abc", _ArcTrack(85.0, 33.65, -84.95, alt_m=3000.0), cfg, touched)
         assert calls["n"] == 2
-        assert a1 != a2
-
-    def test_alt_within_bucket_hits(self, monkeypatch):
-        # A climb inside one 500 m bucket (3000 → 3200 m) must stay a cache
-        # hit — that is the whole point of quantising the altitude.
-        calls = _spy_build_count(monkeypatch)
-        cfg, touched = dict(_NODE_CFG), set()
-        a1 = _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95, alt_m=3000.0), cfg, touched)
-        a2 = _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95, alt_m=3200.0), cfg, touched)
-        assert calls["n"] == 1
-        assert a1 == a2
-
-    def test_cached_solve_uses_bucket_centre(self):
-        # The solve runs at the bucket centre, keeping the cached arc an
-        # exact function of the fingerprint: 3200 m quantises to 3000 m.
-        cfg, touched = dict(_NODE_CFG), set()
-        cached = _fp._cached_single_node_arc(
-            "abc", _ArcTrack(80.0, 33.65, -84.95, alt_m=3200.0), cfg, touched)
-        fresh = _fp._build_single_node_arc(80.0, cfg, alt_m=3000.0)
-        assert cached == fresh
-        assert cached is not None
-
-    def test_low_altitude_folds_into_ground_plane(self, monkeypatch):
-        # Bucket 0 (< 250 m) is the 2-D ground-plane solve, sharing its
-        # fingerprint with the no-altitude case — one entry, one build.
-        calls = _spy_build_count(monkeypatch)
-        cfg, touched = dict(_NODE_CFG), set()
-        a1 = _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95, alt_m=200.0), cfg, touched)
-        a2 = _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95), cfg, touched)
-        assert calls["n"] == 1
-        assert a1 == a2 == _fp._build_single_node_arc(80.0, cfg)
 
 
 # ─── Arc cache wired into build_combined_aircraft_json ──────────────────────

@@ -9,19 +9,19 @@
 // "Pos Error" both use this helper so they always agree.
 //
 // The locus is rebuilt from the entry's freshest measured delay via
-// buildBistaticArc — the same 3D-corrected curve DetectionArcs draws — never
-// from stale afterglow strokes, falling back to the backend-emitted 2D
-// ambiguity_arc when node geometry is missing (useNodes still loading).
+// buildBistaticArc — the same ground-projected curve DetectionArcs draws
+// (altitude-agnostic, 2026-08 direction) — never from stale afterglow
+// strokes, falling back to the backend-emitted 2D ambiguity_arc when node
+// geometry is missing (useNodes still loading).
 
 import { buildBistaticArc } from "./bistaticArc";
 import type { NodeGeometry } from "./bistaticArc";
 import { nearestPointOnPolyline } from "./geo";
-import { M_PER_FT } from "./units";
 
 // Rebuilt-locus cache.  Keyed by the same measurement identity the arc
-// buffer dedupes on (hex + node + delay + altitude bucket); bounded by a
-// wholesale clear — at ≤ a few live arc tracks per tick the cache never
-// legitimately grows past a few hundred entries.
+// buffer dedupes on (hex + node + delay); bounded by a wholesale clear — at
+// ≤ a few live arc tracks per tick the cache never legitimately grows past
+// a few hundred entries.
 const _locusCache = new Map<string, [number, number][] | null>();
 const _LOCUS_CACHE_MAX = 512;
 
@@ -40,12 +40,10 @@ export function resolveArcPoints(
 ): [number, number][] | null {
   const delay = ac.delay_us;
   if (node && ac.node_id && delay != null && delay > 0) {
-    const altM = Number.isFinite(ac.alt_baro) ? (ac.alt_baro as number) * M_PER_FT : null;
-    const altBucket = altM != null ? Math.round(altM / 500) : -1;
-    const key = `${ac.hex}|${ac.node_id}|${delay}|${altBucket}`;
+    const key = `${ac.hex}|${ac.node_id}|${delay}`;
     let pts = _locusCache.get(key);
     if (pts === undefined) {
-      pts = buildBistaticArc(delay, node, altM) ?? null;
+      pts = buildBistaticArc(delay, node) ?? null;
       if (_locusCache.size >= _LOCUS_CACHE_MAX) _locusCache.clear();
       _locusCache.set(key, pts);
     }

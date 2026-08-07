@@ -98,18 +98,6 @@ YAGI_MAX_RANGE_KM = 50.0             # Default Yagi max range (km)
 # floor exemption in services/track_gates.py's track_entry.
 ARC_MIN_DIFFERENTIAL_KM = 3.0
 
-# Altitude quantisation for the altitude-corrected arc solve and its cache
-# key.  The arc builder solves the 3-D delay ellipsoid at the target's known
-# altitude, rounded to the nearest multiple of this bucket, and the cache
-# fingerprint carries the bucket index — so a target climbing or descending
-# within one bucket keeps hitting the cache instead of rebuilding a 37-point
-# arc every frame.  500 m caps the quantisation error at 250 m of altitude,
-# negligible against the 3.6 km median (14.9 km worst-case) ground-plane bias
-# the correction removes.  Altitudes that quantise to bucket 0 (< 250 m) use
-# the 2-D ground-plane solve, whose error at that height is below the arc's
-# own resolution.
-ARC_ALT_BUCKET_M = 500.0
-
 # Anomaly types an arc-only (no fresh ADS-B) track may carry.  A single-node
 # delay measurement constrains almost nothing about behaviour, so most anomaly
 # streams are meaningless noise there — only physically loud signals survive:

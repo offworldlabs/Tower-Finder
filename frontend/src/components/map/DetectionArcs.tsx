@@ -5,8 +5,6 @@ import L from "leaflet";
 import { ARC_HOLD_MS, ARC_FADE_MS, ARC_TOTAL_LIFE_MS, dopplerColor } from "./constants";
 import { buildBistaticArc } from "./bistaticArc";
 
-const FT_TO_M = 0.3048;
-
 /* ── DetectionArcs: imperative Leaflet polylines with timer-driven opacity fade.
 
       Each arc in the buffer is rendered as its own polyline that fades on
@@ -90,18 +88,16 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
           // offset parallel strokes for one measurement — and collapsed a
           // ~30 km arc to a ~1 µs blob when the icon sat near the TX–RX
           // baseline.)  The rebuilt locus spans the node's whole detection
-          // area (same semantics as the backend arc), with the entry's
-          // aircraft altitude applied as a 3D correction the backend's 2D
-          // arc lacks.  Falls back to the backend arc when node geometry
-          // (useNodes still loading) or delay_us is missing.
+          // area (same semantics as the backend arc) and is altitude-agnostic
+          // (2026-08 direction) — entry.alt_baro is display data only here,
+          // it does not shape the geometry.  Falls back to the backend arc
+          // when node geometry (useNodes still loading) or delay_us is
+          // missing.
           let arcPoints = entry.ambiguity_arc;
           if (entry.node_id && entry.delay_us != null && entry.delay_us > 0) {
             const node = nodesByIdRef?.current?.[entry.node_id];
             if (node) {
-              const altM = Number.isFinite(entry.alt_baro)
-                ? entry.alt_baro * FT_TO_M
-                : null;
-              const rebuilt = buildBistaticArc(entry.delay_us, node, altM);
+              const rebuilt = buildBistaticArc(entry.delay_us, node);
               if (rebuilt && rebuilt.length >= 2) arcPoints = rebuilt;
             }
           }
