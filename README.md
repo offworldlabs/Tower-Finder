@@ -72,6 +72,24 @@ The API runs at `http://localhost:8000`. Interactive docs at `/docs`. Add your
 Maprad.io API key to `backend/.env` for tower search; the live map does not need
 it.
 
+#### Database migrations
+
+The schema is owned by Alembic (`backend/migrations/`). `create_all` runs only
+in the test suite, which sets `RETINA_SCHEMA_SOURCE=create_all`; everywhere else
+`deploy/start.sh` applies migrations on boot.
+
+To change the schema, edit the models, then from `backend/`:
+
+```bash
+uv run alembic revision --autogenerate -m "what changed"
+uv run alembic upgrade head
+```
+
+Review the generated file before committing. Anything other than `create_table`
+must go through `op.batch_alter_table`, because SQLite cannot `ALTER`.
+`RETINA_DB_PATH` points Alembic at a scratch file if you want to try a
+migration without touching `backend/data/users.db`.
+
 ### Frontend
 
 `just setup` already installed the dependencies, and `just up` runs this alongside

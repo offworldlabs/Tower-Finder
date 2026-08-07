@@ -76,6 +76,20 @@ python3 /app/deploy/render-nginx-config.py \
 nginx -t
 echo "[start.sh] Rendered nginx config for RETINA_ENV=${RETINA_ENV} (${HOST_MAIN})"
 
+# ── Database migrations ─────────────────────────────────────────────────────
+# create_all is guarded off outside tests (core/users.py), so this is the only
+# thing that builds or updates the schema. `set -e` makes a failure here abort
+# the boot, which is deliberate: a server started against a half-applied schema
+# fails later, at the first request touching the missing column, and the deploy
+# health gate reports this instead.
+#
+# The first run on an existing droplet finds tables but no alembic_version.
+# Revision 0001 detects that and records itself without recreating them, so no
+# `alembic stamp` is needed by hand.
+echo "[start.sh] Applying database migrations..."
+(cd /app/backend && python3 -m alembic upgrade head)
+echo "[start.sh] Migrations applied"
+
 # ── uvicorn supervision: exit on a persistent fast crash-loop ────────────────
 # The fast in-process restart below absorbs *transient* uvicorn crashes without
 # recreating the whole container. But if uvicorn crash-loops persistently the

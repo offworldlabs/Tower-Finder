@@ -75,6 +75,29 @@ advertised. Get them from the DigitalOcean console or your own `~/.ssh/config`.
 
 All state is **in-memory**. A container restart loses all connected nodes, active tracks, and in-flight frame data. State is snapshotted to disk every 60 s and restored on next startup (trust scores, reputations, accuracy samples, node identities).
 
+### Database migrations
+
+Applied automatically by `deploy/start.sh` on every container start, before
+uvicorn. A failed migration aborts the boot and the deploy health gate reports
+it; the container will not serve against a half-applied schema.
+
+To see where a droplet stands:
+
+```bash
+ssh retina-prod 'cd /opt/tower-finder && docker compose exec tower-finder \
+    sh -c "cd /app/backend && python3 -m alembic current"'
+```
+
+Redeploying an older image does not undo a migration. The older code's
+`upgrade head` stops at the revision it knows about and leaves anything newer in
+place, which is harmless for an additive revision and wrong for a destructive
+one. To actually roll back, downgrade first and then redeploy:
+
+```bash
+ssh retina-prod 'cd /opt/tower-finder && docker compose exec tower-finder \
+    sh -c "cd /app/backend && python3 -m alembic downgrade <revision>"'
+```
+
 ---
 
 ## Alert reference

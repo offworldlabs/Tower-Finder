@@ -1,5 +1,7 @@
 import asyncio
 import os
+import tempfile
+from pathlib import Path
 
 import pytest
 from sqlalchemy import event
@@ -8,6 +10,13 @@ from sqlalchemy import event
 os.environ.setdefault("RETINA_ENV", "test")
 # Needed so the /api/radar/detections auth guard is active in tests.
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
+# The suite truncates tables and creates schema, so it must never be pointed at
+# a real database. Without this it runs against backend/data/users.db, which is
+# the developer's own.
+os.environ.setdefault("RETINA_DB_PATH", str(Path(tempfile.gettempdir()) / "retina-test-users.db"))
+# The suite builds its schema with create_all rather than a migration run per
+# session. tests/test_migrations.py asserts the two agree.
+os.environ.setdefault("RETINA_SCHEMA_SOURCE", "create_all")
 
 
 @pytest.fixture(autouse=True)

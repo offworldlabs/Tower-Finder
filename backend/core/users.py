@@ -137,6 +137,15 @@ async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
 
 
 async def create_db_and_tables() -> None:
+    """Create tables directly. Migrations own the schema everywhere except tests.
+
+    `create_all` never alters an existing table, so leaving it as the deploy path
+    would silently skip every column added after a table first appeared. The test
+    suite still uses it: it is faster than a migration run per session, and the
+    equivalence between the two is asserted in tests/test_migrations.py.
+    """
+    if os.getenv("RETINA_SCHEMA_SOURCE", "alembic") != "create_all":
+        return
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
