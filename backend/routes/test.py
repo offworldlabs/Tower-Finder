@@ -578,6 +578,72 @@ async def mlat_verification():
     )
 
 
+@router.get("/api/test/mlat-history")
+async def mlat_history(
+    hex: str | None = None, all: int = 0, minutes: float = 30.0,
+):
+    """Per-solve MLAT history from the last ~30 minutes.
+
+    ``?hex=mn...`` returns the published solves behind one map marker
+    (matched on the solver-minted mn<sha256[:10]> hex), newest first, plus
+    ``rejects_nearby``: gate-rejected solves within 10 km of the marker's
+    newest published position — the signal for "the gates starved this track
+    and the display held a stale point".  ``?all=1`` dumps the whole window
+    for scripted debugging.  Records are written by the solver worker
+    (services.tasks.solver._record_solve_history).
+    """
+    minutes = max(0.0, min(minutes, 35.0))
+    cutoff_ms = int((time.time() - minutes * 60.0) * 1000)
+    records = [
+        r for r in list(state.mlat_solve_history) if r["ts_ms"] >= cutoff_ms
+    ]
+    records.reverse()  # newest first
+
+    if all:
+        payload = {
+            "window_minutes": minutes,
+            "n_records": len(records),
+            "records": records[:1000],
+        }
+        return Response(content=orjson.dumps(payload), media_type="application/json")
+
+    norm = (hex or "").strip().lower()
+    if not norm:
+        return Response(
+            content=orjson.dumps({"error": "pass ?hex=mn... or ?all=1"}),
+            media_type="application/json",
+            status_code=400,
+        )
+    solves = [r for r in records if r.get("solver_hex") == norm]
+    rejects_nearby: list[dict] = []
+    if solves:
+        ref = solves[0]
+        ref_lat, ref_lon = ref.get("raw_lat"), ref.get("raw_lon")
+        if ref_lat is not None and ref_lon is not None:
+            rejects_nearby = [
+                r
+                for r in records
+                if r.get("outcome") != "published"
+                and r.get("raw_lat") is not None
+                and haversine_km(ref_lat, ref_lon, r["raw_lat"], r["raw_lon"]) <= 10.0
+            ]
+    payload = {
+        "hex": norm,
+        "window_minutes": minutes,
+        "n_solves": len(solves),
+        "solves": solves[:500],
+        "rejects_nearby": {
+            "n": len(rejects_nearby),
+            "by_outcome": {
+                o: sum(1 for r in rejects_nearby if r["outcome"] == o)
+                for o in sorted({r["outcome"] for r in rejects_nearby})
+            },
+            "records": rejects_nearby[:200],
+        },
+    }
+    return Response(content=orjson.dumps(payload), media_type="application/json")
+
+
 @router.get("/api/test/mlat-accuracy")
 async def mlat_accuracy():
     """Rolling MLAT solver accuracy stats aggregated from the last 5 000 matched tracks.

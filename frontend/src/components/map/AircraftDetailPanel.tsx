@@ -6,7 +6,7 @@ import { trailToCsv, downloadCsv } from "./trailExport";
 import { copyToClipboard, toast } from "./toast";
 import { M_PER_FT, KNOTS_PER_MS, MS_PER_KNOT } from "./units";
 
-export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError, detectingNodes = [] }) {
+export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError, detectingNodes = [], solveHistory = null }) {
   if (!ac) return null;
 
   const err = computeError(ac.hex, ac);
@@ -261,6 +261,12 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
           <MlatVerificationSection solverHex={ac.hex} />
         )}
 
+        {/* Per-solve history behind this marker (fetched by LiveAircraftMap,
+            which also draws the raw solve dots on the map) */}
+        {ac.position_source === "multinode_solve" && solveHistory?.hex === ac.hex && (
+          <MlatSolveHistorySection history={solveHistory} />
+        )}
+
         {/* Accuracy */}
         <div className="detail-section">
           <div className="detail-section-title">Accuracy</div>
@@ -455,12 +461,86 @@ function MlatVerificationSection({ solverHex }) {
           <Field label="Nodes" value={match.n_nodes} />
         </>
       )}
-      <Field label="Match rate" value={`${data.n_matched}/${data.n_solves} (${data.match_rate_pct}%)`} />
+      {/* The pct is n_matched / n_unique_aircraft (duplicate solver cycles for
+          one aircraft collapse), so render the same denominator — showing
+          n_solves here made "2/5 (50%)" look like a math error. Falls back to
+          n_solves for payloads predating n_unique_aircraft. */}
+      <Field label="Match rate" value={`${data.n_matched}/${data.n_unique_aircraft ?? data.n_solves} (${data.match_rate_pct}%)`} />
       {data.position && <Field label="Median Pos" value={`${data.position.median_km} km`} />}
       {data.position && <Field label="P95 Pos" value={`${data.position.p95_km} km`} />}
       {accuracy?.n_samples > 0 && <Field label="Rolling N" value={accuracy.n_samples} />}
       {accuracy?.n_samples > 0 && <Field label="Rolling P95" value={`${accuracy.p95_km} km`} />}
       {nodeStats && <Field label={`Nodes=${match.n_nodes} P95`} value={`${nodeStats.p95_km} km`} />}
+    </div>
+  );
+}
+
+function MlatSolveHistorySection({ history }) {
+  // Per-solve records behind this marker over the last ~30 min, newest first
+  // (GET /api/test/mlat-history?hex=...).  gt_error_km is frozen at solve
+  // time against the nearest GT trail point — independent of the display's
+  // dead-reckoning and of the feed's per-frame ground_truth_hex re-binding —
+  // so a hex change down the gt column is a visible GT re-bind.
+  const solves = history?.solves || [];
+  const rejects = history?.rejects_nearby;
+  if (!solves.length && !rejects?.n) return null;
+
+  const errClass = (e) => (e == null ? "" : e < 3 ? "good" : e < 8 ? "warn" : "bad");
+  const ago = (ts) => {
+    const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+    return s < 60 ? `-${s}s` : `-${Math.round(s / 60)}m`;
+  };
+  const cell = { padding: "2px 6px", whiteSpace: "nowrap" };
+
+  return (
+    <div className="detail-section">
+      <div className="detail-section-title" style={{ color: "#e879f9" }}>
+        Solve History ({solves.length} in {history.window_minutes} min)
+      </div>
+      {solves.length > 0 && (
+        <div style={{ maxHeight: 180, overflowY: "auto", fontSize: 11 }}>
+          <table style={{ borderCollapse: "collapse", width: "100%" }}>
+            <thead>
+              <tr style={{ color: "#64748b", textAlign: "left" }}>
+                <th style={cell}>t</th>
+                <th style={cell}>N</th>
+                <th style={cell}>GT err</th>
+                <th style={cell}>rmsD</th>
+                <th style={cell}>rmsF</th>
+                <th style={cell}>truth</th>
+              </tr>
+            </thead>
+            <tbody>
+              {solves.map((s, i) => (
+                <tr key={`${s.ts_ms}-${i}`} style={{ borderTop: "1px solid #1e293b" }}>
+                  <td style={{ ...cell, color: "#94a3b8" }}>{ago(s.ts_ms)}</td>
+                  <td style={cell}>{s.n_nodes}</td>
+                  <td style={cell}>
+                    <span className={errClass(s.gt_error_km)}>
+                      {s.gt_error_km != null ? `${s.gt_error_km.toFixed(2)} km` : "—"}
+                    </span>
+                  </td>
+                  <td style={cell}>{s.rms_delay}</td>
+                  <td style={cell}>{s.rms_doppler}</td>
+                  <td style={{ ...cell, color: "#94a3b8" }}>{s.gt_hex || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {rejects?.n > 0 && (
+        <Field
+          label="Rejects nearby"
+          value={
+            <span style={{ color: "#f59e0b" }} title="Gate-rejected solves within 10 km of the latest published solve">
+              {Object.entries(rejects.by_outcome || {})
+                .map(([k, v]) => `${k.replace(/^rejected_|^n2_/, "")}:${v}`)
+                .join("  ") || rejects.n}
+            </span>
+          }
+        />
+      )}
     </div>
   );
 }

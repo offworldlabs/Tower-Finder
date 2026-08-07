@@ -26,6 +26,7 @@ from services.calibration import record_adsb_calibration
 from services.geo import haversine_km as _haversine_km
 from services.geo import in_node_beam as _in_node_beam
 from services.geo import offset_latlon_m
+from services.id_utils import multinode_hex_from_key
 
 _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 
@@ -647,6 +648,120 @@ def _resolve_n2_chi2(s_in: dict, node_cfgs) -> float | None:
 resolve_n2_chi2 = _resolve_n2_chi2
 
 
+# ── Per-solve history (debug) ────────────────────────────────────────────────
+# Every solver outcome — published or gate-rejected — is appended to
+# state.mlat_solve_history so /api/test/mlat-history can decompose a bad map
+# marker into raw solves, smoothing, dead-reckoning, GT binding and gate
+# rejections after the fact.  Retention ~30 min (age-pruned on write, hard
+# capped by the deque's maxlen).
+_MLAT_HISTORY_MAX_AGE_MS = 35 * 60 * 1000
+# GT trail points are pushed every 2 s; beyond this gap the trail is stale
+# enough that a stamp would mislead more than inform.
+_MLAT_HISTORY_GT_MAX_DT_S = 90.0
+
+
+def _nearest_gt(lat: float, lon: float, ts_s: float) -> dict:
+    """Nearest ground-truth trail point at solve time, no distance threshold.
+
+    Frozen into each history record so "how far was this solve really off,
+    and from whom" survives later display dead-reckoning and GT re-binding.
+    Timestamp-closest point per trail — the same rule the MLAT verification
+    matcher uses.
+    """
+    best_hex = best_km = best_pt = None
+    for gt_hex, trail in list(state.ground_truth_trails.items()):
+        if not trail:
+            continue
+        pt = min(trail, key=lambda p: abs(p[3] - ts_s))
+        if abs(pt[3] - ts_s) > _MLAT_HISTORY_GT_MAX_DT_S:
+            continue
+        d = _haversine_km(lat, lon, pt[0], pt[1])
+        if best_km is None or d < best_km:
+            best_hex, best_km, best_pt = gt_hex, d, pt
+    if best_hex is None:
+        return {"gt_hex": None, "gt_error_km": None, "gt_lat": None, "gt_lon": None}
+    return {
+        "gt_hex": best_hex,
+        "gt_error_km": round(best_km, 3),
+        "gt_lat": round(best_pt[0], 6),
+        "gt_lon": round(best_pt[1], 6),
+    }
+
+
+def _record_solve_history(
+    outcome: str,
+    s_in,
+    result: dict | None,
+    *,
+    solve_key: str | None = None,
+    raw_lat: float | None = None,
+    raw_lon: float | None = None,
+    displacement_km: float | None = None,
+    chi2_per_dof: float | None = None,
+) -> None:
+    """Append one solve outcome to state.mlat_solve_history.
+
+    ``raw_lat/raw_lon`` is the solver's own position before EWMA smoothing;
+    for published records ``lat/lon`` additionally carries the smoothed
+    position actually stored in multinode_tracks.  Rejected solves have no
+    track key (it is minted after the gates), so ``solver_hex`` is None for
+    them and lookup by map ID returns published records plus nearby rejects.
+    """
+    r = result if isinstance(result, dict) else {}
+    s = s_in if isinstance(s_in, dict) else {}
+    now_ms = int(time.time() * 1000)
+    if raw_lat is None:
+        raw_lat = r.get("lat")
+        raw_lon = r.get("lon")
+    ig = s.get("initial_guess") or {}
+    if (
+        displacement_km is None
+        and raw_lat is not None
+        and ig.get("lat") and ig.get("lon")
+    ):
+        displacement_km = _haversine_km(
+            float(ig["lat"]), float(ig["lon"]), float(raw_lat), float(raw_lon)
+        )
+    rec = {
+        "ts_ms": now_ms,
+        "measurement_ts_ms": int(r.get("timestamp_ms") or s.get("timestamp_ms") or 0),
+        "outcome": outcome,
+        "solve_key": solve_key,
+        "solver_hex": multinode_hex_from_key(solve_key) if solve_key else None,
+        "n_nodes": int(r.get("n_nodes") or s.get("n_nodes") or 0),
+        "contributing_node_ids": list(r.get("contributing_node_ids") or []),
+        "adsb_hex": s.get("adsb_hex"),
+        "raw_lat": round(float(raw_lat), 6) if raw_lat is not None else None,
+        "raw_lon": round(float(raw_lon), 6) if raw_lon is not None else None,
+        "lat": round(float(r["lat"]), 6) if outcome == "published" else None,
+        "lon": round(float(r["lon"]), 6) if outcome == "published" else None,
+        "alt_m": round(float(r.get("alt_m") or 0), 0),
+        "vel_east": round(float(r.get("vel_east") or 0), 1),
+        "vel_north": round(float(r.get("vel_north") or 0), 1),
+        "rms_delay": round(float(r.get("rms_delay") or 0), 3),
+        "rms_doppler": round(float(r.get("rms_doppler") or 0), 2),
+        "chi2_per_dof": round(float(chi2_per_dof), 3) if chi2_per_dof is not None else None,
+        "guess_lat": round(float(ig["lat"]), 6) if ig.get("lat") else None,
+        "guess_lon": round(float(ig["lon"]), 6) if ig.get("lon") else None,
+        "guess_alt_km": ig.get("alt_km"),
+        "displacement_km": round(displacement_km, 3) if displacement_km is not None else None,
+    }
+    if raw_lat is not None and raw_lon is not None:
+        meas_ts_s = (rec["measurement_ts_ms"] or now_ms) / 1000.0
+        rec.update(_nearest_gt(float(raw_lat), float(raw_lon), meas_ts_s))
+    else:
+        rec.update({"gt_hex": None, "gt_error_km": None, "gt_lat": None, "gt_lon": None})
+    buf = state.mlat_solve_history
+    buf.append(rec)
+    # Age-prune from the left; append/popleft are atomic, and a racing second
+    # writer at worst re-checks an already-fresh head.
+    try:
+        while buf and now_ms - buf[0]["ts_ms"] > _MLAT_HISTORY_MAX_AGE_MS:
+            buf.popleft()
+    except IndexError:
+        pass
+
+
 def _process_solver_item(item: tuple, solve_fn) -> dict | None:
     """Process a single solver queue entry. Returns the solver result (or None).
 
@@ -693,6 +808,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             )
             state.bump_counter("solver_failures")
             state.bump_counter("solver_fail_rms_delay")
+            _record_solve_history("rejected_rms_delay", s_in, result)
             return result
         rms_doppler = result.get("rms_doppler", 0) or 0
         if rms_doppler > _SOLVER_RMS_DOPPLER_MAX_HZ:
@@ -704,6 +820,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             )
             state.bump_counter("solver_failures")
             state.bump_counter("solver_fail_rms_doppler")
+            _record_solve_history("rejected_rms_doppler", s_in, result)
             return result
         # Reject solutions outside the beam coverage of contributing nodes.
         # For n=2 the solver has two geometric solutions (two bistatic ellipse
@@ -725,6 +842,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                     )
                     state.bump_counter("solver_failures")
                     state.bump_counter("solver_fail_beam")
+                    _record_solve_history("rejected_beam", s_in, result)
                     return None
         # Reject if the solution drifted more than _MAX_DISPLACEMENT_KM from
         # the ADS-B initial_guess. For N=2 this catches mirror-point ghosts
@@ -751,6 +869,10 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                     )
                     state.bump_counter("solver_failures")
                     state.bump_counter("solver_fail_displacement")
+                    _record_solve_history(
+                        "rejected_displacement", s_in, result,
+                        displacement_km=_disp_km,
+                    )
                     return None
         # n=2 publication gate.  The pairing must have been fitted and passed;
         # an unfitted one (chi2_per_dof None — too short an observation span so
@@ -768,6 +890,9 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                     result.get("lat", 0), result.get("lon", 0),
                 )
                 state.bump_counter("n2_unconfirmed")
+                _record_solve_history(
+                    "n2_unconfirmed", s_in, result, chi2_per_dof=_chi2,
+                )
                 return result
             if not _claim_track_pair(s_in, _chi2):
                 # A better-fitting pairing already owns one of these two
@@ -777,6 +902,9 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                 # this catches.  Measured offline, competition of this kind is
                 # worth ~9 points of n=2 ghost rate at no cost in real tracks.
                 state.bump_counter("n2_unconfirmed")
+                _record_solve_history(
+                    "n2_outbid", s_in, result, chi2_per_dof=_chi2,
+                )
                 return result
         state.bump_counter("solver_successes")
         with state.solver_latency_lock:
@@ -835,6 +963,9 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             # _MN_POS_HISTORY_LOCK (inside the smoother) is never taken in
             # reverse anywhere.
             key = _multinode_track_key(result, _adsb_hex)
+            # Raw solve position, before smoothing — the history record keeps
+            # both so display-side drift can be separated from solver error.
+            _raw_lat, _raw_lon = result["lat"], result["lon"]
             # Multi-epoch averaging cuts single-frame noise by ~√K.  Originally
             # n=2-with-ADS-B only — production showed dark targets (where MLAT
             # is the only position source) were the one population left raw.
@@ -858,12 +989,19 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
         archive_record = dict(result)
         archive_record["solve_ts_ms"] = int(time.time() * 1000)
         state.track_archive_buffer.append(archive_record)
+        _record_solve_history(
+            "published", s_in, result,
+            solve_key=key,
+            raw_lat=_raw_lat, raw_lon=_raw_lon,
+            chi2_per_dof=s_in.get("chi2_per_dof") if isinstance(s_in, dict) else None,
+        )
     elif result is not None:
         # The LM ran but did not converge (success=False).  Previously this
         # path incremented nothing — staging showed hundreds of solves
         # vanishing with no observable reason.
         state.bump_counter("solver_failures")
         state.bump_counter("solver_fail_unconverged")
+        _record_solve_history("unconverged", s_in, result)
     return result
 
 

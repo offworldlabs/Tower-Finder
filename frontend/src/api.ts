@@ -86,6 +86,17 @@ export async function fetchMlatAccuracy(signal?: AbortSignal) {
   return res.json();
 }
 
+// Per-solve history for one MLAT map marker (mn<sha256[:10]> hex): the raw
+// solves behind the marker over the last ~30 min, plus gate rejections near
+// its position. Debug surface — see AircraftDetailPanel's solve history.
+export async function fetchMlatHistory(hex: string, signal?: AbortSignal) {
+  if (!hex) return null;
+  const res = await fetch(
+    `${API_BASE}/test/mlat-history?hex=${encodeURIComponent(hex)}`, { signal });
+  if (!res.ok) return null;
+  return res.json();
+}
+
 // Returns the current user dict, or null when not authenticated (401) or unreachable.
 export async function fetchMe() {
   try {

@@ -48,7 +48,7 @@ import {
   InBeamDiagnostic,
 } from "./map";
 
-import { fetchNodeVerification, fetchMlatVerification } from "../api";
+import { fetchNodeVerification, fetchMlatVerification, fetchMlatHistory } from "../api";
 import { defaultsGroundTruthOff } from "../utils/domains";
 import { usePersistedState } from "./map/usePersistedState";
 import { parseHash, useHashWriter, encodeLayers, decodeLayers } from "./map/useUrlHashState";
@@ -536,6 +536,38 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
   }, [map, groundTruthRef, smoothRef]);
 
   return null;
+});
+
+/* ── MlatSolveHistoryLayer: raw per-solve positions behind the selected MLAT
+      marker (from /api/test/mlat-history), so "solve trail vs GT trail vs
+      displayed marker" is visually decomposable.  Dots only, no interaction —
+      the detail panel's solve-history table is the lookup surface.  Bounded
+      (≤60 dots for one selected track), so React CircleMarkers are fine. ── */
+const MlatSolveHistoryLayer = memo(function MlatSolveHistoryLayer({ solves }) {
+  const errColor = (e) =>
+    e == null ? "#94a3b8" : e < 3 ? "#34d399" : e < 8 ? "#f59e0b" : "#f43f5e";
+  return (
+    <>
+      {solves.slice(0, 60).map((s, i) =>
+        validLatLon(s.raw_lat, s.raw_lon) ? (
+          <CircleMarker
+            key={`${s.ts_ms}-${i}`}
+            center={[s.raw_lat, s.raw_lon]}
+            radius={3}
+            interactive={false}
+            pathOptions={{
+              color: errColor(s.gt_error_km),
+              weight: 1,
+              opacity: 0.9,
+              fillColor: errColor(s.gt_error_km),
+              // Newest first in the payload — older solves fade out.
+              fillOpacity: Math.max(0.15, 0.75 - i * 0.02),
+            }}
+          />
+        ) : null,
+      )}
+    </>
+  );
 });
 
 /* ── AircraftMarker: memoized with custom comparator — only re-renders on visual changes
@@ -1376,6 +1408,29 @@ export default function LiveAircraftMap() {
     ? radarAircraft.find((ac) => ac.hex === selectedHex) || truthOnlyAircraft.find((ac) => ac.hex === selectedHex)
     : null;
 
+  // Per-solve history for the selected MLAT track (debug): fetched once per
+  // selection + refreshed on the backend's ~30 s recording cadence.  Tagged
+  // with the hex it was fetched for so a selection change never shows the
+  // previous track's solves while the new fetch is in flight.
+  const selectedMnHex =
+    selectedAc?.position_source === "multinode_solve" ? selectedAc.hex : null;
+  const [mlatHistory, setMlatHistory] = useState(null);
+  useEffect(() => {
+    if (!selectedMnHex) {
+      setMlatHistory(null);
+      return;
+    }
+    let cancelled = false;
+    const load = () => {
+      fetchMlatHistory(selectedMnHex).then((d) => {
+        if (!cancelled && d && d.hex === selectedMnHex) setMlatHistory(d);
+      });
+    };
+    load();
+    const interval = setInterval(load, 30000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [selectedMnHex]);
+
   // Nodes with a live detection of the selected simulated object — read from
   // the detection-presence oracle (per-aircraft signals ∪ the detecting_nodes
   // feed key).  trailTick advances on every ingest, so this refreshes at the
@@ -2063,6 +2118,11 @@ export default function LiveAircraftMap() {
                 smoothRef={smoothRef}
               />
             )}
+
+            {/* Raw solve positions behind the selected MLAT marker */}
+            {mlatHistory?.solves?.length > 0 && (
+              <MlatSolveHistoryLayer solves={mlatHistory.solves} />
+            )}
           </MapContainer>
 
           <StatsOverlay
@@ -2082,6 +2142,7 @@ export default function LiveAircraftMap() {
               trails={trailsRef.current}
               computeError={computeError}
               detectingNodes={selectedTruthDetectingNodes}
+              solveHistory={mlatHistory}
             />
           )}
 

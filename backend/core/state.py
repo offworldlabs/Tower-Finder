@@ -87,6 +87,14 @@ multinode_tracks: dict[str, dict] = {}
 # maxlen guards against runaway growth if the flush task ever stalls.
 track_archive_buffer: deque[dict] = deque(maxlen=10000)
 
+# Per-solve MLAT history for the debug panel: every solver outcome (published
+# or gate-rejected), ~30 min retention.  Queried by /api/test/mlat-history so
+# an individual map marker's solves can be looked up and checked by its
+# mn<sha256[:10]> hex.  maxlen is a hard memory cap (~300 B/record);
+# age-pruning happens on write in the solver's recording helper.
+MLAT_HISTORY_MAX = 8000
+mlat_solve_history: deque = deque(maxlen=MLAT_HISTORY_MAX)
+
 # ── ADS-B positions reported inside detection frames ──────────────────────────
 adsb_aircraft: dict[str, dict] = {}
 
@@ -321,6 +329,7 @@ def _reset_for_tests() -> None:
         store.clear()
     anomaly_log.clear()
     track_archive_buffer.clear()
+    mlat_solve_history.clear()
     accuracy_samples.clear()
     mlat_samples.clear()
     for q in (frame_queue, solver_queue):
