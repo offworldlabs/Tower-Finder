@@ -195,6 +195,10 @@ def _build_dashboard_data() -> bytes:
                 # Multinode entries replaced because a later solve consumed
                 # the same source tracks under a new key (fragmented re-solve).
                 "mn_superseded": state.mn_superseded,
+                # Solves published after node-trimming recovered them from
+                # the rms_delay gate at n>=4.  See solver.py's
+                # _trim_and_resolve.
+                "solver_trimmed": state.solver_trimmed,
                 # Teleporting emits (mis-association noise).  Debug counter
                 # only — jumps no longer mark tracks anomalous.
                 "position_jump_events": state.position_jump_events,

@@ -23,9 +23,9 @@ from core import state
 # This module carried its own haversine, bearing and in-beam rule until those
 # were consolidated into services.geo.
 from services.calibration import record_adsb_calibration
+from services.geo import bearing_deg, bistatic_differential_km, node_beam_params, offset_latlon_m
 from services.geo import haversine_km as _haversine_km
 from services.geo import in_node_beam as _in_node_beam
-from services.geo import offset_latlon_m
 from services.id_utils import multinode_hex_from_key
 
 _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
@@ -114,7 +114,25 @@ _SOLVER_ALT_LAYERS_KM = [1.5, 3.0, 5.0, 7.0, 9.0, 11.0]
 # so the threshold can't distinguish mirror from truth — keep generous.
 # A single threshold of 3.0 µs cleans up false n≥3 associations while
 # letting all n=2 results through (n=2 mirrors always have rms ≈ 0).
-_SOLVER_RMS_DELAY_MAX_US = 3.0
+#
+# 2026-08 live re-evaluation at n≥4: this blanket gate had near-zero
+# discrimination — the bad-solve-through rate sat flat at ~2% across every
+# threshold tried, while raising it enough to matter halved the good solves
+# let through.  Cause: one contaminated measurement (a single-node track
+# from a different aircraft, bundled in by association) inflates rms_delay
+# without moving the Huber-fitted position, so rms stopped tracking position
+# quality at n≥4.  _trim_and_resolve below drops the offending node instead
+# of the whole solve, which restores the gate's original meaning.  Kept
+# env-overridable for live tuning while that policy beds in.
+_SOLVER_RMS_DELAY_MAX_US = float(os.getenv("SOLVER_RMS_DELAY_MAX_US", "3.0"))
+
+# Node-trimming policy for the rms_delay gate at n≥4 (see above).  Iteratively
+# drop the worst-residual node(s) and re-solve, down to a floor of
+# _TRIM_MIN_NODES — below that the geometry is too thin to trust a trim's own
+# residuals, and the blanket gate is left to make the call.
+_TRIM_MAX_ROUNDS = 4
+_TRIM_RESID_FACTOR = 1.5   # drop nodes with |res| > factor × rms_delay
+_TRIM_MIN_NODES = 3
 
 # Reject solver results whose RMS Doppler residual exceeds this value.
 # Physics: for FM illuminators (fc ≈ 98–108 MHz, λ ≈ 2.8–3.1 m), the maximum
@@ -255,6 +273,96 @@ def _solve_best_altitude_n2(s_in: dict, node_cfgs: dict, solve_fn) -> dict | Non
     which covers the typical commercial aviation cruise band (7–12 km).
     """
     return solve_fn(s_in, node_cfgs)
+
+
+def _trim_and_resolve(
+    s_in: dict, node_cfgs: dict, solve_fn, result: dict,
+) -> tuple[dict, dict, dict | None]:
+    """Drop the worst-residual node(s) and re-solve, down to _TRIM_MIN_NODES.
+
+    Called only when a solve has failed the rms_delay gate at n≥4 and carries
+    per-node residuals (see _SOLVER_RMS_DELAY_MAX_US).  A contaminated
+    measurement inflates rms_delay without moving the Huber-fitted position,
+    so re-solving on the survivors after dropping the offending node recovers
+    a solve the blanket gate would otherwise discard outright.
+
+    Returns (final_result, final_s_in, trim_meta).  trim_meta is None only
+    when no round ever produced a successful re-solve — i.e. no trimming was
+    actually performed — never when trimming ran but rms stayed high (that
+    case still returns the (last-trimmed result, s_in, trim_meta) so the
+    caller's gates see the best attempt reached, and the reject record still
+    carries what was tried).  A re-solve that raises, returns None, or does
+    not converge abandons trimming and returns whatever was reached in the
+    previous round — a failed re-solve is never surfaced as the result.
+    """
+    trimmed_ids: list[str] = []
+    trim_meta: dict | None = None
+    pre_trim_rms_delay = result.get("rms_delay")
+    pre_trim_n_nodes = result.get("n_nodes")
+
+    for round_idx in range(_TRIM_MAX_ROUNDS):
+        rms_delay = result.get("rms_delay") or 0
+        if rms_delay <= _SOLVER_RMS_DELAY_MAX_US:
+            break
+        if (result.get("n_nodes") or 0) <= _TRIM_MIN_NODES:
+            break
+        residuals = result.get("per_node_delay_res_us")
+        if not residuals:
+            break
+
+        threshold = _TRIM_RESID_FACTOR * rms_delay
+        candidates = {nid for nid, res in residuals.items() if res > threshold}
+        if not candidates:
+            # Nothing clears the factor — the single worst node is still the
+            # best lead available.
+            candidates = {max(residuals, key=residuals.get)}
+
+        survivors = [nid for nid in residuals if nid not in candidates]
+        if len(survivors) < _TRIM_MIN_NODES:
+            # Dropping every candidate would starve the fit below the floor:
+            # keep the _TRIM_MIN_NODES lowest-residual nodes instead and drop
+            # the rest, so a round never re-solves with fewer than that.
+            survivors = sorted(residuals, key=residuals.get)[:_TRIM_MIN_NODES]
+            candidates = {nid for nid in residuals if nid not in survivors}
+        if not candidates:
+            break
+
+        measurements = s_in.get("measurements") or []
+        s_next = dict(s_in)
+        s_next["measurements"] = [
+            m for m in measurements if m.get("node_id") in survivors
+        ]
+        s_next["n_nodes"] = len(
+            {m.get("node_id") for m in s_next["measurements"]}
+        )
+        by_node = s_in.get("track_ids_by_node")
+        if by_node:
+            surviving_by_node = {
+                nid: ids for nid, ids in by_node.items() if nid in survivors
+            }
+            s_next["track_ids_by_node"] = surviving_by_node
+            s_next["track_ids"] = sorted(
+                {tid for ids in surviving_by_node.values() for tid in ids}
+            )
+
+        try:
+            new_result = _solve_best_altitude(s_next, node_cfgs, solve_fn)
+        except Exception:
+            logging.exception("Solver trim re-solve failed")
+            break
+        if not new_result or not new_result.get("success"):
+            break
+
+        trimmed_ids.extend(sorted(candidates))
+        trim_meta = {
+            "trimmed_node_ids": sorted(set(trimmed_ids)),
+            "trim_rounds": round_idx + 1,
+            "pre_trim_rms_delay": pre_trim_rms_delay,
+            "pre_trim_n_nodes": pre_trim_n_nodes,
+        }
+        result, s_in = new_result, s_next
+
+    return result, s_in, trim_meta
 
 
 # ── Multi-epoch EWMA position smoother (all N) ───────────────────────────────
@@ -698,6 +806,7 @@ def _record_solve_history(
     raw_lon: float | None = None,
     displacement_km: float | None = None,
     chi2_per_dof: float | None = None,
+    extra: dict | None = None,
 ) -> None:
     """Append one solve outcome to state.mlat_solve_history.
 
@@ -706,6 +815,10 @@ def _record_solve_history(
     position actually stored in multinode_tracks.  Rejected solves have no
     track key (it is minted after the gates), so ``solver_hex`` is None for
     them and lookup by map ID returns published records plus nearby rejects.
+
+    ``extra`` merges caller-supplied fields (trim metadata, beam-rejection
+    diagnostics) into the record.  Applied before the GT stamp so it can
+    never clobber gt_hex/gt_error_km/gt_lat/gt_lon.
     """
     r = result if isinstance(result, dict) else {}
     s = s_in if isinstance(s_in, dict) else {}
@@ -748,6 +861,8 @@ def _record_solve_history(
         "solve_count": r.get("solve_count"),
         "source_track_ids": list(r.get("source_track_ids") or []),
     }
+    if extra:
+        rec.update(extra)
     if raw_lat is not None and raw_lon is not None:
         meas_ts_s = (rec["measurement_ts_ms"] or now_ms) / 1000.0
         rec.update(_nearest_gt(float(raw_lat), float(raw_lon), meas_ts_s))
@@ -800,6 +915,25 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
         logging.exception("Multinode solver failed")
         result = None
     if result and result.get("success"):
+        # Trim before the rms_delay gate reads it: a contaminated measurement
+        # inflates rms_delay without moving the Huber-fitted position (see
+        # _SOLVER_RMS_DELAY_MAX_US), so at n≥4 a re-solve on the surviving
+        # nodes can recover a solve the blanket gate would otherwise sink.
+        # The rest of the gate stack below runs on whatever this reaches —
+        # the trimmed result/s_in on a successful trim, the original
+        # otherwise — unchanged.
+        trim_meta: dict | None = None
+        if (
+            "initial_guess" in s_in
+            and result.get("n_nodes", 0) >= 4
+            and (result.get("rms_delay") or 0) > _SOLVER_RMS_DELAY_MAX_US
+            and result.get("per_node_delay_res_us")
+        ):
+            result, s_in, trim_meta = _trim_and_resolve(
+                s_in, node_cfgs, solve_fn, result
+            )
+            n_nodes = result.get("n_nodes", n_nodes)
+
         rms_delay = result.get("rms_delay", 0) or 0
         if rms_delay > _SOLVER_RMS_DELAY_MAX_US:
             logging.debug(
@@ -810,7 +944,9 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             )
             state.bump_counter("solver_failures")
             state.bump_counter("solver_fail_rms_delay")
-            _record_solve_history("rejected_rms_delay", s_in, result)
+            _record_solve_history(
+                "rejected_rms_delay", s_in, result, extra=trim_meta,
+            )
             return result
         rms_doppler = result.get("rms_doppler", 0) or 0
         if rms_doppler > _SOLVER_RMS_DOPPLER_MAX_HZ:
@@ -822,30 +958,73 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             )
             state.bump_counter("solver_failures")
             state.bump_counter("solver_fail_rms_doppler")
-            _record_solve_history("rejected_rms_doppler", s_in, result)
+            _record_solve_history(
+                "rejected_rms_doppler", s_in, result, extra=trim_meta,
+            )
             return result
         # Reject solutions outside the beam coverage of contributing nodes.
         # For n=2 the solver has two geometric solutions (two bistatic ellipse
         # intersections); the ghost intersection typically falls outside one of
         # the node beams.  This check rejects it without needing Doppler data.
         # Skipped when node_cfgs lacks beam info (cfg is None) — safe fallback.
+        #
+        # Evaluates every contributing node (not just the first failure) and
+        # records per-node geometry for each one that fails — 25% of good
+        # solves were being rejected here and the single-failure debug log
+        # (DEBUG, which staging does not emit) gave no way to tell a genuine
+        # out-of-beam solve from a beam-geometry/config problem after the
+        # fact.
         contributing_ids = result.get("contributing_node_ids", [])
+        beam_failures: list[dict] = []
         if contributing_ids and isinstance(node_cfgs, dict):
             for nid in contributing_ids:
                 cfg = node_cfgs.get(nid)
-                if cfg and not _in_node_beam(result["lat"], result["lon"], cfg):
-                    logging.debug(
-                        "Solver result rejected: outside beam of node %s "
-                        "(lat=%.3f lon=%.3f beam_az=%.0f beam_w=%.0f range_km=%.0f)",
-                        nid, result["lat"], result["lon"],
-                        float(cfg.get("beam_azimuth_deg") or 0),
-                        float(cfg.get("beam_width_deg") or 41),
-                        float(cfg.get("max_range_km") or 50),
+                if not cfg or _in_node_beam(result["lat"], result["lon"], cfg):
+                    continue
+                p = node_beam_params(cfg)
+                rx_lat, rx_lon = p["rx_lat"], p["rx_lon"]
+                bistatic_km = None
+                if p["max_bistatic_range_km"] and p["tx_lat"] is not None:
+                    bistatic_km = round(
+                        bistatic_differential_km(
+                            p["tx_lat"], p["tx_lon"], rx_lat, rx_lon,
+                            result["lat"], result["lon"],
+                        ), 1,
                     )
-                    state.bump_counter("solver_failures")
-                    state.bump_counter("solver_fail_beam")
-                    _record_solve_history("rejected_beam", s_in, result)
-                    return None
+                bearing_off_deg = None
+                if p["beam_azimuth_deg"] is not None:
+                    brg = bearing_deg(rx_lat, rx_lon, result["lat"], result["lon"])
+                    bearing_off_deg = round(
+                        abs((brg - p["beam_azimuth_deg"] + 180.0) % 360.0 - 180.0),
+                        1,
+                    )
+                beam_failures.append({
+                    "node_id": nid,
+                    "range_km": round(
+                        _haversine_km(rx_lat, rx_lon, result["lat"], result["lon"]),
+                        1,
+                    ),
+                    "max_range_km": p["max_range_km"],
+                    "bistatic_km": bistatic_km,
+                    "max_bistatic_range_km": p["max_bistatic_range_km"],
+                    "bearing_off_deg": bearing_off_deg,
+                    "half_width_deg": p["beam_width_deg"] / 2.0,
+                })
+        if beam_failures:
+            _bf = beam_failures[0]
+            logging.debug(
+                "Solver result rejected: outside beam of node %s "
+                "(lat=%.3f lon=%.3f range_km=%s bearing_off_deg=%s)",
+                _bf["node_id"], result["lat"], result["lon"],
+                _bf["range_km"], _bf["bearing_off_deg"],
+            )
+            state.bump_counter("solver_failures")
+            state.bump_counter("solver_fail_beam")
+            _record_solve_history(
+                "rejected_beam", s_in, result,
+                extra={**(trim_meta or {}), "beam_failures": beam_failures},
+            )
+            return None
         # Reject if the solution drifted more than _MAX_DISPLACEMENT_KM from
         # the ADS-B initial_guess. For N=2 this catches mirror-point ghosts
         # (false bistatic ellipse intersection 15-50 km away). For N≥3 it
@@ -873,7 +1052,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                     state.bump_counter("solver_fail_displacement")
                     _record_solve_history(
                         "rejected_displacement", s_in, result,
-                        displacement_km=_disp_km,
+                        displacement_km=_disp_km, extra=trim_meta,
                     )
                     return None
         # n=2 publication gate.  The pairing must have been fitted and passed;
@@ -893,7 +1072,8 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                 )
                 state.bump_counter("n2_unconfirmed")
                 _record_solve_history(
-                    "n2_unconfirmed", s_in, result, chi2_per_dof=_chi2,
+                    "n2_unconfirmed", s_in, result,
+                    chi2_per_dof=_chi2, extra=trim_meta,
                 )
                 return result
             if not _claim_track_pair(s_in, _chi2):
@@ -905,7 +1085,8 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                 # worth ~9 points of n=2 ghost rate at no cost in real tracks.
                 state.bump_counter("n2_unconfirmed")
                 _record_solve_history(
-                    "n2_outbid", s_in, result, chi2_per_dof=_chi2,
+                    "n2_outbid", s_in, result,
+                    chi2_per_dof=_chi2, extra=trim_meta,
                 )
                 return result
         state.bump_counter("solver_successes")
@@ -1022,6 +1203,8 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                 prev.get("solve_count", 0) if prev else 0, max_superseded_count
             ) + 1
             state.multinode_tracks[key] = result
+            if trim_meta:
+                state.bump_counter("solver_trimmed")
         # Append a snapshot to the track-archive buffer for Parquet persistence.
         # solve_ts_ms records when the solve completed (server wallclock) so
         # analysts can measure end-to-end latency vs. result["timestamp_ms"].
@@ -1033,6 +1216,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             solve_key=key,
             raw_lat=_raw_lat, raw_lon=_raw_lon,
             chi2_per_dof=s_in.get("chi2_per_dof") if isinstance(s_in, dict) else None,
+            extra=trim_meta,
         )
     elif result is not None:
         # The LM ran but did not converge (success=False).  Previously this
