@@ -486,6 +486,11 @@ function MlatSolveHistorySection({ history }) {
   if (!solves.length && !rejects?.n) return null;
 
   const errClass = (e) => (e == null ? "" : e < 3 ? "good" : e < 8 ? "warn" : "bad");
+  // Direction error color, same threshold-bucket idiom as errClass above but
+  // inline — heading_err_deg is None whenever truth is near-hover or the
+  // solve has no meaningful velocity, which errClass's km buckets don't fit.
+  const hdgErrColor = (e) =>
+    e == null ? "#64748b" : e < 15 ? "#34d399" : e < 45 ? "#f59e0b" : "#f43f5e";
   const ago = (ts) => {
     const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
     return s < 60 ? `-${s}s` : `-${Math.round(s / 60)}m`;
@@ -505,6 +510,7 @@ function MlatSolveHistorySection({ history }) {
                 <th style={cell}>t</th>
                 <th style={cell}>N</th>
                 <th style={cell}>GT err</th>
+                <th style={cell}>Δhdg</th>
                 <th style={cell}>rmsD</th>
                 <th style={cell}>rmsF</th>
                 <th style={cell}>truth</th>
@@ -518,6 +524,11 @@ function MlatSolveHistorySection({ history }) {
                   <td style={cell}>
                     <span className={errClass(s.gt_error_km)}>
                       {s.gt_error_km != null ? `${s.gt_error_km.toFixed(2)} km` : "—"}
+                    </span>
+                  </td>
+                  <td style={cell}>
+                    <span style={{ color: hdgErrColor(s.heading_err_deg) }}>
+                      {s.heading_err_deg != null ? `${s.heading_err_deg}°` : "—"}
                     </span>
                   </td>
                   <td style={cell}>{s.rms_delay}</td>

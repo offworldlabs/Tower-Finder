@@ -63,6 +63,17 @@ MN_N2_MIN_SOLVES = int(os.getenv("MN_N2_MIN_SOLVES", "2"))
 # a second solve gets the normal 60 s entry expiry / 30 s DR cap.
 MN_ONESHOT_TTL_S = float(os.getenv("MN_ONESHOT_TTL_S", "5.0"))
 
+# Quality gate for adopting the constant-velocity fit's velocity into a
+# published solve, in place of the single-epoch Doppler solution (see
+# solver.py's _resolve_cv_fit / velocity adoption in _process_solver_item).
+# Velocity is Doppler-determined — one projection per node — so n=2 is
+# underdetermined and n=3 exactly determined, and single-epoch noise maps
+# straight into the vector; the CV fit ties the whole observation window to
+# one constant-velocity trajectory instead.  Distinct from N2_CONFIRM_CHI2_MAX,
+# which gates whether an n=2 *track* publishes at all — that stays unaffected;
+# this only decides which velocity a solve that is already publishing shows.
+CV_VEL_ADOPT_CHI2_MAX = float(os.getenv("CV_VEL_ADOPT_CHI2_MAX", "5.0"))
+
 # Oldest ADS-B fix still usable as a coverage calibration point.  At 250 m/s a
 # 10 s fix is 2.5 km stale, which is already coarse against a 5°/72-bin polar
 # grid; beyond that the point stops describing where the target was when the

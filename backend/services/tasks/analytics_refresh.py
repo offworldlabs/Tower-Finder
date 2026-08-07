@@ -454,28 +454,45 @@ def _velocity_accuracy() -> dict:
         if not speed:
             continue
         last = trail[-1]
-        truth.append((last[0], last[1], float(speed)))
+        # Heading rides along for the direction-error stats below; a truth
+        # aircraft with no heading (meta not carrying one) still counts for
+        # the speed-ratio stats, it just never contributes a heading sample.
+        truth.append((last[0], last[1], float(speed), meta.get("heading")))
     if not truth:
         return {}
 
     truth_max = max(t[2] for t in truth)
     ratios: list[float] = []
+    heading_errs: list[float] = []
+    vector_errs: list[float] = []
     over = 0
     for r in list(state.multinode_tracks.values()):
         lat, lon = r.get("lat"), r.get("lon")
         if lat is None or lon is None:
             continue
-        solved = math.hypot(r.get("vel_east", 0.0), r.get("vel_north", 0.0))
-        best, best_d = None, _VELOCITY_MATCH_KM
-        for t_lat, t_lon, t_speed in truth:
+        vel_east = r.get("vel_east", 0.0)
+        vel_north = r.get("vel_north", 0.0)
+        solved = math.hypot(vel_east, vel_north)
+        best, best_heading, best_d = None, None, _VELOCITY_MATCH_KM
+        for t_lat, t_lon, t_speed, t_heading in truth:
             d = haversine_km(lat, lon, t_lat, t_lon)
             if d < best_d:
-                best, best_d = t_speed, d
+                best, best_heading, best_d = t_speed, t_heading, d
         if not best:
             continue
         ratios.append(solved / best)
         if solved > truth_max:
             over += 1
+        # Heading is undefined near hover and the solve needs a direction to
+        # compare against — same floors as solver.py's per-solve heading_err.
+        if best >= 20.0 and best_heading is not None and solved > 1.0:
+            solved_heading = math.degrees(math.atan2(vel_east, vel_north)) % 360
+            heading_errs.append(
+                abs((solved_heading - best_heading + 180.0) % 360.0 - 180.0)
+            )
+            gt_ve = best * math.sin(math.radians(best_heading))
+            gt_vn = best * math.cos(math.radians(best_heading))
+            vector_errs.append(math.hypot(vel_east - gt_ve, vel_north - gt_vn))
 
     out = {
         "n_matched": len(ratios),
@@ -493,6 +510,13 @@ def _velocity_accuracy() -> dict:
             # Solves faster than any aircraft the simulator actually flies.
             # Should be 0; currently is not.
             "n_faster_than_any_truth": over,
+        })
+    if heading_errs:
+        out.update({
+            "heading_err_median_deg": round(_percentile(heading_errs, 50), 1),
+            "heading_err_p95_deg": round(_percentile(heading_errs, 95), 1),
+            "vector_err_median_ms": round(_percentile(vector_errs, 50), 1),
+            "vector_err_p95_ms": round(_percentile(vector_errs, 95), 1),
         })
     return out
 

@@ -13,6 +13,7 @@ from concurrent.futures.process import BrokenProcessPool
 
 from config.constants import (
     ARC_ONLY_ANOMALY_ALLOWLIST,
+    CV_VEL_ADOPT_CHI2_MAX,
     N2_CONFIRM_CHI2_MAX,
     N2_TRACK_ASSOCIATION,
 )
@@ -709,22 +710,29 @@ def claim_decision(
     return True
 
 
-def _resolve_n2_chi2(s_in: dict, node_cfgs) -> float | None:
-    """chi2/dof for an n=2 pairing, fitting here if association deferred it.
+def _resolve_cv_fit(s_in: dict, node_cfgs) -> dict | None:
+    """Constant-velocity fit over the whole observation window, cached.
 
-    The constant-velocity fit is an ~86 ms LM solve.  Association runs inside
-    the frame worker, so doing it there is frame latency: measured on staging
-    at 92% frame-queue depth with the processor 21 s behind a 6 frame/s feed.
-    This worker already has its own threads and a queue with a staleness drop,
-    which is exactly the place for it — so association hands over the epochs
-    and the fit happens on this side.
+    Fits one constant-velocity trajectory to the associated track pairing's
+    full epoch history — an ~86 ms LM solve.  Association runs inside the
+    frame worker, so doing it there is frame latency: measured on staging at
+    92% frame-queue depth with the processor 21 s behind a 6 frame/s feed.
+    This worker already has its own threads and a queue with a staleness
+    drop, which is exactly the place for it — so association hands over the
+    epochs and the fit happens on this side.
 
-    Association may still fit inline (the offline bench does, having no queue),
-    in which case chi2_per_dof arrives already set and this is a no-op.
+    Cached on the input as ``s_in["_cv_fit"]`` so a caller reached twice for
+    the same solve (the n=2 confirmation gate, then velocity adoption) pays
+    for the pool call once.  ``chi2_per_dof``/``n_epochs`` are cached onto
+    ``s_in`` exactly as before this fit dict existed, so association-fitted
+    inputs (chi2_per_dof arrives already set) keep short-circuiting through
+    _resolve_n2_chi2 without ever reaching here — which is also the one case
+    this function cannot reconstruct a fit dict for: with the fit already
+    done inline, no epochs survive on the input to refit from.
     """
-    chi2 = s_in.get("chi2_per_dof")
-    if chi2 is not None:
-        return chi2
+    cached = s_in.get("_cv_fit")
+    if cached is not None:
+        return cached
     epochs = s_in.get("cv_epochs")
     if not epochs or not isinstance(node_cfgs, dict):
         return None
@@ -745,10 +753,24 @@ def _resolve_n2_chi2(s_in: dict, node_cfgs) -> float | None:
         return None
     if not fit or not fit.get("success"):
         return None
+    s_in["_cv_fit"] = fit
     # Cache it so a retry of the same input does not refit.
     s_in["chi2_per_dof"] = fit["chi2_per_dof"]
     s_in["n_epochs"] = fit["n_epochs"]
-    return fit["chi2_per_dof"]
+    return fit
+
+
+def _resolve_n2_chi2(s_in: dict, node_cfgs) -> float | None:
+    """chi2/dof for an n=2 pairing, fitting here if association deferred it.
+
+    Association may fit inline (the offline bench does, having no queue), in
+    which case chi2_per_dof arrives already set and this is a no-op.
+    """
+    chi2 = s_in.get("chi2_per_dof")
+    if chi2 is not None:
+        return chi2
+    fit = _resolve_cv_fit(s_in, node_cfgs)
+    return fit["chi2_per_dof"] if fit else None
 
 
 # Public alias: the offline bench resolves chi2 through the same code path the
@@ -768,13 +790,53 @@ _MLAT_HISTORY_MAX_AGE_MS = 35 * 60 * 1000
 _MLAT_HISTORY_GT_MAX_DT_S = 90.0
 
 
+_GT_NO_MATCH = {
+    "gt_hex": None, "gt_error_km": None, "gt_lat": None, "gt_lon": None,
+    "gt_speed_ms": None, "gt_heading_deg": None,
+}
+
+
+def _trail_velocity(trail, pt) -> tuple[float | None, float | None]:
+    """Ground-truth speed/heading AT ``pt``, from the temporally nearest
+    other point in the same trail.
+
+    ``pt`` is excluded by identity, not value, so a duplicate-position point
+    elsewhere in the trail is not mistaken for it.  |dt| > 0.1 s avoids
+    dividing by a near-zero interval; the two points are then ordered by
+    timestamp so the heading is the direction of travel, not its reverse.
+    Returns (None, None) when the trail has no other usable point.
+    """
+    other = None
+    best_dt = None
+    for p in trail:
+        if p is pt:
+            continue
+        dt = abs(p[3] - pt[3])
+        if dt <= 0.1:
+            continue
+        if best_dt is None or dt < best_dt:
+            best_dt, other = dt, p
+    if other is None:
+        return None, None
+    earlier, later = (pt, other) if pt[3] <= other[3] else (other, pt)
+    dt_s = later[3] - earlier[3]
+    if dt_s <= 0:
+        return None, None
+    dist_km = _haversine_km(earlier[0], earlier[1], later[0], later[1])
+    speed_ms = dist_km * 1000.0 / dt_s
+    heading = bearing_deg(earlier[0], earlier[1], later[0], later[1])
+    return speed_ms, heading
+
+
 def _nearest_gt(lat: float, lon: float, ts_s: float) -> dict:
     """Nearest ground-truth trail point at solve time, no distance threshold.
 
     Frozen into each history record so "how far was this solve really off,
     and from whom" survives later display dead-reckoning and GT re-binding.
     Timestamp-closest point per trail — the same rule the MLAT verification
-    matcher uses.
+    matcher uses.  gt_speed_ms/gt_heading_deg are truth velocity AT that
+    point (see _trail_velocity), falling back to ground_truth_meta when the
+    trail alone can't derive one (e.g. a single-point trail).
     """
     best_hex = best_km = best_pt = None
     for gt_hex, trail in list(state.ground_truth_trails.items()):
@@ -787,12 +849,23 @@ def _nearest_gt(lat: float, lon: float, ts_s: float) -> dict:
         if best_km is None or d < best_km:
             best_hex, best_km, best_pt = gt_hex, d, pt
     if best_hex is None:
-        return {"gt_hex": None, "gt_error_km": None, "gt_lat": None, "gt_lon": None}
+        return dict(_GT_NO_MATCH)
+    gt_speed_ms, gt_heading_deg = _trail_velocity(
+        state.ground_truth_trails.get(best_hex) or [], best_pt
+    )
+    if gt_speed_ms is None:
+        meta = state.ground_truth_meta.get(best_hex) or {}
+        gt_speed_ms = meta.get("speed_ms")
+        gt_heading_deg = meta.get("heading")
     return {
         "gt_hex": best_hex,
         "gt_error_km": round(best_km, 3),
         "gt_lat": round(best_pt[0], 6),
         "gt_lon": round(best_pt[1], 6),
+        "gt_speed_ms": round(gt_speed_ms, 1) if gt_speed_ms is not None else None,
+        "gt_heading_deg": (
+            round(gt_heading_deg, 1) if gt_heading_deg is not None else None
+        ),
     }
 
 
@@ -860,6 +933,15 @@ def _record_solve_history(
         "displacement_km": round(displacement_km, 3) if displacement_km is not None else None,
         "solve_count": r.get("solve_count"),
         "source_track_ids": list(r.get("source_track_ids") or []),
+        "vel_source": r.get("vel_source"),
+        "solver_vel_east": (
+            round(float(r["solver_vel_east"]), 1)
+            if r.get("solver_vel_east") is not None else None
+        ),
+        "solver_vel_north": (
+            round(float(r["solver_vel_north"]), 1)
+            if r.get("solver_vel_north") is not None else None
+        ),
     }
     if extra:
         rec.update(extra)
@@ -867,7 +949,31 @@ def _record_solve_history(
         meas_ts_s = (rec["measurement_ts_ms"] or now_ms) / 1000.0
         rec.update(_nearest_gt(float(raw_lat), float(raw_lon), meas_ts_s))
     else:
-        rec.update({"gt_hex": None, "gt_error_km": None, "gt_lat": None, "gt_lon": None})
+        rec.update(_GT_NO_MATCH)
+    # Direction error: how far off the solved velocity vector points from
+    # ground truth at the matched trail point.  Heading is undefined near
+    # hover, so this (and the vector-norm error below) only assert anything
+    # once truth is actually moving and the solve has a direction to compare.
+    gt_speed_ms = rec.get("gt_speed_ms")
+    gt_heading_deg = rec.get("gt_heading_deg")
+    ve, vn = rec["vel_east"], rec["vel_north"]
+    if (
+        gt_heading_deg is not None
+        and gt_speed_ms and gt_speed_ms >= 20.0
+        and math.hypot(ve, vn) > 1.0
+    ):
+        solved_heading = math.degrees(math.atan2(ve, vn)) % 360
+        rec["heading_err_deg"] = round(
+            abs((solved_heading - gt_heading_deg + 180.0) % 360.0 - 180.0), 1
+        )
+    else:
+        rec["heading_err_deg"] = None
+    if gt_speed_ms is not None and gt_heading_deg is not None:
+        gt_ve = gt_speed_ms * math.sin(math.radians(gt_heading_deg))
+        gt_vn = gt_speed_ms * math.cos(math.radians(gt_heading_deg))
+        rec["vel_err_ms"] = round(math.hypot(ve - gt_ve, vn - gt_vn), 1)
+    else:
+        rec["vel_err_ms"] = None
     buf = state.mlat_solve_history
     buf.append(rec)
     # Age-prune from the left; append/popleft are atomic, and a racing second
@@ -1136,6 +1242,33 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                 age_s=time.time() - _cal.get("last_seen_ms", 0) / 1000.0,
             )
         _collect_track_anomalies(s_in, result)
+        # Adopt the constant-velocity fit's velocity for display, when it
+        # clears its own quality gate.  Velocity is Doppler-determined — one
+        # projection per node — so n=2 is underdetermined and n=3 exactly
+        # determined, and single-epoch noise maps straight into the vector;
+        # the CV fit ties the whole observation window to one
+        # constant-velocity trajectory instead and is materially better.
+        # Outside the lock deliberately: for n=2 the confirmation gate above
+        # already ran this fit and cached it on s_in, so this is free; for
+        # n≥3 it is a fresh ~86 ms pool call (publish rate here is ~0.2/s,
+        # so affordable) and must not run while other solver workers are
+        # blocked on _MN_TRACKS_LOCK.  Gates and rms residuals above are
+        # untouched — they already ran on the single-epoch values.
+        fit = _resolve_cv_fit(s_in, node_cfgs) if isinstance(s_in, dict) else None
+        result["solver_vel_east"] = result.get("vel_east")
+        result["solver_vel_north"] = result.get("vel_north")
+        if (
+            fit and fit.get("success")
+            and (fit.get("n_epochs") or 0) >= 4
+            and fit.get("chi2_per_dof") is not None
+            and fit["chi2_per_dof"] <= CV_VEL_ADOPT_CHI2_MAX
+        ):
+            result["vel_east"] = fit["vel_east"]
+            result["vel_north"] = fit["vel_north"]
+            result["vel_up"] = fit["vel_up"]
+            result["vel_source"] = "cv_fit"
+        else:
+            result["vel_source"] = "solve"
         with _MN_TRACKS_LOCK:
             # Identity before smoothing: the track key is the smoother's
             # history key, so dark targets accumulate history too.  Key
