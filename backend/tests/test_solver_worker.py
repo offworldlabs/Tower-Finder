@@ -16,6 +16,7 @@ os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
 from core import state  # noqa: E402
+from services.geo import in_node_beam  # noqa: E402
 from services.tasks import solver as solver_mod  # noqa: E402
 
 # An n=2 solver input whose track pairing has already passed the
@@ -494,32 +495,40 @@ class TestBeamCoverageFilter:
 
 
 class TestInNodeBeam:
-    """Test uncovered branches of _in_node_beam: TX-derived azimuth and no-beam fallback."""
+    """Test uncovered branches of in_node_beam: TX-derived azimuth and no-beam
+    fallback.
+
+    in_node_beam lives in services.geo, not this module — the solver's own
+    beam gate stopped calling it when the gate was split into separately
+    n=2/every-N range and bearing rules (see _process_solver_item), but the
+    function itself is still used elsewhere (e.g. track_gates.py), so these
+    branches are exercised directly against services.geo here.
+    """
 
     def test_tx_lat_lon_derives_beam_azimuth_aircraft_outside(self):
         """TX-lat/lon branch: beam_az = bearing(RX→TX)+90; aircraft clearly outside."""
         # RX=(0,0), TX=(1,1) NE → bearing≈45° → beam_az≈135° (SE)
         # Aircraft at (0.1,-0.1) NW (~15 km, in range) → bearing≈315° → 180° off boresight
         cfg = {"rx_lat": 0.0, "rx_lon": 0.0, "tx_lat": 1.0, "tx_lon": 1.0, "max_range_km": 100}
-        assert solver_mod._in_node_beam(0.1, -0.1, cfg) is False
+        assert in_node_beam(0.1, -0.1, cfg) is False
 
     def test_tx_lat_lon_derives_beam_azimuth_aircraft_inside(self):
         """TX-lat/lon branch: aircraft in the derived beam direction."""
         # RX=(0,0), TX=(1,1) NE → beam_az≈135° (SE)
         # Aircraft at (-0.1,0.1) SE (~15 km, in range) → bearing≈135° → 0° off boresight
         cfg = {"rx_lat": 0.0, "rx_lon": 0.0, "tx_lat": 1.0, "tx_lon": 1.0, "max_range_km": 100}
-        assert solver_mod._in_node_beam(-0.1, 0.1, cfg) is True
+        assert in_node_beam(-0.1, 0.1, cfg) is True
 
     def test_no_beam_direction_returns_true_within_range(self):
         """No beam_azimuth_deg and no tx_lat/tx_lon → beam_az=None → always True."""
         cfg = {"rx_lat": 0.0, "rx_lon": 0.0}
-        assert solver_mod._in_node_beam(0.1, 0.0, cfg) is True
+        assert in_node_beam(0.1, 0.0, cfg) is True
 
     def test_out_of_range_returns_false_regardless_of_beam(self):
         """Haversine check fires before beam check; beyond max_range → False."""
         cfg = {"rx_lat": 0.0, "rx_lon": 0.0, "max_range_km": 10.0}
         # ~111 km away, well outside 10 km range
-        assert solver_mod._in_node_beam(1.0, 0.0, cfg) is False
+        assert in_node_beam(1.0, 0.0, cfg) is False
 
 
 # ── _sweep_altitudes ──────────────────────────────────────────────────────────

@@ -105,10 +105,20 @@ class TestRecording:
         self._run(_CONFIRMED_N2, _solve_fn(rms_doppler=500.0))
         assert self._only_record()["outcome"] == "rejected_rms_doppler"
 
-    def test_beam_reject_is_recorded(self, monkeypatch):
-        monkeypatch.setattr(solver_mod, "_in_node_beam", lambda *a: False)
-        self._run(_CONFIRMED_N2, _solve_fn(), cfgs={"n1": {"rx_lat": 1.0}})
-        assert self._only_record()["outcome"] == "rejected_beam"
+    def test_beam_reject_is_recorded(self):
+        # Real geometry that fails the RANGE rule (applied at every n, so
+        # it works for this n=2 _CONFIRMED_N2 input): rx placed ~556 km
+        # from the solve position, well past a 50 km max_range_km — for
+        # both contributing node ids the default _solve_fn() publishes
+        # under (see contributing_node_ids in _solve_fn above).
+        cfgs = {
+            "n1": {"rx_lat": LAT + 5.0, "rx_lon": LON, "max_range_km": 50},
+            "n2": {"rx_lat": LAT + 5.0, "rx_lon": LON, "max_range_km": 50},
+        }
+        self._run(_CONFIRMED_N2, _solve_fn(), cfgs=cfgs)
+        rec = self._only_record()
+        assert rec["outcome"] == "rejected_beam"
+        assert rec["beam_failures"][0]["rule"] == "range"
 
     def test_displacement_reject_records_distance(self):
         s_in = dict(_CONFIRMED_N2)

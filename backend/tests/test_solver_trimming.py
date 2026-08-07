@@ -367,3 +367,160 @@ class TestTrimEnvKnob(_TrimmingTestBase):
         assert rec["outcome"] == "published"
         assert "trimmed_node_ids" not in rec
         assert state.solver_trimmed == 0
+
+
+class TestBeamGateNSplit(_TrimmingTestBase):
+    """The bearing half of the beam gate is n=2-only (measured 35-min
+    instrumentation autopsy): at n>=3 it killed 105 good solves to stop 8
+    bad ones, and 316/474 failing-node evaluations had the true target
+    outside the wedge anyway — a node's wedge constrains where its
+    detection was MADE, not where a multi-epoch track is NOW.  At n=2 it
+    stays: the documented mirror-disambiguation gate (92 bad vs 9 good).
+    The range half (differential or monostatic ceiling) applies at every N
+    and never false-fired (0/474).
+    """
+
+    def test_n3_publishes_outside_wedge_but_in_range(self):
+        # All three nodes' beams point due north (azimuth 0, +-5 deg half
+        # width); the solve sits ~40-55 km due east of each — hugely
+        # outside every wedge, but well inside each generous max_range_km.
+        # At n=3 the bearing rule never runs, so this now publishes.
+        solve_lat, solve_lon = 35.0, -81.5
+        node_ids = ["a", "b", "c"]
+        cfgs = {
+            "a": {"rx_lat": 35.0, "rx_lon": -82.0,
+                  "beam_azimuth_deg": 0.0, "beam_width_deg": 10.0,
+                  "max_range_km": 200.0},
+            "b": {"rx_lat": 35.1, "rx_lon": -82.1,
+                  "beam_azimuth_deg": 0.0, "beam_width_deg": 10.0,
+                  "max_range_km": 200.0},
+            "c": {"rx_lat": 34.9, "rx_lon": -81.9,
+                  "beam_azimuth_deg": 0.0, "beam_width_deg": 10.0,
+                  "max_range_km": 200.0},
+        }
+        s_in = _s_in(node_ids, lat=solve_lat, lon=solve_lon)
+        solve_fn = _stub_solve_fn({frozenset(node_ids): _stub_result(
+            node_ids, rms_delay=1.0, lat=solve_lat, lon=solve_lon,
+        )})
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is not None and result["success"]
+        (entry,) = state.multinode_tracks.values()
+        assert entry["n_nodes"] == 3
+
+    def test_n3_rejected_beam_beyond_bistatic_range_rule_is_range(self):
+        solve_lat, solve_lon = 36.0, -82.0
+        node_ids = ["bad", "g1", "g2"]
+        cfgs = {
+            # Bistatic differential from this geometry to the solve is
+            # ~100+ km, far past the 5 km declared limit.
+            "bad": {"rx_lat": 35.0, "rx_lon": -82.0,
+                    "tx_lat": 35.0, "tx_lon": -81.9,
+                    "max_bistatic_range_km": 5.0, "max_range_km": 500.0},
+            "g1": {"rx_lat": 36.0, "rx_lon": -82.0, "max_range_km": 500.0},
+            "g2": {"rx_lat": 36.0, "rx_lon": -81.9, "max_range_km": 500.0},
+        }
+        s_in = _s_in(node_ids, lat=solve_lat, lon=solve_lon)
+        solve_fn = _stub_solve_fn({frozenset(node_ids): _stub_result(
+            node_ids, rms_delay=1.0, lat=solve_lat, lon=solve_lon,
+        )})
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is None
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_beam"
+        failures = rec["beam_failures"]
+        assert len(failures) == 1
+        assert failures[0]["node_id"] == "bad"
+        assert failures[0]["rule"] == "range"
+
+    def test_n2_rejected_beam_outside_wedge_rule_is_bearing(self):
+        s_in = {
+            "n_nodes": 2,
+            "measurements": [
+                {"node_id": "n1", "delay_us": 10.0, "doppler_hz": 1.0,
+                 "snr": 15.0},
+            ],
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        cfgs = {
+            "n1": {"rx_lat": 35.0, "rx_lon": -82.0,
+                   "beam_azimuth_deg": 90.0, "beam_width_deg": 10.0,
+                   "max_range_km": 500.0},
+        }
+
+        def solve_fn(_s_in, _cfgs):
+            return _stub_result(
+                ["n1"], rms_delay=1.0, lat=36.0, lon=-82.0, n_nodes=2,
+            )
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is None
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_beam"
+        assert rec["beam_failures"][0]["rule"] == "bearing"
+
+    def test_n2_publishes_when_in_wedge_and_in_range(self):
+        s_in = {
+            "n_nodes": 2,
+            "chi2_per_dof": 0.5,
+            "n_epochs": 8,
+            "measurements": [
+                {"node_id": "n1", "delay_us": 10.0, "doppler_hz": 1.0,
+                 "snr": 15.0},
+                {"node_id": "n2", "delay_us": 12.0, "doppler_hz": 1.0,
+                 "snr": 15.0},
+            ],
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        cfgs = {
+            "n1": {"rx_lat": 35.0, "rx_lon": -82.0,
+                   "beam_azimuth_deg": 0.0, "beam_width_deg": 20.0,
+                   "max_range_km": 500.0},
+            "n2": {"rx_lat": 35.0, "rx_lon": -82.1,
+                   "beam_azimuth_deg": 0.0, "beam_width_deg": 20.0,
+                   "max_range_km": 500.0},
+        }
+
+        def solve_fn(_s_in, _cfgs):
+            return _stub_result(
+                ["n1", "n2"], rms_delay=1.0, lat=36.0, lon=-82.0, n_nodes=2,
+            )
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is not None and result["success"]
+        (entry,) = state.multinode_tracks.values()
+        assert entry["n_nodes"] == 2
+
+    def test_n2_omni_node_skips_bearing_but_enforces_range(self):
+        # No beam_azimuth_deg and no tx -> node_beam_params resolves
+        # beam_azimuth_deg to None (omnidirectional): the bearing rule has
+        # nothing to test even though n_nodes == 2, but max_range_km still
+        # gates the monostatic circle.
+        s_in = {
+            "n_nodes": 2,
+            "measurements": [
+                {"node_id": "n1", "delay_us": 10.0, "doppler_hz": 1.0,
+                 "snr": 15.0},
+            ],
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        cfgs = {"n1": {"rx_lat": 35.0, "rx_lon": -82.0, "max_range_km": 5.0}}
+
+        def solve_fn(_s_in, _cfgs):
+            return _stub_result(
+                ["n1"], rms_delay=1.0, lat=36.0, lon=-82.0, n_nodes=2,
+            )
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is None
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_beam"
+        failure = rec["beam_failures"][0]
+        assert failure["rule"] == "range"
+        assert failure["bearing_off_deg"] is None

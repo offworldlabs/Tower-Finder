@@ -19,14 +19,13 @@ from config.constants import (
 )
 from core import state
 
-# Beam-coverage geometry, used to reject solver results whose position falls
-# outside a contributing node's detection beam (ghost disambiguation at n=2).
-# This module carried its own haversine, bearing and in-beam rule until those
+# Beam-coverage geometry, used to reject solver results whose range or (at
+# n=2) bearing fall outside a contributing node's detection area.  This
+# module carried its own haversine, bearing and in-beam rule until those
 # were consolidated into services.geo.
 from services.calibration import record_adsb_calibration
 from services.geo import bearing_deg, bistatic_differential_km, node_beam_params, offset_latlon_m
 from services.geo import haversine_km as _haversine_km
-from services.geo import in_node_beam as _in_node_beam
 from services.id_utils import multinode_hex_from_key
 
 _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
@@ -1068,53 +1067,79 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                 "rejected_rms_doppler", s_in, result, extra=trim_meta,
             )
             return result
-        # Reject solutions outside the beam coverage of contributing nodes.
-        # For n=2 the solver has two geometric solutions (two bistatic ellipse
-        # intersections); the ghost intersection typically falls outside one of
-        # the node beams.  This check rejects it without needing Doppler data.
-        # Skipped when node_cfgs lacks beam info (cfg is None) — safe fallback.
+        # Beam gate: range and bearing are two different physical claims, and
+        # a fresh 35-min instrumentation autopsy (474 failing-node
+        # evaluations) showed they do not deserve the same treatment at
+        # every N.
+        #
+        # RANGE — differential-range ceiling when the node declares a
+        # bistatic limit, else the monostatic circle.  Applied at every N and
+        # never false-fired: 0 of 474 failing-node evaluations were bad
+        # range rejects.  Mirrors point_in_beam's range half exactly.
+        #
+        # BEARING — the beam-wedge azimuth test.  At n>=3 it killed 105 good
+        # solves (<3 km from truth) to stop 8 bad ones (>8 km) — and half of
+        # those 8 the displacement gate below catches anyway.  Worse: 316 of
+        # the 474 failing-node evaluations had the TRUE detected target
+        # outside the gate's wedge even under the most favorable azimuth
+        # candidate.  The reason is structural, not a tuning problem — for
+        # multi-epoch track association a node's wedge constrains where its
+        # detection was MADE, not where the target is *now*, and by
+        # publication time it may well have flown out of that beam.  So the
+        # bearing test is now n=2-only, where it is the documented
+        # mirror-disambiguation gate (92 bad vs 9 good rejected) and stays
+        # exactly as before.
         #
         # Evaluates every contributing node (not just the first failure) and
-        # records per-node geometry for each one that fails — 25% of good
-        # solves were being rejected here and the single-failure debug log
-        # (DEBUG, which staging does not emit) gave no way to tell a genuine
-        # out-of-beam solve from a beam-geometry/config problem after the
-        # fact.
+        # records per-node geometry for each one that fails, tagged with
+        # which rule tripped ("range" or "bearing"; "range" when both do —
+        # the physical impossibility dominates).
         contributing_ids = result.get("contributing_node_ids", [])
         beam_failures: list[dict] = []
+        _n2_bearing_check = result.get("n_nodes") == 2
         if contributing_ids and isinstance(node_cfgs, dict):
             for nid in contributing_ids:
                 cfg = node_cfgs.get(nid)
-                if not cfg or _in_node_beam(result["lat"], result["lon"], cfg):
+                if not cfg:
                     continue
                 p = node_beam_params(cfg)
                 rx_lat, rx_lon = p["rx_lat"], p["rx_lon"]
-                bistatic_km = None
+                range_km = _haversine_km(rx_lat, rx_lon, result["lat"], result["lon"])
+
+                raw_bistatic_km = None
                 if p["max_bistatic_range_km"] and p["tx_lat"] is not None:
-                    bistatic_km = round(
-                        bistatic_differential_km(
-                            p["tx_lat"], p["tx_lon"], rx_lat, rx_lon,
-                            result["lat"], result["lon"],
-                        ), 1,
+                    raw_bistatic_km = bistatic_differential_km(
+                        p["tx_lat"], p["tx_lon"], rx_lat, rx_lon,
+                        result["lat"], result["lon"],
                     )
+                    range_fail = raw_bistatic_km > p["max_bistatic_range_km"]
+                else:
+                    range_fail = range_km > p["max_range_km"]
+                bistatic_km = (
+                    round(raw_bistatic_km, 1) if raw_bistatic_km is not None else None
+                )
+
                 bearing_off_deg = None
+                bearing_fail = False
                 if p["beam_azimuth_deg"] is not None:
                     brg = bearing_deg(rx_lat, rx_lon, result["lat"], result["lon"])
-                    bearing_off_deg = round(
-                        abs((brg - p["beam_azimuth_deg"] + 180.0) % 360.0 - 180.0),
-                        1,
+                    raw_offset = abs((brg - p["beam_azimuth_deg"] + 180.0) % 360.0 - 180.0)
+                    bearing_off_deg = round(raw_offset, 1)
+                    bearing_fail = (
+                        _n2_bearing_check and raw_offset > p["beam_width_deg"] / 2.0
                     )
+
+                if not range_fail and not bearing_fail:
+                    continue
                 beam_failures.append({
                     "node_id": nid,
-                    "range_km": round(
-                        _haversine_km(rx_lat, rx_lon, result["lat"], result["lon"]),
-                        1,
-                    ),
+                    "range_km": round(range_km, 1),
                     "max_range_km": p["max_range_km"],
                     "bistatic_km": bistatic_km,
                     "max_bistatic_range_km": p["max_bistatic_range_km"],
                     "bearing_off_deg": bearing_off_deg,
                     "half_width_deg": p["beam_width_deg"] / 2.0,
+                    "rule": "range" if range_fail else "bearing",
                 })
         if beam_failures:
             _bf = beam_failures[0]
