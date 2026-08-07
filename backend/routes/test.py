@@ -192,6 +192,9 @@ def _build_dashboard_data() -> bytes:
                 # here with queue_drops at 0 means the drain rate collapsed,
                 # not the queue size.
                 "stale_drops": state.solver_stale_drops,
+                # Multinode entries replaced because a later solve consumed
+                # the same source tracks under a new key (fragmented re-solve).
+                "mn_superseded": state.mn_superseded,
                 # Teleporting emits (mis-association noise).  Debug counter
                 # only — jumps no longer mark tracks anomalous.
                 "position_jump_events": state.position_jump_events,

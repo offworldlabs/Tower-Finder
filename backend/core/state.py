@@ -214,6 +214,13 @@ solver_queue_drops: int = 0
 # just drained too slowly).
 solver_stale_drops: int = 0
 
+# Multinode entries removed because a later solve shared a source single-node
+# track under a different track key (the 6 km match in _multinode_track_key
+# missed).  One aircraft is one set of source tracks, so the earlier entry is
+# replaced immediately rather than coexisting with the new one until its own
+# 60 s expiry.
+mn_superseded: int = 0
+
 # Per-reason solver rejection counters.  solver_failures is the aggregate; the
 # per-solve reason was only ever logged at DEBUG, which staging does not emit —
 # 301 failures in one 66-minute window were unattributable.  One counter per
@@ -310,7 +317,7 @@ def _reset_for_tests() -> None:
     global latest_storage_bytes, simulation_config
     global frames_dropped, frames_processed, solver_successes, solver_failures
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
-    global solver_queue_drops, solver_stale_drops
+    global solver_queue_drops, solver_stale_drops, mn_superseded
     global solver_fail_exception, solver_fail_unconverged, solver_fail_rms_delay
     global solver_fail_rms_doppler, solver_fail_beam, solver_fail_displacement
     global position_jump_events
@@ -364,6 +371,7 @@ def _reset_for_tests() -> None:
         solver_successes = solver_failures = n2_unconfirmed = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
         solver_stale_drops = 0
+        mn_superseded = 0
         solver_fail_exception = solver_fail_unconverged = solver_fail_rms_delay = 0
         solver_fail_rms_doppler = solver_fail_beam = solver_fail_displacement = 0
         position_jump_events = 0

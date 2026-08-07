@@ -35,6 +35,10 @@ def _mn_entry(age_s: float, vel_north: float) -> dict:
         "n_measurements": 2,
         "contributing_node_ids": ["n1", "n2"],
         "timestamp_ms": int((time.time() - age_s) * 1000),
+        # Confirmed (solve_count >= 2) so the MN_N2_MIN_SOLVES display gate
+        # does not hide these fixtures — this file tests dead-reckoning, not
+        # the gate itself; see test_mn_lifetime.py for the gate tests.
+        "solve_count": 2,
     }
 
 

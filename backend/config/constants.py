@@ -7,6 +7,8 @@ SOLVER_WORKERS, etc.) — this file is for compile-time constants only.
 retina_tracker YAML config stays separate (loaded at runtime via config.yaml).
 """
 
+import os
+
 # ── Physics ──────────────────────────────────────────────────────────────────
 C_KM_US = 0.299792458                  # Speed of light (km/µs)
 R_EARTH_KM = 6371.0                    # Mean Earth radius (km)
@@ -53,6 +55,13 @@ N2_CONFIRM_CHI2_MAX = 2.0             # chi2/dof ceiling for an n=2 track pairin
 N2_CONFIRM_MIN_SPAN_S = 12.0          # Observation span before a pairing is fitted
 N2_CONFIRM_MIN_EPOCHS = 4             # Floor on samples; span is the real gate
 N2_TRACK_HISTORY_MAX = 20             # Per-node track samples fed to the fit
+
+# A 2-node track needs this many solves before it renders a plane; 1
+# disables the gate.  One-shot n=2 solves were the dominant ghost source.
+MN_N2_MIN_SOLVES = int(os.getenv("MN_N2_MIN_SOLVES", "2"))
+# One-shot display lifetime for n>=3 solves, seconds.  A track confirmed by
+# a second solve gets the normal 60 s entry expiry / 30 s DR cap.
+MN_ONESHOT_TTL_S = float(os.getenv("MN_ONESHOT_TTL_S", "5.0"))
 
 # Oldest ADS-B fix still usable as a coverage calibration point.  At 250 m/s a
 # 10 s fix is 2.5 km stale, which is already coarse against a 5°/72-bin polar

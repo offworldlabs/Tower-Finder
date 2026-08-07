@@ -15,6 +15,8 @@ from retina_tracker.track import TrackState
 from config.constants import (
     ARC_REFRESH_S,
     GT_REFRESH_S,
+    MN_N2_MIN_SOLVES,
+    MN_ONESHOT_TTL_S,
     STALE_TRACK_S,
 )
 from core import state
@@ -174,6 +176,18 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         age_s = now - r.get("timestamp_ms", 0) / 1000
         if age_s > 60:
             stale_mn.append(key)
+            continue
+        # Display gates below are NOT staleness — a gated entry stays in
+        # state.multinode_tracks so the next solve can confirm it (n=2) or
+        # supersede it, and only the age_s > 60 branch above discards its
+        # anomaly hex.  A one-shot solve renders nothing at all: a 2-node
+        # track needs a second solve to prove it isn't a mirror-point ghost,
+        # and a 3+-node one-shot gets a short preview window instead of the
+        # full 60 s entry lifetime before it either confirms or expires.
+        solve_count = int(r.get("solve_count") or 1)
+        if r.get("n_nodes") == 2 and solve_count < MN_N2_MIN_SOLVES:
+            continue
+        if r.get("n_nodes", 0) >= 3 and solve_count == 1 and age_s > MN_ONESHOT_TTL_S:
             continue
         ac = multinode_to_aircraft(key, r)
         # Dead-reckon position using solver velocity (vel_east/vel_north in

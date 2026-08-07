@@ -745,6 +745,8 @@ def _record_solve_history(
         "guess_lon": round(float(ig["lon"]), 6) if ig.get("lon") else None,
         "guess_alt_km": ig.get("alt_km"),
         "displacement_km": round(displacement_km, 3) if displacement_km is not None else None,
+        "solve_count": r.get("solve_count"),
+        "source_track_ids": list(r.get("source_track_ids") or []),
     }
     if raw_lat is not None and raw_lon is not None:
         meas_ts_s = (rec["measurement_ts_ms"] or now_ms) / 1000.0
@@ -982,6 +984,43 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                     set(result.get("anomaly_types", []))
                     | set(prev.get("anomaly_types", []))
                 )
+            # Source-track identity: the single-node track ids this solve was
+            # built from.  Used below for supersession and carried into the
+            # history record so a bad map marker can be traced to its inputs.
+            result["source_track_ids"] = sorted(
+                s_in.get("track_ids") or []
+            ) if isinstance(s_in, dict) else []
+
+            # Supersession: one aircraft is one set of source tracks.  A later
+            # solve that consumes any of the same single-node tracks under a
+            # DIFFERENT key is the same aircraft re-solved past the 6 km match
+            # radius (_multinode_track_key), not a second one — replace the
+            # earlier entry instead of letting it keep rendering for up to
+            # 60 s beside the new one.  solve_count carries forward so the
+            # re-solved aircraft does not fall back under the n=2 gate below.
+            max_superseded_count = 0
+            if result["source_track_ids"]:
+                new_ids = set(result["source_track_ids"])
+                for old_key, old_r in list(state.multinode_tracks.items()):
+                    if old_key == key:
+                        continue
+                    if not new_ids.intersection(old_r.get("source_track_ids") or ()):
+                        continue
+                    state.multinode_tracks.pop(old_key, None)
+                    with state.anomaly_lock:
+                        state.anomaly_hexes.discard(
+                            multinode_hex_from_key(old_key)
+                        )
+                    with _MN_POS_HISTORY_LOCK:
+                        _MN_POS_HISTORY.pop(old_key, None)
+                    max_superseded_count = max(
+                        max_superseded_count, old_r.get("solve_count", 0)
+                    )
+                    state.bump_counter("mn_superseded")
+
+            result["solve_count"] = max(
+                prev.get("solve_count", 0) if prev else 0, max_superseded_count
+            ) + 1
             state.multinode_tracks[key] = result
         # Append a snapshot to the track-archive buffer for Parquet persistence.
         # solve_ts_ms records when the solve completed (server wallclock) so
