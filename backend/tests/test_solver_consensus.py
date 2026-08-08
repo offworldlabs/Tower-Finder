@@ -378,3 +378,104 @@ class TestFilterHelperProvenance:
         solver_mod._filter_s_in_to_nodes(s_in, ["n1"])
         assert s_in["measurements"] == original_measurements
         assert s_in["n_nodes"] == 3
+
+
+class TestDisplacementAnchor(_ConsensusTestBase):
+    """Live-measured (first active-mode window): 131 displacement kills, 80
+    of them <3 km from truth and 110 consensus-selected, median centroid
+    offset 3.04 km against the 2 km cap — the gate was anchored to the
+    contaminated association guess consensus+LM exist to correct, so it was
+    killing the corrections rather than the mis-associations.  For a
+    consensus-selected solve the gate now measures against the corroborated
+    centroid instead; shadow mode and every fallback_* outcome keep the
+    guess anchor — consensus either never ran against this input or was
+    not acted on, so its centroid is not a vetted reference there.
+    """
+
+    FULL = ["n1", "n2", "n3", "n4"]
+    # ~5 km north of the guess (LAT, LON) — comfortably past the 2 km cap
+    # from the guess, and comfortably inside it from itself.
+    CENTROID_LAT = LAT + 5.0 / 111.32
+    CENTROID_LON = LON
+    # Far from both the guess and the centroid above (~106-111 km either
+    # way) — unambiguously rejects regardless of which anchor is in play.
+    FAR_LAT, FAR_LON = 36.0, -82.0
+
+    def _table_at(self, node_ids, lat, lon):
+        return {frozenset(node_ids): _stub_result(
+            node_ids, rms_delay=0.5, lat=lat, lon=lon,
+        )}
+
+    def test_active_selected_anchors_to_centroid_and_publishes(self, monkeypatch):
+        monkeypatch.setattr(solver_mod, "_CONSENSUS_MODE", "active")
+        selection = _selection(
+            self.FULL, self.FULL, lat=self.CENTROID_LAT, lon=self.CENTROID_LON,
+        )
+        # Solve lands ON the centroid: ~0 km from it (well under the cap),
+        # ~5 km from the guess (over the cap) — only publishes if the gate
+        # is measuring against the centroid.
+        table = self._table_at(self.FULL, self.CENTROID_LAT, self.CENTROID_LON)
+
+        result = self._run(
+            _s_in(self.FULL), _stub_solve_fn(table), _stub_select_fn(selection),
+        )
+
+        assert result is not None and result["success"]
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "published"
+        assert rec["consensus_meta"]["displacement_anchor"] == "consensus"
+        assert rec["displacement_km"] < 2.0
+
+    def test_active_selected_rejects_when_off_both_anchors(self, monkeypatch):
+        monkeypatch.setattr(solver_mod, "_CONSENSUS_MODE", "active")
+        selection = _selection(
+            self.FULL, self.FULL, lat=self.CENTROID_LAT, lon=self.CENTROID_LON,
+        )
+        table = self._table_at(self.FULL, self.FAR_LAT, self.FAR_LON)
+
+        result = self._run(
+            _s_in(self.FULL), _stub_solve_fn(table), _stub_select_fn(selection),
+        )
+
+        assert result is None
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_displacement"
+        assert rec["consensus_meta"]["displacement_anchor"] == "consensus"
+        assert rec["displacement_km"] > 2.0
+
+    def test_shadow_mode_keeps_guess_anchor(self, monkeypatch):
+        monkeypatch.setattr(solver_mod, "_CONSENSUS_MODE", "shadow")
+        selection = _selection(
+            self.FULL, self.FULL, lat=self.CENTROID_LAT, lon=self.CENTROID_LON,
+        )
+        # Shadow never filters — the LM sees (and solves) the full,
+        # unfiltered set, landing on the centroid: ~5 km from the guess.
+        table = self._table_at(self.FULL, self.CENTROID_LAT, self.CENTROID_LON)
+
+        result = self._run(
+            _s_in(self.FULL), _stub_solve_fn(table), _stub_select_fn(selection),
+        )
+
+        assert result is None
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_displacement"
+        assert rec["consensus_meta"]["outcome"] == "shadow_selected"
+        assert rec["consensus_meta"]["displacement_anchor"] == "guess"
+        assert rec["displacement_km"] > 2.0
+
+    def test_fallback_abstained_keeps_guess_anchor(self, monkeypatch):
+        monkeypatch.setattr(solver_mod, "_CONSENSUS_MODE", "active")
+        # select_fn abstains (returns None) -> fallback to the unfiltered
+        # input, landing on the centroid: ~5 km from the guess.
+        table = self._table_at(self.FULL, self.CENTROID_LAT, self.CENTROID_LON)
+
+        result = self._run(
+            _s_in(self.FULL), _stub_solve_fn(table), _stub_select_fn(None),
+        )
+
+        assert result is None
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_displacement"
+        assert rec["consensus_meta"]["outcome"] == "fallback_abstained"
+        assert rec["consensus_meta"]["displacement_anchor"] == "guess"
+        assert rec["displacement_km"] > 2.0

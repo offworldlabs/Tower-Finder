@@ -1292,27 +1292,52 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             )
             return None
         # Reject if the solution drifted more than _MAX_DISPLACEMENT_KM from
-        # the ADS-B initial_guess. For N=2 this catches mirror-point ghosts
-        # (false bistatic ellipse intersection 15-50 km away). For N≥3 it
-        # catches solves where the inter-node associator bound a wrong frame
-        # and the LM converged on a non-target position — production stats
-        # showed those were the dominant source of the per-N inversion in
+        # its sanity anchor. For N=2 this catches mirror-point ghosts (false
+        # bistatic ellipse intersection 15-50 km away). For N≥3 it catches
+        # solves where the inter-node associator bound a wrong frame and the
+        # LM converged on a non-target position — production stats showed
+        # those were the dominant source of the per-N inversion in
         # /api/test/mlat-accuracy.
+        #
+        # The anchor is the association guess by default (that mis-
+        # association protection).  But for a consensus-vetted solve
+        # (consensus_meta outcome == "selected" — active mode actually
+        # filtered this solve's input on a corroborated node subset) the
+        # corroborated centroid replaces guess-proximity as the sanity
+        # reference instead.  Measured in the first live active-mode window:
+        # 131 displacement kills, 80 of them <3 km from truth and 110
+        # consensus-selected, median centroid offset 3.04 km against this
+        # same 2 km cap — the gate was anchored to the contaminated guess
+        # consensus+LM exist to correct, so it was killing the corrections
+        # rather than the mis-associations.  shadow mode and every
+        # fallback_* outcome keep the guess anchor: consensus either never
+        # ran against this solve's input or was not acted on, so its
+        # centroid is not a vetted reference here.
+        _disp_km: float | None = None
         if "initial_guess" in s_in:
             _ig = s_in["initial_guess"]
-            _ig_lat = _ig.get("lat")
-            _ig_lon = _ig.get("lon")
-            if _ig_lat and _ig_lon:
+            _anchor_lat, _anchor_lon = _ig.get("lat"), _ig.get("lon")
+            _anchor_label = "guess"
+            if consensus_meta is not None:
+                if consensus_meta.get("outcome") == "selected":
+                    _anchor_lat = consensus_meta.get("lat")
+                    _anchor_lon = consensus_meta.get("lon")
+                    _anchor_label = "consensus"
+                consensus_meta["displacement_anchor"] = _anchor_label
+            if _anchor_lat and _anchor_lon:
                 _disp_km = _haversine_km(
-                    float(_ig_lat), float(_ig_lon),
+                    float(_anchor_lat), float(_anchor_lon),
                     result["lat"], result["lon"],
                 )
                 if _disp_km > _MAX_DISPLACEMENT_KM:
                     logging.debug(
-                        "n=%d result rejected: %.1f km from initial_guess "
+                        "n=%d result rejected: %.1f km from %s "
                         "(lat=%.3f lon=%.3f) — likely mirror or wrong-frame "
                         "convergence",
-                        n_nodes, _disp_km, result["lat"], result["lon"],
+                        n_nodes, _disp_km,
+                        "consensus centroid" if _anchor_label == "consensus"
+                        else "initial_guess",
+                        result["lat"], result["lon"],
                     )
                     state.bump_counter("solver_failures")
                     state.bump_counter("solver_fail_displacement")
@@ -1509,6 +1534,7 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             solve_key=key,
             raw_lat=_raw_lat, raw_lon=_raw_lon,
             chi2_per_dof=s_in.get("chi2_per_dof") if isinstance(s_in, dict) else None,
+            displacement_km=_disp_km,
             extra=_extra,
         )
     elif result is not None:
