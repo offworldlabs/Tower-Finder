@@ -48,3 +48,6 @@ backend/data/runtime/
 
 # local testmap runner (justfile) pids/logs
 .testmap-run/
+
+# Claude working notes (machine-local)
+CLAUDE.md
