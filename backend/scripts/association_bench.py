@@ -50,10 +50,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # DetectionAssociator is a superset of InterNodeAssociator — it adds the
 # superseded detection path that --mode detection measures as the baseline, so
 # constructing it unconditionally leaves --mode track unaffected.
-# Sibling script, not a package import — consensus_estimator.py lives next to
-# this file under backend/scripts/ and is never imported from services/.
-from consensus_estimator import solve_consensus  # noqa: E402
 from retina_analytics.detection_association import DetectionAssociator  # noqa: E402
+from retina_geolocator.consensus import solve_consensus  # noqa: E402
 from retina_geolocator.multinode_solver import (  # noqa: E402
     fit_constant_velocity,
     solve_multinode,
@@ -73,7 +71,7 @@ from services.tasks.solver import claim_decision, resolve_n2_chi2  # noqa: E402
 
 # --estimator name -> solve_fn.  "consensus-refine" hands the consensus
 # winner's supporting nodes to solve_multinode for a final LM polish (see
-# consensus_estimator.solve_consensus's refine_fn parameter).
+# retina_geolocator.consensus.solve_consensus's refine_fn parameter).
 _ESTIMATORS = {
     "lm": solve_multinode,
     "consensus": solve_consensus,
@@ -788,8 +786,8 @@ def main():
     p.add_argument("--estimator", nargs="+", choices=("lm", "consensus", "consensus-refine"),
                    default=["lm"],
                    help="position solver(s) to sweep. 'lm' is solve_multinode "
-                        "(shipped). 'consensus' is the bench-only pairwise-"
-                        "intersection estimator (consensus_estimator.py) — "
+                        "(shipped). 'consensus' is the pairwise-intersection "
+                        "estimator (retina_geolocator.consensus) — "
                         "no LM, no Doppler. 'consensus-refine' takes the "
                         "consensus winner's supporting nodes and hands them "
                         "to solve_multinode for a final LM polish.")

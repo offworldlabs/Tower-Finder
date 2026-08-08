@@ -126,6 +126,28 @@ _SOLVER_ALT_LAYERS_KM = [1.5, 3.0, 5.0, 7.0, 9.0, 11.0]
 # env-overridable for live tuning while that policy beds in.
 _SOLVER_RMS_DELAY_MAX_US = float(os.getenv("SOLVER_RMS_DELAY_MAX_US", "3.0"))
 
+# Consensus hypothesis stage (retina_geolocator.consensus.select_consensus):
+# runs once at n≥3, ahead of the LM altitude sweep, and picks the subset of
+# contributing nodes whose pairwise delay-ellipse intersections corroborate
+# each other.  Bench measurement (association_bench.py --estimator
+# consensus-refine vs lm, 5 seeds × default + dense scenes): n≥3 ghost
+# solves ~3x down (13-16 vs ~46), position error slightly better, zero real
+# tracks lost, LM-equivalent per-solve cost (consensus picks the subset,
+# the existing LM solve still runs — this is not a solver replacement).
+#   off    (default) — consensus never runs.
+#   shadow — consensus runs and its selection is recorded on the history
+#            record (consensus_meta), but the LM sees the unfiltered input;
+#            for comparing the two without touching what publishes.
+#   active — consensus's selection replaces the LM's input measurements
+#            when it corroborates >= _CONSENSUS_MIN_NODES nodes; otherwise
+#            (abstain, too few nodes, or an exception) it falls back to the
+#            unfiltered input silently — see _consensus_select.
+_CONSENSUS_MODE = os.getenv("SOLVER_CONSENSUS_MODE", "off").lower()
+# Below this many corroborated nodes, a consensus selection is not trusted
+# enough to filter on — the blanket rms_delay gate (and, if it still fails,
+# trimming) is left to make the call on the unfiltered input instead.
+_CONSENSUS_MIN_NODES = 3
+
 # Node-trimming policy for the rms_delay gate at n≥4 (see above).  Iteratively
 # drop the worst-residual node(s) and re-solve, down to a floor of
 # _TRIM_MIN_NODES — below that the geometry is too thin to trust a trim's own
@@ -275,6 +297,41 @@ def _solve_best_altitude_n2(s_in: dict, node_cfgs: dict, solve_fn) -> dict | Non
     return solve_fn(s_in, node_cfgs)
 
 
+def _filter_s_in_to_nodes(s_in: dict, survivors) -> dict:
+    """Filter a solver input down to a node subset, rebuilding provenance.
+
+    Shared rebuild idiom: filter ``measurements`` to the surviving node ids,
+    recompute ``n_nodes``, and rebuild ``track_ids_by_node``/``track_ids``
+    from it when the input carries per-node track provenance (else
+    ``track_ids`` passes through unchanged — the supersession block reads
+    ``s_in["track_ids"]`` into ``result["source_track_ids"]`` regardless of
+    which caller narrowed the node set).  Used by both _trim_and_resolve
+    (dropping the worst-residual node after a failed rms gate) and
+    _consensus_select (dropping nodes consensus's cross-pair corroboration
+    didn't support) — so provenance is identical-by-construction between
+    the two.
+    """
+    survivors = set(survivors)
+    measurements = s_in.get("measurements") or []
+    s_next = dict(s_in)
+    s_next["measurements"] = [
+        m for m in measurements if m.get("node_id") in survivors
+    ]
+    s_next["n_nodes"] = len(
+        {m.get("node_id") for m in s_next["measurements"]}
+    )
+    by_node = s_in.get("track_ids_by_node")
+    if by_node:
+        surviving_by_node = {
+            nid: ids for nid, ids in by_node.items() if nid in survivors
+        }
+        s_next["track_ids_by_node"] = surviving_by_node
+        s_next["track_ids"] = sorted(
+            {tid for ids in surviving_by_node.values() for tid in ids}
+        )
+    return s_next
+
+
 def _trim_and_resolve(
     s_in: dict, node_cfgs: dict, solve_fn, result: dict,
 ) -> tuple[dict, dict, dict | None]:
@@ -327,23 +384,7 @@ def _trim_and_resolve(
         if not candidates:
             break
 
-        measurements = s_in.get("measurements") or []
-        s_next = dict(s_in)
-        s_next["measurements"] = [
-            m for m in measurements if m.get("node_id") in survivors
-        ]
-        s_next["n_nodes"] = len(
-            {m.get("node_id") for m in s_next["measurements"]}
-        )
-        by_node = s_in.get("track_ids_by_node")
-        if by_node:
-            surviving_by_node = {
-                nid: ids for nid, ids in by_node.items() if nid in survivors
-            }
-            s_next["track_ids_by_node"] = surviving_by_node
-            s_next["track_ids"] = sorted(
-                {tid for ids in surviving_by_node.values() for tid in ids}
-            )
+        s_next = _filter_s_in_to_nodes(s_in, survivors)
 
         try:
             new_result = _solve_best_altitude(s_next, node_cfgs, solve_fn)
@@ -984,11 +1025,91 @@ def _record_solve_history(
         pass
 
 
-def _process_solver_item(item: tuple, solve_fn) -> dict | None:
+def _pool_select_consensus(s_in, node_cfgs):
+    """select_consensus via the process pool (inline when no pool exists).
+
+    Mirrors _pool_solve_multinode below, but has to live here rather than
+    beside it: it is _process_solver_item's select_fn default, and a
+    default argument value is resolved when the ``def`` executes, so it
+    must already be bound by the time that line is reached.
+    """
+    from retina_geolocator.consensus import select_consensus
+    return _pool_call(select_consensus, s_in, node_cfgs)
+
+
+def _consensus_select(
+    s_in: dict, node_cfgs: dict, select_fn,
+) -> tuple[dict, dict | None]:
+    """Run the consensus hypothesis stage once, ahead of the LM altitude
+    sweep, and decide whether to act on its selection.
+
+    Called only at n>=3 with an initial_guess and _CONSENSUS_MODE != "off"
+    (see the dispatch in _process_solver_item) — n=2 and detection-level
+    (no-guess) inputs never reach this.  select_fn is select_consensus by
+    default, routed through the spawn pool exactly like solve_fn; tests
+    substitute a stub.
+
+    Every non-selecting outcome (an exception, an abstain, or too few
+    corroborated nodes) returns the ORIGINAL s_in unchanged — a consensus
+    failure must never block a solve the unfiltered input could still
+    produce.  initial_guess is never touched here either way: the
+    displacement gate downstream measures the LM's own solve against the
+    association guess regardless of what consensus decided, and
+    centroid_offset_km in the meta is the observability channel for how
+    often the two disagree.
+
+    Returns (s_in_for_solve, consensus_meta).  consensus_meta is always a
+    dict (never None) once this runs, carrying at least "outcome" —
+    _process_solver_item threads it into every history record for this
+    item, published or rejected.
+    """
+    try:
+        selection = select_fn(s_in, node_cfgs)
+    except Exception:
+        logging.exception("Consensus selection failed")
+        state.bump_counter("solver_consensus_fallback")
+        return s_in, {"outcome": "fallback_error"}
+
+    if selection is None:
+        state.bump_counter("solver_consensus_fallback")
+        return s_in, {"outcome": "fallback_abstained"}
+
+    node_ids = selection.get("node_ids") or []
+    if len(node_ids) < _CONSENSUS_MIN_NODES:
+        meta = dict(selection)
+        meta["outcome"] = "fallback_small"
+        state.bump_counter("solver_consensus_fallback")
+        return s_in, meta
+
+    input_node_ids = selection.get("input_node_ids") or []
+    meta = dict(selection)
+    meta["input_node_ids"] = input_node_ids
+    meta["selected_node_ids"] = sorted(node_ids)
+    meta["dropped_node_ids"] = sorted(set(input_node_ids) - set(node_ids))
+
+    if _CONSENSUS_MODE == "shadow":
+        meta["outcome"] = "shadow_selected"
+        state.bump_counter("solver_consensus_shadow")
+        return s_in, meta
+
+    meta["outcome"] = "selected"
+    state.bump_counter("solver_consensus_selected")
+    if meta["dropped_node_ids"]:
+        state.bump_counter("solver_consensus_filtered")
+    return _filter_s_in_to_nodes(s_in, node_ids), meta
+
+
+def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus) -> dict | None:
     """Process a single solver queue entry. Returns the solver result (or None).
 
     Extracted from the worker loop so the success/failure/latency bookkeeping
     can be unit-tested without spinning up daemon threads.
+
+    select_fn is the consensus hypothesis stage (_pool_select_consensus by
+    default; tests substitute a stub).  It only ever runs at n>=3 with an
+    initial_guess and _CONSENSUS_MODE != "off" — n=2 (mirror-disambiguation
+    is the displacement/beam gates' job, not consensus's) and detection-level
+    inputs (no initial_guess to pin an altitude with) never call it.
     """
     s_in, node_cfgs = item[0], item[1]
     enqueued_at: float | None = item[2] if len(item) > 2 else None
@@ -1006,10 +1127,14 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
         )
         return None
     n_nodes = s_in.get("n_nodes", 0) if isinstance(s_in, dict) else 0
+    consensus_meta: dict | None = None
     try:
         if "initial_guess" not in s_in:
             result = solve_fn(s_in, node_cfgs)
         elif n_nodes >= 3:
+            if _CONSENSUS_MODE != "off":
+                s_in, consensus_meta = _consensus_select(s_in, node_cfgs, select_fn)
+                n_nodes = s_in.get("n_nodes", n_nodes)
             result = _solve_best_altitude(s_in, node_cfgs, solve_fn)
         else:
             result = _solve_best_altitude_n2(s_in, node_cfgs, solve_fn)
@@ -1026,7 +1151,9 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
         # nodes can recover a solve the blanket gate would otherwise sink.
         # The rest of the gate stack below runs on whatever this reaches —
         # the trimmed result/s_in on a successful trim, the original
-        # otherwise — unchanged.
+        # otherwise — unchanged.  A consensus-filtered n=3 input skips this
+        # (below the n≥4 floor) by construction, which is intended: consensus
+        # already chose the subset it trusts.
         trim_meta: dict | None = None
         if (
             "initial_guess" in s_in
@@ -1039,6 +1166,14 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             )
             n_nodes = result.get("n_nodes", n_nodes)
 
+        # Built once and threaded through every history record below
+        # (published or rejected) so a bad map marker can be traced back to
+        # both what trimming tried and what consensus selected.
+        _extra: dict | None = dict(trim_meta) if trim_meta else {}
+        if consensus_meta is not None:
+            _extra["consensus_meta"] = consensus_meta
+        _extra = _extra or None
+
         rms_delay = result.get("rms_delay", 0) or 0
         if rms_delay > _SOLVER_RMS_DELAY_MAX_US:
             logging.debug(
@@ -1050,7 +1185,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             state.bump_counter("solver_failures")
             state.bump_counter("solver_fail_rms_delay")
             _record_solve_history(
-                "rejected_rms_delay", s_in, result, extra=trim_meta,
+                "rejected_rms_delay", s_in, result, extra=_extra,
             )
             return result
         rms_doppler = result.get("rms_doppler", 0) or 0
@@ -1064,7 +1199,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             state.bump_counter("solver_failures")
             state.bump_counter("solver_fail_rms_doppler")
             _record_solve_history(
-                "rejected_rms_doppler", s_in, result, extra=trim_meta,
+                "rejected_rms_doppler", s_in, result, extra=_extra,
             )
             return result
         # Beam gate: range and bearing are two different physical claims, and
@@ -1153,7 +1288,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             state.bump_counter("solver_fail_beam")
             _record_solve_history(
                 "rejected_beam", s_in, result,
-                extra={**(trim_meta or {}), "beam_failures": beam_failures},
+                extra={**(_extra or {}), "beam_failures": beam_failures},
             )
             return None
         # Reject if the solution drifted more than _MAX_DISPLACEMENT_KM from
@@ -1183,7 +1318,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                     state.bump_counter("solver_fail_displacement")
                     _record_solve_history(
                         "rejected_displacement", s_in, result,
-                        displacement_km=_disp_km, extra=trim_meta,
+                        displacement_km=_disp_km, extra=_extra,
                     )
                     return None
         # n=2 publication gate.  The pairing must have been fitted and passed;
@@ -1204,7 +1339,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                 state.bump_counter("n2_unconfirmed")
                 _record_solve_history(
                     "n2_unconfirmed", s_in, result,
-                    chi2_per_dof=_chi2, extra=trim_meta,
+                    chi2_per_dof=_chi2, extra=_extra,
                 )
                 return result
             if not _claim_track_pair(s_in, _chi2):
@@ -1217,7 +1352,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                 state.bump_counter("n2_unconfirmed")
                 _record_solve_history(
                     "n2_outbid", s_in, result,
-                    chi2_per_dof=_chi2, extra=trim_meta,
+                    chi2_per_dof=_chi2, extra=_extra,
                 )
                 return result
         state.bump_counter("solver_successes")
@@ -1374,15 +1509,21 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             solve_key=key,
             raw_lat=_raw_lat, raw_lon=_raw_lon,
             chi2_per_dof=s_in.get("chi2_per_dof") if isinstance(s_in, dict) else None,
-            extra=trim_meta,
+            extra=_extra,
         )
     elif result is not None:
         # The LM ran but did not converge (success=False).  Previously this
         # path incremented nothing — staging showed hundreds of solves
-        # vanishing with no observable reason.
+        # vanishing with no observable reason.  trim_meta never applies here
+        # (trimming only starts once a solve has already succeeded), but
+        # consensus_meta can — the hypothesis stage ran before this solve
+        # was even attempted.
         state.bump_counter("solver_failures")
         state.bump_counter("solver_fail_unconverged")
-        _record_solve_history("unconverged", s_in, result)
+        _record_solve_history(
+            "unconverged", s_in, result,
+            extra={"consensus_meta": consensus_meta} if consensus_meta is not None else None,
+        )
     return result
 
 

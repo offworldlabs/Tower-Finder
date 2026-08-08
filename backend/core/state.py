@@ -227,6 +227,22 @@ mn_superseded: int = 0
 # of trimming", not "how many rounds trimming ran".
 solver_trimmed: int = 0
 
+# Consensus hypothesis stage (solver.py's _consensus_select /
+# retina_geolocator.consensus.select_consensus), gated by
+# SOLVER_CONSENSUS_MODE (off/shadow/active; off by default).  selected and
+# filtered both count "active" selections that cleared _CONSENSUS_MIN_NODES
+# — filtered is the subset of those where at least one input node was
+# actually dropped, so selected - filtered is "corroborated but nothing to
+# drop".  fallback is every non-acting outcome regardless of mode (an
+# exception, an abstain, or too few corroborated nodes) — the unfiltered
+# input is used either way.  shadow is "active"'s dry-run twin: consensus
+# ran and its selection was recorded, but the LM still saw the unfiltered
+# input.
+solver_consensus_selected: int = 0
+solver_consensus_filtered: int = 0
+solver_consensus_fallback: int = 0
+solver_consensus_shadow: int = 0
+
 # Per-reason solver rejection counters.  solver_failures is the aggregate; the
 # per-solve reason was only ever logged at DEBUG, which staging does not emit —
 # 301 failures in one 66-minute window were unattributable.  One counter per
@@ -324,6 +340,8 @@ def _reset_for_tests() -> None:
     global frames_dropped, frames_processed, solver_successes, solver_failures
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
     global solver_queue_drops, solver_stale_drops, mn_superseded, solver_trimmed
+    global solver_consensus_selected, solver_consensus_filtered
+    global solver_consensus_fallback, solver_consensus_shadow
     global solver_fail_exception, solver_fail_unconverged, solver_fail_rms_delay
     global solver_fail_rms_doppler, solver_fail_beam, solver_fail_displacement
     global position_jump_events
@@ -379,6 +397,8 @@ def _reset_for_tests() -> None:
         solver_stale_drops = 0
         mn_superseded = 0
         solver_trimmed = 0
+        solver_consensus_selected = solver_consensus_filtered = 0
+        solver_consensus_fallback = solver_consensus_shadow = 0
         solver_fail_exception = solver_fail_unconverged = solver_fail_rms_delay = 0
         solver_fail_rms_doppler = solver_fail_beam = solver_fail_displacement = 0
         position_jump_events = 0

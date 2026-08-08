@@ -16,6 +16,7 @@ from core.users import require_admin
 from services.frame_processor import resolve_ground_truth_hex
 from services.geo import haversine_km
 from services.id_utils import normalize_hex_key
+from services.tasks import solver as solver_mod
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -199,6 +200,17 @@ def _build_dashboard_data() -> bytes:
                 # the rms_delay gate at n>=4.  See solver.py's
                 # _trim_and_resolve.
                 "solver_trimmed": state.solver_trimmed,
+                # Consensus hypothesis stage (solver.py's _consensus_select).
+                # mode is off/shadow/active (SOLVER_CONSENSUS_MODE); the
+                # counters are cumulative since boot regardless of mode —
+                # shadow/selected/filtered only move once mode isn't "off".
+                "consensus": {
+                    "mode": solver_mod._CONSENSUS_MODE,
+                    "selected": state.solver_consensus_selected,
+                    "filtered": state.solver_consensus_filtered,
+                    "fallback": state.solver_consensus_fallback,
+                    "shadow": state.solver_consensus_shadow,
+                },
                 # Teleporting emits (mis-association noise).  Debug counter
                 # only — jumps no longer mark tracks anomalous.
                 "position_jump_events": state.position_jump_events,
