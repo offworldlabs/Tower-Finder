@@ -67,7 +67,11 @@ from retina_tracker.tracker import Tracker  # noqa: E402
 
 from services.frame_processor import confirmed_track_views  # noqa: E402
 from services.geo import haversine_km as _haversine_km  # noqa: E402
-from services.tasks.solver import claim_decision, resolve_n2_chi2  # noqa: E402
+from services.tasks.solver import (  # noqa: E402
+    claim_decision,
+    multinode_key_decision,
+    resolve_n2_chi2,
+)
 
 # --estimator name -> solve_fn.  "consensus-refine" hands the consensus
 # winner's supporting nodes to solve_multinode for a final LM polish (see
@@ -308,6 +312,30 @@ class Result:
     # the LM baseline.
     solve_ms: list = None
 
+    # ── Top-down claiming (--claim-mode) ──────────────────────────────────
+    # Straight off the library associator — same counters the live
+    # /api/radar/association/status "claiming" block reports.
+    claims_matched: int = 0
+    claim_conflicts: int = 0
+    anchored_inputs: int = 0
+    # Bench-side, mirroring solver.py's solver_anchor_* / solver_anchored_
+    # published: counted at the bench's own publish point (multinode_key_
+    # decision against bench_mn), which is where an anchor is actually
+    # honored or falls through.
+    anchored_published: int = 0
+    anchor_fallbacks: int = 0
+    # Distinct state.multinode_tracks-equivalent keys minted over the whole
+    # run (bench_mn) — the acceptance metric claiming exists to move:
+    # distinct published keys should drop toward O(targets).  keys_real/
+    # keys_ghost split that count by the same MATCH_KM binding the solve-
+    # level matched/ghosts counters use, evaluated at each solve that
+    # updates a key (a key can appear in both if its solves wander across
+    # the gate — same non-exclusivity matched_tracks/ghost_tracks already
+    # accept).
+    distinct_keys: int = 0
+    keys_real: int = 0
+    keys_ghost: int = 0
+
     def __post_init__(self):
         self.errors_km = []
         self.ghost_dist_km = []
@@ -352,12 +380,23 @@ class Result:
     def total(self):
         return self.matched + self.ghosts
 
+    @property
+    def keys_per_object(self):
+        """Headline claiming metric: published keys per real GT object
+        actually matched.  1.0 is the floor — one key per aircraft; the
+        pre-claiming baseline runs to ~O(solves) per object instead."""
+        n_objects = len(self.matched_tracks)
+        return self.keys_real / n_objects if n_objects else 0.0
+
     _SUM_FIELDS = (
         "matched", "ghosts", "solver_rejects",
         "gate_gated", "gate_rejected", "gate_accepted", "gate_unfitted",
         "gate_superseded",
         "n2_withheld_unfitted", "n2_withheld_chi2", "n2_withheld_claimed",
         "claim_refused_self", "claim_refused_other",
+        "claims_matched", "claim_conflicts", "anchored_inputs",
+        "anchored_published", "anchor_fallbacks",
+        "distinct_keys", "keys_real", "keys_ghost",
     )
     _EXTEND_FIELDS = (
         "errors_km", "ghost_dist_km", "speeds_kt", "speed_err_ms",
@@ -456,7 +495,8 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
         dual_aim="core", blind=True, mode="detection",
         chi2_max=2.0, min_span_s=12.0, history_n=20, exclusive=True,
         cv_fit_mode="inline", claim_policy="strict",
-        claim_ttl_s=60.0, solve_fn=solve_multinode) -> Result:
+        claim_ttl_s=60.0, solve_fn=solve_multinode,
+        claim_mode="off") -> Result:
     import random
 
     random.seed(seed)
@@ -498,7 +538,39 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
     assoc._ASSOC_MIN_INTERVAL_S = 0.0
     last_assoc: dict[str, float] = {}
 
+    # Top-down claiming (--claim-mode).  Only meaningful in --mode track:
+    # off-mode's associator ignores claim_mode == "off" anyway, but setting
+    # it unconditionally keeps --mode detection's assoc untouched by
+    # construction (it never calls submit_tracks_round).
+    #
+    # Anchored inputs are ALWAYS unscored (chi2_per_dof=None, cv_epochs
+    # carried for the solver worker to fit) regardless of --cv-fit, because
+    # _claim_round has no inline fit path of its own — production shape.  So
+    # --claim-mode only measures anything faithful together with --cv-fit
+    # deferred (n2_gate is not None below): that is what actually resolves
+    # cv_epochs and runs the n=2 confirmation gate on them.  With --cv-fit
+    # inline (the bench default) n2_gate is None and an anchored n=2 input
+    # skips that gate entirely — not a bug so much as an unsupported
+    # combination; the verification runbook always pairs claim-mode with
+    # --cv-fit deferred for exactly this reason.
+    #
+    # bench_mn mimics state.multinode_tracks: keyed the same way
+    # (multinode_key_decision, the shipped rule, imported rather than
+    # reimplemented — same reason claim_decision is imported above), pruned
+    # on the same 60 s window.  It stores RAW (unsmoothed) positions — no
+    # EWMA — a deliberate divergence from production's smoothed store: the
+    # bench has no frame-to-frame position history to smooth over, and the
+    # claiming gates compare against the tracklet's own last measurement
+    # either way, not the smoothed position.
+    bench_mn: dict[str, dict] = {}
+    assoc.claim_mode = claim_mode if mode == "track" else "off"
+    assoc.global_track_provider = lambda: list(bench_mn.values())
+    _BENCH_MN_MAX_AGE_MS = 60_000
+
     res = Result()
+    _all_keys_seen: set = set()
+    _keys_real: set = set()
+    _keys_ghost: set = set()
 
     # Reproduce the orchestrator's staggered sending (orchestrator.py:508-531).
     # Nodes are geo-sorted so same-metro neighbours land in adjacent slots, then
@@ -549,9 +621,13 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                 continue
             last_assoc[nid] = t
             if mode == "track":
-                pairs = assoc.submit_tracks(
+                round_ = assoc.submit_tracks_round(
                     nid, assoc._pending_tracks.get(nid, []), ts_ms)
-                solver_inputs = assoc.format_track_pairs_for_solver(pairs)
+                # anchored_inputs are already solver-input shaped (see
+                # _claim_round) — empty unless --claim-mode active (or
+                # shadow's counters-only, per submit_tracks_round).
+                solver_inputs = (assoc.format_track_pairs_for_solver(round_.pairs)
+                                 + round_.anchored_inputs)
             else:
                 cands = assoc.submit_frame(nid, frame, ts_ms)
                 solver_inputs = (assoc.format_candidates_for_solver(cands)
@@ -588,6 +664,46 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                     if not n2_gate.claim(s_in, _chi2, t):
                         res.n2_withheld_claimed += 1
                         continue
+
+                # Bench-side state.multinode_tracks equivalent — accepted
+                # solves only, mirroring where production's _MN_TRACKS_LOCK
+                # block runs (after every gate above, before GT matching).
+                if mode == "track":
+                    _anchor_key = s_in.get("anchor_key")
+                    _key, _how = multinode_key_decision(bench_mn, out, None, _anchor_key)
+                    if _anchor_key:
+                        res.anchored_published += 1
+                        if _how != "anchor":
+                            res.anchor_fallbacks += 1
+                    _new_ids = set(s_in.get("track_ids") or [])
+                    # Source-track supersession, mirroring solver.py: a later
+                    # solve sharing source tracks with an earlier entry under
+                    # a DIFFERENT key is the same aircraft re-solved past the
+                    # match radius, not a second one.
+                    if _new_ids:
+                        for _old_key in list(bench_mn.keys()):
+                            if _old_key == _key:
+                                continue
+                            if _new_ids.intersection(
+                                    bench_mn[_old_key].get("source_track_ids") or ()):
+                                del bench_mn[_old_key]
+                    _prev_mn = bench_mn.get(_key)
+                    bench_mn[_key] = {
+                        "key": _key,
+                        "lat": out["lat"], "lon": out["lon"],
+                        "alt_m": out.get("alt_m", 0.0),
+                        "vel_east": out.get("vel_east", 0.0),
+                        "vel_north": out.get("vel_north", 0.0),
+                        "timestamp_ms": ts_ms,
+                        "n_nodes": out.get("n_nodes", s_in.get("n_nodes", 0)),
+                        "solve_count": (_prev_mn.get("solve_count", 0) if _prev_mn else 0) + 1,
+                        "source_track_ids": sorted(_new_ids),
+                    }
+                    for _k in [k for k, v in bench_mn.items()
+                              if ts_ms - v.get("timestamp_ms", 0) > _BENCH_MN_MAX_AGE_MS]:
+                        del bench_mn[_k]
+                    _all_keys_seen.add(_key)
+
                 d, best_id, best_speed = min(
                     ((_haversine_km(out["lat"], out["lon"], a, b), oid, sp)
                      for a, b, oid, sp in truth),
@@ -595,6 +711,10 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                 nn = out.get("n_nodes", s_in.get("n_nodes", 0))
                 speed = math.hypot(out.get("vel_east", 0.0), out.get("vel_north", 0.0))
                 res.speeds_kt.append(speed * 1.94384)
+                if mode == "track":
+                    # Key->GT binding at publish, the same MATCH_KM radius
+                    # the solve-level matched/ghosts split uses below.
+                    (_keys_real if d <= MATCH_KM else _keys_ghost).add(_key)
                 if d <= MATCH_KM:
                     res.matched += 1
                     res.errors_km.append(d)
@@ -646,6 +766,12 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
     res.gate_accepted = assoc.track_pairs_accepted
     res.gate_unfitted = assoc.track_pairs_unfitted
     res.gate_superseded = assoc.track_pairs_superseded
+    res.claims_matched = assoc.claims_matched
+    res.claim_conflicts = assoc.claim_conflicts
+    res.anchored_inputs = assoc.anchored_inputs_emitted
+    res.distinct_keys = len(_all_keys_seen)
+    res.keys_real = len(_keys_real)
+    res.keys_ghost = len(_keys_ghost)
     return res
 
 
@@ -726,6 +852,19 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
             print(f"  cluster sizes {grp:4s} {dict(sorted(sizes.items()))}  "
                   f"-> {100 * wide / max(tot, 1):.1f}% span >2 tracks  ({note})")
     print(f"  solver rejects/failures: {r.solver_rejects}")
+    # Top-down claiming.  Gated on either counter moving: shadow mode counts
+    # without ever emitting an anchored_input, active mode does both.
+    if r.claims_matched + r.anchored_inputs > 0:
+        print(f"  claiming: {r.claims_matched} matched, {r.claim_conflicts} "
+              f"conflicts -> {r.anchored_inputs} anchored inputs emitted "
+              f"({r.anchored_published} published, {r.anchor_fallbacks} "
+              "fell back off the anchor)")
+        print(f"    distinct published keys: {r.distinct_keys}  "
+              f"(real {r.keys_real}, ghost {r.keys_ghost})  "
+              f"-> {r.keys_per_object:.2f} keys/matched-object "
+              "(1.0 is the floor)")
+        print(f"    n=2-only track ghost rate: {r.track_ghost_pct_n2:.1f}%  "
+              "(claiming must not raise this)")
 
 
 def main():
@@ -772,6 +911,12 @@ def main():
                         "renew its own claim as its chi2 drifts.")
     p.add_argument("--claim-ttl-s", type=float, default=60.0,
                    help="deferred mode: how long a track claim is held")
+    p.add_argument("--claim-mode", choices=("off", "shadow", "active"),
+                   default="off",
+                   help="track mode: top-down claiming (ASSOC_CLAIM_MODE). "
+                        "off is shipped default; shadow computes and counts "
+                        "without ever excluding a tracklet or emitting an "
+                        "anchored input; active does both.")
     p.add_argument("--no-select", dest="exclusive", action="store_false",
                    default=True,
                    help="track mode: disable one-to-one hypothesis selection "
@@ -797,7 +942,8 @@ def main():
           f"nodes={args.nodes} budget={args.n_cluster} "
           f"{args.seconds:.0f}s @ {args.frame_interval:.0f}s frames, seed {args.seed}, "
           f"{'BLIND' if args.blind else 'ADS-B-tagged'}, mode={args.mode}"
-          + (f", span>={args.min_span_s:.0f}s, cv-fit={args.cv_fit_mode}"
+          + (f", span>={args.min_span_s:.0f}s, cv-fit={args.cv_fit_mode}, "
+             f"claim-mode={args.claim_mode}"
              if args.mode == "track" else ""))
 
     # chi2 only means anything in track mode; keep one pass otherwise.
@@ -819,7 +965,7 @@ def main():
                          args.mode, chi2_max if chi2_max is not None else 2.0,
                          args.min_span_s, args.history_n, args.exclusive,
                          args.cv_fit_mode, args.claim_policy, args.claim_ttl_s,
-                         solve_fn=solve_fn)
+                         solve_fn=solve_fn, claim_mode=args.claim_mode)
               agg.merge(last, tag=f"s{args.seed + k}")
               # Track-level is the comparable metric — solve-level and
               # track-level differ by ~20x on the same data, so mixing them is

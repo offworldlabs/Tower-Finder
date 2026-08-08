@@ -290,11 +290,17 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
         (v["track_id"] for v in _track_views),
         list(pipeline.geolocated_tracks.keys()),
     )
-    pairs = state.node_associator.submit_tracks(
+    round_ = state.node_associator.submit_tracks_round(
         node_id, _track_views, _ts_ms_assoc,
     )
-    solver_inputs = (state.node_associator.format_track_pairs_for_solver(pairs)
-                     if pairs else [])
+    # anchored_inputs (top-down claiming, ASSOC_CLAIM_MODE=active) are
+    # already in solver-input shape — see _claim_round — so they join the
+    # bottom-up pairs' formatted output directly.  Empty in off/shadow mode.
+    solver_inputs = (
+        (state.node_associator.format_track_pairs_for_solver(round_.pairs)
+         if round_.pairs else [])
+        + round_.anchored_inputs
+    )
     if solver_inputs:
         node_cfgs = get_node_configs()
         for s_in in solver_inputs:

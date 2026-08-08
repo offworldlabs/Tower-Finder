@@ -212,6 +212,51 @@ class TestProcessOneFrame:
         process_one_frame("test-nan", frame, default)
         assert "testbad" not in state.adsb_aircraft
 
+    def test_claiming_anchored_inputs_reach_the_solver_queue(self, monkeypatch):
+        """Top-down claiming's anchored_inputs are already solver-input
+        shaped (see association._claim_round), so frame_processor must hand
+        them to the queue directly, alongside — not instead of — whatever
+        the bottom-up pairs formatted.  Stubs submit_tracks_round rather than
+        wiring a real multi-node claiming scenario through the tracker: the
+        contract under test is frame_processor's plumbing, not claiming
+        itself (covered in the lib's test_track_claiming.py)."""
+        from retina_analytics.association import AssociationRound
+
+        anchored = {
+            "initial_guess": {"lat": 35.0, "lon": -82.0, "alt_km": 7.0},
+            "initial_velocity": {"vel_east_ms": 100.0, "vel_north_ms": 50.0},
+            "measurements": [
+                {"node_id": "site-a", "delay_us": 10.0, "doppler_hz": 5.0, "snr": 15.0},
+                {"node_id": "site-b", "delay_us": 12.0, "doppler_hz": 4.0, "snr": 14.0},
+            ],
+            "n_nodes": 2,
+            "timestamp_ms": int(time.time() * 1000),
+            "adsb_hex": None,
+            "chi2_per_dof": None,
+            "n_epochs": 2,
+            "cv_epochs": [{"t_s": 0.0, "measurements": []}],
+            "track_pair_ids": [("t1", "t2")],
+            "track_ids": ["t1", "t2"],
+            "track_ids_by_node": {"site-a": ["t1"], "site-b": ["t2"]},
+            "anchor_key": "mn-dark-test-1",
+        }
+        monkeypatch.setattr(
+            state.node_associator, "submit_tracks_round",
+            lambda *a, **kw: AssociationRound(pairs=[], anchored_inputs=[anchored], claims=[]),
+        )
+        while True:  # start from an empty queue so only this item is seen
+            try:
+                state.solver_queue.get_nowait()
+            except Exception:
+                break
+
+        default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        process_one_frame("test-anchor", _make_frame(), default)
+
+        s_in, _node_cfgs, _enqueued_at = state.solver_queue.get_nowait()
+        assert s_in["anchor_key"] == "mn-dark-test-1"
+        assert s_in["n_nodes"] == 2
+
 
 # ── Multinode result conversion ──────────────────────────────────────────────
 

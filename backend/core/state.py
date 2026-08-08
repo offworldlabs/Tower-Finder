@@ -45,9 +45,56 @@ def _coverage_limit_for(node_id: str):
     return node_analytics.coverage_limit_for(node_id)
 
 
+# Top-down tracklet claiming (see retina_analytics.association._claim_round).
+# off/shadow/active, following the SOLVER_CONSENSUS_MODE precedent.  Read
+# here rather than in config/constants.py: constants.py's header rule is
+# that env vars are read at their use site, and this module's construction
+# of node_associator below is that site.
+_ASSOC_CLAIM_MODE = os.getenv("ASSOC_CLAIM_MODE", "off").lower()
+
+
+def _global_tracks_for_claiming():
+    """Unlocked snapshot of currently-published dark tracks, in the
+    claiming provider contract InterNodeAssociator documents on
+    global_track_provider.
+
+    list(dict.items()) — the same unlocked read pattern _coverage_limit_for
+    and every other snapshot provider in this file uses; a concurrent
+    solver-thread write racing this read loses at worst one entry to a
+    stale round, not a corrupted one.
+
+    Only mn-dark-* keys are claimable: an ADS-B-tagged track already has an
+    external identity (a transponder hex) and must never be re-derived by
+    top-down projection — mirrors "only dark tracks are claimable" at
+    solver.py's _multinode_track_key / multinode_key_decision.  Eligibility
+    filtering, the DR-age cap and the CLAIM_MAX_GLOBAL_TRACKS truncation are
+    all applied by the LIB, not here — this stays a dumb snapshot so the
+    offline bench measures the shipped filtering.
+    """
+    out = []
+    for key, rec in list(multinode_tracks.items()):
+        if not key.startswith("mn-dark-"):
+            continue
+        out.append({
+            "key": key,
+            "lat": rec.get("lat"),
+            "lon": rec.get("lon"),
+            "alt_m": rec.get("alt_m", 0.0),
+            "vel_east": rec.get("vel_east", 0.0),
+            "vel_north": rec.get("vel_north", 0.0),
+            "vel_up": rec.get("vel_up", 0.0),
+            "timestamp_ms": rec.get("timestamp_ms", 0),
+            "n_nodes": rec.get("n_nodes", 0),
+            "solve_count": rec.get("solve_count", 0),
+        })
+    return out
+
+
 node_associator = InterNodeAssociator(
     grid_step_km=ASSOC_GRID_STEP_KM,
     coverage_provider=_coverage_limit_for,
+    claim_mode=_ASSOC_CLAIM_MODE,
+    global_track_provider=_global_tracks_for_claiming,
     # Passed explicitly because ASSOC_MIN_INTERVAL_S was dead config: defined
     # here but never reaching the associator, which used its own hardcoded
     # copy, so tuning it did nothing.
@@ -243,6 +290,27 @@ solver_consensus_filtered: int = 0
 solver_consensus_fallback: int = 0
 solver_consensus_shadow: int = 0
 
+# Top-down claiming's solver-side honoring (services.tasks.solver's
+# multinode_key_decision), gated on the anchor_key field an anchored solver
+# input carries — no mode read here, ASSOC_CLAIM_MODE lives entirely in the
+# associator; without the field this whole block stays at zero, which is
+# what "off" (no field ever set) and "shadow" (claiming computed but no
+# anchored input emitted) both look like.  anchored_published is every
+# publish that carried an anchor_key regardless of outcome; hits is the
+# subset that actually kept the anchor's own key, fallbacks the subset that
+# fell through to proximity/mint anyway (e.g. the >6 km displacement check
+# in multinode_key_decision tripped) — hits + fallbacks == anchored_published.
+solver_anchor_hits: int = 0
+solver_anchor_fallbacks: int = 0
+solver_anchored_published: int = 0
+
+# Unhandled exceptions swallowed by the solver worker loop so the thread
+# survives.  Nonzero means a solve item crashed past every gate's own
+# handling — the 2026-08-08 outage (trail-deque race) killed both workers
+# because nothing caught it; now the item is dropped, this counts it, and
+# the traceback lands in the log.
+solver_worker_errors: int = 0
+
 # Per-reason solver rejection counters.  solver_failures is the aggregate; the
 # per-solve reason was only ever logged at DEBUG, which staging does not emit —
 # 301 failures in one 66-minute window were unattributable.  One counter per
@@ -342,6 +410,8 @@ def _reset_for_tests() -> None:
     global solver_queue_drops, solver_stale_drops, mn_superseded, solver_trimmed
     global solver_consensus_selected, solver_consensus_filtered
     global solver_consensus_fallback, solver_consensus_shadow
+    global solver_anchor_hits, solver_anchor_fallbacks, solver_anchored_published
+    global solver_worker_errors
     global solver_fail_exception, solver_fail_unconverged, solver_fail_rms_delay
     global solver_fail_rms_doppler, solver_fail_beam, solver_fail_displacement
     global position_jump_events
@@ -399,6 +469,8 @@ def _reset_for_tests() -> None:
         solver_trimmed = 0
         solver_consensus_selected = solver_consensus_filtered = 0
         solver_consensus_fallback = solver_consensus_shadow = 0
+        solver_anchor_hits = solver_anchor_fallbacks = solver_anchored_published = 0
+        solver_worker_errors = 0
         solver_fail_exception = solver_fail_unconverged = solver_fail_rms_delay = 0
         solver_fail_rms_doppler = solver_fail_beam = solver_fail_displacement = 0
         position_jump_events = 0

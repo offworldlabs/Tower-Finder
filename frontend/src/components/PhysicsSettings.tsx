@@ -10,6 +10,7 @@ import {
   funnelSegments,
   rejectReasonBars,
   consensusModeLabel,
+  claimModeLabel,
 } from "./physics/solverReport";
 
 const API = "/api";
@@ -807,6 +808,36 @@ export default function PhysicsSettings() {
                 <span className="ps-consensus-chip">Shadow {solverStats.consensus.shadow}</span>
                 <span className="ps-consensus-caption">since boot</span>
               </div>
+
+              {/* Claiming: mode badge + since-boot counters. Absent from
+                  older cached payloads (claiming/fragmentation shipped
+                  later than consensus), so both render null-safely. */}
+              {solverStats.claiming && (
+                <div className="ps-consensus-row">
+                  <span className={`ps-consensus-badge ps-consensus-${solverStats.claiming.mode}`}>
+                    Claiming: {claimModeLabel(solverStats.claiming.mode)}
+                  </span>
+                  <span className="ps-consensus-chip">Matched {solverStats.claiming.matched}</span>
+                  <span className="ps-consensus-chip">Conflicts {solverStats.claiming.conflicts}</span>
+                  <span className="ps-consensus-chip">Anchored {solverStats.claiming.anchored_inputs}</span>
+                  <span className="ps-consensus-chip">Fallbacks {solverStats.claiming.anchor_fallbacks}</span>
+                  <span className="ps-consensus-caption">since boot</span>
+                </div>
+              )}
+              {solverStats.fragmentation && (
+                <div className="ps-consensus-row">
+                  <span className="ps-consensus-chip">
+                    Distinct keys {solverStats.fragmentation.distinct_keys}
+                  </span>
+                  <span className="ps-consensus-chip">
+                    Solves/key median {solverStats.fragmentation.solves_per_key.median ?? "—"}
+                  </span>
+                  <span className="ps-consensus-chip">
+                    Anchored {formatPct(solverStats.fragmentation.anchored_pct)}
+                  </span>
+                  <span className="ps-consensus-caption">last {solverStats.window_minutes} min</span>
+                </div>
+              )}
             </>
           )}
         </div>

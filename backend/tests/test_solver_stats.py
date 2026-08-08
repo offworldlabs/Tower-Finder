@@ -20,12 +20,15 @@ def _client():
     return TestClient(app)
 
 
-def _rec(outcome, n_nodes=2, gt_error_km=None, age_s=0.0):
+def _rec(outcome, n_nodes=2, gt_error_km=None, age_s=0.0, solve_key=None,
+        anchor_key=None):
     return {
         "ts_ms": int((time.time() - age_s) * 1000),
         "outcome": outcome,
         "n_nodes": n_nodes,
         "gt_error_km": gt_error_km,
+        "solve_key": solve_key,
+        "anchor_key": anchor_key,
     }
 
 
@@ -184,12 +187,91 @@ class TestConsensusAndCounters:
         assert out["counters"] == {
             "successes": 5, "failures": 2, "n2_unconfirmed": 1,
             "solver_trimmed": 3, "stale_drops": 4, "queue_drops": 6,
+            "worker_errors": 0,
         }
         assert out["consensus"]["selected"] == 7
         assert out["consensus"]["filtered"] == 8
         assert out["consensus"]["fallback"] == 9
         assert out["consensus"]["shadow"] == 10
         assert "mode" in out["consensus"]
+
+
+class TestClaimingPassthrough:
+    """The "claiming" block is a straight passthrough of the library
+    associator's counters plus the solver-side anchor-honoring counters —
+    same shape as TestConsensusAndCounters above."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_claiming_reflects_the_associator_and_solver_counters(self):
+        _a = state.node_associator
+        _a.claim_rounds = 4
+        _a.claims_matched = 3
+        _a.claim_conflicts = 1
+        _a.anchored_inputs_emitted = 2
+        _a.tracklets_excluded = 5
+        state.solver_anchor_hits = 6
+        state.solver_anchor_fallbacks = 7
+        state.solver_anchored_published = 13
+        out = _solver_window_stats(10.0)
+        assert out["claiming"] == {
+            "mode": _a.claim_mode,
+            "rounds": 4, "matched": 3, "conflicts": 1,
+            "anchored_inputs": 2, "tracklets_excluded": 5,
+            "anchor_hits": 6, "anchor_fallbacks": 7, "anchored_published": 13,
+        }
+
+    def test_claiming_mode_defaults_to_off_in_tests(self):
+        out = _solver_window_stats(10.0)
+        assert out["claiming"]["mode"] == "off"
+
+
+class TestFragmentation:
+    """Windowed, from published mlat_solve_history records — the acceptance
+    metric top-down claiming exists to move: distinct published keys."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_distinct_keys_and_solves_per_key(self):
+        # 5 distinct keys, solved 1, 1, 1, 2 and 3 times respectively.
+        for key, n in (("a", 1), ("b", 1), ("c", 1), ("d", 2), ("e", 3)):
+            for _ in range(n):
+                state.mlat_solve_history.append(_rec("published", solve_key=key))
+        out = _solver_window_stats(10.0)
+        frag = out["fragmentation"]
+        assert frag["distinct_keys"] == 5
+        assert frag["published"] == 8
+        # counts sorted = [1, 1, 1, 2, 3]; n=5
+        # median idiom sorted[n//2] == sorted[2] == 1
+        # p90 idiom sorted[int(0.9*(n-1))] == sorted[int(3.6)] == sorted[3] == 2
+        assert frag["solves_per_key"]["median"] == 1
+        assert frag["solves_per_key"]["p90"] == 2
+
+    def test_anchored_pct_reads_anchor_key_regardless_of_outcome_scope(self):
+        state.mlat_solve_history.append(
+            _rec("published", solve_key="a", anchor_key="mn-dark-1"))
+        state.mlat_solve_history.append(_rec("published", solve_key="b"))
+        state.mlat_solve_history.append(_rec("published", solve_key="c"))
+        state.mlat_solve_history.append(_rec("published", solve_key="d"))
+        out = _solver_window_stats(10.0)
+        assert out["fragmentation"]["anchored_pct"] == 25.0
+
+    def test_rejects_do_not_count_toward_fragmentation(self):
+        state.mlat_solve_history.append(_rec("rejected_beam", solve_key="a"))
+        state.mlat_solve_history.append(_rec("published", solve_key="b"))
+        out = _solver_window_stats(10.0)
+        assert out["fragmentation"]["published"] == 1
+        assert out["fragmentation"]["distinct_keys"] == 1
+
+    def test_empty_window_no_division_errors(self):
+        out = _solver_window_stats(10.0)
+        assert out["fragmentation"] == {
+            "distinct_keys": 0, "published": 0,
+            "solves_per_key": {"median": None, "p90": None},
+            "anchored_pct": 0.0,
+        }
 
 
 class TestEmptyState:
@@ -215,6 +297,18 @@ class TestEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert data["window_minutes"] == 10.0
+
+    def test_claiming_and_fragmentation_blocks_present(self):
+        resp = _client().get("/api/test/solver-stats")
+        data = resp.json()
+        assert data["claiming"].keys() == {
+            "mode", "rounds", "matched", "conflicts", "anchored_inputs",
+            "tracklets_excluded", "anchor_hits", "anchor_fallbacks",
+            "anchored_published",
+        }
+        assert data["fragmentation"].keys() == {
+            "distinct_keys", "published", "solves_per_key", "anchored_pct",
+        }
 
     def test_minutes_clamp_low(self):
         resp = _client().get("/api/test/solver-stats?minutes=0")

@@ -596,35 +596,70 @@ def _collect_track_anomalies(s_in, result: dict) -> None:
         result["max_velocity_ms"] = round(max_vel, 1)
 
 
-def _multinode_track_key(result: dict, adsb_hex: str | None) -> str:
-    """Return a stable per-aircraft key for state.multinode_tracks.
+def multinode_key_decision(
+    tracks: dict[str, dict],
+    result: dict,
+    adsb_hex: str | None,
+    anchor_key: str | None,
+    max_dist_km: float = _MN_ASSOC_MAX_DIST_KM,
+    max_age_s: float = _MN_ASSOC_MAX_AGE_S,
+) -> tuple[str, str]:
+    """The keying rule itself, pure and clock-free — the multinode-track
+    analogue of claim_decision.  Extracted so the offline bench measures the
+    SHIPPED rule by construction (the same reason claim_decision is imported
+    at association_bench.py's top-of-file import), and so _process_solver_item can observe
+    which branch fired for the anchor counters below.
 
-    Call under _MN_TRACKS_LOCK — it scans state.multinode_tracks and the caller
-    writes back into it.
+    Caller holds _MN_TRACKS_LOCK — it reads `tracks` and the caller writes
+    back into it under the same lock.  Returns (key, how) with
+    how in {"adsb", "anchor", "proximity", "minted"}.
 
-    ADS-B-tagged solves key on the transponder hex.  This key is also the
-    smoother's history key (_ewma_smooth_track), so the smoother and the
-    track store agree by construction — dark tracks included.
-
-    Dark targets have no such identity and are associated to the nearest recent
-    dark track, dead-reckoned forward to this solve's timestamp.  This is the
-    path real (non-simulated) hardware depends on: ground_truth_hex is not
-    usable here because it only exists for simulated traffic.
+    Order:
+      1. ADS-B-tagged solves key on the transponder hex — unconditional, and
+         this key is also the smoother's history key (_ewma_smooth_track),
+         so the smoother and the track store agree by construction.
+      2. Anchor honoring.  anchor_key is set only by an anchored solver
+         input (top-down claiming, ASSOC_CLAIM_MODE=active) — mn-dark-*,
+         still live in `tracks`, and within max_dist_km of THIS solve's own
+         result.  That distance check is what closes the
+         consensus-anchored-displacement edge case: the n>=3 displacement
+         gate at :~1320 already re-anchors to the consensus centroid rather
+         than the claim guess for a consensus-selected solve, so an anchor
+         whose claim guess was wrong but whose consensus-corrected result
+         still landed near the claimed track is legitimate, while one that
+         converged somewhere else entirely is not honored just because a
+         claim was attempted.
+      3. Existing DR proximity scan, moved verbatim from the pre-claiming
+         _multinode_track_key: only dark tracks are claimable — an untagged
+         solve must never steal the identity of an ADS-B-tagged aircraft
+         that happens to be nearby — dead-reckoned forward so a fast target
+         is not rejected purely for having moved since its last solve.
+      4. Mint.  This key only needs to be unique at birth; every later solve
+         associates to it above (by proximity, or by anchor once a claim
+         forms), so it stays stable.
     """
     if adsb_hex:
-        return f"mn-adsb-{adsb_hex}"
+        return f"mn-adsb-{adsb_hex}", "adsb"
 
     lat, lon = result["lat"], result["lon"]
-    ts_s = result.get("timestamp_ms", 0) / 1000.0
-    best_key, best_dist = None, _MN_ASSOC_MAX_DIST_KM
 
-    for key, prev in state.multinode_tracks.items():
+    if anchor_key and anchor_key.startswith("mn-dark-") and anchor_key in tracks:
+        anchor = tracks[anchor_key]
+        a_lat, a_lon = anchor.get("lat"), anchor.get("lon")
+        if (a_lat is not None and a_lon is not None
+                and _haversine_km(lat, lon, a_lat, a_lon) <= max_dist_km):
+            return anchor_key, "anchor"
+
+    ts_s = result.get("timestamp_ms", 0) / 1000.0
+    best_key, best_dist = None, max_dist_km
+
+    for key, prev in tracks.items():
         # Only dark tracks are claimable; an untagged solve must never steal the
         # identity of an ADS-B-tagged aircraft that happens to be nearby.
         if not key.startswith("mn-dark-"):
             continue
         dt = ts_s - prev.get("timestamp_ms", 0) / 1000.0
-        if not (0.0 <= dt <= _MN_ASSOC_MAX_AGE_S):
+        if not (0.0 <= dt <= max_age_s):
             continue
         p_lat, p_lon = prev.get("lat"), prev.get("lon")
         if p_lat is None or p_lon is None:
@@ -641,10 +676,20 @@ def _multinode_track_key(result: dict, adsb_hex: str | None) -> str:
             best_key, best_dist = key, d
 
     if best_key is not None:
-        return best_key
-    # No claimant — a genuinely new target.  This key only needs to be unique at
-    # birth; every later solve associates to it above, so it stays stable.
-    return f"mn-dark-{result.get('timestamp_ms', 0)}-{lat:.3f}-{lon:.3f}"
+        return best_key, "proximity"
+    # No claimant — a genuinely new target.
+    return f"mn-dark-{result.get('timestamp_ms', 0)}-{lat:.3f}-{lon:.3f}", "minted"
+
+
+def _multinode_track_key(result: dict, adsb_hex: str | None,
+                         anchor_key: str | None = None) -> str:
+    """Thin wrapper over multinode_key_decision against state.multinode_tracks.
+
+    Call under _MN_TRACKS_LOCK — multinode_key_decision reads
+    state.multinode_tracks and the caller writes back into it.
+    """
+    key, _how = multinode_key_decision(state.multinode_tracks, result, adsb_hex, anchor_key)
+    return key
 
 
 # Maximum age (seconds) of a solver queue item before it is discarded without
@@ -879,7 +924,13 @@ def _nearest_gt(lat: float, lon: float, ts_s: float) -> dict:
     trail alone can't derive one (e.g. a single-point trail).
     """
     best_hex = best_km = best_pt = None
+    best_trail = ()
     for gt_hex, trail in list(state.ground_truth_trails.items()):
+        # tuple() snapshots the deque in one C call; iterating the live deque
+        # here (min below, _trail_velocity after) raises "deque mutated during
+        # iteration" when the sim-ingest thread appends a trail point — both
+        # solver workers died exactly that way on staging (2026-08-08).
+        trail = tuple(trail)
         if not trail:
             continue
         pt = min(trail, key=lambda p: abs(p[3] - ts_s))
@@ -887,12 +938,10 @@ def _nearest_gt(lat: float, lon: float, ts_s: float) -> dict:
             continue
         d = _haversine_km(lat, lon, pt[0], pt[1])
         if best_km is None or d < best_km:
-            best_hex, best_km, best_pt = gt_hex, d, pt
+            best_hex, best_km, best_pt, best_trail = gt_hex, d, pt, trail
     if best_hex is None:
         return dict(_GT_NO_MATCH)
-    gt_speed_ms, gt_heading_deg = _trail_velocity(
-        state.ground_truth_trails.get(best_hex) or [], best_pt
-    )
+    gt_speed_ms, gt_heading_deg = _trail_velocity(best_trail, best_pt)
     if gt_speed_ms is None:
         meta = state.ground_truth_meta.get(best_hex) or {}
         gt_speed_ms = meta.get("speed_ms")
@@ -957,6 +1006,11 @@ def _record_solve_history(
         "n_nodes": int(r.get("n_nodes") or s.get("n_nodes") or 0),
         "contributing_node_ids": list(r.get("contributing_node_ids") or []),
         "adsb_hex": s.get("adsb_hex"),
+        # Set only on an anchored solver input (top-down claiming, active
+        # mode) — present on rejects too, not just "published", so the
+        # windowed fragmentation breakdown can see what fraction of ALL
+        # attempts (not just successful ones) were anchor-carrying.
+        "anchor_key": s.get("anchor_key"),
         "raw_lat": round(float(raw_lat), 6) if raw_lat is not None else None,
         "raw_lon": round(float(raw_lon), 6) if raw_lon is not None else None,
         "lat": round(float(r["lat"]), 6) if outcome == "published" else None,
@@ -1463,7 +1517,18 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             # each mint a fresh key.  Lock order _MN_TRACKS_LOCK →
             # _MN_POS_HISTORY_LOCK (inside the smoother) is never taken in
             # reverse anywhere.
-            key = _multinode_track_key(result, _adsb_hex)
+            _anchor_key = s_in.get("anchor_key") if isinstance(s_in, dict) else None
+            key, _key_how = multinode_key_decision(state.multinode_tracks, result,
+                                                    _adsb_hex, _anchor_key)
+            if _anchor_key:
+                # Only an anchored solver input (top-down claiming, active
+                # mode) ever sets s_in["anchor_key"] — this whole block is
+                # inert off/shadow, by construction, with no mode read here.
+                state.bump_counter("solver_anchored_published")
+                state.bump_counter(
+                    "solver_anchor_hits" if _key_how == "anchor"
+                    else "solver_anchor_fallbacks"
+                )
             # Raw solve position, before smoothing — the history record keeps
             # both so display-side drift can be separated from solver error.
             _raw_lat, _raw_lon = result["lat"], result["lon"]
@@ -1493,10 +1558,17 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             # Supersession: one aircraft is one set of source tracks.  A later
             # solve that consumes any of the same single-node tracks under a
             # DIFFERENT key is the same aircraft re-solved past the 6 km match
-            # radius (_multinode_track_key), not a second one — replace the
+            # radius (multinode_key_decision), not a second one — replace the
             # earlier entry instead of letting it keep rendering for up to
             # 60 s beside the new one.  solve_count carries forward so the
             # re-solved aircraft does not fall back under the n=2 gate below.
+            #
+            # Unchanged by anchor honoring: `old_key == key: continue` below
+            # already protects an anchor from superseding itself, and a
+            # proximity-minted fragment sharing the anchor's source tracks
+            # merging INTO the anchor (old_key != key, key == anchor_key) is
+            # exactly the fragmentation-collapse this whole feature exists
+            # for — not a bug to guard against.
             max_superseded_count = 0
             if result["source_track_ids"]:
                 new_ids = set(result["source_track_ids"])
@@ -1559,14 +1631,34 @@ def _pool_solve_multinode(s_in, node_cfgs):
     return _pool_call(solve_multinode, s_in, node_cfgs)
 
 
+def _solver_worker_iteration(timeout: float = 1.0, q=None) -> bool:
+    """One queue-drain step; True if an item was taken (processed or failed).
+
+    ``q`` defaults to state.solver_queue; tests pass their own Queue so a
+    worker daemon leaked by an earlier test cannot race their items away.
+    """
+    if q is None:
+        q = state.solver_queue
+    try:
+        item = q.get(timeout=timeout)
+    except queue.Empty:
+        return False
+    try:
+        _process_solver_item(item, _pool_solve_multinode)
+    except Exception:
+        # A worker thread must survive any single bad item: when the
+        # trail-snapshot race killed both workers, the queue silently
+        # filled and publishing stopped for hours with only the health
+        # check noticing.
+        state.bump_counter("solver_worker_errors")
+        logging.exception("Solver worker: unhandled error for one item")
+    return True
+
+
 def _run_solver_worker():
     """Drain state.solver_queue and run solve_multinode. Runs as a daemon thread."""
     while True:
-        try:
-            item = state.solver_queue.get(timeout=1.0)
-        except queue.Empty:
-            continue
-        _process_solver_item(item, _pool_solve_multinode)
+        _solver_worker_iteration()
 
 
 def start_solver_workers():

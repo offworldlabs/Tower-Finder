@@ -124,6 +124,35 @@ class TestAssociationStatus:
         assert "overlap_zones" in body
         assert "overlaps" in body
 
+    def test_status_includes_claiming_block(self, client):
+        """Top-down claiming (ASSOC_CLAIM_MODE) since boot — off by default
+        in tests, so this pins the shape rather than any particular mode."""
+        r = client.get("/api/radar/association/status")
+        assert r.status_code == 200
+        claiming = r.json()["claiming"]
+        assert claiming.keys() == {
+            "mode", "rounds", "matched", "conflicts",
+            "anchored_inputs", "tracklets_excluded",
+        }
+        assert claiming["mode"] == state.node_associator.claim_mode
+
+    def test_claiming_counters_reflect_the_associator(self, client):
+        _a = state.node_associator
+        _a.claim_rounds += 3
+        _a.claims_matched += 2
+        _a.claim_conflicts += 1
+        _a.anchored_inputs_emitted += 1
+        _a.tracklets_excluded += 4
+        try:
+            body = client.get("/api/radar/association/status").json()
+            assert body["claiming"] == {
+                "mode": _a.claim_mode,
+                "rounds": 3, "matched": 2, "conflicts": 1,
+                "anchored_inputs": 1, "tracklets_excluded": 4,
+            }
+        finally:
+            state._reset_for_tests()
+
 
 # ── Anomalies ────────────────────────────────────────────────────────────────
 

@@ -1142,3 +1142,27 @@ class TestDarkSolveSmoothing:
         stored = self._stored()
         assert stored["lat"] == pytest.approx(lat2, abs=2e-4)
         assert stored["lon"] == pytest.approx(self.LON, abs=1e-3)
+
+
+class TestWorkerLoopResilience:
+    """The worker loop must survive any single bad item (2026-08-08 outage:
+    an unhandled exception killed both worker threads and publishing stopped
+    silently until the queue overflowed)."""
+
+    def test_poison_item_is_swallowed_counted_and_loop_continues(self):
+        import queue as _queue
+
+        _reset_state()
+        before = state.solver_worker_errors
+        # A private queue: a worker daemon leaked by an earlier test polls
+        # state.solver_queue and would race these items away.  Malformed
+        # items: item[0] on None raises TypeError inside
+        # _process_solver_item, past every gate's own handling.
+        q = _queue.Queue()
+        q.put_nowait(None)
+        q.put_nowait(None)
+        assert solver_mod._solver_worker_iteration(timeout=0.1, q=q) is True
+        assert solver_mod._solver_worker_iteration(timeout=0.1, q=q) is True
+        assert state.solver_worker_errors == before + 2
+        # Queue drained, no exception escaped either iteration.
+        assert solver_mod._solver_worker_iteration(timeout=0.05, q=q) is False

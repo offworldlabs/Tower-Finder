@@ -5,6 +5,8 @@ import {
   funnelSegments,
   rejectReasonBars,
   consensusModeLabel,
+  claimModeLabel,
+  type SolverStats,
 } from "./solverReport";
 
 describe("formatKm", () => {
@@ -85,5 +87,29 @@ describe("consensusModeLabel", () => {
 
   it("falls back to Off for unknown values", () => {
     expect(consensusModeLabel("weird")).toBe("Off");
+  });
+});
+
+describe("claimModeLabel", () => {
+  it("maps known modes", () => {
+    expect(claimModeLabel("active")).toBe("Active");
+    expect(claimModeLabel("shadow")).toBe("Shadow");
+    expect(claimModeLabel("off")).toBe("Off");
+  });
+
+  it("falls back to Off for unknown values", () => {
+    expect(claimModeLabel("weird")).toBe("Off");
+  });
+});
+
+describe("null-safe formatting for older payloads missing claiming/fragmentation", () => {
+  it("formatPct renders — for a missing fragmentation.anchored_pct-shaped value", () => {
+    const fragmentation: SolverStats["fragmentation"] | undefined = undefined;
+    expect(formatPct(fragmentation?.anchored_pct)).toBe("—");
+  });
+
+  it("formatPct/formatKm render — for missing solves_per_key stats", () => {
+    const fragmentation: SolverStats["fragmentation"] | undefined = undefined;
+    expect(formatPct(fragmentation?.solves_per_key.median ?? null)).toBe("—");
   });
 });

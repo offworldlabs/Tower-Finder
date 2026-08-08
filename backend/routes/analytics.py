@@ -112,6 +112,23 @@ async def association_status():
             "rejected": getattr(_a, "track_pairs_rejected", 0),
             "superseded": getattr(_a, "track_pairs_superseded", 0),
         },
+        # Top-down claiming (ASSOC_CLAIM_MODE) since boot.  rounds/matched/
+        # conflicts/anchored_inputs are all live in shadow too — _claim_round
+        # computes and counts them unconditionally; shadow only forces the
+        # RETURNED anchored-input list (and claimed ids) back to empty
+        # afterward, in submit_tracks_round, which is what makes it provably
+        # inert downstream.  tracklets_excluded is the one that only ever
+        # moves in active mode, since the exclusion filter never runs
+        # against an empty claimed-ids map.  off mode reads zero everywhere
+        # here BY DESIGN, not because nothing is happening.
+        "claiming": {
+            "mode": _a.claim_mode,
+            "rounds": getattr(_a, "claim_rounds", 0),
+            "matched": getattr(_a, "claims_matched", 0),
+            "conflicts": getattr(_a, "claim_conflicts", 0),
+            "anchored_inputs": getattr(_a, "anchored_inputs_emitted", 0),
+            "tracklets_excluded": getattr(_a, "tracklets_excluded", 0),
+        },
         "overlaps": _a.get_overlap_summary(),
     }
 

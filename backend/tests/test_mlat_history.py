@@ -224,3 +224,40 @@ class TestEndpoint:
         data = self._client().get(f"/api/test/mlat-history?hex={hex_}").json()
         assert data["rejects_nearby"]["n"] == 1
         assert data["rejects_nearby"]["by_outcome"] == {"rejected_rms_delay": 1}
+
+
+class TestTrailSnapshotRace:
+    """_nearest_gt must survive concurrent trail appends (2026-08-08 outage).
+
+    Both solver workers died with "deque mutated during iteration" — the
+    Python-level min()/_trail_velocity loops over a live trail deque raced
+    the sim-ingest append.  The fix snapshots each trail with tuple(), a
+    single C call the appender cannot interleave.  This stress test raced
+    reliably within a few hundred iterations before the fix.
+    """
+
+    def test_nearest_gt_survives_concurrent_appends(self):
+        import threading
+
+        now = time.time()
+        trail = deque(
+            [[LAT + i * 1e-4, LON, 9000.0, now - 60 + i] for i in range(80)],
+            maxlen=4000,
+        )
+        state.ground_truth_trails["race"] = trail
+        stop = threading.Event()
+
+        def _appender():
+            i = 0
+            while not stop.is_set():
+                trail.append([LAT + i * 1e-5, LON, 9000.0, now + i * 1e-3])
+                i += 1
+
+        t = threading.Thread(target=_appender, daemon=True)
+        t.start()
+        try:
+            for _ in range(2000):
+                solver_mod._nearest_gt(LAT, LON, now)
+        finally:
+            stop.set()
+            t.join(timeout=5.0)

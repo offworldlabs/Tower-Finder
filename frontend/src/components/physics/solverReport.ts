@@ -25,6 +25,29 @@ export interface SolverStats {
     fallback: number;
     shadow: number;
   };
+  // Top-down claiming (ASSOC_CLAIM_MODE), since boot — same "cumulative
+  // regardless of mode" convention as consensus above.  May be absent from
+  // an older cached payload; render null-safely (see formatKm/formatPct's
+  // "—" idiom) rather than assuming presence.
+  claiming?: {
+    mode: string;
+    rounds: number;
+    matched: number;
+    conflicts: number;
+    anchored_inputs: number;
+    tracklets_excluded: number;
+    anchor_hits: number;
+    anchor_fallbacks: number;
+    anchored_published: number;
+  };
+  // Windowed, from published records — distinct published keys is the
+  // acceptance metric claiming exists to move toward O(targets).
+  fragmentation?: {
+    distinct_keys: number;
+    published: number;
+    solves_per_key: { median: number | null; p90: number | null };
+    anchored_pct: number;
+  };
   counters: {
     successes: number;
     failures: number;
@@ -102,6 +125,14 @@ export function rejectReasonBars(byReason: Record<string, number>): RejectReason
 
 /** Display label for the consensus mode badge. */
 export function consensusModeLabel(mode: string): string {
+  if (mode === "active") return "Active";
+  if (mode === "shadow") return "Shadow";
+  return "Off";
+}
+
+/** Display label for the claiming mode badge — same off/shadow/active set
+ * as consensus, so the same fallback-to-"Off" rule applies. */
+export function claimModeLabel(mode: string): string {
   if (mode === "active") return "Active";
   if (mode === "shadow") return "Shadow";
   return "Off";

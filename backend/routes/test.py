@@ -211,6 +211,16 @@ def _build_dashboard_data() -> bytes:
                     "fallback": state.solver_consensus_fallback,
                     "shadow": state.solver_consensus_shadow,
                 },
+                # Top-down claiming (ASSOC_CLAIM_MODE), since boot.  See
+                # /api/test/solver-stats' "claiming"/"fragmentation" blocks
+                # for the fuller windowed picture.
+                "claiming": {
+                    "mode": state.node_associator.claim_mode,
+                    "matched": state.node_associator.claims_matched,
+                    "conflicts": state.node_associator.claim_conflicts,
+                    "anchor_hits": state.solver_anchor_hits,
+                    "anchor_fallbacks": state.solver_anchor_fallbacks,
+                },
                 # Teleporting emits (mis-association noise).  Debug counter
                 # only — jumps no longer mark tracks anomalous.
                 "position_jump_events": state.position_jump_events,
@@ -739,6 +749,31 @@ def _solver_window_stats(minutes: float) -> dict:
     median_err = pos_errors[n_err // 2] if n_err else None
     p90_err = pos_errors[int(0.9 * (n_err - 1))] if n_err else None
 
+    # ── fragmentation ───────────────────────────────────────────────────────
+    # Windowed, from the same published records the funnel above counts —
+    # distinct published keys is the acceptance metric top-down claiming
+    # exists to move: O(targets) instead of O(solves).  anchored_pct reads
+    # anchor_key rather than an outcome filter so it reflects every attempt
+    # this window, not just successful ones — solver.py stamps anchor_key on
+    # rejects too (see _record_solve_history).
+    published_records = [r for r in records if r.get("outcome") == "published"]
+    key_counts: dict[str, int] = {}
+    anchored_published = 0
+    for r in published_records:
+        k = r.get("solve_key")
+        if k is not None:
+            key_counts[k] = key_counts.get(k, 0) + 1
+        if r.get("anchor_key"):
+            anchored_published += 1
+    counts_sorted = sorted(key_counts.values())
+    n_keys = len(counts_sorted)
+    spk_median = counts_sorted[n_keys // 2] if n_keys else None
+    spk_p90 = counts_sorted[int(0.9 * (n_keys - 1))] if n_keys else None
+    anchored_pct = (
+        round(100.0 * anchored_published / len(published_records), 1)
+        if published_records else 0.0
+    )
+
     # ── ghosts ──────────────────────────────────────────────────────────────
     now = time.time()
     now_ms = now * 1000.0
@@ -806,6 +841,28 @@ def _solver_window_stats(minutes: float) -> dict:
             "fallback": state.solver_consensus_fallback,
             "shadow": state.solver_consensus_shadow,
         },
+        # Top-down claiming, since boot — same "cumulative regardless of
+        # mode" convention as consensus above.  rounds/matched/conflicts/
+        # anchored_inputs/tracklets_excluded come off the library associator
+        # (the claiming stage itself); anchor_hits/anchor_fallbacks/
+        # anchored_published are the solver-side honoring outcome.
+        "claiming": {
+            "mode": state.node_associator.claim_mode,
+            "rounds": state.node_associator.claim_rounds,
+            "matched": state.node_associator.claims_matched,
+            "conflicts": state.node_associator.claim_conflicts,
+            "anchored_inputs": state.node_associator.anchored_inputs_emitted,
+            "tracklets_excluded": state.node_associator.tracklets_excluded,
+            "anchor_hits": state.solver_anchor_hits,
+            "anchor_fallbacks": state.solver_anchor_fallbacks,
+            "anchored_published": state.solver_anchored_published,
+        },
+        "fragmentation": {
+            "distinct_keys": len(key_counts),
+            "published": len(published_records),
+            "solves_per_key": {"median": spk_median, "p90": spk_p90},
+            "anchored_pct": anchored_pct,
+        },
         "counters": {
             "successes": state.solver_successes,
             "failures": state.solver_failures,
@@ -813,6 +870,7 @@ def _solver_window_stats(minutes: float) -> dict:
             "solver_trimmed": state.solver_trimmed,
             "stale_drops": state.solver_stale_drops,
             "queue_drops": state.solver_queue_drops,
+            "worker_errors": state.solver_worker_errors,
         },
     }
 
