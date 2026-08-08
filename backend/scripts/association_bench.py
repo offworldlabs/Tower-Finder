@@ -41,6 +41,7 @@ import math
 import os
 import statistics
 import sys
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 
@@ -49,6 +50,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # DetectionAssociator is a superset of InterNodeAssociator — it adds the
 # superseded detection path that --mode detection measures as the baseline, so
 # constructing it unconditionally leaves --mode track unaffected.
+# Sibling script, not a package import — consensus_estimator.py lives next to
+# this file under backend/scripts/ and is never imported from services/.
+from consensus_estimator import solve_consensus  # noqa: E402
 from retina_analytics.detection_association import DetectionAssociator  # noqa: E402
 from retina_geolocator.multinode_solver import (  # noqa: E402
     fit_constant_velocity,
@@ -66,6 +70,17 @@ from retina_tracker.tracker import Tracker  # noqa: E402
 from services.frame_processor import confirmed_track_views  # noqa: E402
 from services.geo import haversine_km as _haversine_km  # noqa: E402
 from services.tasks.solver import claim_decision, resolve_n2_chi2  # noqa: E402
+
+# --estimator name -> solve_fn.  "consensus-refine" hands the consensus
+# winner's supporting nodes to solve_multinode for a final LM polish (see
+# consensus_estimator.solve_consensus's refine_fn parameter).
+_ESTIMATORS = {
+    "lm": solve_multinode,
+    "consensus": solve_consensus,
+    "consensus-refine": lambda s_in, node_cfgs: solve_consensus(
+        s_in, node_cfgs, refine_fn=solve_multinode,
+    ),
+}
 
 # A solve is credited to an aircraft if it lands within this radius.  Matches
 # resolve_ground_truth_hex's display radius so results line up with the staging
@@ -290,6 +305,10 @@ class Result:
     # solved at n=2 on one round and n=3 on the next; "an n=2 track" means
     # every solve behind it was n=2.
     track_n: dict = None
+    # Per-solve wall time (ms), timed around the solve_fn call regardless of
+    # estimator — the --estimator sweep exists partly to compare this against
+    # the LM baseline.
+    solve_ms: list = None
 
     def __post_init__(self):
         self.errors_km = []
@@ -306,6 +325,7 @@ class Result:
         self.claim_chi2_drift = []
         self.cluster_sizes = Counter()
         self.track_n = defaultdict(Counter)
+        self.solve_ms = []
         self._ghost_tracks = {}
 
     @property
@@ -343,7 +363,7 @@ class Result:
     )
     _EXTEND_FIELDS = (
         "errors_km", "ghost_dist_km", "speeds_kt", "speed_err_ms",
-        "claim_chi2_drift",
+        "claim_chi2_drift", "solve_ms",
     )
     _COUNTER_FIELDS = ("n_nodes_matched", "n_nodes_ghost", "cluster_sizes")
 
@@ -438,7 +458,7 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
         dual_aim="core", blind=True, mode="detection",
         chi2_max=2.0, min_span_s=12.0, history_n=20, exclusive=True,
         cv_fit_mode="inline", claim_policy="strict",
-        claim_ttl_s=60.0) -> Result:
+        claim_ttl_s=60.0, solve_fn=solve_multinode) -> Result:
     import random
 
     random.seed(seed)
@@ -547,7 +567,9 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                 if s_in.get("n_nodes", 0) < 2:
                     continue
                 try:
-                    out = solve_multinode(s_in, node_cfgs)
+                    _t0 = time.perf_counter()
+                    out = solve_fn(s_in, node_cfgs)
+                    res.solve_ms.append((time.perf_counter() - _t0) * 1000.0)
                 except Exception:
                     res.solver_rejects += 1
                     continue
@@ -633,6 +655,10 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
     print(f"\n=== {label} ===")
     print(f"  solves {r.total:>5}   matched {r.matched:>5}   ghosts {r.ghosts:>5}"
           f"   -> {r.ghost_pct:>5.1f}% ghosts (by solve)")
+    if r.solve_ms:
+        _t = sorted(r.solve_ms)
+        print(f"  solve time: median {statistics.median(_t):.1f} ms"
+              f"   p95 {_t[int(0.95 * (len(_t) - 1))]:.1f} ms")
     print(f"  tracks: real {len(r.matched_tracks):>3}   false {len(r.ghost_tracks):>3}"
           f"   -> {r.track_ghost_pct:>5.1f}% ghosts (by track — comparable to staging)")
     _g2, _m2 = r.n2_only(r.ghost_tracks), r.n2_only(r.matched_tracks)
@@ -759,6 +785,14 @@ def main():
                    help="matches FLEET_METRO_TRAFFIC_FRAC")
     p.add_argument("--repeat", type=int, default=1,
                    help="repeat each config with different seeds and report the spread")
+    p.add_argument("--estimator", nargs="+", choices=("lm", "consensus", "consensus-refine"),
+                   default=["lm"],
+                   help="position solver(s) to sweep. 'lm' is solve_multinode "
+                        "(shipped). 'consensus' is the bench-only pairwise-"
+                        "intersection estimator (consensus_estimator.py) — "
+                        "no LM, no Doppler. 'consensus-refine' takes the "
+                        "consensus winner's supporting nodes and hands them "
+                        "to solve_multinode for a final LM polish.")
     args = p.parse_args()
 
     print(f"scene: metro={args.metro} layout={args.layout}/{args.illuminator_band} "
@@ -772,52 +806,56 @@ def main():
     chi2_values = args.chi2_max if args.mode == "track" else [None]
     for interval in args.assoc_interval:
       for chi2_max in chi2_values:
-        rates, solve_rates, reals, fakes, speed_errs = [], [], [], [], []
-        n2_rates = []
-        agg = Result()
-        last = None
-        for k in range(args.repeat):
-            last = run(args.seed + k, args.seconds, args.dt, args.frame_interval,
-                       interval, args.nodes, args.n_cluster, args.metro,
-                       args.min_aircraft, args.max_aircraft,
-                       args.metro_traffic_frac, args.layout,
-                       args.illuminator_band, args.dual_aim, args.blind,
-                       args.mode, chi2_max if chi2_max is not None else 2.0,
-                       args.min_span_s, args.history_n, args.exclusive,
-                       args.cv_fit_mode, args.claim_policy, args.claim_ttl_s)
-            agg.merge(last, tag=f"s{args.seed + k}")
-            # Track-level is the comparable metric — solve-level and
-            # track-level differ by ~20x on the same data, so mixing them is
-            # how two staging conclusions went wrong.
-            rates.append(last.track_ghost_pct)
-            n2_rates.append(last.track_ghost_pct_n2)
-            solve_rates.append(last.ghost_pct)
-            reals.append(len(last.matched_tracks))
-            fakes.append(len(last.ghost_tracks))
-            if last.speed_err_ms:
-                speed_errs.append(statistics.median(last.speed_err_ms))
-        label = f"assoc_interval={interval:g}s"
-        if chi2_max is not None:
-            label += f"  chi2/dof<={chi2_max:g}"
-        if args.repeat > 1:
-            label += f"  (pooled over {args.repeat} seeds)"
-        report(label, agg if args.repeat > 1 else last)
-        if args.repeat > 1:
-            mean = statistics.mean(rates)
-            sd = statistics.pstdev(rates)
-            print(f"  across {args.repeat} seeds (by track): "
-                  f"{', '.join(f'{x:.0f}%' for x in rates)}")
-            print(f"    mean {mean:.0f}%   sd {sd:.0f}   "
-                  f"range {min(rates):.0f}-{max(rates):.0f}%   "
-                  f"real {min(reals)}-{max(reals)}  false {min(fakes)}-{max(fakes)}")
-            print(f"    n=2-only tracks: mean {statistics.mean(n2_rates):.0f}%   "
-                  f"sd {statistics.pstdev(n2_rates):.0f}   "
-                  f"({', '.join(f'{x:.0f}%' for x in n2_rates)})")
-            print(f"    by solve: {', '.join(f'{x:.1f}%' for x in solve_rates)}")
-            if speed_errs:
-                print(f"    median speed error per seed: "
-                      f"{', '.join(f'{x:.0f}' for x in speed_errs)} m/s"
-                      f"   mean {statistics.mean(speed_errs):.0f}")
+        for estimator_name in args.estimator:
+          solve_fn = _ESTIMATORS[estimator_name]
+          rates, solve_rates, reals, fakes, speed_errs = [], [], [], [], []
+          n2_rates = []
+          agg = Result()
+          last = None
+          for k in range(args.repeat):
+              last = run(args.seed + k, args.seconds, args.dt, args.frame_interval,
+                         interval, args.nodes, args.n_cluster, args.metro,
+                         args.min_aircraft, args.max_aircraft,
+                         args.metro_traffic_frac, args.layout,
+                         args.illuminator_band, args.dual_aim, args.blind,
+                         args.mode, chi2_max if chi2_max is not None else 2.0,
+                         args.min_span_s, args.history_n, args.exclusive,
+                         args.cv_fit_mode, args.claim_policy, args.claim_ttl_s,
+                         solve_fn=solve_fn)
+              agg.merge(last, tag=f"s{args.seed + k}")
+              # Track-level is the comparable metric — solve-level and
+              # track-level differ by ~20x on the same data, so mixing them is
+              # how two staging conclusions went wrong.
+              rates.append(last.track_ghost_pct)
+              n2_rates.append(last.track_ghost_pct_n2)
+              solve_rates.append(last.ghost_pct)
+              reals.append(len(last.matched_tracks))
+              fakes.append(len(last.ghost_tracks))
+              if last.speed_err_ms:
+                  speed_errs.append(statistics.median(last.speed_err_ms))
+          label = f"assoc_interval={interval:g}s"
+          if chi2_max is not None:
+              label += f"  chi2/dof<={chi2_max:g}"
+          label += f"  estimator={estimator_name}"
+          if args.repeat > 1:
+              label += f"  (pooled over {args.repeat} seeds)"
+          report(label, agg if args.repeat > 1 else last)
+          if args.repeat > 1:
+              mean = statistics.mean(rates)
+              sd = statistics.pstdev(rates)
+              print(f"  across {args.repeat} seeds (by track): "
+                    f"{', '.join(f'{x:.0f}%' for x in rates)}")
+              print(f"    mean {mean:.0f}%   sd {sd:.0f}   "
+                    f"range {min(rates):.0f}-{max(rates):.0f}%   "
+                    f"real {min(reals)}-{max(reals)}  false {min(fakes)}-{max(fakes)}")
+              print(f"    n=2-only tracks: mean {statistics.mean(n2_rates):.0f}%   "
+                    f"sd {statistics.pstdev(n2_rates):.0f}   "
+                    f"({', '.join(f'{x:.0f}%' for x in n2_rates)})")
+              print(f"    by solve: {', '.join(f'{x:.1f}%' for x in solve_rates)}")
+              if speed_errs:
+                  print(f"    median speed error per seed: "
+                        f"{', '.join(f'{x:.0f}' for x in speed_errs)} m/s"
+                        f"   mean {statistics.mean(speed_errs):.0f}")
 
 
 if __name__ == "__main__":
