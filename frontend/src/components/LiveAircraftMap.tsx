@@ -1018,6 +1018,8 @@ export default function LiveAircraftMap() {
   // already has the old `tf.layer.inBeamDiag: true` persisted in localStorage —
   // without it, every existing user keeps seeing the lines.
   const [showInBeamDiag, setShowInBeamDiag] = usePersistedState("tf.layer.inBeamDiag.v2", initialLayers?.inBeamDiag ?? false);
+  // Detection arcs default ON — preserves the previously-unconditional render.
+  const [showArcs, setShowArcs] = usePersistedState("tf.layer.arcs", initialLayers?.arcs ?? true);
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   // Enthusiast filters: altitude band (FL, hundreds of ft), speed floor, type.
   const [filters, setFilters] = usePersistedState("tf.filters", { minFl: "", maxFl: "", minGs: "", type: "all" });
@@ -1508,10 +1510,10 @@ export default function LiveAircraftMap() {
         coverage: showCoverage, labels: showLabels, trails: showTrails,
         groundTruth: showGroundTruth, illuminators: showIlluminators,
         colorByAlt, stats: showStats, rangeRings: showRangeRings,
-        inBeamDiag: showInBeamDiag,
+        inBeamDiag: showInBeamDiag, arcs: showArcs,
       }),
     });
-  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings, showInBeamDiag]);
+  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings, showInBeamDiag, showArcs]);
 
   // Push hash when selection or toggles change without waiting for a pan.
   useEffect(() => {
@@ -1523,10 +1525,10 @@ export default function LiveAircraftMap() {
         coverage: showCoverage, labels: showLabels, trails: showTrails,
         groundTruth: showGroundTruth, illuminators: showIlluminators,
         colorByAlt, stats: showStats, rangeRings: showRangeRings,
-        inBeamDiag: showInBeamDiag,
+        inBeamDiag: showInBeamDiag, arcs: showArcs,
       }),
     });
-  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings, showInBeamDiag]);
+  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings, showInBeamDiag, showArcs]);
 
   /* ── Keyboard shortcuts ─────────────────────────────────────
      Single-letter bindings.  Suppressed while typing in inputs so the
@@ -1614,12 +1616,13 @@ export default function LiveAircraftMap() {
     a: () => setColorByAlt((v) => !v),
     s: () => setShowStats((v) => !v),
     r: () => setShowRangeRings((v) => !v),
+    d: () => setShowArcs((v) => !v),
     x: () => exportSelectedTrail(),
     X: () => exportAllTrails(),
     p: () => { if (selectedHex) { togglePinned(selectedHex); toast(pinnedSet.has(selectedHex) ? "Unpinned" : "Pinned"); } },
     m: () => locateMe(),
     n: () => { setSoundOn((v) => { toast(v ? "Sound off" : "Sound on"); return !v; }); },
-  }), [showShortcutHelp, searchQuery, exportSelectedTrail, exportAllTrails, locateMe, selectedHex, togglePinned, pinnedSet, setSoundOn, setShowLabels, setShowTrails, setShowCoverage, setShowIlluminators, setShowGroundTruth, setColorByAlt, setShowStats, setShowRangeRings]);
+  }), [showShortcutHelp, searchQuery, exportSelectedTrail, exportAllTrails, locateMe, selectedHex, togglePinned, pinnedSet, setSoundOn, setShowLabels, setShowTrails, setShowCoverage, setShowIlluminators, setShowGroundTruth, setColorByAlt, setShowStats, setShowRangeRings, setShowArcs]);
   useKeyboardShortcuts(shortcutMap);
 
   function computeError(hex, ac) {
@@ -1678,6 +1681,7 @@ export default function LiveAircraftMap() {
         showStats={showStats}
         showRangeRings={showRangeRings}
         showInBeamDiag={showInBeamDiag}
+        showArcs={showArcs}
         soundOn={soundOn}
         tileTheme={tileTheme}
         hasUserLoc={!!userLoc}
@@ -1693,6 +1697,7 @@ export default function LiveAircraftMap() {
         onToggleStats={() => setShowStats((v) => !v)}
         onToggleRangeRings={() => setShowRangeRings((v) => !v)}
         onToggleInBeamDiag={() => setShowInBeamDiag((v) => !v)}
+        onToggleArcs={() => setShowArcs((v) => !v)}
         onToggleSound={() => setSoundOn((v) => !v)}
         onCycleTheme={() => setTileTheme((t) => t === "voyager" ? "positron" : t === "positron" ? "osm" : "voyager")}
         onShare={shareLink}
@@ -2033,7 +2038,9 @@ export default function LiveAircraftMap() {
             })()}
 
             {/* Detection arcs — imperative Leaflet layer, 4Hz opacity fade, sourced from raw WS buffer */}
-            <DetectionArcs arcsBufferRef={arcsBufferRef} selectedHex={selectedHex} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} nodesByIdRef={nodesByIdRef} />
+            {showArcs && (
+              <DetectionArcs arcsBufferRef={arcsBufferRef} selectedHex={selectedHex} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} nodesByIdRef={nodesByIdRef} />
+            )}
             {/* In-beam-no-detection diagnostic — red dashed lines from a node's RX to any
                  ADS-B aircraft sitting inside its beam that the node is NOT currently detecting. */}
             {showInBeamDiag && (

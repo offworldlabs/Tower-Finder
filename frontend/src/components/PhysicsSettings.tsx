@@ -4,6 +4,13 @@ import "./PhysicsSettings.css";
 
 // One plane path — imported from the icon module the map itself uses.
 import { PLANE_PATH } from "./map/icons";
+import {
+  formatKm,
+  formatPct,
+  funnelSegments,
+  rejectReasonBars,
+  consensusModeLabel,
+} from "./physics/solverReport";
 
 const API = "/api";
 
@@ -96,6 +103,20 @@ export default function PhysicsSettings() {
   const [error, setError] = useState(null);
   const [gtData, setGtData] = useState(null);
 
+  // Fleet Scene — node count / dual fraction. Deliberately separate from
+  // `draft` above: merging it in would restart the fleet simulator on every
+  // frac_dark/frac_drone tweak, which only needs an in-process reapply.
+  const [sceneDraft, setSceneDraft] = useState(null);
+  const [sceneApplying, setSceneApplying] = useState(false);
+  const [sceneArmed, setSceneArmed] = useState(false);
+  const [sceneMsg, setSceneMsg] = useState(null);
+  const [scenePending, setScenePending] = useState(false);
+  const [runningScene, setRunningScene] = useState(null);
+  const sceneArmTimerRef = useRef(null);
+  useEffect(() => {
+    return () => { if (sceneArmTimerRef.current) clearTimeout(sceneArmTimerRef.current); };
+  }, []);
+
   // Dead-reckoning animation state for the GT map
   const fixesRef = useRef({});
   const [animatedAircraft, setAnimatedAircraft] = useState([]);
@@ -122,6 +143,13 @@ export default function PhysicsSettings() {
         max_range_km:   data.max_range_km,
         min_aircraft:   data.min_aircraft,
         max_aircraft:   data.max_aircraft,
+      });
+      // Separate draft — NEVER merged into the above. Scene keys are
+      // only-if-set on the backend (fresh backend ships neither), so a
+      // sensible slider default fills in until the operator has PUT one.
+      setSceneDraft(prev => prev ? prev : {
+        n_nodes:       data.n_nodes ?? 30,
+        dual_fraction: data.dual_fraction ?? 0.0,
       });
     } catch (e) {
       setError(e.message);
@@ -157,6 +185,28 @@ export default function PhysicsSettings() {
     const id = setInterval(fetchGt, 2000);
     return () => clearInterval(id);
   }, [fetchGt]);
+
+  // Solver Report — funnel/error/ghost/consensus stats. Separate, slower
+  // poll from fetchGt: it scans up to 8000 mlat_solve_history records, so a
+  // 2 Hz cadence would be wasted work for numbers that only move on solves.
+  const [solverStats, setSolverStats] = useState(null);
+  const fetchSolverStats = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/test/solver-stats?minutes=10`, { signal: abortRef.current?.signal });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (abortRef.current?.signal.aborted) return;
+      setSolverStats(data);
+    } catch {
+      // non-fatal — Solver Report just holds the last good data
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchSolverStats();
+    const id = setInterval(fetchSolverStats, 5000);
+    return () => clearInterval(id);
+  }, [fetchSolverStats]);
 
   // Dead-reckoning animation — smooth position updates at 500 ms
   useEffect(() => {
@@ -214,6 +264,84 @@ export default function PhysicsSettings() {
 
   function handleSlider(key, pctVal) {
     setDraft(prev => ({ ...prev, [key]: frac(pctVal) }));
+  }
+
+  // Running scene — zero new plumbing: counts what's actually connected
+  // rather than trusting the config the fleet booted with.
+  const fetchRunningScene = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/radar/nodes`, { signal: abortRef.current?.signal });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (abortRef.current?.signal.aborted) return;
+      const entries = Object.entries(data.nodes || {});
+      const connectedSynthetic = entries.filter(
+        ([, n]: any) => n.is_synthetic && n.status !== "disconnected",
+      );
+      const dualSites = Math.floor(
+        connectedSynthetic.filter(([id]) => /-DUAL-\d{4}[ab]$/.test(id)).length / 2,
+      );
+      setRunningScene({ connected: connectedSynthetic.length, dualSites });
+    } catch {
+      // non-fatal — the running-scene line just holds the last good read
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchRunningScene();
+    const id = setInterval(fetchRunningScene, 10000);
+    return () => clearInterval(id);
+  }, [fetchRunningScene]);
+
+  // "restart pending" clears once the connected count has caught up with
+  // the draft — generation can come out a couple of nodes short when
+  // _pick_illuminator_pair skips a site, so this is a converge check, not
+  // an exact-match one.
+  useEffect(() => {
+    if (!scenePending || !runningScene || !sceneDraft) return;
+    if (runningScene.connected >= sceneDraft.n_nodes - 2) {
+      setScenePending(false);
+    }
+  }, [scenePending, runningScene, sceneDraft]);
+
+  async function applySceneChange() {
+    setSceneApplying(true);
+    setSceneMsg(null);
+    try {
+      const res = await fetch(`${API}/simulation/config`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        // Only these two — never merged with `draft`'s PUT body.
+        body: JSON.stringify({
+          n_nodes: sceneDraft.n_nodes,
+          dual_fraction: sceneDraft.dual_fraction,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `HTTP ${res.status}`);
+      }
+      setSceneMsg("Applied — fleet is restarting (~30–60s), the map will go quiet briefly.");
+      setScenePending(true);
+      setTimeout(() => setSceneMsg(null), 6000);
+    } catch (e) {
+      setSceneMsg(`Error: ${e.message}`);
+    } finally {
+      setSceneApplying(false);
+    }
+  }
+
+  function handleSceneApplyClick() {
+    if (!sceneArmed) {
+      // First click arms; second click (within 5s) confirms and PUTs.
+      setSceneArmed(true);
+      if (sceneArmTimerRef.current) clearTimeout(sceneArmTimerRef.current);
+      sceneArmTimerRef.current = setTimeout(() => setSceneArmed(false), 5000);
+      return;
+    }
+    if (sceneArmTimerRef.current) clearTimeout(sceneArmTimerRef.current);
+    setSceneArmed(false);
+    applySceneChange();
   }
 
   if (!draft) {
@@ -439,6 +567,93 @@ export default function PhysicsSettings() {
         )}
       </div>
 
+      {/* ── Fleet Scene ─────────────────────────────────────────────── */}
+      {sceneDraft && (() => {
+        const dualPct = Math.round(sceneDraft.dual_fraction * 100);
+        const dualSitesPreview = Math.round(sceneDraft.n_nodes * sceneDraft.dual_fraction / 2);
+        return (
+          <div className="ps-scene-section">
+            <div className="ps-scene-title">Fleet Scene</div>
+            <p className="ps-scene-running">
+              {runningScene
+                ? `Running: ${runningScene.connected} connected nodes · ${runningScene.dualSites} dual sites`
+                : "Running: —"}
+            </p>
+
+            <div className="ps-settings-grid">
+              <div className="ps-settings-card">
+                <div className="ps-settings-label">Node count</div>
+                <div className="ps-slider-row">
+                  <input
+                    type="range"
+                    min={10}
+                    max={60}
+                    step={2}
+                    value={sceneDraft.n_nodes}
+                    onChange={e => setSceneDraft(prev => ({ ...prev, n_nodes: Number(e.target.value) }))}
+                    className="ps-range"
+                    style={{
+                      "--thumb-color": "#a78bfa",
+                      "--fill-pct": `${((sceneDraft.n_nodes - 10) / 50) * 100}%`,
+                    }}
+                  />
+                  <span className="ps-pct-val" style={{ color: "#a78bfa", minWidth: "3rem" }}>
+                    {sceneDraft.n_nodes}
+                  </span>
+                </div>
+              </div>
+
+              <div className="ps-settings-card">
+                <div className="ps-settings-label">
+                  Dual-node fraction
+                  <span className="ps-settings-sublabel">
+                    {" "}→ {dualSitesPreview} dual sites ({dualSitesPreview * 2} of {sceneDraft.n_nodes} nodes)
+                  </span>
+                </div>
+                <div className="ps-slider-row">
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={5}
+                    value={dualPct}
+                    onChange={e => setSceneDraft(prev => ({ ...prev, dual_fraction: Number(e.target.value) / 100 }))}
+                    className="ps-range"
+                    style={{
+                      "--thumb-color": "#a78bfa",
+                      "--fill-pct": `${dualPct}%`,
+                    }}
+                  />
+                  <span className="ps-pct-val" style={{ color: "#a78bfa", minWidth: "3rem" }}>
+                    {dualPct}%
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="ps-scene-warning">
+              Restarts the fleet simulator: the map goes quiet for ~30–60 s and all synthetic aircraft respawn.
+            </div>
+
+            <div className="ps-actions">
+              <button
+                className={`ps-scene-apply-btn${sceneArmed ? " ps-scene-apply-armed" : ""}`}
+                onClick={handleSceneApplyClick}
+                disabled={sceneApplying}
+              >
+                {sceneApplying ? "Applying…" : sceneArmed ? "Confirm restart" : "Apply Scene Change"}
+              </button>
+              {scenePending && <span className="ps-scene-pending-chip">restart pending…</span>}
+              {sceneMsg && (
+                <span className={`ps-save-msg ${sceneMsg.startsWith("Error") ? "ps-save-err" : ""}`}>
+                  {sceneMsg}
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ── Ground Truth Map ────────────────────────────────────────── */}
       {(animatedAircraft.length > 0 || (gtData && gtData.aircraft.length > 0)) && (() => {
         const ac = animatedAircraft.length > 0 ? animatedAircraft : gtData.aircraft;
@@ -495,40 +710,105 @@ export default function PhysicsSettings() {
         );
       })()}
 
-      {/* ── Solver Performance ──────────────────────────────────────── */}
+      {/* ── Solver Report ──────────────────────────────────────────── */}
       {gtData?.performance && (
         <div className="ps-perf-section">
-          <div className="ps-perf-title">Solver Performance</div>
+          <div className="ps-perf-title">Solver Report</div>
           <div className="ps-perf-grid">
-            <div className="ps-perf-card">
-              <span className="ps-perf-val">{gtData.performance.gt_total}</span>
-              <span className="ps-perf-lbl">GT Objects</span>
-            </div>
-            <div className="ps-perf-card">
-              <span className="ps-perf-val">{gtData.performance.detected}</span>
-              <span className="ps-perf-lbl">Detected</span>
-            </div>
             <div className="ps-perf-card ps-perf-rate">
               <span className="ps-perf-val">{gtData.performance.detection_rate_pct}%</span>
               <span className="ps-perf-lbl">Detection Rate</span>
             </div>
+            <div
+              className="ps-perf-card"
+              title="Live multinode tracks with no ADS-B tag, more than 5 km from every ground-truth trail and every fresh ADS-B fix"
+            >
+              <span className="ps-perf-val">
+                {solverStats ? solverStats.ghosts.ghost_tracks : "—"}
+              </span>
+              <span className="ps-perf-lbl">
+                Ghost Tracks
+                {solverStats && (
+                  <span className="ps-perf-sublbl">
+                    {" "}· {formatPct(solverStats.ghosts.precision_pct)} precision
+                  </span>
+                )}
+              </span>
+            </div>
             <div className="ps-perf-card">
               <span className="ps-perf-val">
-                {gtData.performance.avg_position_error_km != null
-                  ? `${gtData.performance.avg_position_error_km} km`
-                  : "—"}
+                {solverStats ? formatKm(solverStats.position_error_km.median) : "—"}
               </span>
-              <span className="ps-perf-lbl">Avg Position Error</span>
+              <span className="ps-perf-lbl">Median Error</span>
+            </div>
+            <div className="ps-perf-card">
+              <span className="ps-perf-val">
+                {solverStats ? formatKm(solverStats.position_error_km.p90) : "—"}
+              </span>
+              <span className="ps-perf-lbl">p90 Error</span>
             </div>
             <div className="ps-perf-card">
               <span className="ps-perf-val">{gtData.performance.multinode_tracks}</span>
               <span className="ps-perf-lbl">Multinode Tracks</span>
             </div>
-            <div className="ps-perf-card">
-              <span className="ps-perf-val">{gtData.performance.tracked_with_error}</span>
-              <span className="ps-perf-lbl">Positions Compared</span>
-            </div>
           </div>
+
+          {solverStats && (
+            <>
+              {/* Publication funnel: published n=2 / n≥3 vs rejected, then a
+                  proportional mini-bar per reject reason (largest first). */}
+              <div className="ps-funnel-section">
+                <div className="ps-funnel-bar">
+                  {funnelSegments(solverStats)
+                    .filter((seg) => seg.count > 0)
+                    .map((seg) => (
+                      <div
+                        key={seg.key}
+                        className="ps-funnel-seg"
+                        style={{ flex: seg.count, background: seg.color }}
+                        title={`${seg.label}: ${seg.count} (${formatPct(seg.pct)})`}
+                      />
+                    ))}
+                </div>
+                <div className="ps-funnel-legend">
+                  {funnelSegments(solverStats).map((seg) => (
+                    <span key={seg.key} style={{ color: seg.color }}>
+                      ■ {seg.label}: {seg.count}
+                    </span>
+                  ))}
+                </div>
+                <div className="ps-funnel-caption">
+                  last {solverStats.window_minutes} min · {solverStats.attempts} attempts
+                </div>
+
+                {rejectReasonBars(solverStats.rejects.by_reason).length > 0 && (
+                  <div className="ps-reject-reasons">
+                    {rejectReasonBars(solverStats.rejects.by_reason).map((r) => (
+                      <div key={r.reason} className="ps-reject-row">
+                        <span className="ps-reject-label">{r.reason}</span>
+                        <div className="ps-reject-track">
+                          <div className="ps-reject-fill" style={{ width: `${r.pct}%` }} />
+                        </div>
+                        <span className="ps-reject-count">{r.count}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Consensus: mode badge + since-boot counters. */}
+              <div className="ps-consensus-row">
+                <span className={`ps-consensus-badge ps-consensus-${solverStats.consensus.mode}`}>
+                  {consensusModeLabel(solverStats.consensus.mode)}
+                </span>
+                <span className="ps-consensus-chip">Selected {solverStats.consensus.selected}</span>
+                <span className="ps-consensus-chip">Filtered {solverStats.consensus.filtered}</span>
+                <span className="ps-consensus-chip">Fallback {solverStats.consensus.fallback}</span>
+                <span className="ps-consensus-chip">Shadow {solverStats.consensus.shadow}</span>
+                <span className="ps-consensus-caption">since boot</span>
+              </div>
+            </>
+          )}
         </div>
       )}
 

@@ -42,6 +42,7 @@ function encodeLayers(t: Record<string, boolean>): string {
   if (t.stats)        out += "s";
   if (t.rangeRings)   out += "r";
   if (t.inBeamDiag)   out += "b";
+  if (t.arcs)         out += "d";
   return out;
 }
 
@@ -57,6 +58,7 @@ function decodeLayers(s: string | undefined): Partial<Record<string, boolean>> {
     stats:        s.includes("s"),
     rangeRings:   s.includes("r"),
     inBeamDiag:   s.includes("b"),
+    arcs:         s.includes("d"),
   };
 }
 

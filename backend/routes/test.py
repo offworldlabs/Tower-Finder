@@ -419,8 +419,17 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
     Accepted keys: frac_anomalous, frac_drone, frac_dark (0.0–1.0 each).
     Sum of the three must not exceed 1.0 — the remainder is commercial aircraft.
     Optional: max_range_km (10–400), min_aircraft (1–500), max_aircraft (1–500).
+
+    Also accepted — fleet scene keys, deliberately NO defaults (state.py's
+    only-if-set pattern: a fresh backend never ships these, so the fleet
+    container falls back to its own env; applying one is an orchestrator
+    self-restart, see fleet-entrypoint.sh / retina_simulation.orchestrator):
+    n_nodes (int, 4–100), dual_fraction (0.0–1.0).
     """
-    allowed = {"frac_anomalous", "frac_drone", "frac_dark", "max_range_km", "min_aircraft", "max_aircraft"}
+    allowed = {
+        "frac_anomalous", "frac_drone", "frac_dark", "max_range_km", "min_aircraft", "max_aircraft",
+        "n_nodes", "dual_fraction",
+    }
     updated = {}
     for k in allowed:
         if k in body:
@@ -434,6 +443,14 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
             elif k in ("min_aircraft", "max_aircraft"):
                 if not isinstance(v, int) or not (1 <= v <= 500):
                     raise HTTPException(400, detail=f"{k} must be int 1–500")
+            elif k == "n_nodes":
+                # bool is an int subclass in Python — True/False must not
+                # sneak through as 1/0.
+                if not isinstance(v, int) or isinstance(v, bool) or not (4 <= v <= 100):
+                    raise HTTPException(400, detail=f"{k} must be int 4–100")
+            elif k == "dual_fraction":
+                if not isinstance(v, (int, float)) or isinstance(v, bool) or not (0.0 <= v <= 1.0):
+                    raise HTTPException(400, detail=f"{k} must be 0.0–1.0")
             updated[k] = v
 
     total_frac = (
@@ -660,6 +677,156 @@ async def mlat_history(
             "records": rejects_nearby[:200],
         },
     }
+    return Response(content=orjson.dumps(payload), media_type="application/json")
+
+
+# ── Solver Report (full funnel/error/ghost/consensus picture) ─────────────────
+
+# Both tunable from staging observation, not derived from anything physical.
+_GHOST_GATE_KM = 5.0
+_ERR_GT_GATE_KM = 15.0
+# How stale a ground-truth trail point (or ADS-B fix) may be and still count
+# as "the aircraft was there" for ghost detection.
+_GHOST_GT_MAX_AGE_S = 90.0
+_ADSB_FRESH_S = 60.0
+
+
+def _solver_window_stats(minutes: float) -> dict:
+    """Full solver picture: publication funnel, position error, ghost/false-track
+    precision, consensus counters — the data behind the Solver Report panel.
+
+    Funnel, reject-reason, and position-error stats are windowed over the
+    last ``minutes`` of ``state.mlat_solve_history`` (idiom shared with
+    mlat-history). Ghost detection and consensus/counters read *current* live
+    state (multinode_tracks / ground_truth_trails / adsb_aircraft) rather
+    than the window — a live track is either a ghost right now or it isn't.
+
+    Ghost definition: a currently-live state.multinode_tracks entry that is
+    (1) not ADS-B-associated (no adsb_hex on the result and its key doesn't
+    start with mn-adsb-, solver.py:615), (2) more than _GHOST_GATE_KM from
+    the time-nearest (<= _GHOST_GT_MAX_AGE_S old) point of every ground-truth
+    trail, AND (3) more than _GHOST_GATE_KM from every adsb_aircraft entry
+    fresh within _ADSB_FRESH_S. Both distance gates are required because
+    staging injects real adsb.lol traffic alongside the simulated fleet — "no
+    GT match" alone would mislabel every real-traffic track as a ghost.
+    """
+    cutoff_ms = int((time.time() - minutes * 60.0) * 1000)
+    records = [r for r in list(state.mlat_solve_history) if r["ts_ms"] >= cutoff_ms]
+
+    attempts = len(records)
+    n2 = n3plus = 0
+    reject_total = 0
+    by_reason: dict[str, int] = {}
+    pos_errors: list[float] = []
+    for r in records:
+        outcome = r.get("outcome")
+        if outcome == "published":
+            n_nodes = r.get("n_nodes") or 0
+            if n_nodes == 2:
+                n2 += 1
+            elif n_nodes >= 3:
+                n3plus += 1
+            err = r.get("gt_error_km")
+            if err is not None and err <= _ERR_GT_GATE_KM:
+                pos_errors.append(err)
+        else:
+            reject_total += 1
+            reason = outcome[len("rejected_"):] if outcome.startswith("rejected_") else outcome
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+
+    pos_errors.sort()
+    n_err = len(pos_errors)
+    median_err = pos_errors[n_err // 2] if n_err else None
+    p90_err = pos_errors[int(0.9 * (n_err - 1))] if n_err else None
+
+    # ── ghosts ──────────────────────────────────────────────────────────────
+    now = time.time()
+    now_ms = now * 1000.0
+    gt_trails = [(hx, list(trail)) for hx, trail in state.ground_truth_trails.items()]
+    fresh_adsb = [
+        a for a in state.adsb_aircraft.values()
+        if a.get("last_seen_ms") is not None and now_ms - a["last_seen_ms"] <= _ADSB_FRESH_S * 1000.0
+    ]
+
+    live_tracks = 0
+    adsb_associated = 0
+    gt_matched = 0
+    ghost_tracks = 0
+    for key, rec in state.multinode_tracks.items():
+        live_tracks += 1
+        if rec.get("adsb_hex") or key.startswith("mn-adsb-"):
+            adsb_associated += 1
+            continue
+        lat, lon = rec.get("lat"), rec.get("lon")
+        if lat is None or lon is None:
+            continue
+
+        matched = False
+        for _hx, trail in gt_trails:
+            if not trail:
+                continue
+            pt = min(trail, key=lambda p: abs(p[3] - now))
+            if abs(pt[3] - now) > _GHOST_GT_MAX_AGE_S:
+                continue
+            if haversine_km(lat, lon, pt[0], pt[1]) <= _GHOST_GATE_KM:
+                matched = True
+                break
+        if matched:
+            gt_matched += 1
+            continue
+
+        near_adsb = any(
+            haversine_km(lat, lon, a["lat"], a["lon"]) <= _GHOST_GATE_KM
+            for a in fresh_adsb
+        )
+        if not near_adsb:
+            ghost_tracks += 1
+
+    precision_pct = (
+        round((live_tracks - ghost_tracks) / live_tracks * 100, 1) if live_tracks else 0.0
+    )
+
+    return {
+        "window_minutes": minutes,
+        "attempts": attempts,
+        "published": {"total": n2 + n3plus, "n2": n2, "n3plus": n3plus},
+        "rejects": {"total": reject_total, "by_reason": by_reason},
+        "position_error_km": {"median": median_err, "p90": p90_err, "n": n_err},
+        "ghosts": {
+            "live_tracks": live_tracks,
+            "adsb_associated": adsb_associated,
+            "gt_matched": gt_matched,
+            "ghost_tracks": ghost_tracks,
+            "precision_pct": precision_pct,
+        },
+        "consensus": {
+            "mode": solver_mod._CONSENSUS_MODE,
+            "selected": state.solver_consensus_selected,
+            "filtered": state.solver_consensus_filtered,
+            "fallback": state.solver_consensus_fallback,
+            "shadow": state.solver_consensus_shadow,
+        },
+        "counters": {
+            "successes": state.solver_successes,
+            "failures": state.solver_failures,
+            "n2_unconfirmed": state.n2_unconfirmed,
+            "solver_trimmed": state.solver_trimmed,
+            "stale_drops": state.solver_stale_drops,
+            "queue_drops": state.solver_queue_drops,
+        },
+    }
+
+
+@router.get("/api/test/solver-stats")
+async def solver_stats(minutes: float = 10.0):
+    """Full solver picture for the Solver Report panel: publication funnel
+    (n=2 vs n>=3), reject-reason breakdown, position-error percentiles,
+    ghost/false-track precision, and consensus/since-boot counters.
+
+    See ``_solver_window_stats`` for the ghost definition and gate constants.
+    """
+    minutes = max(1.0, min(minutes, 35.0))
+    payload = _solver_window_stats(minutes)
     return Response(content=orjson.dumps(payload), media_type="application/json")
 
 

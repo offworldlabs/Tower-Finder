@@ -177,3 +177,51 @@ class TestSimulationConfig:
         counts = client.get("/api/simulation/config").json()["ground_truth_counts"]
         assert counts == {"anomalous": 1, "drone": 1, "aircraft": 1,
                           "dark": 1, "total": 4}
+
+    def test_scene_keys_absent_by_default(self, client):
+        # Only-if-set pattern (state.py): a fresh backend never ships
+        # n_nodes/dual_fraction, so the fleet container falls back to env.
+        r = client.get("/api/simulation/config").json()
+        assert "n_nodes" not in r
+        assert "dual_fraction" not in r
+
+    def test_scene_keys_accepted_and_echoed(self, client):
+        r = client.put("/api/simulation/config", json={"n_nodes": 32, "dual_fraction": 0.2})
+        assert r.status_code == 200
+        assert r.json()["config"]["n_nodes"] == 32
+        assert r.json()["config"]["dual_fraction"] == 0.2
+        echoed = client.get("/api/simulation/config").json()
+        assert echoed["n_nodes"] == 32
+        assert echoed["dual_fraction"] == 0.2
+
+    def test_n_nodes_below_range_rejected(self, client):
+        r = client.put("/api/simulation/config", json={"n_nodes": 2})
+        assert r.status_code == 400
+
+    def test_n_nodes_above_range_rejected(self, client):
+        r = client.put("/api/simulation/config", json={"n_nodes": 1000})
+        assert r.status_code == 400
+
+    def test_n_nodes_float_rejected(self, client):
+        r = client.put("/api/simulation/config", json={"n_nodes": 40.5})
+        assert r.status_code == 400
+
+    def test_n_nodes_bool_rejected(self, client):
+        # bool is an int subclass in Python — True/False must not sneak
+        # through the isinstance(v, int) check as 1/0.
+        r = client.put("/api/simulation/config", json={"n_nodes": True})
+        assert r.status_code == 400
+
+    def test_dual_fraction_above_range_rejected(self, client):
+        r = client.put("/api/simulation/config", json={"dual_fraction": 1.5})
+        assert r.status_code == 400
+
+    def test_dual_fraction_below_range_rejected(self, client):
+        r = client.put("/api/simulation/config", json={"dual_fraction": -0.1})
+        assert r.status_code == 400
+
+    def test_partial_put_leaves_scene_keys_absent(self, client):
+        r = client.put("/api/simulation/config", json={"frac_dark": 0.1})
+        assert r.status_code == 200
+        assert "n_nodes" not in r.json()["config"]
+        assert "dual_fraction" not in r.json()["config"]
