@@ -51,6 +51,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # superseded detection path that --mode detection measures as the baseline, so
 # constructing it unconditionally leaves --mode track unaffected.
 from retina_analytics.detection_association import DetectionAssociator  # noqa: E402
+from retina_analytics.manager import NodeAnalyticsManager  # noqa: E402
 from retina_geolocator.consensus import solve_consensus  # noqa: E402
 from retina_geolocator.multinode_solver import (  # noqa: E402
     fit_constant_velocity,
@@ -66,9 +67,15 @@ from retina_simulation.world import (  # noqa: E402
 from retina_tracker.tracker import Tracker  # noqa: E402
 
 from services.frame_processor import confirmed_track_views  # noqa: E402
+from services.geo import (
+    bearing_deg,  # noqa: E402
+    bistatic_differential_km,  # noqa: E402
+    node_beam_params,  # noqa: E402
+)
 from services.geo import haversine_km as _haversine_km  # noqa: E402
 from services.tasks.solver import (  # noqa: E402
     claim_decision,
+    fov_gate_verdict,
     multinode_key_decision,
     resolve_n2_chi2,
 )
@@ -139,6 +146,58 @@ def _strip_adsb(frame: dict) -> dict:
     kept only to reproduce the old figures.
     """
     return {k: v for k, v in frame.items() if k != "adsb"}
+
+
+def _beam_gate_ok(out: dict, s_in: dict, node_cfgs: dict, fov_provider) -> bool:
+    """--fov leg: emulate solver.py's beam gate for one solve result.
+
+    Reimplements the range/bearing half locally (node_beam_params + the same
+    n=2-only bearing rule) because that half is inline in solver.py, not a
+    separately importable function — but the FOV overlay uses
+    fov_gate_verdict imported directly from services.tasks.solver, so the
+    bench measures the SAME rule the live gate applies rather than a second
+    copy of it that could drift from the shipped one.
+
+    fov_provider(node_id) -> EmpiricalCoverageState | None; pass a callable
+    returning None for every node (the --fov off leg) to get exactly
+    today's range+bearing rule with no FOV involvement.
+    """
+    contributing_ids = out.get("contributing_node_ids") or [
+        m["node_id"] for m in s_in.get("measurements", [])
+    ]
+    n_nodes = out.get("n_nodes", s_in.get("n_nodes", 0))
+    for nid in contributing_ids:
+        cfg = node_cfgs.get(nid)
+        if not cfg:
+            continue
+        p = node_beam_params(cfg)
+        rx_lat, rx_lon = p["rx_lat"], p["rx_lon"]
+        range_km = _haversine_km(rx_lat, rx_lon, out["lat"], out["lon"])
+
+        if p["max_bistatic_range_km"] and p["tx_lat"] is not None:
+            bistatic_km = bistatic_differential_km(
+                p["tx_lat"], p["tx_lon"], rx_lat, rx_lon, out["lat"], out["lon"],
+            )
+            range_fail = bistatic_km > p["max_bistatic_range_km"]
+        else:
+            range_fail = range_km > p["max_range_km"]
+
+        bearing_fail = False
+        if n_nodes == 2 and p["beam_azimuth_deg"] is not None:
+            brg = bearing_deg(rx_lat, rx_lon, out["lat"], out["lon"])
+            off = abs((brg - p["beam_azimuth_deg"] + 180.0) % 360.0 - 180.0)
+            bearing_fail = off > p["beam_width_deg"] / 2.0
+
+        node_fail = range_fail or bearing_fail
+        fov = fov_provider(nid)
+        if fov is not None:
+            brg = bearing_deg(rx_lat, rx_lon, out["lat"], out["lon"])
+            node_fail = not fov_gate_verdict(
+                fov, n_nodes, brg, range_km, range_rule_pass=not range_fail,
+            )
+        if node_fail:
+            return False
+    return True
 
 
 class DeferredN2Gate:
@@ -271,6 +330,14 @@ class Result:
     n_nodes_ghost: Counter = None
     speeds_kt: list = None
     solver_rejects: int = 0
+    # Solves that cleared solve_fn but failed _beam_gate_ok (services/tasks/
+    # solver.py's beam gate, emulated for the --fov leg — see _beam_gate_ok).
+    # New this round: the bench had no beam-gate emulation before, so this
+    # is nonzero even under --fov off (today's range+bearing rule, which
+    # production always applies, now actually runs here too) — the go/no-go
+    # comparison is the --fov off vs --fov active DELTA on n=2 ghost rate,
+    # not this counter's absolute value.
+    beam_rejects: int = 0
     matched_tracks: set = None
     ghost_tracks: set = None
     speed_err_ms: list = None
@@ -389,7 +456,7 @@ class Result:
         return self.keys_real / n_objects if n_objects else 0.0
 
     _SUM_FIELDS = (
-        "matched", "ghosts", "solver_rejects",
+        "matched", "ghosts", "solver_rejects", "beam_rejects",
         "gate_gated", "gate_rejected", "gate_accepted", "gate_unfitted",
         "gate_superseded",
         "n2_withheld_unfitted", "n2_withheld_chi2", "n2_withheld_claimed",
@@ -496,7 +563,7 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
         chi2_max=2.0, min_span_s=12.0, history_n=20, exclusive=True,
         cv_fit_mode="inline", claim_policy="strict",
         claim_ttl_s=60.0, solve_fn=solve_multinode,
-        claim_mode="off") -> Result:
+        claim_mode="off", fov="off") -> Result:
     import random
 
     random.seed(seed)
@@ -504,6 +571,21 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                                min_aircraft, max_aircraft, metro_traffic_frac,
                                layout, illuminator_band, dual_aim)
     node_cfgs = {nd["node_id"]: nd for nd in fleet}
+
+    # --fov {off,active}: a bench-local NodeAnalyticsManager, fed from the
+    # same per-detection ADS-B truth the sim attaches to a match (the sim's
+    # equivalent of production's record_adsb_calibration choke point) —
+    # BEFORE _strip_adsb below, since a real receiver's ADS-B calibration
+    # feed is a separate channel from the blind detection stream association
+    # measures, not something the association gate itself sees.
+    # storage_dir="" -- nothing persisted, this is a fresh run every time.
+    fov_analytics = NodeAnalyticsManager(fov_mode="active") if fov == "active" else None
+    if fov_analytics is not None:
+        for nd in fleet:
+            fov_analytics.register_node(nd["node_id"], nd)
+
+    def fov_provider(node_id):
+        return fov_analytics.learned_fov_for(node_id) if fov_analytics is not None else None
 
     # "inline" fits inside the associator, which is what the bench has always
     # done and what every published figure was measured on.  "deferred" is what
@@ -604,6 +686,14 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
         for nid in due_nodes:
             next_send[nid] += frame_interval
             frame = world.generate_detections_for_node(nid, ts_ms)
+            if fov_analytics is not None:
+                # The truth channel, not the (possibly blind) association
+                # stream below -- a real node's ADS-B calibration reaches
+                # the node's own receiver directly, independent of whether
+                # per-detection tags are forwarded to association.
+                for _ae in (frame.get("adsb") or []):
+                    if _ae and _ae.get("lat") is not None and _ae.get("lon") is not None:
+                        fov_analytics.record_calibration_point(nid, _ae["lat"], _ae["lon"])
             if blind:
                 frame = _strip_adsb(frame)
             # Every frame drives the node's own tracker, whether or not this
@@ -649,6 +739,15 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                     continue
                 if not out or not out.get("success"):
                     res.solver_rejects += 1
+                    continue
+                # Beam gate (services/tasks/solver.py, emulated here for
+                # every run — not just --fov active — so the bench measures
+                # the same funnel production does; fov_provider returns None
+                # for every node under --fov off, which reduces this to
+                # exactly today's range+bearing rule).  Runs before the n=2
+                # gate below, mirroring solver.py's order.
+                if not _beam_gate_ok(out, s_in, node_cfgs, fov_provider):
+                    res.beam_rejects += 1
                     continue
                 # The shipped n=2 gate.  Mirrors solver.py:607-632, including
                 # that a withheld solve never reaches state.multinode_tracks —
@@ -851,7 +950,8 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
                     else "never reaches the claim — solver gates it on n_nodes==2")
             print(f"  cluster sizes {grp:4s} {dict(sorted(sizes.items()))}  "
                   f"-> {100 * wide / max(tot, 1):.1f}% span >2 tracks  ({note})")
-    print(f"  solver rejects/failures: {r.solver_rejects}")
+    print(f"  solver rejects/failures: {r.solver_rejects}  "
+          f"beam gate rejects: {r.beam_rejects}")
     # Top-down claiming.  Gated on either counter moving: shadow mode counts
     # without ever emitting an anchored_input, active mode does both.
     if r.claims_matched + r.anchored_inputs > 0:
@@ -917,6 +1017,15 @@ def main():
                         "off is shipped default; shadow computes and counts "
                         "without ever excluding a tracklet or emitting an "
                         "anchored input; active does both.")
+    p.add_argument("--fov", choices=("off", "active"), default="off",
+                   help="empirical FOV beam gate (FOV_MODE).  off is the "
+                        "shipped default: the beam gate emulation applies "
+                        "only today's range+bearing rule.  active feeds a "
+                        "bench-local NodeAnalyticsManager from the sim's "
+                        "ADS-B truth and applies the same n-split rule the "
+                        "live solver gate does (services.tasks.solver."
+                        "fov_gate_verdict).  Go/no-go: n=2 ghost-rate delta "
+                        "<= +3 points vs off, real tracks flat.")
     p.add_argument("--no-select", dest="exclusive", action="store_false",
                    default=True,
                    help="track mode: disable one-to-one hypothesis selection "
@@ -944,7 +1053,8 @@ def main():
           f"{'BLIND' if args.blind else 'ADS-B-tagged'}, mode={args.mode}"
           + (f", span>={args.min_span_s:.0f}s, cv-fit={args.cv_fit_mode}, "
              f"claim-mode={args.claim_mode}"
-             if args.mode == "track" else ""))
+             if args.mode == "track" else "")
+          + f", fov={args.fov}")
 
     # chi2 only means anything in track mode; keep one pass otherwise.
     chi2_values = args.chi2_max if args.mode == "track" else [None]
@@ -965,7 +1075,8 @@ def main():
                          args.mode, chi2_max if chi2_max is not None else 2.0,
                          args.min_span_s, args.history_n, args.exclusive,
                          args.cv_fit_mode, args.claim_policy, args.claim_ttl_s,
-                         solve_fn=solve_fn, claim_mode=args.claim_mode)
+                         solve_fn=solve_fn, claim_mode=args.claim_mode,
+                         fov=args.fov)
               agg.merge(last, tag=f"s{args.seed + k}")
               # Track-level is the comparable metric — solve-level and
               # track-level differ by ~20x on the same data, so mixing them is

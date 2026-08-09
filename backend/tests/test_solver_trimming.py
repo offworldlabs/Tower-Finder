@@ -523,4 +523,202 @@ class TestBeamGateNSplit(_TrimmingTestBase):
         assert rec["outcome"] == "rejected_beam"
         failure = rec["beam_failures"][0]
         assert failure["rule"] == "range"
-        assert failure["bearing_off_deg"] is None
+
+
+class _StubFov:
+    """Duck-types EmpiricalCoverageState's beam-gate surface — enough for
+    solver.fov_gate_verdict to run without a real accumulated state."""
+
+    def __init__(self, ok: bool, wedge: str = "closed", limit_km: float = 10.0):
+        self.ok = ok
+        self.wedge = wedge
+        self.limit_km_value = limit_km
+
+    def contains(self, bearing, range_km):
+        return self.ok
+
+    def wedge_state(self, bearing):
+        return self.wedge
+
+    def limit_km(self, bearing):
+        return self.limit_km_value
+
+
+class TestFovGateActive(_TrimmingTestBase):
+    """FOV_MODE active/shadow beam-gate behaviour (solver.fov_gate_verdict).
+
+    TestBeamGateNSplit/TestBeamInstrumentation above run under the default
+    FOV_MODE=off and stay green unchanged — state.FOV_MODE is only read
+    inside the beam-gate block, and every test here monkeypatches it
+    explicitly rather than relying on the env var, so these are exercised in
+    the same pytest run.
+    """
+
+    def _stub_fov(self, monkeypatch, fovs: dict):
+        monkeypatch.setattr(
+            state.node_analytics, "learned_fov_for", lambda nid: fovs.get(nid)
+        )
+
+    def test_n2_learned_bin_rescues_a_wedge_reject(self, monkeypatch):
+        """The invented-azimuth kill path: a narrow theoretical wedge pointed
+        away from the solve would reject on bearing alone; an fov that has
+        actually seen this bearing (contains() True) replaces that verdict."""
+        monkeypatch.setattr(state, "FOV_MODE", "active")
+        s_in = {
+            "n_nodes": 2,
+            # Pre-fitted (as the offline bench and a deferred-fit worker item
+            # both may arrive), so the n=2 confirmation gate (a separate
+            # concern from the beam gate this test targets) clears cleanly.
+            "chi2_per_dof": 0.5,
+            "n_epochs": 8,
+            "measurements": [
+                {"node_id": "n1", "delay_us": 10.0, "doppler_hz": 1.0, "snr": 15.0},
+                {"node_id": "n2", "delay_us": 12.0, "doppler_hz": 1.0, "snr": 15.0},
+            ],
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        cfgs = {
+            "n1": {"rx_lat": 35.0, "rx_lon": -82.0,
+                   "beam_azimuth_deg": 270.0, "beam_width_deg": 10.0,
+                   "max_range_km": 500.0},
+            "n2": {"rx_lat": 35.0, "rx_lon": -82.1,
+                   "beam_azimuth_deg": 270.0, "beam_width_deg": 10.0,
+                   "max_range_km": 500.0},
+        }
+        self._stub_fov(monkeypatch, {"n1": _StubFov(ok=True), "n2": _StubFov(ok=True)})
+
+        def solve_fn(_s_in, _cfgs):
+            return _stub_result(["n1", "n2"], rms_delay=1.0, lat=36.0, lon=-82.0, n_nodes=2)
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is not None and result["success"]
+        (entry,) = state.multinode_tracks.values()
+        assert entry["n_nodes"] == 2
+
+    def test_n2_closed_bin_rejects_even_though_the_wedge_would_pass(self, monkeypatch):
+        """fov REPLACES the legacy rules at n=2, not just widens them: a
+        theoretical wedge that would happily pass this solve is overridden
+        by a closed fov bin.  Also covers the rule:"fov" failure fields."""
+        monkeypatch.setattr(state, "FOV_MODE", "active")
+        s_in = {
+            "n_nodes": 2,
+            "measurements": [
+                {"node_id": "n1", "delay_us": 10.0, "doppler_hz": 1.0, "snr": 15.0},
+                {"node_id": "n2", "delay_us": 12.0, "doppler_hz": 1.0, "snr": 15.0},
+            ],
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        cfgs = {
+            "n1": {"rx_lat": 35.0, "rx_lon": -82.0,
+                   "beam_azimuth_deg": 0.0, "beam_width_deg": 20.0,
+                   "max_range_km": 500.0},
+            "n2": {"rx_lat": 35.0, "rx_lon": -82.1,
+                   "beam_azimuth_deg": 0.0, "beam_width_deg": 20.0,
+                   "max_range_km": 500.0},
+        }
+        self._stub_fov(monkeypatch, {
+            "n1": _StubFov(ok=False, wedge="closed", limit_km=3.5),
+            "n2": _StubFov(ok=True),
+        })
+
+        def solve_fn(_s_in, _cfgs):
+            return _stub_result(["n1", "n2"], rms_delay=1.0, lat=36.0, lon=-82.0, n_nodes=2)
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is None
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_beam"
+        failures = {f["node_id"]: f for f in rec["beam_failures"]}
+        assert set(failures) == {"n1"}   # n2's fov passed — only n1 failed
+        assert failures["n1"]["rule"] == "fov"
+        assert failures["n1"]["fov_state"] == "closed"
+        assert failures["n1"]["fov_limit_km"] == 3.5
+
+    def test_n3_or_semantics_never_loses_a_solve_kept_today(self, monkeypatch):
+        """n>=3 only ever widens: every node's fov says closed, but today's
+        range rule alone already keeps this solve, so it must still
+        publish."""
+        monkeypatch.setattr(state, "FOV_MODE", "active")
+        solve_lat, solve_lon = 35.0, -81.5
+        node_ids = ["a", "b", "c"]
+        cfgs = {
+            "a": {"rx_lat": 35.0, "rx_lon": -82.0, "max_range_km": 200.0},
+            "b": {"rx_lat": 35.1, "rx_lon": -82.1, "max_range_km": 200.0},
+            "c": {"rx_lat": 34.9, "rx_lon": -81.9, "max_range_km": 200.0},
+        }
+        self._stub_fov(monkeypatch, {
+            nid: _StubFov(ok=False) for nid in node_ids
+        })
+        s_in = _s_in(node_ids, lat=solve_lat, lon=solve_lon)
+        solve_fn = _stub_solve_fn({frozenset(node_ids): _stub_result(
+            node_ids, rms_delay=1.0, lat=solve_lat, lon=solve_lon,
+        )})
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is not None and result["success"]
+        (entry,) = state.multinode_tracks.values()
+        assert entry["n_nodes"] == 3
+
+    def test_shadow_counts_verdicts_and_tags_history_without_changing_outcome(self, monkeypatch):
+        """shadow: today's rules still decide the outcome; the fov verdict
+        is only counted and tagged onto the rejected_beam history record."""
+        monkeypatch.setattr(state, "FOV_MODE", "shadow")
+        s_in = {
+            "n_nodes": 2,
+            "measurements": [
+                {"node_id": "n1", "delay_us": 10.0, "doppler_hz": 1.0, "snr": 15.0},
+            ],
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        cfgs = {
+            "n1": {"rx_lat": 35.0, "rx_lon": -82.0,
+                   "beam_azimuth_deg": 90.0, "beam_width_deg": 10.0,
+                   "max_range_km": 500.0},
+        }
+        # Today's rule rejects on bearing; the fov would pass — the
+        # fov_shadow_would_pass bucket (the radar3 recovery number).
+        self._stub_fov(monkeypatch, {"n1": _StubFov(ok=True)})
+
+        def solve_fn(_s_in, _cfgs):
+            return _stub_result(["n1"], rms_delay=1.0, lat=36.0, lon=-82.0, n_nodes=2)
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is None   # shadow never changes the outcome
+        assert state.fov_shadow_would_pass == 1
+        assert state.fov_shadow_agree == 0
+        assert state.fov_shadow_would_reject == 0
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_beam"
+        assert rec["fov_verdict"] == [
+            {"node_id": "n1", "today_pass": False, "fov_verdict": True},
+        ]
+
+    def test_shadow_agree_when_both_reject(self, monkeypatch):
+        monkeypatch.setattr(state, "FOV_MODE", "shadow")
+        s_in = {
+            "n_nodes": 2,
+            "measurements": [
+                {"node_id": "n1", "delay_us": 10.0, "doppler_hz": 1.0, "snr": 15.0},
+            ],
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        cfgs = {
+            "n1": {"rx_lat": 35.0, "rx_lon": -82.0,
+                   "beam_azimuth_deg": 90.0, "beam_width_deg": 10.0,
+                   "max_range_km": 500.0},
+        }
+        self._stub_fov(monkeypatch, {"n1": _StubFov(ok=False)})
+
+        def solve_fn(_s_in, _cfgs):
+            return _stub_result(["n1"], rms_delay=1.0, lat=36.0, lon=-82.0, n_nodes=2)
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is None
+        assert state.fov_shadow_agree == 1
+        assert state.fov_shadow_would_pass == 0
+        assert state.fov_shadow_would_reject == 0

@@ -227,6 +227,34 @@ class TestClaimingPassthrough:
         assert out["claiming"]["mode"] == "off"
 
 
+class TestFovStatsPassthrough:
+    """The "fov" block is a straight passthrough of the FOV_MODE beam-gate
+    counters — same shape as TestClaimingPassthrough above."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_fov_reflects_state_counters(self):
+        state.fov_shadow_agree = 11
+        state.fov_shadow_would_pass = 4
+        state.fov_shadow_would_reject = 2
+        state.fov_neg_events = 9
+        out = _solver_window_stats(10.0)
+        assert out["fov"] == {
+            "mode": state.FOV_MODE,
+            "shadow_agree": 11, "would_pass": 4, "would_reject": 2,
+            "neg_events": 9,
+        }
+
+    def test_fov_mode_defaults_to_off_in_tests(self):
+        out = _solver_window_stats(10.0)
+        assert out["fov"]["mode"] == "off"
+        assert out["fov"] == {
+            "mode": "off", "shadow_agree": 0, "would_pass": 0,
+            "would_reject": 0, "neg_events": 0,
+        }
+
+
 class TestFragmentation:
     """Windowed, from published mlat_solve_history records — the acceptance
     metric top-down claiming exists to move: distinct published keys."""
@@ -308,6 +336,9 @@ class TestEndpoint:
         }
         assert data["fragmentation"].keys() == {
             "distinct_keys", "published", "solves_per_key", "anchored_pct",
+        }
+        assert data["fov"].keys() == {
+            "mode", "shadow_agree", "would_pass", "would_reject", "neg_events",
         }
 
     def test_minutes_clamp_low(self):

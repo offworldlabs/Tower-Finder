@@ -8,6 +8,7 @@ Tests the pure helper functions:
 
 import pytest
 
+from core import state
 from services.geo import haversine_km
 from services.tasks import analytics_refresh
 from services.tasks.analytics_refresh import _aircraft_in_beam, _bearing_deg, _bistatic_angle_deg
@@ -386,6 +387,13 @@ class TestCoverageConstraintRefresh:
     constraint would only ever take effect on a restart.  It runs on the
     analytics cadence rather than the frame path because each rebuild costs one
     grid computation per neighbour.
+
+    _quantize_digest also handles the FOV_MODE tuple digest — see
+    TestQuantizeDigestTupleFormat below — but the rebuild-decision tests here
+    stay on the float|None shape (constraint_digest) they always used; the
+    logic under test (recheck floor, first-build, sub-bucket drift) is
+    identical for both shapes, and TestQuantizeDigestTupleFormat is where the
+    tuple-specific behaviour (state code compared exactly) is pinned.
     """
 
     def setup_method(self):
@@ -474,3 +482,223 @@ class TestCoverageConstraintRefresh:
         digests["n1"] = (10.0, None)                        # polygon appears
         assert analytics_refresh._refresh_coverage_constraints() == 1
         assert calls == ["n1"]
+
+
+class TestQuantizeDigestTupleFormat:
+    """_quantize_digest also has to handle fov_digest()'s per-bin
+    (state_code, limit) shape (FOV_MODE shadow/active), not just
+    constraint_digest()'s float|None — see empirical_coverage.EmpiricalCoverageState.fov_digest.
+    """
+
+    def test_state_code_compared_exactly(self):
+        """A bin opening ("closed" -> "prior") must move the digest even
+        when the limit component rounds to the same 2 km bucket."""
+        before = analytics_refresh._quantize_digest((("closed", 0.0), ("prior", 42.0)))
+        after = analytics_refresh._quantize_digest((("prior", 0.0), ("prior", 42.0)))
+        assert before != after
+
+    def test_limit_is_quantized_to_the_same_2km_grain(self):
+        q1 = analytics_refresh._quantize_digest((("observed", 40.0),))
+        q2 = analytics_refresh._quantize_digest((("observed", 40.9),))
+        assert q1 == q2   # same 2 km bucket, same state -- no rebuild
+
+    def test_a_meaningful_limit_move_still_changes_the_digest(self):
+        q1 = analytics_refresh._quantize_digest((("observed", 20.0),))
+        q2 = analytics_refresh._quantize_digest((("observed", 60.0),))
+        assert q1 != q2
+
+    def test_none_entries_pass_through(self):
+        assert analytics_refresh._quantize_digest((None, ("closed", 0.0))) == (
+            None, ("closed", 0),
+        )
+
+    def test_float_digest_still_works_unquantized_by_the_tuple_branch(self):
+        """The off-mode constraint_digest() shape must not be misrouted into
+        the tuple branch."""
+        assert analytics_refresh._quantize_digest((10.9, None)) == (5, None)
+
+
+# ── Disappearance detector (FOV_MODE shadow/active) ─────────────────────────
+
+
+class _StubMetrics:
+    def __init__(self, last_heartbeat):
+        self.last_heartbeat = last_heartbeat
+
+
+class _StubFov:
+    def __init__(self, ok=True):
+        self.ok = ok
+
+    def contains(self, bearing, range_km):
+        return self.ok
+
+
+class _StubAnalytics:
+    def __init__(self, fov=None, metrics=None):
+        self._fov = fov
+        self.metrics = metrics or {}
+        self.recorded: list = []
+
+    def learned_fov_for(self, node_id):
+        return self._fov
+
+    def record_negative_event(self, node_id, lat, lon):
+        self.recorded.append((node_id, lat, lon))
+        return True
+
+
+class TestDisappearanceDetector:
+    """_refresh_disappearance_detector — FOV_MODE shadow/active only (callers
+    gate on state.FOV_MODE != "off", exercised via _refresh_missed_detections
+    itself; this class drives the detector directly, one cycle at a time)."""
+
+    RX_LAT, RX_LON = 35.0, -82.0
+
+    def setup_method(self):
+        analytics_refresh._DETECTED_RECENTLY.clear()
+        state.adsb_aircraft.clear()
+        state.fov_neg_events = 0
+
+    def _adsb(self, hex_code, lat, lon, age_s, now):
+        state.adsb_aircraft[hex_code] = {
+            "lat": lat, "lon": lon,
+            "last_seen_ms": (now - age_s) * 1000.0,
+        }
+
+    def test_event_on_detected_then_gone_with_fresh_in_fov_adsb(self, monkeypatch):
+        now = 1_000_000.0
+        analytics = _StubAnalytics(fov=_StubFov(ok=True), metrics={"n1": _StubMetrics(now)})
+        monkeypatch.setattr(state, "node_analytics", analytics)
+
+        # Cycle 1: the node's tracker has the hex.
+        analytics_refresh._refresh_disappearance_detector(
+            "n1", now, self.RX_LAT, self.RX_LON, {"abc123"},
+        )
+        assert analytics.recorded == []
+
+        # Cycle 2: gone from the tracker, but a fresh ADS-B fix says where it
+        # is -- and the stub fov says that position is inside the node's
+        # current claim.
+        later = now + 30.0
+        self._adsb("abc123", self.RX_LAT + 0.1, self.RX_LON, age_s=5.0, now=later)
+        analytics_refresh._refresh_disappearance_detector(
+            "n1", later, self.RX_LAT, self.RX_LON, set(),
+        )
+        assert analytics.recorded == [("n1", self.RX_LAT + 0.1, self.RX_LON)]
+        assert state.fov_neg_events == 1
+        # One event per disappearance: dropped from memory, so a third cycle
+        # with the same absent hex (even with the same fresh fix) does not
+        # emit a second event.
+        assert "abc123" not in analytics_refresh._DETECTED_RECENTLY.get("n1", {})
+        analytics_refresh._refresh_disappearance_detector(
+            "n1", later + 1.0, self.RX_LAT, self.RX_LON, set(),
+        )
+        assert len(analytics.recorded) == 1
+
+    def test_no_event_for_never_detected_aircraft(self, monkeypatch):
+        """The was-detected precondition: a hex that never entered memory
+        cannot produce an event, however good its ADS-B fix."""
+        now = 1_000_000.0
+        analytics = _StubAnalytics(fov=_StubFov(ok=True), metrics={"n1": _StubMetrics(now)})
+        monkeypatch.setattr(state, "node_analytics", analytics)
+        self._adsb("zzz999", self.RX_LAT, self.RX_LON, age_s=5.0, now=now)
+
+        analytics_refresh._refresh_disappearance_detector(
+            "n1", now, self.RX_LAT, self.RX_LON, set(),
+        )
+        assert analytics.recorded == []
+        assert state.fov_neg_events == 0
+
+    def test_liveness_guard_blocks_a_dark_node(self, monkeypatch):
+        """A node not heard from within _FOV_NODE_LIVENESS_MAX_AGE_S produces
+        no events even with a detected-then-gone hex and a fresh fix."""
+        now = 1_000_000.0
+        stale = now - (analytics_refresh._FOV_NODE_LIVENESS_MAX_AGE_S + 30.0)
+        analytics = _StubAnalytics(fov=_StubFov(ok=True), metrics={"n1": _StubMetrics(stale)})
+        monkeypatch.setattr(state, "node_analytics", analytics)
+
+        analytics_refresh._refresh_disappearance_detector(
+            "n1", now, self.RX_LAT, self.RX_LON, {"abc123"},
+        )
+        later = now + 30.0
+        self._adsb("abc123", self.RX_LAT, self.RX_LON, age_s=5.0, now=later)
+        analytics_refresh._refresh_disappearance_detector(
+            "n1", later, self.RX_LAT, self.RX_LON, set(),
+        )
+        assert analytics.recorded == []
+        assert state.fov_neg_events == 0
+
+    def test_per_cycle_cap(self, monkeypatch):
+        now = 1_000_000.0
+        analytics = _StubAnalytics(fov=_StubFov(ok=True), metrics={"n1": _StubMetrics(now)})
+        monkeypatch.setattr(state, "node_analytics", analytics)
+        hexes = {f"h{i}" for i in range(8)}
+
+        analytics_refresh._refresh_disappearance_detector(
+            "n1", now, self.RX_LAT, self.RX_LON, hexes,
+        )
+        later = now + 30.0
+        for h in hexes:
+            self._adsb(h, self.RX_LAT, self.RX_LON, age_s=5.0, now=later)
+        analytics_refresh._refresh_disappearance_detector(
+            "n1", later, self.RX_LAT, self.RX_LON, set(),
+        )
+        assert len(analytics.recorded) == analytics_refresh._FOV_MAX_EVENTS_PER_NODE_CYCLE
+        # The uncapped remainder stays in memory for the next cycle rather
+        # than being silently dropped.
+        assert len(analytics_refresh._DETECTED_RECENTLY["n1"]) == (
+            len(hexes) - analytics_refresh._FOV_MAX_EVENTS_PER_NODE_CYCLE
+        )
+
+    def test_memory_expires_without_an_event_when_no_fresh_fix_ever_arrives(self, monkeypatch):
+        now = 1_000_000.0
+        analytics = _StubAnalytics(fov=_StubFov(ok=True), metrics={"n1": _StubMetrics(now)})
+        monkeypatch.setattr(state, "node_analytics", analytics)
+
+        analytics_refresh._refresh_disappearance_detector(
+            "n1", now, self.RX_LAT, self.RX_LON, {"abc123"},
+        )
+        stale_cycle = now + analytics_refresh._FOV_DISAPPEAR_MEMORY_S + 1.0
+        # Update the stub's liveness so the guard itself doesn't block this.
+        analytics.metrics["n1"] = _StubMetrics(stale_cycle)
+        analytics_refresh._refresh_disappearance_detector(
+            "n1", stale_cycle, self.RX_LAT, self.RX_LON, set(),
+        )
+        assert analytics.recorded == []
+        assert "abc123" not in analytics_refresh._DETECTED_RECENTLY.get("n1", {})
+
+    def test_no_event_when_the_fresh_fix_is_outside_the_current_fov(self, monkeypatch):
+        now = 1_000_000.0
+        analytics = _StubAnalytics(fov=_StubFov(ok=False), metrics={"n1": _StubMetrics(now)})
+        monkeypatch.setattr(state, "node_analytics", analytics)
+
+        analytics_refresh._refresh_disappearance_detector(
+            "n1", now, self.RX_LAT, self.RX_LON, {"abc123"},
+        )
+        later = now + 30.0
+        self._adsb("abc123", self.RX_LAT, self.RX_LON, age_s=5.0, now=later)
+        analytics_refresh._refresh_disappearance_detector(
+            "n1", later, self.RX_LAT, self.RX_LON, set(),
+        )
+        assert analytics.recorded == []
+        assert state.fov_neg_events == 0
+        # Not dropped -- still eligible on a later cycle if the fov opens or
+        # a fresher fix arrives, until the 90 s memory window elapses.
+        assert "abc123" in analytics_refresh._DETECTED_RECENTLY.get("n1", {})
+
+    def test_no_event_when_the_adsb_fix_is_stale(self, monkeypatch):
+        now = 1_000_000.0
+        analytics = _StubAnalytics(fov=_StubFov(ok=True), metrics={"n1": _StubMetrics(now)})
+        monkeypatch.setattr(state, "node_analytics", analytics)
+
+        analytics_refresh._refresh_disappearance_detector(
+            "n1", now, self.RX_LAT, self.RX_LON, {"abc123"},
+        )
+        later = now + 30.0
+        self._adsb("abc123", self.RX_LAT, self.RX_LON,
+                   age_s=analytics_refresh._FOV_EVENT_MAX_ADSB_AGE_S + 1.0, now=later)
+        analytics_refresh._refresh_disappearance_detector(
+            "n1", later, self.RX_LAT, self.RX_LON, set(),
+        )
+        assert analytics.recorded == []

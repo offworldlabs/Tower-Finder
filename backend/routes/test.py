@@ -221,6 +221,19 @@ def _build_dashboard_data() -> bytes:
                     "anchor_hits": state.solver_anchor_hits,
                     "anchor_fallbacks": state.solver_anchor_fallbacks,
                 },
+                # Empirical FOV beam gate (FOV_MODE).  Since-boot counters,
+                # passthrough only — mode is off/shadow/active; shadow_*
+                # only move once mode isn't "off" (see solver.py's beam
+                # gate); neg_events is the disappearance detector's accepted
+                # record_negative_event count (analytics_refresh.py), shadow
+                # AND active.
+                "fov": {
+                    "mode": state.FOV_MODE,
+                    "shadow_agree": state.fov_shadow_agree,
+                    "would_pass": state.fov_shadow_would_pass,
+                    "would_reject": state.fov_shadow_would_reject,
+                    "neg_events": state.fov_neg_events,
+                },
                 # Teleporting emits (mis-association noise).  Debug counter
                 # only — jumps no longer mark tracks anomalous.
                 "position_jump_events": state.position_jump_events,
@@ -856,6 +869,17 @@ def _solver_window_stats(minutes: float) -> dict:
             "anchor_hits": state.solver_anchor_hits,
             "anchor_fallbacks": state.solver_anchor_fallbacks,
             "anchored_published": state.solver_anchored_published,
+        },
+        # Empirical FOV beam gate (FOV_MODE) — since-boot counters, same
+        # "cumulative regardless of mode" convention as claiming/consensus
+        # above.  See routes/test.py's dashboard "fov" block / solver.py's
+        # beam gate for what agree/would_pass/would_reject mean.
+        "fov": {
+            "mode": state.FOV_MODE,
+            "shadow_agree": state.fov_shadow_agree,
+            "would_pass": state.fov_shadow_would_pass,
+            "would_reject": state.fov_shadow_would_reject,
+            "neg_events": state.fov_neg_events,
         },
         "fragmentation": {
             "distinct_keys": len(key_counts),

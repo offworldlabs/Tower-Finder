@@ -34,7 +34,19 @@ COVERAGE_STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 
 connected_nodes: dict[str, dict] = {}
 # node_id → {config_hash, config, status, last_heartbeat, peer, is_synthetic, capabilities}
 
-node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR)
+# Empirical FOV (see retina_analytics.empirical_coverage / manager /
+# association).  off/shadow/active, ASSOC_CLAIM_MODE precedent — an
+# unrecognised value falls back to "off" rather than raising.  Read here
+# rather than in config/constants.py for the same reason _ASSOC_CLAIM_MODE
+# is: this module's construction of node_analytics/node_associator below is
+# the use site, and constants.py's header rule is that env vars are read
+# there.  Default "off" is byte-identical to every behaviour that predates
+# this flag.
+FOV_MODE = os.getenv("FOV_MODE", "off").lower()
+if FOV_MODE not in ("off", "shadow", "active"):
+    FOV_MODE = "off"
+
+node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR, fov_mode=FOV_MODE)
 
 def _coverage_limit_for(node_id: str):
     """Shrink-only empirical prior for one node, from accumulated ADS-B fixes.
@@ -43,6 +55,22 @@ def _coverage_limit_for(node_id: str):
     about NodeAnalyticsManager, the same shape cv_fit used.
     """
     return node_analytics.coverage_limit_for(node_id)
+
+
+def _learned_fov_for(node_id: str):
+    """The learned-FOV state for one node, or None — see
+    NodeAnalyticsManager.learned_fov_for.
+
+    Passed to InterNodeAssociator as fov_provider ONLY when FOV_MODE is
+    active (below): off/shadow construct the associator with fov_provider
+    unset, so every geo.fov stays None and the overlap grids this module
+    builds are byte-identical to before FOV_MODE existed.  The solver's beam
+    gate (services/tasks/solver.py) reads node_analytics.learned_fov_for
+    directly instead of through this — it runs per-solve, not at
+    registration, and shadow mode needs the state even though the associator
+    must not.
+    """
+    return node_analytics.learned_fov_for(node_id)
 
 
 # Top-down tracklet claiming (see retina_analytics.association._claim_round).
@@ -93,6 +121,10 @@ def _global_tracks_for_claiming():
 node_associator = InterNodeAssociator(
     grid_step_km=ASSOC_GRID_STEP_KM,
     coverage_provider=_coverage_limit_for,
+    # Active only (see _learned_fov_for) — shadow still computes/counts the
+    # FOV verdict at the solver gate, but must not touch the overlap grid,
+    # so off/shadow's association geometry is unchanged by this flag.
+    fov_provider=(_learned_fov_for if FOV_MODE == "active" else None),
     claim_mode=_ASSOC_CLAIM_MODE,
     global_track_provider=_global_tracks_for_claiming,
     # Passed explicitly because ASSOC_MIN_INTERVAL_S was dead config: defined
@@ -304,6 +336,21 @@ solver_anchor_hits: int = 0
 solver_anchor_fallbacks: int = 0
 solver_anchored_published: int = 0
 
+# FOV_MODE beam-gate instrumentation (services/tasks/solver.py's
+# fov_gate_verdict).  shadow-mode-only comparison of today's per-node beam
+# verdict against what the learned FOV would have decided: agree covers both
+# (pass,pass) and (reject,reject); would_pass is "today rejects, FOV would
+# pass" — the radar3 recovery number; would_reject is the opposite direction
+# (today passes, FOV would reject — never acted on in shadow, but worth
+# knowing about before any active flip).  neg_events is the disappearance
+# detector's (analytics_refresh.py) accepted record_negative_event count,
+# shadow AND active (it runs in both — see _refresh_missed_detections).  All
+# four stay at zero under FOV_MODE=off.
+fov_shadow_agree: int = 0
+fov_shadow_would_pass: int = 0
+fov_shadow_would_reject: int = 0
+fov_neg_events: int = 0
+
 # Unhandled exceptions swallowed by the solver worker loop so the thread
 # survives.  Nonzero means a solve item crashed past every gate's own
 # handling — the 2026-08-08 outage (trail-deque race) killed both workers
@@ -411,6 +458,8 @@ def _reset_for_tests() -> None:
     global solver_consensus_selected, solver_consensus_filtered
     global solver_consensus_fallback, solver_consensus_shadow
     global solver_anchor_hits, solver_anchor_fallbacks, solver_anchored_published
+    global fov_shadow_agree, fov_shadow_would_pass, fov_shadow_would_reject
+    global fov_neg_events
     global solver_worker_errors
     global solver_fail_exception, solver_fail_unconverged, solver_fail_rms_delay
     global solver_fail_rms_doppler, solver_fail_beam, solver_fail_displacement
@@ -470,6 +519,8 @@ def _reset_for_tests() -> None:
         solver_consensus_selected = solver_consensus_filtered = 0
         solver_consensus_fallback = solver_consensus_shadow = 0
         solver_anchor_hits = solver_anchor_fallbacks = solver_anchored_published = 0
+        fov_shadow_agree = fov_shadow_would_pass = fov_shadow_would_reject = 0
+        fov_neg_events = 0
         solver_worker_errors = 0
         solver_fail_exception = solver_fail_unconverged = solver_fail_rms_delay = 0
         solver_fail_rms_doppler = solver_fail_beam = solver_fail_displacement = 0

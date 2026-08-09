@@ -1153,6 +1153,33 @@ def _consensus_select(
     return _filter_s_in_to_nodes(s_in, node_ids), meta
 
 
+def fov_gate_verdict(fov, n_nodes: int, brg: float, dist_km: float,
+                     range_rule_pass: bool) -> bool:
+    """The FOV_MODE beam-gate rule for one contributing node, pure over an
+    already-resolved fov (EmpiricalCoverageState) and today's range-rule
+    outcome.  Shared by the live solver gate below and the offline bench's
+    --fov leg (association_bench.py) so the bench measures the rule that
+    actually ships, not a reimplementation of it.
+
+    n == 2: fov.contains alone.  This REPLACES today's rules entirely — the
+    autopsy behind this feature found the invented broadside-+90 azimuth
+    (geo.node_beam_params, for a node with no declared aim) killed 66% of
+    good real-data n=2 solves, and the wedge test is the n=2 mirror-
+    disambiguation gate that invented azimuth feeds.
+
+    n >= 3: range_rule_pass OR fov.contains — FOV only ever WIDENS here.  A
+    separate autopsy showed the bearing wedge is structurally wrong at n>=3
+    (a node's wedge constrains where a detection was MADE, not where a
+    multi-epoch track is NOW), so this must never cost a solve the range
+    rule already keeps; it can only rescue one the range rule alone would
+    have killed.
+    """
+    fov_pass = fov.contains(brg, dist_km)
+    if n_nodes == 2:
+        return fov_pass
+    return range_rule_pass or fov_pass
+
+
 def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus) -> dict | None:
     """Process a single solver queue entry. Returns the solver result (or None).
 
@@ -1279,13 +1306,35 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
         # mirror-disambiguation gate (92 bad vs 9 good rejected) and stays
         # exactly as before.
         #
+        # FOV_MODE — a further autopsy of the SAME 474 evaluations found the
+        # bearing wedge's azimuth was itself often invented: a node with no
+        # declared aim and a known TX falls back to broadside+90 (see
+        # geo.node_beam_params), and that guess alone killed 66% of good
+        # real-data n=2 solves.  The learned FOV (empirical_coverage.py)
+        # replaces the invented wedge with what the node has actually been
+        # seen to detect, broadening fast off ADS-B and shrinking only on
+        # sustained negative evidence.  active: per node with a learned fov,
+        # fov_gate_verdict (above) decides instead of range+bearing above —
+        # n=2 replaces both rules, n>=3 only ever widens.  shadow: today's
+        # rules keep deciding; the verdict is only counted/tagged.  off:
+        # untouched — no fov is ever looked up.  A node with no learned fov
+        # yet (state.node_analytics.learned_fov_for returns None) falls back
+        # to today's rules verbatim regardless of mode.
+        #
         # Evaluates every contributing node (not just the first failure) and
         # records per-node geometry for each one that fails, tagged with
-        # which rule tripped ("range" or "bearing"; "range" when both do —
-        # the physical impossibility dominates).
+        # which rule tripped ("range", "bearing" or "fov"; "range" when both
+        # range and bearing do — the physical impossibility dominates).
         contributing_ids = result.get("contributing_node_ids", [])
         beam_failures: list[dict] = []
         _n2_bearing_check = result.get("n_nodes") == 2
+        _fov_mode = state.FOV_MODE
+        _fov_n_nodes = result.get("n_nodes")
+        # Per-node {node_id, today_pass, fov_verdict} records in shadow mode
+        # only — attached to the rejected_beam history entry below.  Shadow's
+        # whole purpose is this comparison, so it must be visible after the
+        # fact, not just folded into a counter.
+        _fov_shadow_records: list[dict] = []
         if contributing_ids and isinstance(node_cfgs, dict):
             for nid in contributing_ids:
                 cfg = node_cfgs.get(nid)
@@ -1318,7 +1367,42 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
                         _n2_bearing_check and raw_offset > p["beam_width_deg"] / 2.0
                     )
 
-                if not range_fail and not bearing_fail:
+                node_fail = range_fail or bearing_fail
+                fov_rule: str | None = None
+                fov_state: str | None = None
+                fov_limit_km: float | None = None
+
+                if _fov_mode != "off":
+                    fov = state.node_analytics.learned_fov_for(nid)
+                    if fov is not None:
+                        brg_for_fov = bearing_deg(rx_lat, rx_lon, result["lat"], result["lon"])
+                        fov_verdict = fov_gate_verdict(
+                            fov, _fov_n_nodes, brg_for_fov, range_km,
+                            range_rule_pass=not range_fail,
+                        )
+                        if _fov_mode == "active":
+                            node_fail = not fov_verdict
+                            if node_fail:
+                                fov_state = fov.wedge_state(brg_for_fov)
+                                fov_limit_km = round(fov.limit_km(brg_for_fov), 1)
+                                if _fov_n_nodes == 2:
+                                    fov_rule = "fov"
+                        else:   # shadow
+                            today_pass = not (range_fail or bearing_fail)
+                            if today_pass == fov_verdict:
+                                state.bump_counter("fov_shadow_agree")
+                            elif fov_verdict:
+                                # Today rejects, FOV would pass — the radar3
+                                # recovery number.
+                                state.bump_counter("fov_shadow_would_pass")
+                            else:
+                                state.bump_counter("fov_shadow_would_reject")
+                            _fov_shadow_records.append({
+                                "node_id": nid, "today_pass": today_pass,
+                                "fov_verdict": fov_verdict,
+                            })
+
+                if not node_fail:
                     continue
                 beam_failures.append({
                     "node_id": nid,
@@ -1328,7 +1412,9 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
                     "max_bistatic_range_km": p["max_bistatic_range_km"],
                     "bearing_off_deg": bearing_off_deg,
                     "half_width_deg": p["beam_width_deg"] / 2.0,
-                    "rule": "range" if range_fail else "bearing",
+                    "rule": fov_rule or ("range" if range_fail else "bearing"),
+                    **({"fov_state": fov_state, "fov_limit_km": fov_limit_km}
+                       if fov_state is not None else {}),
                 })
         if beam_failures:
             _bf = beam_failures[0]
@@ -1340,9 +1426,12 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             )
             state.bump_counter("solver_failures")
             state.bump_counter("solver_fail_beam")
+            _beam_extra = {**(_extra or {}), "beam_failures": beam_failures}
+            if _fov_mode == "shadow" and _fov_shadow_records:
+                _beam_extra["fov_verdict"] = _fov_shadow_records
             _record_solve_history(
                 "rejected_beam", s_in, result,
-                extra={**(_extra or {}), "beam_failures": beam_failures},
+                extra=_beam_extra,
             )
             return None
         # Reject if the solution drifted more than _MAX_DISPLACEMENT_KM from
