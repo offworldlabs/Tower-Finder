@@ -11,7 +11,12 @@ import pytest
 from core import state
 from services.geo import haversine_km
 from services.tasks import analytics_refresh
-from services.tasks.analytics_refresh import _aircraft_in_beam, _bearing_deg, _bistatic_angle_deg
+from services.tasks.analytics_refresh import (
+    _aircraft_in_beam,
+    _bearing_deg,
+    _bistatic_angle_deg,
+    _detected_hexes_for,
+)
 
 
 class TestBearingDeg:
@@ -702,3 +707,59 @@ class TestDisappearanceDetector:
             "n1", later, self.RX_LAT, self.RX_LON, set(),
         )
         assert analytics.recorded == []
+
+
+# ── "detected" means the tracker associated a detection THIS frame ─────────
+
+
+class _StubTrack:
+    """Minimal stand-in for retina_tracker.track.Track's fields consumed by
+    _detected_hexes_for.  A raw tracker Track always carries n_missed; the
+    getattr default in the helper exists only so tests like this one can omit
+    it harmlessly."""
+
+    def __init__(self, adsb_hex, n_missed=0):
+        self.adsb_hex = adsb_hex
+        self.n_missed = n_missed
+
+
+class TestDetectedHexesFor:
+    def setup_method(self):
+        state.node_pipelines.clear()
+
+    def teardown_method(self):
+        state.node_pipelines.clear()
+
+    def _pipeline(self, tracks):
+        import types
+        return types.SimpleNamespace(tracker=types.SimpleNamespace(tracks=tracks))
+
+    def test_a_coasting_track_is_excluded(self):
+        # n_missed > 0 means the tracker did NOT associate a detection to
+        # this track on the latest frame -- it is coasting, not detected.
+        state.node_pipelines["n1"] = self._pipeline([_StubTrack("abc123", n_missed=1)])
+        assert _detected_hexes_for("n1") == set()
+
+    def test_a_freshly_associated_track_is_included(self):
+        state.node_pipelines["n1"] = self._pipeline([_StubTrack("abc123", n_missed=0)])
+        assert _detected_hexes_for("n1") == {"abc123"}
+
+    def test_hex_is_lowercased(self):
+        state.node_pipelines["n1"] = self._pipeline([_StubTrack("ABC123", n_missed=0)])
+        assert _detected_hexes_for("n1") == {"abc123"}
+
+    def test_missing_n_missed_defaults_harmless_for_stub_tracks(self):
+        # No n_missed attribute at all -- getattr default (0) must not
+        # exclude it, so stub tracks (as used throughout this test module)
+        # keep working.
+        import types
+        stub = types.SimpleNamespace(adsb_hex="def456")
+        state.node_pipelines["n1"] = self._pipeline([stub])
+        assert _detected_hexes_for("n1") == {"def456"}
+
+    def test_no_pipeline_returns_empty_set(self):
+        assert _detected_hexes_for("missing-node") == set()
+
+    def test_track_without_adsb_hex_is_skipped(self):
+        state.node_pipelines["n1"] = self._pipeline([_StubTrack(None, n_missed=0)])
+        assert _detected_hexes_for("n1") == set()

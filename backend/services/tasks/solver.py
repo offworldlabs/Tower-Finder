@@ -23,7 +23,6 @@ from core import state
 # n=2) bearing fall outside a contributing node's detection area.  This
 # module carried its own haversine, bearing and in-beam rule until those
 # were consolidated into services.geo.
-from services.calibration import record_adsb_calibration
 from services.geo import bearing_deg, bistatic_differential_km, node_beam_params, offset_latlon_m
 from services.geo import haversine_km as _haversine_km
 from services.id_utils import multinode_hex_from_key
@@ -1551,24 +1550,16 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
         # the wrong hex's is_anomalous=False — pollutting the normal_only stats.
         if _adsb_hex:
             result["adsb_hex"] = _adsb_hex
-        # Empirical coverage characterises where a node can see, so it is built
-        # only from positions known independently of the solve.  This loop used
-        # to record result["lat"]/["lon"] for every multinode solve — measured
-        # blind, 55-85% of n=2 tracks are ghosts a median 20+ km from any
-        # aircraft, and those were shaping the polygon.  Worse, that polygon is
-        # on its way to constraining association, so a phantom would have
-        # widened the very region that produced it.
-        #
-        # The ADS-B fix is the honest input, and contributing_node_ids remains
-        # the right attribution: one calibration point per node that actually
-        # saw the target.  A dark solve now records nothing.
-        _cal = state.adsb_aircraft.get(_adsb_hex) if _adsb_hex else None
-        if _cal:
-            record_adsb_calibration(
-                result.get("contributing_node_ids", []),
-                _cal.get("lat"), _cal.get("lon"),
-                age_s=time.time() - _cal.get("last_seen_ms", 0) / 1000.0,
-            )
+        # Publish-path calibration is banned: attribution rides on the very
+        # association the coverage polygon is used to judge, and under an
+        # active FOV gate it formed a feedback loop — a ghost publish (wrong
+        # tracklet pairing tagged with a real hex) recorded positives for
+        # BOTH contributing nodes at another aircraft's real position, which
+        # opened bins, widened the gate, and produced more ghosts.  Staging
+        # 2026-08-09: ghost precision 25%, 15/29 synthetic nodes with
+        # out-of-wedge bins within ~25 min of the active flip.  The frame
+        # path (services/track_gates.py) records the same aircraft per node,
+        # gated on an actual fresh detection instead of a solve result.
         _collect_track_anomalies(s_in, result)
         # Adopt the constant-velocity fit's velocity for display, when it
         # clears its own quality gate.  Velocity is Doppler-determined — one

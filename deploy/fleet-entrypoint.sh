@@ -97,6 +97,8 @@ if 'n_nodes' in cfg:
     out.append('NODES=' + str(int(cfg['n_nodes'])))
 if 'dual_fraction' in cfg:
     out.append('DUAL_FRACTION=' + str(float(cfg['dual_fraction'])))
+if 'max_range_km' in cfg:
+    out.append('MAX_RANGE_KM=' + str(float(cfg['max_range_km'])))
 print('\n'.join(out))
 " 2>/dev/null) && break
     echo "  Scene fetch attempt ${i}/3 failed, retrying..."
@@ -108,7 +110,7 @@ if [ -n "${SCENE_OVERRIDES}" ]; then
     echo "${SCENE_OVERRIDES}"
     eval "${SCENE_OVERRIDES}"
 else
-    echo "No scene overrides applied — using env NODES=${NODES} DUAL_FRACTION=${DUAL_FRACTION}"
+    echo "No scene overrides applied — using env NODES=${NODES} DUAL_FRACTION=${DUAL_FRACTION} MAX_RANGE_KM=${MAX_RANGE_KM}"
 fi
 
 # Generate fleet config

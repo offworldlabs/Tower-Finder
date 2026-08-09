@@ -82,6 +82,16 @@ CV_VEL_ADOPT_CHI2_MAX = float(os.getenv("CV_VEL_ADOPT_CHI2_MAX", "5.0"))
 # services/calibration.py, which both recording sites now go through.
 CAL_MAX_ADSB_AGE_S = 10.0
 
+# Oldest last-detection stamp still allowed to characterize node coverage.
+# Detection events arrive at the ~1 Hz frame cadence, so 5 s tolerates a
+# couple of dropped frames while bounding a 250 m/s target to ~1.25 km past
+# its last actual detection — the same staleness budget CAL_MAX_ADSB_AGE_S
+# applies to the fix itself. The emit path stays alive DISPLAY_STALE_TRACK_S
+# (15 s) past the last detection for display; calibration must not inherit
+# that window, or the coverage polygon paints an aircraft's exit path as
+# detected ground.  See services/track_gates.py.
+CAL_DETECTION_FRESH_S = 5.0
+
 # ── Default antenna parameters ───────────────────────────────────────────────
 YAGI_BEAM_WIDTH_DEG = 42.0            # Half-power beamwidth (°) of the fleet Yagis
 YAGI_MAX_RANGE_KM = 50.0             # Default Yagi max range (km)

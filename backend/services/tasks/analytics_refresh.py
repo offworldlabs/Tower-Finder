@@ -383,16 +383,23 @@ def _aircraft_in_beam(
 
 
 def _detected_hexes_for(node_id: str) -> set[str]:
-    """Lowercase ADS-B hexes the node's own tracker currently has associated.
+    """Lowercase ADS-B hexes the node's own tracker currently detects.
 
-    Independent of the ADS-B in-range comparison — read by the miss-rate
-    calculation below and, under FOV_MODE shadow/active, by the
-    disappearance detector.
+    "Detected" means associated a real detection on the latest frame; a
+    coasting track is precisely NOT a detection, and counting it both
+    delayed disappearance events and credited miss-rate "detected" into
+    space the node cannot see.  Independent of the ADS-B in-range
+    comparison — read by the miss-rate calculation below and, under
+    FOV_MODE shadow/active, by the disappearance detector.
     """
     pipeline = state.node_pipelines.get(node_id)
     detected: set[str] = set()
     if pipeline:
         for track in pipeline.tracker.tracks:
+            # getattr default keeps stub tracks in tests harmless; a raw
+            # tracker Track always has n_missed.
+            if getattr(track, "n_missed", 0) != 0:
+                continue
             hex_val = getattr(track, "adsb_hex", None)
             if hex_val:
                 detected.add(hex_val.lower())

@@ -86,6 +86,11 @@ class TestBothCallSitesUseIt:
         import services.track_gates as tg
         assert tg.record_adsb_calibration is record_adsb_calibration
 
-    def test_solver_routes_through_the_helper(self):
+    def test_solver_does_not_calibrate_at_all(self):
+        # Publish-path calibration is banned outright: attribution rides on
+        # the association the coverage polygon is used to judge, and under
+        # an active FOV gate it formed a ghost→positive→wider-gate feedback
+        # loop (staging 2026-08-09).  If this import reappears, that loop
+        # reappears with it.
         import services.tasks.solver as sv
-        assert sv.record_adsb_calibration is record_adsb_calibration
+        assert not hasattr(sv, "record_adsb_calibration")

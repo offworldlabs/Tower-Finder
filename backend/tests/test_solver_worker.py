@@ -701,12 +701,17 @@ class TestN2ConfirmationGate:
 
 
 class TestCoverageCalibration:
-    """Empirical coverage is fed only from independently-known positions.
+    """Publish-path calibration is banned — regression coverage.
 
-    The polygon characterises where a node can see, and it is on its way to
-    constraining association — so feeding it the solver's own output would let a
-    phantom widen the very region that produced it.  Measured blind, 55-85% of
-    n=2 tracks are ghosts a median 20+ km from any aircraft.
+    Attribution here rides on the very association the coverage polygon is
+    used to judge: under an active FOV gate a ghost publish (wrong tracklet
+    pairing tagged with a real hex) recorded positives for BOTH contributing
+    nodes at another aircraft's real position, opening bins, widening the
+    gate, and producing more ghosts.  Staging 2026-08-09: ghost precision
+    25%, 15/29 synthetic nodes with out-of-wedge bins within ~25 min of the
+    active flip.  A published multinode solve must now record NOTHING here
+    — the frame path (services/track_gates.py) is the only calibration
+    writer, gated on an actual fresh detection.
     """
 
     @staticmethod
@@ -731,28 +736,26 @@ class TestCoverageCalibration:
         solver_mod._process_solver_item((s_in, {}, time.time()), self._solve_fn)
         return stub
 
-    def test_records_the_adsb_position_not_the_solve(self, monkeypatch):
+    def test_published_solve_with_a_fresh_adsb_match_records_no_calibration(self, monkeypatch):
+        """The regression: this used to record one point per contributing
+        node at the ADS-B position.  It must now record none."""
         stub = self._run(monkeypatch, {
             "lat": 34.88, "lon": -82.35,
             "last_seen_ms": time.time() * 1000,
         })
-        assert len(stub.calibration_calls) == 2          # one per contributing node
-        assert {c[0] for c in stub.calibration_calls} == {"n1", "n2"}
-        for _nid, lat, lon in stub.calibration_calls:
-            assert (lat, lon) == (34.88, -82.35)          # not (37.5, -122.1)
+        assert stub.calibration_calls == []
 
     def test_dark_solve_records_nothing(self, monkeypatch):
         assert self._run(monkeypatch, None).calibration_calls == []
 
-    def test_stale_adsb_fix_is_refused(self, monkeypatch):
-        """At 250 m/s a stale fix no longer says where the target was."""
+    def test_stale_adsb_fix_still_records_nothing(self, monkeypatch):
         stub = self._run(monkeypatch, {
             "lat": 34.88, "lon": -82.35,
             "last_seen_ms": (time.time() - 60.0) * 1000,
         })
         assert stub.calibration_calls == []
 
-    def test_missing_position_is_refused(self, monkeypatch):
+    def test_null_island_adsb_still_records_nothing(self, monkeypatch):
         stub = self._run(monkeypatch, {
             "lat": 0, "lon": 0, "last_seen_ms": time.time() * 1000,
         })
@@ -1117,11 +1120,9 @@ class TestDarkSolveSmoothing:
         stored = self._stored()
         assert stored["lat"] == pytest.approx(self.LAT1 + 0.005, abs=1e-6)
 
-    def test_adsb_velocity_is_preferred_over_solved(self, monkeypatch):
+    def test_adsb_velocity_is_preferred_over_solved(self):
         """Tagged solve with a live ADS-B entry: DR follows ADS-B ground
         speed/track even when the solved velocity is junk."""
-        monkeypatch.setattr(solver_mod, "record_adsb_calibration",
-                            lambda *a, **k: None)
         state.adsb_aircraft["abc123"] = {
             # 100 m/s = 194.384 kt, due north.
             "gs": 194.384, "track": 0.0,

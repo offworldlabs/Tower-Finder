@@ -441,7 +441,8 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
 
     Accepted keys: frac_anomalous, frac_drone, frac_dark (0.0–1.0 each).
     Sum of the three must not exceed 1.0 — the remainder is commercial aircraft.
-    Optional: max_range_km (10–400), min_aircraft (1–500), max_aircraft (1–500).
+    Optional: max_range_km (0 = auto, or 10–400), min_aircraft (1–500),
+    max_aircraft (1–500).
 
     Also accepted — fleet scene keys, deliberately NO defaults (state.py's
     only-if-set pattern: a fresh backend never ships these, so the fleet
@@ -461,8 +462,11 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
                 if not isinstance(v, (int, float)) or not (0.0 <= v <= 1.0):
                     raise HTTPException(400, detail=f"{k} must be 0.0–1.0")
             elif k in ("max_range_km",):
-                if not isinstance(v, (int, float)) or not (10 <= v <= 400):
-                    raise HTTPException(400, detail=f"{k} must be 10–400")
+                # 0 = no uniform override; every node keeps its generated
+                # per-node range — matches FLEET_MAX_RANGE_KM=0 deployment
+                # semantics.
+                if not isinstance(v, (int, float)) or not (v == 0 or 10 <= v <= 400):
+                    raise HTTPException(400, detail=f"{k} must be 0 or 10–400")
             elif k in ("min_aircraft", "max_aircraft"):
                 if not isinstance(v, int) or not (1 <= v <= 500):
                     raise HTTPException(400, detail=f"{k} must be int 1–500")

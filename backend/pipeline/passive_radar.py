@@ -179,6 +179,11 @@ class GeolocatedTrack:
         self.last_update_ms = timestamp_ms
         self.wall_clock_ts = time.time()  # wall-clock for staleness checks
         self.pos_fix_ts = self.wall_clock_ts  # when lat/lon actually changed
+        # A GeolocatedTrack is only ever constructed while processing a
+        # tracker event, and tracker events are written only on detection
+        # association or promotion (retina_tracker/tracker.py:75-145) — so
+        # construction time is a real detection, same as wall_clock_ts.
+        self.last_detection_wall_ts = self.wall_clock_ts
         self.adsb_hex = adsb_hex
         self.latest_delay_us = latest_delay_us
         self.latest_doppler_hz = latest_doppler_hz
@@ -496,6 +501,12 @@ class PassiveRadarPipeline:
         for track_id, event in self.event_writer.get_new_events().items():
             adsb_hex = event.get("adsb_hex")
             existing = self.geolocated_tracks.get(track_id)
+
+            if existing is not None:
+                # An event exists only because the tracker associated a real
+                # detection this frame; this stamp is what lets the emit path
+                # tell a detecting track from one coasting on ADS-B enrichment.
+                existing.last_detection_wall_ts = _time_geo.time()
 
             # Newest measurement carried by this event (detections are stored
             # newest-first).  Used to keep the published delay fresh below and

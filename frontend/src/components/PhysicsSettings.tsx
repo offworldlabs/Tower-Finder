@@ -137,13 +137,16 @@ export default function PhysicsSettings() {
       const data = await res.json();
       if (abortRef.current?.signal.aborted) return;
       setConfig(data);
+      // min_aircraft/max_aircraft are only-if-set on the backend (staging
+      // fleet env FLEET_MIN/MAX_AIRCRAFT; a fresh backend ships neither —
+      // see core/state.py:545), same only-if-set reasoning as the scene
+      // keys below, so a sensible default fills in until the operator PUTs.
       setDraft(prev => prev ? prev : {
         frac_anomalous: data.frac_anomalous,
         frac_drone:     data.frac_drone,
         frac_dark:      data.frac_dark,
-        max_range_km:   data.max_range_km,
-        min_aircraft:   data.min_aircraft,
-        max_aircraft:   data.max_aircraft,
+        min_aircraft:   data.min_aircraft ?? 20,
+        max_aircraft:   data.max_aircraft ?? 40,
       });
       // Separate draft — NEVER merged into the above. Scene keys are
       // only-if-set on the backend (fresh backend ships neither), so a
@@ -151,6 +154,7 @@ export default function PhysicsSettings() {
       setSceneDraft(prev => prev ? prev : {
         n_nodes:       data.n_nodes ?? 30,
         dual_fraction: data.dual_fraction ?? 0.0,
+        max_range_km:  data.max_range_km ?? 0,
       });
     } catch (e) {
       setError(e.message);
@@ -247,7 +251,16 @@ export default function PhysicsSettings() {
       const res = await fetch(`${API}/simulation/config`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(draft),
+        // max_range_km lives in sceneDraft now — a fleet-restart setting,
+        // not an in-process spawn fraction. min/max_aircraft default above
+        // guarantees these are always numeric, never NaN over the wire.
+        body: JSON.stringify({
+          frac_anomalous: draft.frac_anomalous,
+          frac_drone:     draft.frac_drone,
+          frac_dark:      draft.frac_dark,
+          min_aircraft:   Number(draft.min_aircraft),
+          max_aircraft:   Number(draft.max_aircraft),
+        }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -312,10 +325,14 @@ export default function PhysicsSettings() {
       const res = await fetch(`${API}/simulation/config`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        // Only these two — never merged with `draft`'s PUT body.
+        // Only these — never merged with `draft`'s PUT body. max_range_km
+        // rides along here (not the main Apply) because applying it, like
+        // n_nodes/dual_fraction, requires regenerating node configs —
+        // that's the fleet-restart path, not an in-process reapply.
         body: JSON.stringify({
           n_nodes: sceneDraft.n_nodes,
           dual_fraction: sceneDraft.dual_fraction,
+          max_range_km: sceneDraft.max_range_km,
         }),
       });
       if (!res.ok) {
@@ -502,31 +519,9 @@ export default function PhysicsSettings() {
       {/* ── Settings ────────────────────────────────────────────────── */}
       <div className="ps-settings-grid">
         <div className="ps-settings-card">
-          <div className="ps-settings-label">Max detection range</div>
-          <div className="ps-slider-row">
-            <input
-              type="range"
-              min={40}
-              max={300}
-              step={10}
-              value={draft.max_range_km}
-              onChange={e => setDraft(prev => ({ ...prev, max_range_km: Number(e.target.value) }))}
-              className="ps-range"
-              style={{
-                "--thumb-color": "#38bdf8",
-                "--fill-pct":    `${((draft.max_range_km - 40) / 260) * 100}%`,
-              }}
-            />
-            <span className="ps-pct-val" style={{ color: "#38bdf8", minWidth: "4.5rem" }}>
-              {draft.max_range_km} km
-            </span>
-          </div>
-        </div>
-
-        <div className="ps-settings-card">
           <div className="ps-settings-label">
             Total objects target
-            <span className="ps-settings-sublabel"> (spawns {Math.max(1, Math.floor(draft.max_aircraft * 0.8))}–{draft.max_aircraft})</span>
+            <span className="ps-settings-sublabel"> (spawns {draft.min_aircraft}–{draft.max_aircraft})</span>
           </div>
           <div className="ps-slider-row">
             <input
@@ -627,6 +622,32 @@ export default function PhysicsSettings() {
                   />
                   <span className="ps-pct-val" style={{ color: "#a78bfa", minWidth: "3rem" }}>
                     {dualPct}%
+                  </span>
+                </div>
+              </div>
+
+              <div className="ps-settings-card">
+                <div className="ps-settings-label">Max detection range</div>
+                <div className="ps-slider-row">
+                  <input
+                    type="range"
+                    min={0}
+                    max={300}
+                    step={10}
+                    value={sceneDraft.max_range_km}
+                    onChange={e => setSceneDraft(prev => ({ ...prev, max_range_km: Number(e.target.value) }))}
+                    className="ps-range"
+                    style={{
+                      "--thumb-color": "#a78bfa",
+                      "--fill-pct":    `${(sceneDraft.max_range_km / 300) * 100}%`,
+                    }}
+                  />
+                  <span
+                    className="ps-pct-val"
+                    style={{ color: "#a78bfa", minWidth: "4.5rem" }}
+                    title={sceneDraft.max_range_km === 0 ? "Per-node generated ranges (no uniform override)" : undefined}
+                  >
+                    {sceneDraft.max_range_km === 0 ? "auto" : `${sceneDraft.max_range_km} km`}
                   </span>
                 </div>
               </div>

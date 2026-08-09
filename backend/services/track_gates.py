@@ -12,6 +12,7 @@ import math
 from config.constants import (
     ARC_MIN_DIFFERENTIAL_KM,
     ARC_ONLY_ANOMALY_ALLOWLIST,
+    CAL_DETECTION_FRESH_S,
     DISPLAY_STALE_TRACK_S,
     GATE_MAX_HOLD_S,
 )
@@ -586,17 +587,35 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
         # Age matters as much as provenance, and this path used to have no
         # age gate at all: _fresh_adsb admits a 60 s fix, which is 15 km of
         # travel.  services.calibration holds the one rule now.
-        if nid:
+        #
+        # Coverage recording additionally requires a FRESH DETECTION, not
+        # just a live ADS-B fix: the emit path keeps a track alive for
+        # DISPLAY_STALE_TRACK_S (15 s) after its last detection while
+        # has_adsb keeps matching the live fix, so ungated recording stamped
+        # positives along every departure path outside coverage, every emit
+        # cycle, for as long as the stale track kept rendering.  The polygon
+        # is a map of where the node DETECTS, and only a fresh detection
+        # event proves that — n_detections>=3 additionally keeps a one-frame
+        # mis-matched-hex association from characterizing coverage, the same
+        # maturity bar the tracker's own M-of-N confirmation demands.
+        _detection_fresh = (
+            now - getattr(track, "last_detection_wall_ts", 0.0) <= CAL_DETECTION_FRESH_S
+            and getattr(track, "n_detections", 0) >= 3
+        )
+        if nid and _detection_fresh:
             record_adsb_calibration(
                 [nid], adsb_lat, adsb_lon,
                 age_s=now - (adsb.get("last_seen_ms", 0) or 0) / 1000.0,
             )
-        if nid:
+        if nid and _detection_fresh:
             # Track furthest verified detections per node (for detection range)
             area = state.node_analytics.detection_areas.get(nid)
             if area:
                 area.record_verified_detection(adsb_lat, adsb_lon, ac_hex)
-        # Track accuracy: haversine(solver, adsb) per aircraft per update
+        # Track accuracy: haversine(solver, adsb) per aircraft per update.
+        # NOT gated on _detection_fresh — accuracy of what's painted is
+        # honest even while coasting on ADS-B enrichment; only coverage
+        # characterisation needs a fresh detection to be honest.
         if adsb_lat and adsb_lon:
             err_km = position_distance_km(solver_lat, solver_lon, adsb_lat, adsb_lon)
             _record_accuracy_sample(ac_hex, err_km, position_source, now)

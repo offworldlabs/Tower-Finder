@@ -225,3 +225,24 @@ class TestSimulationConfig:
         assert r.status_code == 200
         assert "n_nodes" not in r.json()["config"]
         assert "dual_fraction" not in r.json()["config"]
+
+    def test_max_range_km_zero_accepted(self, client):
+        # 0 = no uniform override; every node keeps its generated per-node
+        # range — matches FLEET_MAX_RANGE_KM=0 deployment semantics.
+        r = client.put("/api/simulation/config", json={"max_range_km": 0})
+        assert r.status_code == 200
+        assert r.json()["config"]["max_range_km"] == 0
+
+    def test_max_range_km_below_10_but_nonzero_rejected(self, client):
+        r = client.put("/api/simulation/config", json={"max_range_km": 5})
+        assert r.status_code == 400
+
+    def test_max_range_km_above_400_rejected(self, client):
+        r = client.put("/api/simulation/config", json={"max_range_km": 401})
+        assert r.status_code == 400
+
+    def test_max_range_km_boundary_values_accepted(self, client):
+        r = client.put("/api/simulation/config", json={"max_range_km": 10})
+        assert r.status_code == 200
+        r = client.put("/api/simulation/config", json={"max_range_km": 400})
+        assert r.status_code == 200
