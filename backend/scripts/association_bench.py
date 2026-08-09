@@ -26,6 +26,19 @@ amounts to reading the answer off the simulator.  See _strip_adsb -- it is the
 difference between a 14% and a 79% ghost rate on identical scenes.  --tagged
 restores the old behaviour for comparison.
 
+Optionally, --mode track can also score every run against Stone-Soup's GOSPA
+and SIAP metrics (scripts/stonesoup_metrics.py) -- an assignment-based
+complement to the MATCH_KM ghost/matched counters above.  Where the counters
+above answer one question decided in advance (is a solve within MATCH_KM of
+some aircraft?), GOSPA decomposes a single distance into localisation/missed/
+false costs via an optimal assignment at each sampled instant, and SIAP scores
+completeness, ambiguity, spuriousness and track continuity the way the
+tracking literature usually does -- a second, independently-implemented read
+on the same runs.  This is entirely optional: stonesoup ships only in the
+bench's own docker image, never in production's services/ dependencies, and
+--ss-metrics defaults to "auto", which is silently off whenever stonesoup
+is not importable or the run isn't --mode track.
+
 Usage
 -----
     python backend/scripts/association_bench.py
@@ -47,6 +60,10 @@ from dataclasses import dataclass
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+# Bench-only, optional: stonesoup_metrics itself imports cleanly whether or
+# not the `stonesoup` package is installed (see its module docstring) -- it
+# is the bench's own docker image that carries stonesoup, never a dependency
+# of anything under services/.
 # DetectionAssociator is a superset of InterNodeAssociator — it adds the
 # superseded detection path that --mode detection measures as the baseline, so
 # constructing it unconditionally leaves --mode track unaffected.
@@ -66,6 +83,7 @@ from retina_simulation.world import (  # noqa: E402
 )
 from retina_tracker.tracker import Tracker  # noqa: E402
 
+from scripts.stonesoup_metrics import STONESOUP_AVAILABLE, MetricRecorder, format_report_lines  # noqa: E402
 from services.frame_processor import confirmed_track_views  # noqa: E402
 from services.geo import (
     bearing_deg,  # noqa: E402
@@ -403,6 +421,15 @@ class Result:
     keys_real: int = 0
     keys_ghost: int = 0
 
+    # Stone-Soup GOSPA/SIAP scalars for this one run (--ss-metrics), or None
+    # when it was off, stonesoup wasn't available, or the recorder had
+    # nothing to score (see stonesoup_metrics.MetricRecorder.compute).  Not
+    # in _SUM_FIELDS/_EXTEND_FIELDS/_COUNTER_FIELDS: unlike those, a single
+    # seed's dict of pre-averaged scalars cannot be summed or extended into
+    # a cross-seed aggregate the way a plain counter or list can -- see
+    # ss_metrics_all below, which is what merge() populates instead.
+    ss_metrics: dict = None
+
     def __post_init__(self):
         self.errors_km = []
         self.ghost_dist_km = []
@@ -420,6 +447,11 @@ class Result:
         self.track_n = defaultdict(Counter)
         self.solve_ms = []
         self._ghost_tracks = {}
+        # Cross-seed pool for ss_metrics -- see merge() and report()'s
+        # "stonesoup pooled over N seeds" block.  Populated regardless of
+        # whether this Result is a per-seed result or the running aggregate;
+        # only the aggregate's list is ever read.
+        self.ss_metrics_all = []
 
     @property
     def track_ghost_pct(self):
@@ -501,6 +533,8 @@ class Result:
             self.speed_err_by_n[nn].extend(v)
         for nn, v in other.dopp_rms_by_n.items():
             self.dopp_rms_by_n[nn].extend(v)
+        if other.ss_metrics:
+            self.ss_metrics_all.append(other.ss_metrics)
 
     @property
     def ghost_pct(self):
@@ -563,7 +597,8 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
         chi2_max=2.0, min_span_s=12.0, history_n=20, exclusive=True,
         cv_fit_mode="inline", claim_policy="strict",
         claim_ttl_s=60.0, solve_fn=solve_multinode,
-        claim_mode="off", fov="off") -> Result:
+        claim_mode="off", fov="off",
+        ss_metrics=False, ss_metric_dt=5.0, ss_hold_s=12.0) -> Result:
     import random
 
     random.seed(seed)
@@ -571,6 +606,22 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                                min_aircraft, max_aircraft, metro_traffic_frac,
                                layout, illuminator_band, dual_aim)
     node_cfgs = {nd["node_id"]: nd for nd in fleet}
+
+    # --ss-metrics: Stone-Soup GOSPA/SIAP scoring, --mode track only (see
+    # scripts/stonesoup_metrics.py).  The reference point is the fleet
+    # centroid -- same quantity build_scene already computes for the
+    # simulated world's center_lat/center_lon, recomputed here rather than
+    # threaded through because build_scene doesn't return it.  main()'s
+    # --ss-metrics auto/on/off resolution is what actually decides whether
+    # ss_metrics is ever True, so this is the only place that constructs a
+    # MetricRecorder.
+    recorder = None
+    if ss_metrics and mode == "track":
+        _ref_lat = sum(nd["rx_lat"] for nd in fleet) / len(fleet)
+        _ref_lon = sum(nd["rx_lon"] for nd in fleet) / len(fleet)
+        recorder = MetricRecorder(_ref_lat, _ref_lon, duration_s=seconds,
+                                  sample_dt_s=ss_metric_dt, hold_max_age_s=ss_hold_s,
+                                  match_km=MATCH_KM)
 
     # --fov {off,active}: a bench-local NodeAnalyticsManager, fed from the
     # same per-detection ADS-B truth the sim attaches to a match (the sim's
@@ -676,6 +727,8 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
         world.step(dt, mode="adsb")
         t += dt
         ts_ms = int(t * 1000)
+        if recorder is not None:
+            recorder.record_truth(t, world.aircraft)
         due_nodes = [nid for nid in node_ids if next_send[nid] <= t]
         if not due_nodes:
             continue
@@ -798,6 +851,10 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                         "solve_count": (_prev_mn.get("solve_count", 0) if _prev_mn else 0) + 1,
                         "source_track_ids": sorted(_new_ids),
                     }
+                    if recorder is not None:
+                        recorder.record_publish(t, _key, out["lat"], out["lon"],
+                                                out.get("vel_east", 0.0) or 0.0,
+                                                out.get("vel_north", 0.0) or 0.0)
                     for _k in [k for k, v in bench_mn.items()
                               if ts_ms - v.get("timestamp_ms", 0) > _BENCH_MN_MAX_AGE_MS]:
                         del bench_mn[_k]
@@ -871,6 +928,8 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
     res.distinct_keys = len(_all_keys_seen)
     res.keys_real = len(_keys_real)
     res.keys_ghost = len(_keys_ghost)
+    if recorder is not None:
+        res.ss_metrics = recorder.compute()
     return res
 
 
@@ -965,6 +1024,31 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
               "(1.0 is the floor)")
         print(f"    n=2-only track ghost rate: {r.track_ghost_pct_n2:.1f}%  "
               "(claiming must not raise this)")
+    # Stone-Soup GOSPA/SIAP (--ss-metrics).  A single-seed Result carries its
+    # own ss_metrics dict directly; the cross-seed aggregate merge() builds
+    # has ss_metrics=None (a pooled dict of pre-averaged scalars isn't a
+    # thing) but ss_metrics_all populated with each seed's dict instead --
+    # see the pooled block below.
+    if getattr(r, "ss_metrics", None):
+        for line in format_report_lines(r.ss_metrics):
+            print(line)
+    elif getattr(r, "ss_metrics_all", None) and len(r.ss_metrics_all) > 1:
+        print(f"  stonesoup pooled over {len(r.ss_metrics_all)} seeds:")
+        _headline = (
+            ("gospa_distance_m", "gospa dist", 1 / 1000.0, "km"),
+            ("siap_completeness", "completeness", 1.0, ""),
+            ("siap_ambiguity", "ambiguity", 1.0, ""),
+            ("siap_spuriousness", "spuriousness", 1.0, ""),
+            ("siap_pos_accuracy_m", "pos-acc", 1 / 1000.0, "km"),
+            ("siap_vel_accuracy_ms", "vel-acc", 1.0, "m/s"),
+        )
+        for key, label, scale, unit in _headline:
+            vals = [m[key] * scale for m in r.ss_metrics_all if key in m]
+            if not vals:
+                continue
+            mean = statistics.mean(vals)
+            sd = statistics.pstdev(vals) if len(vals) > 1 else 0.0
+            print(f"    {label}: mean {mean:.2f}{unit}  sd {sd:.2f}{unit}")
 
 
 def main():
@@ -1045,7 +1129,45 @@ def main():
                         "no LM, no Doppler. 'consensus-refine' takes the "
                         "consensus winner's supporting nodes and hands them "
                         "to solve_multinode for a final LM polish.")
+    p.add_argument("--ss-metrics", choices=("auto", "on", "off"), default="auto",
+                   help="Stone-Soup GOSPA/SIAP scoring (scripts/stonesoup_metrics.py), "
+                        "--mode track only. 'auto' (default) enables it iff "
+                        "stonesoup is importable AND --mode track, printing a "
+                        "one-line notice when it auto-disables for the former "
+                        "reason. 'on' forces it and errors out if stonesoup "
+                        "is not installed. 'off' never computes it.")
+    p.add_argument("--ss-metric-dt", type=float, default=5.0,
+                   help="stonesoup: the uniform grid (seconds) both truth and "
+                        "published tracks are resampled onto before scoring -- "
+                        "see stonesoup_metrics.py's module docstring for why.")
+    p.add_argument("--ss-hold-s", type=float, default=12.0,
+                   help="stonesoup: how long (seconds) a track's last publish "
+                        "is held, unmoved, across grid points before it counts "
+                        "as missing rather than tracked")
     args = p.parse_args()
+
+    # --ss-metrics auto/on/off resolution.  "on" without stonesoup installed
+    # is a hard error (the user explicitly asked for numbers this image
+    # cannot produce); "auto" degrades quietly except for one notice line so
+    # a --mode track run doesn't silently print fewer sections than expected
+    # with no explanation.
+    if args.ss_metrics == "on" and not STONESOUP_AVAILABLE:
+        p.error("--ss-metrics on requires the `stonesoup` package, which is "
+                "not importable here. It ships only in the association "
+                "bench's own docker image -- never a dependency of the "
+                "shipped services/ code -- so this means the image this "
+                "process is running in wasn't built with it. Use "
+                "--ss-metrics auto or off, or rebuild with stonesoup.")
+    if args.ss_metrics == "off":
+        ss_metrics_enabled = False
+    elif args.ss_metrics == "on":
+        ss_metrics_enabled = True
+    else:
+        ss_metrics_enabled = STONESOUP_AVAILABLE and args.mode == "track"
+        if not STONESOUP_AVAILABLE and args.mode == "track":
+            print("note: stonesoup not installed -- GOSPA/SIAP scoring "
+                  "auto-disabled (--ss-metrics on to force this to error "
+                  "instead, off to silence this notice)")
 
     print(f"scene: metro={args.metro} layout={args.layout}/{args.illuminator_band} "
           f"nodes={args.nodes} budget={args.n_cluster} "
@@ -1054,7 +1176,8 @@ def main():
           + (f", span>={args.min_span_s:.0f}s, cv-fit={args.cv_fit_mode}, "
              f"claim-mode={args.claim_mode}"
              if args.mode == "track" else "")
-          + f", fov={args.fov}")
+          + f", fov={args.fov}"
+          + f", ss-metrics={'on' if ss_metrics_enabled else 'off'}")
 
     # chi2 only means anything in track mode; keep one pass otherwise.
     chi2_values = args.chi2_max if args.mode == "track" else [None]
@@ -1076,7 +1199,8 @@ def main():
                          args.min_span_s, args.history_n, args.exclusive,
                          args.cv_fit_mode, args.claim_policy, args.claim_ttl_s,
                          solve_fn=solve_fn, claim_mode=args.claim_mode,
-                         fov=args.fov)
+                         fov=args.fov, ss_metrics=ss_metrics_enabled,
+                         ss_metric_dt=args.ss_metric_dt, ss_hold_s=args.ss_hold_s)
               agg.merge(last, tag=f"s{args.seed + k}")
               # Track-level is the comparable metric — solve-level and
               # track-level differ by ~20x on the same data, so mixing them is

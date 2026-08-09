@@ -1057,6 +1057,9 @@ class TestDarkSolveSmoothing:
     targets, the one population whose only position source is MLAT, got raw
     single-frame solves.  History is now keyed by the multinode track key and
     dead-reckoned with the solved velocity when there is no ADS-B.
+
+    This class documents the legacy EWMA path (TRACK_SMOOTHER=ewma); the
+    default KF smoother is covered in test_track_filter.py.
     """
 
     # A moving dark target: 100 m/s due north, solves 20 s apart.  20 s of
@@ -1068,10 +1071,12 @@ class TestDarkSolveSmoothing:
         _reset_state()
         solver_mod._reset_for_tests()
         state.adsb_aircraft.clear()
+        os.environ["TRACK_SMOOTHER"] = "ewma"
 
     def teardown_method(self):
         solver_mod._reset_for_tests()
         state.adsb_aircraft.clear()
+        os.environ.pop("TRACK_SMOOTHER", None)
 
     def _solve_fn(self, lat, lon, ts_ms, vel_east=0.0, vel_north=0.0):
         def fn(s_in, cfgs):

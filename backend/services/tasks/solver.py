@@ -18,6 +18,7 @@ from config.constants import (
     N2_TRACK_ASSOCIATION,
 )
 from core import state
+from services import track_filter
 
 # Beam-coverage geometry, used to reject solver results whose range or (at
 # n=2) bearing fall outside a contributing node's detection area.  This
@@ -406,6 +407,9 @@ def _trim_and_resolve(
 
 
 # ── Multi-epoch EWMA position smoother (all N) ───────────────────────────────
+# This EWMA machinery is now the TRACK_SMOOTHER=ewma fallback; the default
+# smoother is the Kalman filter in services/track_filter.py.
+#
 # Each multinode solve has position error σ_pos = GDOP × σ_delay.  By
 # accumulating K successive solver positions for the same aircraft (identified
 # by ICAO hex) and dead-reckoning earlier positions forward to the current
@@ -449,6 +453,7 @@ def _reset_for_tests() -> None:
         _mn_history_last_sweep = 0.0
     with _TRACK_CLAIMS_LOCK:
         _TRACK_CLAIMS.clear()
+    track_filter.reset()
 
 
 def _sweep_mn_history(now_s: float) -> None:
@@ -1615,7 +1620,10 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             # Multi-epoch averaging cuts single-frame noise by ~√K.  Originally
             # n=2-with-ADS-B only — production showed dark targets (where MLAT
             # is the only position source) were the one population left raw.
-            result = _ewma_smooth_track(result, key, _adsb_hex)
+            # Smoothing now runs through the env-gated KF in
+            # services/track_filter.py, with this module's EWMA kept as the
+            # TRACK_SMOOTHER=ewma fallback.
+            result = track_filter.smooth_solve(result, key, _adsb_hex, ewma_fn=_ewma_smooth_track)
             prev = state.multinode_tracks.get(key)
             if prev:
                 # Latch: a tracker flag raised on an earlier solve holds for
@@ -1664,6 +1672,7 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
                         )
                     with _MN_POS_HISTORY_LOCK:
                         _MN_POS_HISTORY.pop(old_key, None)
+                    track_filter.drop_key(old_key)
                     max_superseded_count = max(
                         max_superseded_count, old_r.get("solve_count", 0)
                     )
