@@ -598,9 +598,22 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
         # event proves that — n_detections>=3 additionally keeps a one-frame
         # mis-matched-hex association from characterizing coverage, the same
         # maturity bar the tracker's own M-of-N confirmation demands.
+        # ...and the fresh detection must be ADS-B-tagged with THIS hex.
+        # The tracker's adsb_hex goes stale on identity swaps onto untagged
+        # (dark) targets — the swap debounce only advances on tagged
+        # mismatches — and a swapped track then records the departed
+        # aircraft's live position, anywhere in the metro, for as long as it
+        # keeps associating (measured on staging 2026-08-09 as contiguous
+        # ~100°+ out-of-wedge fans).  An untagged newest detection is not
+        # neutral, it is the signature of exactly that state, so None
+        # abstains: only a detection the node itself ADS-B-correlated to
+        # this hex may characterize coverage.
+        _det_tag = getattr(track, "last_detection_adsb_hex", None)
         _detection_fresh = (
             now - getattr(track, "last_detection_wall_ts", 0.0) <= CAL_DETECTION_FRESH_S
             and getattr(track, "n_detections", 0) >= 3
+            and isinstance(_det_tag, str)
+            and _det_tag.strip().lower() == (ac_hex or "").strip().lower()
         )
         if nid and _detection_fresh:
             record_adsb_calibration(

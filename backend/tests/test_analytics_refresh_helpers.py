@@ -763,3 +763,28 @@ class TestDetectedHexesFor:
     def test_track_without_adsb_hex_is_skipped(self):
         state.node_pipelines["n1"] = self._pipeline([_StubTrack(None, n_missed=0)])
         assert _detected_hexes_for("n1") == set()
+
+    def test_newest_detection_tag_outranks_a_stale_track_hex(self):
+        # Identity-swap case: the track still claims the departed aircraft's
+        # hex, but its newest associated detection is tagged with the target
+        # it is ACTUALLY riding.  The detection's tag is the truth.
+        import types
+        track = types.SimpleNamespace(
+            adsb_hex="departed",
+            n_missed=0,
+            get_recent_detections=lambda n=1: [{"adsb": {"hex": "ACTUAL1"}}],
+        )
+        state.node_pipelines["n1"] = self._pipeline([track])
+        assert _detected_hexes_for("n1") == {"actual1"}
+
+    def test_untagged_newest_detection_falls_back_to_the_track_hex(self):
+        # Real nodes whose ADS-B correlation lags emit untagged detections;
+        # the track hex remains the only (weaker) evidence there.
+        import types
+        track = types.SimpleNamespace(
+            adsb_hex="abc123",
+            n_missed=0,
+            get_recent_detections=lambda n=1: [{"adsb": None}],
+        )
+        state.node_pipelines["n1"] = self._pipeline([track])
+        assert _detected_hexes_for("n1") == {"abc123"}

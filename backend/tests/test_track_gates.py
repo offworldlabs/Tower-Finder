@@ -72,12 +72,15 @@ def _clean_state():
     state.accuracy_samples.clear()
 
 
-def _make_track(*, n_detections, last_detection_age_s, now):
+def _make_track(*, n_detections, last_detection_age_s, now,
+                last_detection_adsb_hex=HEX):
     """A GeolocatedTrack-like object sitting inside the node's ADS-B fix.
 
     latest_delay_us=None keeps _cached_single_node_arc a no-op (no beam
     geometry to satisfy), which isolates this test to the calibration gate
-    rather than the arc-building path.
+    rather than the arc-building path.  last_detection_adsb_hex defaults to
+    the track's own hex — the honest, non-swapped state; identity tests
+    override it.
     """
     from pipeline.passive_radar import GeolocatedTrack
     track = GeolocatedTrack(
@@ -90,6 +93,7 @@ def _make_track(*, n_detections, last_detection_age_s, now):
     )
     track.wall_clock_ts = now
     track.last_detection_wall_ts = now - last_detection_age_s
+    track.last_detection_adsb_hex = last_detection_adsb_hex
     return track
 
 
@@ -165,3 +169,45 @@ class TestFreshDetectionRecordsCalibration:
         del track.last_detection_wall_ts
         track_gates.track_entry(HEX, track, dict(_NODE_CFG), now, set())
         assert _points(node) == 0
+
+
+class TestDetectionIdentityGate:
+    """The fresh detection must be ADS-B-tagged with THIS hex.
+
+    A track that swaps onto an untagged (dark) target keeps its old
+    adsb_hex — the tracker's swap debounce only advances on tagged
+    mismatches — and then has genuinely fresh detections while has_adsb
+    matches the DEPARTED aircraft's live fix.  Freshness alone cannot see
+    that; only the detection's own tag can.
+    """
+
+    def test_mismatched_detection_tag_records_neither(self, node):
+        now = time.time()
+        _adsb_fix(now)
+        track = _make_track(n_detections=5, last_detection_age_s=0.5, now=now,
+                            last_detection_adsb_hex="0ther1")
+        entry = track_gates.track_entry(HEX, track, dict(_NODE_CFG), now, set())
+
+        assert entry is not None  # display path unaffected
+        assert _points(node) == 0
+        assert _furthest_count(node) == 0
+        assert len(state.accuracy_samples) == 1
+
+    def test_untagged_detection_records_neither(self, node):
+        """None is the signature of the swapped-onto-dark state, not a
+        neutral absence — it must abstain, never fall through."""
+        now = time.time()
+        _adsb_fix(now)
+        track = _make_track(n_detections=5, last_detection_age_s=0.5, now=now,
+                            last_detection_adsb_hex=None)
+        track_gates.track_entry(HEX, track, dict(_NODE_CFG), now, set())
+        assert _points(node) == 0
+        assert _furthest_count(node) == 0
+
+    def test_tag_comparison_is_case_insensitive(self, node):
+        now = time.time()
+        _adsb_fix(now)
+        track = _make_track(n_detections=5, last_detection_age_s=0.5, now=now,
+                            last_detection_adsb_hex=HEX.upper())
+        track_gates.track_entry(HEX, track, dict(_NODE_CFG), now, set())
+        assert _points(node) == 1

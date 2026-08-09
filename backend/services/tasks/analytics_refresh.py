@@ -400,7 +400,19 @@ def _detected_hexes_for(node_id: str) -> set[str]:
             # tracker Track always has n_missed.
             if getattr(track, "n_missed", 0) != 0:
                 continue
-            hex_val = getattr(track, "adsb_hex", None)
+            # The newest associated detection's own ADS-B tag outranks the
+            # track's adsb_hex: the latter goes stale on identity swaps onto
+            # untagged targets and would report the departed aircraft as
+            # still detected.  Fall back to the track hex only when the
+            # detection carries no tag (real nodes whose correlation lags).
+            hex_val = None
+            _get_recent = getattr(track, "get_recent_detections", None)
+            if callable(_get_recent):
+                _recent = _get_recent(n=1)
+                if _recent:
+                    hex_val = ((_recent[0].get("adsb") or {}).get("hex"))
+            if not hex_val:
+                hex_val = getattr(track, "adsb_hex", None)
             if hex_val:
                 detected.add(hex_val.lower())
     return detected
