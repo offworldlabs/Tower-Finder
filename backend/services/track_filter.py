@@ -21,9 +21,14 @@ give you:
      solve less, automatically, instead of averaging it in at full weight.
      That Jacobian covariance is only a measurement-noise-propagation LOWER
      BOUND on true solve error, though — it cannot see inter-node frame-time
-     skew, association contamination, or pinned-altitude error, which is why
-     it is inflated by _KF_R_INFLATE before use (see that constant's comment
-     for the staging measurement that made this necessary).
+     skew, association contamination, or pinned-altitude error, which are
+     INDEPENDENT of the fit noise, not a scaled version of it.  So the
+     covariance is both inflated (_KF_R_INFLATE, for relative weighting
+     between a good solve and a bad one) AND added to an unmodeled-error
+     floor (_KF_DEFAULT_POS_SIGMA_M, now unconditional) rather than replaced
+     by a single flat multiplier — see _measurement_R and the _KF_R_INFLATE
+     comment for the staging measurements that made the additive form
+     necessary.
   2. Principled dead-reckoning.  The predict step is real KF prediction, not
      a recomputed-every-time projection: the filter's OWN velocity state
      accumulates evidence from every solve (and from ADS-B when available),
@@ -88,42 +93,70 @@ from services.geo import M_PER_DEG_LAT, km_per_deg_lon, offset_latlon_m
 # module's Q against Stone-Soup's own to 1e-6).
 _KF_SIGMA_A_MS2 = float(os.getenv("TRACK_KF_SIGMA_A", "1.5"))
 
-# R fallback (variance = this squared) when a solve carries no per-solve
-# covariance yet — cov_en_km2 is new and not every solve path sets it.  This
-# is an empirical end-to-end figure, not a formal covariance, so it is NOT
-# run through _KF_R_INFLATE below — it already covers whatever the inflation
-# factor is correcting for; inflating it again would double-correct.
+# Base position-noise floor, applied to EVERY solve (variance = this
+# squared) — see _measurement_R below for why this is now additive rather
+# than a fallback-only default.  cov absent -> R is EXACTLY this, the cov=0
+# limit of the same formula, not a separate code path.
 _KF_DEFAULT_POS_SIGMA_M = float(os.getenv("TRACK_KF_POS_SIGMA_M", "1200"))
 
 # cov_en_km2, when present, comes from the LM fit's Jacobian: a formal
 # measurement-noise-propagation covariance, and ONLY that.  It has no way to
 # see inter-node frame-time skew, association contamination between the
 # single-node tracks that fed the solve, or pinned-altitude error — every
-# multinode solve carries all three, and together they dominate.  Staging
-# confirmed this directly: live /api/test/mlat-history data on 2026-08-09
-# showed only 1/19 multi-solve records actually smoothed (median displacement
-# 0.000 km) — the raw Jacobian sigma (hundreds of metres) fed straight into
-# the gate made ordinary innovations look like chi²>13.8 identity breaks,
-# so the filter was re-anchoring on nearly every solve instead of tracking,
-# while true end-to-end error (gt_error_km against frozen ground truth) ran
-# medians of ~3 km at n=3-4.
+# multinode solve carries all three, and they are INDEPENDENT of the formal
+# fit noise, not a scaled-up version of it.  Two rounds of staging
+# measurement made the shape of the gap unmistakable:
 #
-# _KF_R_INFLATE is the measured ratio between that end-to-end error and the
-# formal sigma (~4x at the time of the staging measurement above) — a SIGMA
-# multiplier, so the covariance MATRIX scales by _KF_R_INFLATE**2.  Applied
-# to cov_en_km2-derived R only, never to _KF_DEFAULT_POS_SIGMA_M (see that
-# constant's comment).  Env-tunable so it can be retuned without a deploy as
-# the sensor model — frame-time sync, association, altitude pinning — improves
-# and the formal covariance becomes a less severe underestimate.
+#   2026-08-09, round 1: raw Jacobian sigma fed straight into the gate ->
+#   only 1/19 multi-solve records actually smoothed (median displacement
+#   0.000 km) — ordinary innovations looked like chi²>13.8 identity breaks,
+#   so the filter re-anchored almost every solve.  End-to-end error
+#   (gt_error_km against frozen ground truth) ran medians of ~3 km at n=3-4.
+#
+#   round 2 (flat 4x sigma inflation): much better (11/13 smoothed,
+#   kf_pos_sigma_m median 407 m) but a live probe of formal pos_sigma_km on
+#   real solves showed WHY a single multiplier cannot close this honestly:
+#   formal sigma runs a median of 86 m (14 m .. 1.1 km across the
+#   distribution) against a true error still measured at ~2.7 km median — a
+#   ~31x ratio.  Multiplying the formal sigma by 31x to match the median
+#   would nuke the very thing cov_en_km2 is for: a 1.1 km formal sigma and a
+#   14 m formal sigma would both saturate to multi-kilometre R and become
+#   indistinguishable, throwing away the relative weighting between a good
+#   solve and a bad one.  A handful of solves still gate-re-anchored on
+#   borderline d² ~14-15 for the same reason — the tail of the formal
+#   distribution was still too tight relative to what a flat multiplier could
+#   cover without wrecking the head.
+#
+# The honest model is additive, not multiplicative-only: true solve error is
+# the formal (relatively-weighted, inflated) measurement noise term PLUS an
+# INDEPENDENT unmodeled-error floor that every solve carries regardless of
+# its own GDOP — frame-time skew, association contamination, altitude
+# pinning do not shrink just because a solve's baselines happened to be
+# well-conditioned.  R = (_KF_R_INFLATE**2) * cov_m2 + diag(_KF_DEFAULT_POS_SIGMA_M**2, ...):
+# the base term carries the unmodeled-error floor (same role
+# _KF_DEFAULT_POS_SIGMA_M always had as the no-cov fallback — this is why
+# cov-absent is now literally the cov=0 limit of one formula, not a separate
+# branch), the inflated formal term still carries meaningful relative
+# weighting on top of it.  With the defaults above: formal sigma 86 m ->
+# R sigma = sqrt((4*86)² + 1200²) ≈ 1248 m; formal sigma 1.1 km -> R sigma =
+# sqrt((4*1100)² + 1200²) ≈ 4561 m — a good solve and a bad one four
+# quality-orders apart in the formal fit still land roughly 3.6x apart in R,
+# not saturated to the same clamp-capped number.
+#
+# _KF_R_INFLATE is env-tunable so it can be retuned without a deploy as the
+# sensor model — frame-time sync, association, altitude pinning — improves
+# and the formal covariance becomes a less severe underestimate of the
+# INDEPENDENT (not additive-floor) portion of the error it's meant to weight.
 _KF_R_INFLATE = float(os.getenv("TRACK_KF_R_INFLATE", "4.0"))
 
-# Clamp band for the (already-inflated) per-solve position sigma — a
-# degenerate Jacobian (near-parallel baselines) can still produce a
-# covariance that is absurdly tight or absurdly loose even after inflation;
-# neither should be taken at face value.  The floor was raised from 150 to
-# 500 m alongside the inflation factor above, for the same reason: nothing
-# staging has measured supports a Jacobian-derived sigma that tight actually
-# describing true solve error, inflated or not.
+# Clamp band for the final per-solve position sigma (after the additive
+# composition above) — a degenerate Jacobian (near-parallel baselines) can
+# still produce a covariance that is absurdly tight or absurdly loose;
+# neither should be taken at face value.  The floor is now mostly inert by
+# construction: with the additive base term always contributing
+# _KF_DEFAULT_POS_SIGMA_M (1200 m) on its own, R sigma cannot fall below that
+# regardless of cov, and 1200 > 500 already — the floor only still matters if
+# _KF_DEFAULT_POS_SIGMA_M itself is ever env-tuned below it.
 _KF_MIN_POS_SIGMA_M = 500.0
 _KF_MAX_POS_SIGMA_M = 8000.0
 
@@ -295,24 +328,36 @@ def _kf_correct(x: np.ndarray, P: np.ndarray, z: np.ndarray,
 def _measurement_R(result: dict) -> np.ndarray:
     """Per-solve position measurement covariance, in m^2.
 
-    Prefers the solver's own cov_en_km2 (2x2, km^2, ENU) when present and
-    sane, inflated by _KF_R_INFLATE**2 (a measurement-noise-propagation
-    lower bound is not an end-to-end error estimate — see that constant's
-    comment); falls back to the isotropic _KF_DEFAULT_POS_SIGMA_M default —
-    NOT inflated, it is already an end-to-end figure — when cov_en_km2 is
-    missing, non-finite, or degenerate.  Either way, clamps the implied sigma
-    to [_KF_MIN_POS_SIGMA_M, _KF_MAX_POS_SIGMA_M] by uniform scaling — this
-    preserves whatever correlation the solver reported instead of stomping
-    it with a fresh diagonal.
+    ADDITIVE composition (see the _KF_R_INFLATE comment above for the
+    staging measurements this is built from): the formal LM-fit covariance,
+    cov_en_km2, and the unmodeled-error floor are INDEPENDENT noise sources,
+    not one scaled version of the other, so they add rather than one
+    replacing the other:
+
+        cov present and sane:  R = (_KF_R_INFLATE**2) * cov_m2 + base
+        cov absent/degenerate: R = base                          (cov=0 limit)
+
+    where base = diag(_KF_DEFAULT_POS_SIGMA_M**2, _KF_DEFAULT_POS_SIGMA_M**2)
+    is added UNCONDITIONALLY — the no-cov fallback is not a separate branch,
+    it is exactly this same formula evaluated at cov_m2 = 0.  This is what
+    lets a well-conditioned solve (small cov_m2) and a poorly-conditioned one
+    (large cov_m2) still land at meaningfully different R after inflation,
+    instead of a flat multiplier saturating both to the same multi-kilometre
+    number once the unmodeled-error floor dominates either way.
+
+    Either way, clamps the implied sigma to [_KF_MIN_POS_SIGMA_M,
+    _KF_MAX_POS_SIGMA_M] by uniform scaling — this preserves whatever
+    correlation the solver reported instead of stomping it with a fresh
+    diagonal.  The floor is mostly inert now (see that constant's comment);
+    the cap still matters for a badly-conditioned Jacobian.
     """
-    r = None
+    base = np.diag([_KF_DEFAULT_POS_SIGMA_M ** 2, _KF_DEFAULT_POS_SIGMA_M ** 2])
+    r = base
     cov = result.get("cov_en_km2")
     if cov is not None:
         arr = np.asarray(cov, dtype=float) * 1e6   # km^2 -> m^2
         if arr.shape == (2, 2) and np.all(np.isfinite(arr)) and arr[0, 0] > 0 and arr[1, 1] > 0:
-            r = arr * (_KF_R_INFLATE ** 2)   # measurement-noise floor -> end-to-end estimate
-    if r is None:
-        r = np.diag([_KF_DEFAULT_POS_SIGMA_M ** 2, _KF_DEFAULT_POS_SIGMA_M ** 2])
+            r = (_KF_R_INFLATE ** 2) * arr + base   # independent noise sources -> variances add
 
     s = math.sqrt(0.5 * (r[0, 0] + r[1, 1]))
     if s < _KF_MIN_POS_SIGMA_M:
