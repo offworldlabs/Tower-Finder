@@ -97,10 +97,15 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
       seen.add(ac.hex);
       const isAnom  = ac.is_anomalous;
       const isDrone = ac.object_type === "drone";
+      // Dark = simulated aircraft flying without ADS-B.  Grey, matching the
+      // Physics tab's Dark Aircraft legend, so a viewer can tell at a glance
+      // which truth dots the radar must find on its own.  Strict === false:
+      // entries without the field (older payloads) keep the ADS-B blue.
+      const isDark  = !isAnom && !isDrone && ac.has_adsb === false;
       const isSel   = ac.hex === selectedHex;
-      const color   = isAnom ? "#f43f5e" : isDrone ? "#f59e0b" : "#22d3ee";
-      // Selection ring is white so it reads against all three fill colors.
-      const border  = isSel ? "#f8fafc" : isAnom ? "#e11d48" : isDrone ? "#d97706" : "#67e8f9";
+      const color   = isAnom ? "#f43f5e" : isDrone ? "#f59e0b" : isDark ? "#94a3b8" : "#22d3ee";
+      // Selection ring is white so it reads against all fill colors.
+      const border  = isSel ? "#f8fafc" : isAnom ? "#e11d48" : isDrone ? "#d97706" : isDark ? "#64748b" : "#67e8f9";
       const baseR   = isDrone ? 6 : isAnom ? 8 : 9;
       const radius  = isSel ? baseR + 4 : baseR;
       const weight  = isSel ? 4 : 3;
