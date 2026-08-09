@@ -58,6 +58,22 @@ should therefore track how staleness is actually treated downstream (the map
 UI's own staleness cutoff, or state.py's track-expiry window), not be tuned
 to flatter the numbers.
 
+A key's held coverage need not be one contiguous run: --cv-fit deferred can
+leave a gap between two publishes longer than hold_max_age_s in the *middle*
+of a key's life, not just trailing off at its end (sparse publishes are the
+normal case there, not an edge case). _build_tracks segments a key at every
+such gap into one Track per contiguous covered run, rather than a single
+Track carrying a stateless hole in the middle of its states. That distinction
+matters because stonesoup's TrackToTruth associator builds its association
+time-ranges from a track's own state timestamps, and a range spanning a
+stateless grid point makes SIAPMetrics.accuracy_at_time index a timestamp the
+track never had a state for, raising IndexError -- segmenting at the gap
+means every range a Track can be assigned always has a state at every
+timestamp inside it. GOSPA is unaffected either way: it scores states per
+timestamp, never a track-level range. A key that is covered at every grid
+point (the only case exercised before this existed) still produces exactly
+one Track, byte-identical to before.
+
 Units and frames
 -----------------
 Internally everything is metres and m/s, in a local ENU (East-North-Up,
@@ -360,32 +376,61 @@ class MetricRecorder:
         return paths
 
     def _build_tracks(self):
-        """One Track per publish key, holding the latest publish across grid points.
+        """One Track per CONTIGUOUS run of held publishes for a key.
 
-        At each grid point, the track has a state iff some publish for this
-        key has happened at or before that point AND it is no older than
+        At each grid point, a key is "covered" iff some publish for it has
+        happened at or before that point AND it is no older than
         hold_max_age_s -- i.e. exactly the "what does a viewer still see"
         rule from the module docstring.  No dead-reckoning: position and
         velocity are the held publish's own values, unchanged.
+
+        Coverage need not be contiguous across the whole run: sparse
+        publishes (--cv-fit deferred) can leave an internal gap longer than
+        hold_max_age_s between two publishes for the same key.  Building one
+        Track per key regardless would leave that Track with a hole -- no
+        state at the grid points inside the gap -- and stonesoup's
+        TrackToTruth associator builds its association time-ranges from a
+        track's own state timestamps, so a range spanning the hole makes
+        SIAPMetrics.accuracy_at_time index a timestamp the track has no
+        state for, raising IndexError.  So a key is instead segmented at
+        every gap: a new Track starts on the first covered grid point after
+        an uncovered stretch (or at the run's start), and the current Track
+        is closed on the next uncovered point.
+
+        The first segment keeps id str(key), so a key that is covered at
+        every grid point -- the only case this had before segmentation
+        existed -- still produces exactly one Track, byte-identical to
+        before.  Only a key with an actual internal gap produces more than
+        one, numbered f"{key}#s{n}" (n = 1, 2, ...) from the second segment
+        on.
         """
         tracks = set()
         for key, samples in self._publishes.items():
             if not samples:
                 continue
             times = [s[0] for s in samples]
-            track = Track(id=str(key))
+            current = None
+            next_segment_n = 0
             for grid_t in self._grid_times:
                 # Index of the latest publish at or before this grid point.
                 idx = bisect.bisect_right(times, grid_t) - 1
-                if idx < 0:
+                sample = samples[idx] if idx >= 0 else None
+                covered = sample is not None and (grid_t - sample[0]) <= self.hold_max_age_s
+                if not covered:
+                    if current is not None and len(current) > 0:
+                        tracks.add(current)
+                    current = None
                     continue
-                t_pub, e_m, n_m, ve_ms, vn_ms = samples[idx]
-                if grid_t - t_pub > self.hold_max_age_s:
-                    continue
+                if current is None:
+                    track_id = (str(key) if next_segment_n == 0
+                               else f"{key}#s{next_segment_n}")
+                    current = Track(id=track_id)
+                    next_segment_n += 1
+                _t_pub, e_m, n_m, ve_ms, vn_ms = sample
                 ts = self.epoch + timedelta(seconds=grid_t)
-                track.append(State(StateVector([e_m, ve_ms, n_m, vn_ms]), timestamp=ts))
-            if len(track) > 0:
-                tracks.add(track)
+                current.append(State(StateVector([e_m, ve_ms, n_m, vn_ms]), timestamp=ts))
+            if current is not None and len(current) > 0:
+                tracks.add(current)
         return tracks
 
     def compute(self) -> dict | None:

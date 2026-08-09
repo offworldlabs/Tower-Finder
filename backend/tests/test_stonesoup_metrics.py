@@ -245,3 +245,38 @@ def test_hold_window():
     # whole run comes in well under the continuously-published case.
     assert stopped["siap_completeness"] < continuous["siap_completeness"] - 0.2
     assert stopped["siap_completeness"] < 0.7
+
+
+def test_track_segmented_at_internal_gap():
+    """A key that publishes t=0..10, falls silent through an internal gap
+    longer than hold_max_age_s, then resumes publishing t=40..50 -- the
+    --cv-fit deferred shape that crashed a real run (association_bench.py
+    --mode track --cv-fit deferred --ss-metrics on): stonesoup's
+    TrackToTruth associator built an association time-range spanning the
+    stateless grid points inside the gap, and SIAPMetrics.accuracy_at_time
+    raised IndexError trying to index a timestamp the (single, holed) Track
+    never had a state for.
+
+    duration=60, sample_dt=5, hold=12 gives grid points every 5 s from 0 to
+    60.  Publishing every 2 s through t=10 covers grid points 0/5/10/15/20
+    (20 is still within hold=12 of the last publish at t=10), then grid
+    points 25/30/35 go uncovered (25 is 15 s past t=10, over the 12 s hold),
+    then publishing resumes every 2 s from t=40 and covers 40/45/50/55/60.
+    That is one key with two disjoint covered runs, so _build_tracks must
+    hand back two Track segments for it -- not one Track with a hole (the
+    shape that crashed) and not zero (compute() must not raise at all).
+    """
+    recorder = MetricRecorder(REF_LAT, REF_LON, duration_s=60.0,
+                              sample_dt_s=5.0, hold_max_age_s=12.0)
+    t = 0.0
+    while t <= 60.0:
+        ac = _aircraft_at("A", 0.0, 0.0, 90.0, 0.1, t)
+        recorder.record_truth(t, [ac])
+        if (t <= 10.0 or t >= 40.0) and t % 2.0 == 0.0:
+            ve, vn = _velocity_enu(ac.speed_km_s, ac.heading_deg)
+            recorder.record_publish(t, "A", ac.lat, ac.lon, ve, vn)
+        t += 1.0
+
+    metrics = recorder.compute()
+    assert metrics is not None
+    assert metrics["n_tracks"] == 2.0
