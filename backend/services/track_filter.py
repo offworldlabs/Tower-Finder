@@ -19,6 +19,11 @@ give you:
      (cov_en_km2, from retina_geolocator.multinode_solver's Jacobian) — a bad
      GDOP geometry produces a wide covariance and this filter believes that
      solve less, automatically, instead of averaging it in at full weight.
+     That Jacobian covariance is only a measurement-noise-propagation LOWER
+     BOUND on true solve error, though — it cannot see inter-node frame-time
+     skew, association contamination, or pinned-altitude error, which is why
+     it is inflated by _KF_R_INFLATE before use (see that constant's comment
+     for the staging measurement that made this necessary).
   2. Principled dead-reckoning.  The predict step is real KF prediction, not
      a recomputed-every-time projection: the filter's OWN velocity state
      accumulates evidence from every solve (and from ADS-B when available),
@@ -31,10 +36,17 @@ give you:
 
 The filter is EWMA-compatible where it needs to be: first solve for a key is
 raw passthrough (no prior to smooth against, exactly like _ewma_smooth_track
-returning raw below len(positions) < 2), duplicate/out-of-order timestamps
-are raw passthrough, and a gap past _KF_MAX_GAP_S re-anchors instead of
-bridging — the same threshold solver.py's _MN_DR_MAX_AGE_S uses for the same
-reason (a multi-minute gap is not the same aircraft's continuous track).
+returning raw below len(positions) < 2), a gap past _KF_MAX_GAP_S re-anchors
+instead of bridging — the same threshold solver.py's _MN_DR_MAX_AGE_S uses
+for the same reason (a multi-minute gap is not the same aircraft's
+continuous track) — and duplicate/out-of-order timestamps (dt <= 0) are raw
+passthrough, same as the EWMA.  That last case is not a rare edge condition
+in production: it fires mostly as an association burst, several solves for
+one key sharing a single measurement_ts_ms because overlapping single-node
+association rounds re-solved the same epoch's measurements.  Fusing those
+would double-count the same underlying evidence rather than add independent
+information, so a no-op here is intentional, not a gap in the model — see
+the comment at the dt <= 0 check in _smooth_kf.
 
 Env gate — TRACK_SMOOTHER, read PER CALL (not cached) so tests can flip it
 without reimporting:
@@ -77,13 +89,42 @@ from services.geo import M_PER_DEG_LAT, km_per_deg_lon, offset_latlon_m
 _KF_SIGMA_A_MS2 = float(os.getenv("TRACK_KF_SIGMA_A", "1.5"))
 
 # R fallback (variance = this squared) when a solve carries no per-solve
-# covariance yet — cov_en_km2 is new and not every solve path sets it.
+# covariance yet — cov_en_km2 is new and not every solve path sets it.  This
+# is an empirical end-to-end figure, not a formal covariance, so it is NOT
+# run through _KF_R_INFLATE below — it already covers whatever the inflation
+# factor is correcting for; inflating it again would double-correct.
 _KF_DEFAULT_POS_SIGMA_M = float(os.getenv("TRACK_KF_POS_SIGMA_M", "1200"))
 
-# Clamp band for the per-solve position sigma derived from cov_en_km2 — a
-# degenerate Jacobian (near-parallel baselines) can produce a covariance that
-# is absurdly tight or absurdly loose; neither should be taken at face value.
-_KF_MIN_POS_SIGMA_M = 150.0
+# cov_en_km2, when present, comes from the LM fit's Jacobian: a formal
+# measurement-noise-propagation covariance, and ONLY that.  It has no way to
+# see inter-node frame-time skew, association contamination between the
+# single-node tracks that fed the solve, or pinned-altitude error — every
+# multinode solve carries all three, and together they dominate.  Staging
+# confirmed this directly: live /api/test/mlat-history data on 2026-08-09
+# showed only 1/19 multi-solve records actually smoothed (median displacement
+# 0.000 km) — the raw Jacobian sigma (hundreds of metres) fed straight into
+# the gate made ordinary innovations look like chi²>13.8 identity breaks,
+# so the filter was re-anchoring on nearly every solve instead of tracking,
+# while true end-to-end error (gt_error_km against frozen ground truth) ran
+# medians of ~3 km at n=3-4.
+#
+# _KF_R_INFLATE is the measured ratio between that end-to-end error and the
+# formal sigma (~4x at the time of the staging measurement above) — a SIGMA
+# multiplier, so the covariance MATRIX scales by _KF_R_INFLATE**2.  Applied
+# to cov_en_km2-derived R only, never to _KF_DEFAULT_POS_SIGMA_M (see that
+# constant's comment).  Env-tunable so it can be retuned without a deploy as
+# the sensor model — frame-time sync, association, altitude pinning — improves
+# and the formal covariance becomes a less severe underestimate.
+_KF_R_INFLATE = float(os.getenv("TRACK_KF_R_INFLATE", "4.0"))
+
+# Clamp band for the (already-inflated) per-solve position sigma — a
+# degenerate Jacobian (near-parallel baselines) can still produce a
+# covariance that is absurdly tight or absurdly loose even after inflation;
+# neither should be taken at face value.  The floor was raised from 150 to
+# 500 m alongside the inflation factor above, for the same reason: nothing
+# staging has measured supports a Jacobian-derived sigma that tight actually
+# describing true solve error, inflated or not.
+_KF_MIN_POS_SIGMA_M = 500.0
 _KF_MAX_POS_SIGMA_M = 8000.0
 
 # Velocity measurement sigmas: ADS-B ground-speed/track is known independently
@@ -255,9 +296,12 @@ def _measurement_R(result: dict) -> np.ndarray:
     """Per-solve position measurement covariance, in m^2.
 
     Prefers the solver's own cov_en_km2 (2x2, km^2, ENU) when present and
-    sane; falls back to an isotropic default when it is missing, non-finite,
-    or degenerate.  Either way, clamps the implied sigma to
-    [_KF_MIN_POS_SIGMA_M, _KF_MAX_POS_SIGMA_M] by uniform scaling — this
+    sane, inflated by _KF_R_INFLATE**2 (a measurement-noise-propagation
+    lower bound is not an end-to-end error estimate — see that constant's
+    comment); falls back to the isotropic _KF_DEFAULT_POS_SIGMA_M default —
+    NOT inflated, it is already an end-to-end figure — when cov_en_km2 is
+    missing, non-finite, or degenerate.  Either way, clamps the implied sigma
+    to [_KF_MIN_POS_SIGMA_M, _KF_MAX_POS_SIGMA_M] by uniform scaling — this
     preserves whatever correlation the solver reported instead of stomping
     it with a fresh diagonal.
     """
@@ -266,7 +310,7 @@ def _measurement_R(result: dict) -> np.ndarray:
     if cov is not None:
         arr = np.asarray(cov, dtype=float) * 1e6   # km^2 -> m^2
         if arr.shape == (2, 2) and np.all(np.isfinite(arr)) and arr[0, 0] > 0 and arr[1, 1] > 0:
-            r = arr
+            r = arr * (_KF_R_INFLATE ** 2)   # measurement-noise floor -> end-to-end estimate
     if r is None:
         r = np.diag([_KF_DEFAULT_POS_SIGMA_M ** 2, _KF_DEFAULT_POS_SIGMA_M ** 2])
 
@@ -343,7 +387,14 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
 
         dt = ts_s - entry.last_ts_s
         if dt <= 0:
-            return result   # duplicate or out-of-order solve — leave it alone, same as the EWMA
+            # Known/intentional, not a gap in the model — see the module
+            # docstring.  In production this fires mostly as an association
+            # burst: several solves for the same key sharing one
+            # measurement_ts_ms because overlapping single-node association
+            # rounds re-solved the same epoch.  Fusing them would
+            # double-count the same underlying measurements rather than add
+            # independent evidence, so this stays a no-op, same as the EWMA.
+            return result
 
         if dt > _KF_MAX_GAP_S:
             # Too long a gap to bridge with any confidence — start over here,

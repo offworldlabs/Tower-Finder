@@ -218,10 +218,23 @@ class TestKFWeighting:
         state.adsb_aircraft.clear()
 
     def test_tight_covariance_trusts_measurement_more_than_loose(self, monkeypatch):
+        """cov_en_km2 is inflated by _KF_R_INFLATE (4x sigma) and then
+        clamped to [_KF_MIN_POS_SIGMA_M, _KF_MAX_POS_SIGMA_M] = [500, 8000] m
+        before use (see TestRInflation for that mechanism in isolation) —
+        neither input here survives unclamped, but the two stay strictly
+        ordered on opposite sides of the band, which is all this test needs:
+
+          tight: raw sigma  100 m -> inflated  400 m -> floored to   500 m
+          loose: raw sigma 2000 m -> inflated 8000 m -> capped   at 8000 m
+
+        so the qualitative claim (tighter reported cov -> posterior trusts
+        the measurement more) still holds, and by a wider margin than before
+        the floor/inflation existed (500 vs 8000 is a bigger contrast than
+        the raw 100 vs 2000)."""
         monkeypatch.setenv("TRACK_SMOOTHER", "kf")
         lat0, lon0 = 35.0, -82.0
-        loose_cov = [[4.0, 0.0], [0.0, 4.0]]     # ~2 km sigma
-        tight_cov = [[0.01, 0.0], [0.0, 0.01]]   # ~100 m sigma
+        loose_cov = [[4.0, 0.0], [0.0, 4.0]]     # raw ~2 km sigma -> capped at 8000 m post-inflation
+        tight_cov = [[0.01, 0.0], [0.0, 0.01]]   # raw ~100 m sigma -> floored at 500 m post-inflation
 
         def run(key, cov_third):
             ts = 1_000
@@ -277,6 +290,65 @@ class TestKFWeighting:
         assert out2["lon"] == pytest.approx(lon0, abs=1e-3)
 
 
+class TestRInflation:
+    """_measurement_R inflates a cov_en_km2-derived R by _KF_R_INFLATE (a
+    sigma multiplier — the covariance matrix scales by _KF_R_INFLATE**2)
+    before the min/max clamp; the fallback default R is NOT inflated — it is
+    already an empirical end-to-end figure, not a formal measurement
+    covariance from the LM fit's Jacobian, so inflating it again would
+    double-correct for the same gap.  See the module docstring and the
+    _KF_R_INFLATE comment for the staging measurement (2026-08-09: 1/19
+    multi-solve records actually smoothed) that made this necessary — an
+    un-inflated Jacobian sigma made ordinary innovations look like identity
+    breaks to the gate, so the filter was re-anchoring almost every solve."""
+
+    def setup_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def teardown_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def test_cov_derived_r_is_inflated_then_clamped(self):
+        # A nominal sigma (1000 m) chosen so that inflated-and-clamped is
+        # just "inflated" — 1000 * _KF_R_INFLATE (4.0) = 4000 m, inside
+        # [_KF_MIN_POS_SIGMA_M, _KF_MAX_POS_SIGMA_M] = [500, 8000] — so the
+        # expected result is a clean, directly-checkable multiplication with
+        # the clamp not muddying what's being verified.
+        sigma_m = 1000.0
+        cov_en_km2 = [[(sigma_m / 1000.0) ** 2, 0.0], [0.0, (sigma_m / 1000.0) ** 2]]
+        result = make_result(35.0, -82.0, 1_000, cov_en_km2=cov_en_km2)
+
+        r = track_filter._measurement_R(result)
+        actual_sigma = math.sqrt(0.5 * (r[0, 0] + r[1, 1]))
+
+        expected_sigma = sigma_m * track_filter._KF_R_INFLATE
+        expected_sigma = min(max(expected_sigma, track_filter._KF_MIN_POS_SIGMA_M),
+                              track_filter._KF_MAX_POS_SIGMA_M)
+        assert expected_sigma == pytest.approx(4000.0)   # sanity: this test is inside the clamp band
+        assert actual_sigma == pytest.approx(expected_sigma)
+
+    def test_fallback_r_is_not_inflated(self):
+        # No cov_en_km2 at all -> the isotropic default, untouched by
+        # _KF_R_INFLATE (it's already an end-to-end figure, see the module's
+        # comment on _KF_DEFAULT_POS_SIGMA_M).
+        result = make_result(35.0, -82.0, 1_000)
+
+        r = track_filter._measurement_R(result)
+        actual_sigma = math.sqrt(0.5 * (r[0, 0] + r[1, 1]))
+
+        # If this were inflated like the cov-derived path, actual_sigma would
+        # be _KF_DEFAULT_POS_SIGMA_M * _KF_R_INFLATE instead — assert the
+        # un-inflated value specifically, not just "some value in the band",
+        # so an accidental inflate-everything regression would be caught.
+        assert actual_sigma == pytest.approx(track_filter._KF_DEFAULT_POS_SIGMA_M)
+        # And confirm the assumption the module's comments make: the default
+        # already sits inside the clamp band, so this test isn't accidentally
+        # passing only because the clamp happens to produce the same number.
+        assert track_filter._KF_MIN_POS_SIGMA_M < track_filter._KF_DEFAULT_POS_SIGMA_M < track_filter._KF_MAX_POS_SIGMA_M
+
+
 class TestKFReducesError:
     """A seeded synthetic constant-velocity track: the filtered RMSE against
     ground truth must beat the raw (unsmoothed) RMSE by at least 20%."""
@@ -300,8 +372,22 @@ class TestKFReducesError:
         vn_true = v_ms * math.cos(heading_rad)
         dt_s = 10.0
         n_steps = 20
-        sigma_m = 800.0
-        cov_en_km2 = [[(sigma_m / 1000.0) ** 2, 0.0], [0.0, (sigma_m / 1000.0) ** 2]]
+        sigma_m = 800.0   # actual injected measurement noise
+        # cov_en_km2 reported here is the REALISTIC pre-inflation figure:
+        # sigma_m / _KF_R_INFLATE, so that once track_filter applies its
+        # inflation the filter's R lands on sigma_m — the true injected
+        # noise — rather than overshooting it by another _KF_R_INFLATE.
+        # Feeding sigma_m directly as cov_en_km2 (pre-inflation) would leave
+        # the filter's R ~16x too large relative to the real noise: an
+        # under-confident filter starves its own Kalman gain, which slows
+        # velocity convergence on this 120 m/s target enough to eat most of
+        # the margin this test checks for.  That miscalibration is exactly
+        # what _KF_R_INFLATE exists to correct on real solves (TestRInflation
+        # tests the correction itself); a synthetic RMSE check should feed a
+        # believable cov_en_km2, not the deliberately-mismatched one this
+        # whole feature is a response to.
+        reported_sigma_m = sigma_m / track_filter._KF_R_INFLATE
+        cov_en_km2 = [[(reported_sigma_m / 1000.0) ** 2, 0.0], [0.0, (reported_sigma_m / 1000.0) ** 2]]
 
         key = "rmse-key"
         raw_err_sq = []
@@ -340,6 +426,14 @@ class TestStoneSoupOracle:
     never fires and the two filters' predict+update chains stay directly
     comparable at every step.
 
+    No cov_en_km2 either — deliberately.  cov_en_km2-derived R gets
+    inflated by _KF_R_INFLATE inside track_filter (see _measurement_R), a
+    step Stone-Soup's LinearGaussian model here knows nothing about, so
+    feeding a covariance would desync the two filters' R immediately and
+    break the exact-equality assertions below.  The fallback default R
+    (_KF_DEFAULT_POS_SIGMA_M, un-inflated by design) is exactly what both
+    sides use when cov_en_km2 is absent, so that is what this test compares.
+
     The importorskip lives in setup_method, not the class body: a class body
     runs at module-import time (collection), so a bare
     `pytest.importorskip("stonesoup")` statement there would risk skipping
@@ -376,9 +470,10 @@ class TestStoneSoupOracle:
         dt_s = 10.0
         n_steps = 15
         ve_true, vn_true = 80.0, -20.0
-        r_sigma_m = 500.0
+        # The fallback R — no cov_en_km2 in this sequence, so this is what
+        # track_filter actually uses internally (see class docstring).
+        r_sigma_m = track_filter._KF_DEFAULT_POS_SIGMA_M
         r_m2 = np.array([[r_sigma_m ** 2, 0.0], [0.0, r_sigma_m ** 2]])
-        cov_en_km2 = (r_m2 / 1e6).tolist()
 
         # A fixed, deterministic wiggle rather than random noise: this test
         # checks the KF arithmetic against an external oracle, not gate
@@ -399,7 +494,7 @@ class TestStoneSoupOracle:
         for i in range(n_steps):
             e_i, n_i = meas_en(i)
             lat, lon = offset_latlon_m(ref_lat, ref_lon, east_m=e_i, north_m=n_i)
-            result = make_result(lat, lon, base_ts_ms + int(i * dt_s * 1000), cov_en_km2=cov_en_km2)
+            result = make_result(lat, lon, base_ts_ms + int(i * dt_s * 1000))   # no cov_en_km2 -> fallback R
             track_filter.smooth_solve(result, key, None)
             entry = track_filter._KF_TRACKS[key]
             entry_after.append((np.array(entry.x, dtype=float), np.array(entry.P, dtype=float)))

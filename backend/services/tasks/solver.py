@@ -1025,6 +1025,13 @@ def _record_solve_history(
         "rms_delay": round(float(r.get("rms_delay") or 0), 3),
         "rms_doppler": round(float(r.get("rms_doppler") or 0), 2),
         "chi2_per_dof": round(float(chi2_per_dof), 3) if chi2_per_dof is not None else None,
+        # Solve-quality observability for the KF smoother in
+        # services/track_filter.py: pos_sigma_km is the solver's own
+        # cov_en_km2-derived sigma (pre-inflation), kf_pos_sigma_m is the
+        # filter's post-update marginal — both absent on solves the smoother
+        # never touched (rejects, off/ewma mode, first-ever solve for a key).
+        "pos_sigma_km": round(float(r["pos_sigma_km"]), 3) if r.get("pos_sigma_km") is not None else None,
+        "kf_pos_sigma_m": r.get("kf_pos_sigma_m"),
         "guess_lat": round(float(ig["lat"]), 6) if ig.get("lat") else None,
         "guess_lon": round(float(ig["lon"]), 6) if ig.get("lon") else None,
         "guess_alt_km": ig.get("alt_km"),
