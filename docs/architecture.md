@@ -79,8 +79,27 @@ The math lives in separate repos under `libs/` so it can be versioned and reused
   Runtime-tunable via `PUT /api/simulation/config` (target-class fractions,
   aircraft counts), which the fleet polls every 5 s; fleet scale itself comes
   from the deployment env (`FLEET_*` in the compose files).
-- **retina-custody**, **retina-analytics** — custody protocol and node
-  trust/reputation.
+- **retina-custody** — custody protocol.
+- **retina-analytics** — node trust/reputation, inter-node track association
+  (pairing + top-down claiming), and per-node empirical coverage / learned
+  FOV (see [`pipeline.md`](pipeline.md) §4 and §7).
+
+## Feature gates
+
+The multi-node stack's newer stages ship behind env flags (set in the
+gitignored `backend/.env`; unset = the safe default):
+
+| Env | Values | Default | Staging | Gates |
+|-----|--------|---------|---------|-------|
+| `SOLVER_CONSENSUS_MODE` | `off/shadow/active` | `off` | `active` | n≥3 consensus-refine hypothesis stage |
+| `ASSOC_CLAIM_MODE` | `off/shadow/active` | `off` | `active` | top-down tracklet claiming from global tracks |
+| `FOV_MODE` | `off/shadow/active` | `off` | `active` | learned empirical FOV as association grid + solver beam gate |
+| `TRACK_SMOOTHER` | `kf/ewma/off` | `kf` | `kf` | display smoothing for multinode tracks (`ewma` is the rollback) |
+
+`shadow` computes and counts a stage's verdicts (exposed in
+`/api/test/solver-stats`) without letting them bind — the standard soak step
+before flipping `active`. Production currently sets none of the mode flags
+(all `off`).
 
 ## State & storage
 

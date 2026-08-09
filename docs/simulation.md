@@ -72,13 +72,38 @@ tab (or `PUT /api/simulation/config`, admin-authed) can change at runtime:
 | `frac_drone` | 0.0 | Drone fraction (off by default; enable for drone scenarios) |
 | `frac_dark` | 0.15 | Non-ADS-B ("dark") fraction |
 | `min_aircraft` / `max_aircraft` | *(unset)* | Steady-state aircraft bounds |
+| `n_nodes` / `dual_fraction` / `max_range_km` | *(unset)* | Fleet-scene keys — applying one **restarts the fleet** for regeneration |
 
-The aircraft-count keys are **deliberately absent from the defaults**: the
-fleet applies them only when explicitly set, otherwise its deployment env
-(`FLEET_MIN_AIRCRAFT` / `FLEET_MAX_AIRCRAFT`) wins. Defaults here once
-carried a stale fleet scale that silently overrode the deployment the first
-time anyone touched an unrelated knob. The runtime config is in-memory only —
-a backend restart returns it to these defaults.
+The fractions and aircraft counts apply in-process to *new spawns*. The scene
+keys are different: node count, dual-illuminator fraction and a uniform range
+override (`max_range_km`, `0` = per-node generated ranges) shape the node
+configs themselves, so the orchestrator compares the polled value against its
+running scene and shuts down for regeneration on drift;
+`deploy/fleet-entrypoint.sh` fetches the overrides on reboot. The Physics
+tab keeps these under the Fleet Scene section with its restart warning.
+
+The unset keys are **deliberately absent from the defaults**: the fleet
+applies them only when explicitly set, otherwise its deployment env
+(`FLEET_MIN_AIRCRAFT` etc.) wins. Defaults here once carried a stale fleet
+scale that silently overrode the deployment the first time anyone touched an
+unrelated knob. The world's own constructor defaults are kept matched to this
+table (drones once defaulted to 0.10 in the world, spawning a few boot-window
+drones on every fleet restart even with the slider at 0). The runtime config
+is in-memory only — a backend restart returns it to these defaults.
+
+---
+
+## Aircraft lifecycle
+
+Spawns roll a target class from the fractions, get a route (85% metro-cell
+traffic on the regional waypoint net under `--metro`) and a lifetime of
+180–900 s (drones 60–300 s). Expiry never removes an aircraft mid-view: an
+expired non-drone is rerouted to a waypoint past `retire_edge_km` (70 km) on
+the bearing away from the world center and retires only once beyond that
+edge — the viewer watches it leave. A 900 s exit grace backstops genuinely
+stuck aircraft; drones keep the old 2×-lifetime churn (an amber X-frame
+vanishing reads as turnover, not a tracking bug). On the map, ADS-B truth
+dots are blue and dark aircraft grey, matching the Physics-tab legend.
 
 ---
 
