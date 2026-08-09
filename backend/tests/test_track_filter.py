@@ -205,9 +205,13 @@ class TestKFBasics:
 
 
 class TestKFWeighting:
-    """The KF weights each solve by its per-solve covariance and prefers
-    ADS-B velocity over the solved CV fit — the two behaviours a plain mean
-    (the old EWMA) cannot give you."""
+    """The KF weights each solve by its per-solve covariance, treats ADS-B
+    velocity as a real measurement, and treats solved vel_east/vel_north as
+    an init-prior ONLY — never a recurring measurement (2026-08-09 staging:
+    solved-velocity vector error measured a median of 127 m/s against the
+    sigma=25 m/s it used to be trusted at as a measurement; re-applying it
+    every solve dragged smoothed positions worse than raw).  These are three
+    behaviours a plain mean (the old EWMA) cannot give you."""
 
     def setup_method(self):
         track_filter.reset()
@@ -289,6 +293,71 @@ class TestKFWeighting:
         assert out2["smoother"] == "kf"
         assert out2["lat"] == pytest.approx(lat2, abs=2e-4)
         assert out2["lon"] == pytest.approx(lon0, abs=1e-3)
+
+    def test_junk_solved_velocity_does_not_drag_position(self, monkeypatch):
+        """Dark target, no ADS-B ever: solved vel_east/vel_north seeds only
+        the init prior (_init_entry) and must NOT recur as a velocity
+        measurement update on later solves — that recurring update is
+        exactly what the 2026-08-09 staging finding condemned (median 127 m/s
+        vector error fed in at a sigma=25 trust level, dragging smoothed
+        positions worse than raw on moved records).
+
+        Solve #1 seeds a junk vel_east=200 m/s claim.  Solve #2's TRUE
+        position continues unchanged (a stationary target — the measurement
+        the filter should trust) while its solved velocity AGAIN claims the
+        same 200 m/s junk, exactly as a noisy dark-target CV fit might on a
+        bad epoch.  This reconstructs the answer a position-only KF would
+        give — using the SAME _f_q/_kf_correct building blocks _smooth_kf
+        itself uses, starting from the SAME state _init_entry produces for
+        solve #1 — rather than a hand-computed magic number, so the
+        assertion tracks the production math instead of a snapshot of it.
+        """
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        lat0, lon0 = 35.0, -82.0
+        key = "junk-vel-key"
+
+        r1 = make_result(lat0, lon0, 1_000, vel_east=200.0, vel_north=0.0)
+        track_filter.smooth_solve(r1, key, None)   # init: ve=200 as a loose PRIOR only
+
+        r2 = make_result(lat0, lon0, 21_000, vel_east=200.0, vel_north=0.0)
+        out2 = track_filter.smooth_solve(r2, key, None)
+        assert out2["smoother"] == "kf"
+
+        # Independently reconstruct the position-only answer: same init,
+        # same predict, same position update — but stop there (no vel update).
+        r_pos = track_filter._measurement_R(r1)
+        entry0 = track_filter._init_entry(lat0, lon0, 1.0, r1, False, 0.0, 0.0, r_pos)
+        f, q = track_filter._f_q(20.0)
+        x_pred = f @ entry0.x
+        p_pred = f @ entry0.P @ f.T + q
+        z_e, z_n = track_filter._enu_offset_m(lat0, lon0, lat0, lon0)
+        x_expected, p_expected, _, _ = track_filter._kf_correct(
+            x_pred, p_pred, np.array([z_e, z_n]), track_filter._H_POS, r_pos
+        )
+
+        # The actual smoothed output must match that position-only
+        # reconstruction — proof no velocity update perturbed it (a real
+        # perturbation is hundreds of metres, see below).  Tolerance 0.2 m,
+        # not float precision: smooth_solve rounds lat/lon to 6 dp on output
+        # (~0.11 m of latitude quantisation), which the direct reconstruction
+        # here does not pass through.
+        e_actual, n_actual = track_filter._enu_offset_m(lat0, lon0, out2["lat"], out2["lon"])
+        assert e_actual == pytest.approx(float(x_expected[0]), abs=0.2)
+        assert n_actual == pytest.approx(float(x_expected[2]), abs=0.2)
+
+        # And confirm that position-only answer sits genuinely closer to the
+        # true (stationary) measurement than the OLD behaviour would have
+        # left it: apply the extra velocity update the old code used to do
+        # (junk 200 m/s claim, sigma=25) on top of the same position-updated
+        # state, and check it pulls east noticeably further from 0 — a hand
+        # Kalman replica of this exact scenario put the old-style answer at
+        # ~1842 m vs ~485 m for the position-only one, roughly 3.8x worse.
+        old_measurement_sigma = 25.0
+        zv = np.array([200.0, 0.0])
+        r_vel_old = np.eye(2) * (old_measurement_sigma ** 2)
+        x_old, _, _, _ = track_filter._kf_correct(x_expected, p_expected, zv, track_filter._H_VEL, r_vel_old)
+
+        assert abs(e_actual) < abs(float(x_old[0]))
 
 
 class TestRInflation:
@@ -386,6 +455,19 @@ class TestKFReducesError:
        one fixed outer seed) kept the worst case observed above 25% margin.
        This changes how many times the scenario is repeated for statistical
        stability, not any parameter of the scenario itself.
+
+    Re-checked after the round removing the solved-velocity MEASUREMENT
+    update (see module docstring / _KF_VEL_SIGMA_SOLVE_MS): this scenario
+    never fed vel_east/vel_north in the first place (dark target, no
+    adsb_hex, make_result() called without those kwargs), so the removed
+    code path never fired here either before or after — it is genuinely
+    unaffected.  The init-prior sigma widening (60 -> 150, same change) DOES
+    apply, since every solve here inits through the dark-target branch with
+    a zero-mean velocity guess; re-run with the replica, a wider init prior
+    converges to the true 120 m/s velocity slightly FASTER (a less-confident
+    zero-velocity guess is overridden sooner by real position evidence),
+    which raised the worst-case pooled margin observed from 26.5% to 28.4%
+    over the same 200 outer seeds — a small improvement, not a regression.
     """
 
     def setup_method(self):
@@ -538,9 +620,13 @@ class TestStoneSoupOracle:
 
         t0 = datetime.datetime(2026, 1, 1)
         # Prior at i=0 equals track_filter's own post-init state exactly —
-        # same init rule (x=[0,0,0,0], P_pos=R, P_vel=_KF_INIT_VEL_SIGMA^2),
-        # and there is no vel measurement in this sequence for either filter
-        # to have applied since.
+        # same init rule (x=[0,0,0,0], P_pos=R, P_vel=_KF_VEL_SIGMA_SOLVE_MS^2
+        # — the dark-target init-prior sigma; no vel_east/vel_north here
+        # either, so the mean stays 0).  Captured directly from entry_after,
+        # not hardcoded, so this stays correct regardless of that constant's
+        # value.  No vel measurement ever applies in this sequence (no
+        # ADS-B), so this prior is never touched again except by predict +
+        # the position updates being compared below.
         x0, p0 = entry_after[0]
         prior = GaussianState(state_vector=x0, covar=p0, timestamp=t0)
 

@@ -31,8 +31,11 @@ give you:
      necessary.
   2. Principled dead-reckoning.  The predict step is real KF prediction, not
      a recomputed-every-time projection: the filter's OWN velocity state
-     accumulates evidence from every solve (and from ADS-B when available),
-     so between-solve gaps are bridged with a growing, honestly-tracked
+     accumulates evidence from every solve's POSITION update (plus an
+     explicit velocity measurement from ADS-B when live — see
+     _KF_VEL_SIGMA_SOLVE_MS for why the solved CV fit is deliberately NOT
+     fed in the same way: it is an init prior only, never a measurement), so
+     between-solve gaps are bridged with a growing, honestly-tracked
      uncertainty rather than a fresh point estimate each call.
   3. Honest uncertainty out.  kf_pos_sigma_m on the smoothed result is the
      filter's actual position marginal, not an assumption — callers that want
@@ -160,13 +163,32 @@ _KF_R_INFLATE = float(os.getenv("TRACK_KF_R_INFLATE", "4.0"))
 _KF_MIN_POS_SIGMA_M = 500.0
 _KF_MAX_POS_SIGMA_M = 8000.0
 
-# Velocity measurement sigmas: ADS-B ground-speed/track is known independently
-# of the solver and is trusted tighter than the solved CV fit.  The init
-# sigma is looser still — it is a prior on a state we have exactly one solve's
-# worth of evidence for.
+# Velocity: ADS-B ground-speed/track is a genuine MEASUREMENT, independent
+# of the solver — trusted at sigma=5 m/s both at init and as an ongoing
+# Kalman update on every solve that has a live entry.
+#
+# Solved vel_east/vel_north (the CV fit) is NOT a measurement.  It used to be
+# fed back in as one (sigma=25) every solve for dark targets, on the theory
+# that it was a reasonable independent estimate.  2026-08-09 staging measured
+# otherwise: solved-velocity vector error vs frozen gt_speed_ms/gt_heading_deg
+# (n=93 matched solves) ran a median of 127 m/s (p90 336, max 512) — 84% of
+# solves exceeded the sigma=25 m/s it was being trusted at.  Feeding that
+# biased a velocity estimate into the predict step every solve dragged the
+# position estimate AWAY from the measurements that actually deserved trust:
+# smoothed positions on moved records got WORSE than raw (median error
+# 2.01 -> 2.46 km).  Solved velocity is now used ONLY as a one-shot
+# INITIALIZATION PRIOR (_init_entry, dark-target branch) — outweighed by the
+# very next position update and never re-applied, so its bias is harmless
+# there.  For a dark target (the only case this fires; ADS-B always wins
+# when live) the filter's own velocity state is otherwise learned purely
+# from the position sequence — which is what a Kalman filter is for.
 _KF_VEL_SIGMA_ADSB_MS = 5.0
-_KF_VEL_SIGMA_SOLVE_MS = 25.0
-_KF_INIT_VEL_SIGMA_MS = 60.0
+# Init-prior sigma only — NOT a measurement sigma, see above.  Widened from
+# the old 25 (which had been sized as if this were a trustworthy measurement)
+# to an honest 150: a prior this loose still beats zero information, but it
+# is outweighed by real position evidence within one or two solves instead of
+# anchoring the filter to a biased velocity for its whole early life.
+_KF_VEL_SIGMA_SOLVE_MS = float(os.getenv("TRACK_KF_VEL_SIGMA_SOLVE", "150"))
 
 # Mirrors solver.py's _MN_DR_MAX_AGE_S: a gap this long is not a continuous
 # track to bridge, it is a new one to start.
@@ -388,12 +410,14 @@ def _init_entry(r_lat: float, r_lon: float, ts_s: float, result: dict,
                  has_adsb_vel: bool, v0e: float, v0n: float, r_pos: np.ndarray) -> _TrackKF:
     """Fresh filter state anchored at this solve.
 
-    Velocity seed prefers live ADS-B ground-speed/track (tight prior,
-    independent of the solver) over the solved CV fit (loose prior — one
-    epoch's worth of evidence) over zero (same loose prior — with neither
-    source, zero is simply the least-wrong starting guess).  Position
-    uncertainty is seeded straight from this solve's own R, preserving
-    whatever correlation it carries.
+    Velocity seed prefers live ADS-B ground-speed/track (a real measurement,
+    tight prior sigma=5) over the solved CV fit (an honest, loose ONE-SHOT
+    prior, sigma=150 — never re-applied as a measurement, see the
+    _KF_VEL_SIGMA_SOLVE_MS comment for the staging finding that made solved
+    velocity untrustworthy as anything more than a starting guess) over zero
+    (same loose prior sigma — with neither source, zero is simply the
+    least-wrong starting guess).  Position uncertainty is seeded straight
+    from this solve's own R, preserving whatever correlation it carries.
     """
     if has_adsb_vel:
         ve0, vn0 = v0e, v0n
@@ -401,7 +425,7 @@ def _init_entry(r_lat: float, r_lon: float, ts_s: float, result: dict,
     else:
         ve0 = float(result.get("vel_east") or 0.0)
         vn0 = float(result.get("vel_north") or 0.0)
-        p_vel = _KF_INIT_VEL_SIGMA_MS ** 2
+        p_vel = _KF_VEL_SIGMA_SOLVE_MS ** 2
 
     x = np.array([0.0, ve0, 0.0, vn0])
     p = np.zeros((4, 4))
@@ -465,21 +489,21 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
             _KF_TRACKS[track_key] = _init_entry(r_lat, r_lon, ts_s, result, has_adsb_vel, v0e, v0n, r_pos)
             return result
 
-        # Velocity update, same source preference as the init seed above.
-        # Neither source present (dark target, no adopted CV fit) -> skip;
-        # the predict step alone still carries the filter's own velocity
-        # state forward.
-        vel_meas = None
+        # Velocity measurement update: ADS-B ONLY.  Solved vel_east/vel_north
+        # is deliberately NOT applied here — see the _KF_VEL_SIGMA_SOLVE_MS
+        # comment above for the 2026-08-09 staging finding (median vector
+        # error 127 m/s against a sigma=25 trust level) that made feeding it
+        # back in every solve actively harmful: a biased velocity state drags
+        # predict away from the position measurements that deserve the trust.
+        # Solved velocity still seeds the INIT prior (_init_entry) — a
+        # one-shot, loose-sigma guess that the next position update quickly
+        # outweighs is harmless in a way a recurring measurement update is
+        # not.  For a dark target with no live ADS-B, the velocity state is
+        # otherwise learned purely from the position sequence via the
+        # predict/update cycle above — no separate update needed or wanted.
         if has_adsb_vel:
-            vel_meas = (v0e, v0n, _KF_VEL_SIGMA_ADSB_MS)
-        else:
-            ve, vn = result.get("vel_east"), result.get("vel_north")
-            if ve is not None and vn is not None and math.isfinite(float(ve)) and math.isfinite(float(vn)):
-                vel_meas = (float(ve), float(vn), _KF_VEL_SIGMA_SOLVE_MS)
-
-        if vel_meas is not None:
-            zv = np.array([vel_meas[0], vel_meas[1]])
-            r_vel = np.eye(2) * (vel_meas[2] ** 2)
+            zv = np.array([v0e, v0n])
+            r_vel = np.eye(2) * (_KF_VEL_SIGMA_ADSB_MS ** 2)
             x_upd, p_upd, _, _ = _kf_correct(x_upd, p_upd, zv, _H_VEL, r_vel)
 
         entry.x = x_upd
