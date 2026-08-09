@@ -667,3 +667,74 @@ class TestEnuRoundTrip:
 
         assert abs(lat2 - lat) < 1e-9
         assert abs(lon2 - lon) < 1e-9
+
+
+class TestLearnedVelocity:
+    """learned_velocity() is the read-only accessor services/aircraft_feed.py
+    uses for TRACK_DR_SOURCE=kf display dead-reckoning: it must expose the
+    filter's own velocity STATE -- learned from the position sequence, the
+    thing the KF is strictly better-informed about than the solved CV fit
+    (see module docstring) -- not the solved-velocity init prior, and it must
+    go stale exactly when the filter entry itself does (drop_key/reset)."""
+
+    def setup_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def teardown_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def test_unknown_key_returns_none(self):
+        assert track_filter.learned_velocity("never-seen-key") is None
+
+    def test_learns_velocity_from_position_sequence_not_init_prior(self, monkeypatch):
+        """Three solves, 100 m/s due east, 10 s apart -- vel_east/vel_north
+        are 0.0 on every fed result, so the init prior the first solve seeds
+        is exactly zero.  If learned_velocity ever echoed that prior instead
+        of the filter's own updated state, v_east would read ~0, not ~100:
+        the position updates from solve #2 and #3 are what must move it.
+        """
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        key = "learned-vel-key"
+        lat0, lon0 = 35.0, -82.0
+        v_east_true = 100.0
+        ts0_ms = 1_000
+
+        last_ts_ms = ts0_ms
+        for i in range(3):
+            ts_ms = ts0_ms + i * 10_000
+            lat_i, lon_i = offset_latlon_m(lat0, lon0, east_m=v_east_true * (i * 10.0), north_m=0.0)
+            result = make_result(lat_i, lon_i, ts_ms, vel_east=0.0, vel_north=0.0)
+            track_filter.smooth_solve(result, key, None)
+            last_ts_ms = ts_ms
+
+        lv = track_filter.learned_velocity(key)
+        assert lv is not None
+        v_east, v_north, vel_sigma, last_ts_s = lv
+        assert abs(v_east - v_east_true) < 40.0   # learned, not the ~0 prior
+        assert abs(v_north) < 40.0
+        assert vel_sigma > 0
+        assert last_ts_s == pytest.approx(last_ts_ms / 1000.0)
+
+    def test_drop_key_and_reset_clear_learned_velocity(self, monkeypatch):
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        key = "learned-vel-drop"
+
+        def _feed():
+            track_filter.smooth_solve(
+                make_result(35.0, -82.0, 1_000, vel_east=0.0, vel_north=0.0), key, None)
+            track_filter.smooth_solve(
+                make_result(35.001, -82.0, 21_000, vel_east=0.0, vel_north=0.0), key, None)
+
+        _feed()
+        assert track_filter.learned_velocity(key) is not None
+
+        track_filter.drop_key(key)
+        assert track_filter.learned_velocity(key) is None
+
+        _feed()
+        assert track_filter.learned_velocity(key) is not None
+
+        track_filter.reset()
+        assert track_filter.learned_velocity(key) is None

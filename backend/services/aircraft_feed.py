@@ -8,6 +8,7 @@ in services.feed_gc.
 """
 
 import math
+import os
 import time
 
 from retina_tracker.track import TrackState
@@ -21,6 +22,7 @@ from config.constants import (
 )
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
+from services import track_filter
 from services.feed_gc import prune_stale_stores
 from services.feed_helpers import (
     append_track_history,
@@ -199,6 +201,19 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         elapsed = min(now - ts_fix, 30.0)
         vel_east_m_s = r.get("vel_east", 0.0)
         vel_north_m_s = r.get("vel_north", 0.0)
+        # TRACK_DR_SOURCE, read per call like TRACK_SMOOTHER: "kf" (default)
+        # dead-reckons with the display filter's LEARNED velocity when one
+        # exists — the solved velocity this block used to trust was measured
+        # (2026-08-09, n=93) at median 127 m/s vector error, i.e. ~3.8 km of
+        # drift at the 30 s cap below, worse than the solve error itself.
+        # "solve" restores the old behaviour (rollback, env only).  The KF
+        # accessor returns None whenever the KF never saw this key (smoother
+        # in ewma/off mode, first solve, TTL-swept) so the fallback below is
+        # also the natural off-path, not a separate mode.
+        if (os.getenv("TRACK_DR_SOURCE", "kf") or "kf").strip().lower() != "solve":
+            _lv = track_filter.learned_velocity(key)
+            if _lv is not None:
+                vel_east_m_s, vel_north_m_s = _lv[0], _lv[1]
         if elapsed > 0.0 and (vel_east_m_s != 0.0 or vel_north_m_s != 0.0):
             _dr_lat, _dr_lon = offset_latlon_m(
                 ac["lat"], ac["lon"],

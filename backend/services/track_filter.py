@@ -261,6 +261,25 @@ def drop_key(track_key: str) -> None:
         _KF_TRACKS.pop(track_key, None)
 
 
+def learned_velocity(track_key: str) -> tuple[float, float, float, float] | None:
+    """(v_east_ms, v_north_ms, vel_sigma_ms, last_update_ts_s) for this key's
+    filter entry, or None when the key has no live filter state (never
+    smoothed, TTL-swept, or TRACK_SMOOTHER != kf so the KF never ran).
+
+    Read-only: exposes the filter's velocity state for display-side
+    dead-reckoning (services/aircraft_feed.py) without any way to mutate the
+    filter.  _KF_LOCK is a leaf lock (see module docstring), so taking it here
+    keeps the established solver.py -> track_filter order; callers must not
+    hold it already.
+    """
+    with _KF_LOCK:
+        entry = _KF_TRACKS.get(track_key)
+        if entry is None:
+            return None
+        vel_sigma = math.sqrt(0.5 * (entry.P[1, 1] + entry.P[3, 3]))
+        return float(entry.x[1]), float(entry.x[3]), float(vel_sigma), float(entry.last_ts_s)
+
+
 def _sweep(now_s: float) -> None:
     """Drop keys whose last update is stale.  Caller holds _KF_LOCK.
 
