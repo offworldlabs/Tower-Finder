@@ -67,6 +67,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # DetectionAssociator is a superset of InterNodeAssociator — it adds the
 # superseded detection path that --mode detection measures as the baseline, so
 # constructing it unconditionally leaves --mode track unaffected.
+import retina_analytics.association as _assoc_module  # noqa: E402
 from retina_analytics.detection_association import DetectionAssociator  # noqa: E402
 from retina_analytics.manager import NodeAnalyticsManager  # noqa: E402
 from retina_geolocator.consensus import solve_consensus  # noqa: E402
@@ -97,6 +98,60 @@ from services.tasks.solver import (  # noqa: E402
     multinode_key_decision,
     resolve_n2_chi2,
 )
+
+# ── Overlap-zone memoization (bench-only monkeypatch) ────────────────────
+# register_node recomputes compute_overlap_zone for every node pair (105
+# pairs at 15 nodes; a 91x91x6 pure-Python grid sweep each) on every run()
+# call, and identical fleets recur across --repeat seeds, the
+# --assoc-interval/--chi2-max/--estimator sweeps in main(), and any
+# in-process sweep driver that imports run() directly -- all rebuilding the
+# same zones from scratch. compute_overlap_zone is referenced as a bare
+# module-global inside InterNodeAssociator.register_node, so overwriting the
+# name on retina_analytics.association intercepts every call
+# DetectionAssociator makes (DetectionAssociator inherits register_node
+# unchanged). This is safe because:
+#   - OverlapZone is never mutated after construction: __post_init__ and the
+#     idempotent _ensure_np() are the only writers, and _ensure_np derives
+#     its arrays deterministically from delay_pairs, so one instance can be
+#     shared across associators and runs with no risk of cross-run drift.
+#   - The bench always constructs its associator with coverage_provider=None
+#     and fov_provider=None, so geo.coverage_limit and geo.fov are always
+#     None here. Both are dynamic, non-hashable inputs, so a real value on
+#     either bypasses the cache below rather than being treated as
+#     memoizable.
+#   - compute_overlap_zone consumes no random state, so skipping it on a
+#     cache hit cannot shift any downstream RNG draw.
+_OVERLAP_MEMO: dict = {}
+_uncached_compute_overlap_zone = _assoc_module.compute_overlap_zone
+
+
+def _geo_signature(geo):
+    return (geo.node_id, geo.rx_lat, geo.rx_lon, geo.rx_alt_km, geo.tx_lat,
+            geo.tx_lon, geo.tx_alt_km, geo.fc_hz, geo.beam_azimuth_deg,
+            geo.beam_width_deg, geo.max_range_km, geo.max_bistatic_range_km)
+
+
+def _cached_compute_overlap_zone(geo_a, geo_b, grid_step_km=3.0,
+                                 altitudes_km=(1.5, 3.0, 5.0, 7.0, 9.0, 11.0),
+                                 delay_gate_us=5.0, doppler_gate_hz=30.0):
+    if (geo_a.fov is not None or geo_b.fov is not None
+            or geo_a.coverage_limit is not None or geo_b.coverage_limit is not None):
+        return _uncached_compute_overlap_zone(
+            geo_a, geo_b, grid_step_km=grid_step_km, altitudes_km=altitudes_km,
+            delay_gate_us=delay_gate_us, doppler_gate_hz=doppler_gate_hz)
+    key = (_geo_signature(geo_a), _geo_signature(geo_b), grid_step_km,
+           tuple(altitudes_km), delay_gate_us, doppler_gate_hz)
+    zone = _OVERLAP_MEMO.get(key)
+    if zone is None:
+        zone = _uncached_compute_overlap_zone(
+            geo_a, geo_b, grid_step_km=grid_step_km, altitudes_km=altitudes_km,
+            delay_gate_us=delay_gate_us, doppler_gate_hz=doppler_gate_hz)
+        _OVERLAP_MEMO[key] = zone
+    return zone
+
+
+_assoc_module.compute_overlap_zone = _cached_compute_overlap_zone
+
 
 # --estimator name -> solve_fn.  "consensus-refine" hands the consensus
 # winner's supporting nodes to solve_multinode for a final LM polish (see
