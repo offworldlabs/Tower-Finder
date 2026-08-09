@@ -50,12 +50,13 @@ Usage
 from __future__ import annotations
 
 import argparse
+import importlib
 import math
 import os
 import statistics
 import sys
 import time
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, namedtuple
 from dataclasses import dataclass
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -84,6 +85,7 @@ from retina_simulation.world import (  # noqa: E402
 )
 from retina_tracker.tracker import Tracker  # noqa: E402
 
+import services.track_filter as track_filter_mod  # noqa: E402
 from scripts.stonesoup_metrics import STONESOUP_AVAILABLE, MetricRecorder, format_report_lines  # noqa: E402
 from services.frame_processor import confirmed_track_views  # noqa: E402
 from services.geo import (
@@ -93,10 +95,14 @@ from services.geo import (
 )
 from services.geo import haversine_km as _haversine_km  # noqa: E402
 from services.tasks.solver import (  # noqa: E402
+    _ewma_smooth_track,
     claim_decision,
     fov_gate_verdict,
     multinode_key_decision,
     resolve_n2_chi2,
+)
+from services.tasks.solver import (
+    _reset_for_tests as _solver_reset_for_tests,
 )
 
 # ── Overlap-zone memoization (bench-only monkeypatch) ────────────────────
@@ -151,6 +157,15 @@ def _cached_compute_overlap_zone(geo_a, geo_b, grid_step_km=3.0,
 
 
 _assoc_module.compute_overlap_zone = _cached_compute_overlap_zone
+
+
+# --smoother-leg opt-in replay (see run()'s buffer+replay section below): a
+# lightweight stand-in for retina_simulation's SimulatedAircraft carrying only
+# the five attributes MetricRecorder.record_truth reads (lat, lon, object_id,
+# speed_km_s, heading_deg), so a run()'s world.aircraft can be snapshotted
+# into a plain list once per step without holding a reference to the live
+# World/aircraft objects for the rest of the run.
+_AcSnap = namedtuple("_AcSnap", "lat lon object_id speed_km_s heading_deg")
 
 
 # --estimator name -> solve_fn.  "consensus-refine" hands the consensus
@@ -484,6 +499,15 @@ class Result:
     # a cross-seed aggregate the way a plain counter or list can -- see
     # ss_metrics_all below, which is what merge() populates instead.
     ss_metrics: dict = None
+    # --smoother-leg opt-in (off by default -- see run()'s buffer+replay
+    # section): label -> that leg's MetricRecorder.compute() dict.  Stays the
+    # empty dict (set in __post_init__) when smoother_legs was never passed,
+    # so nothing downstream needs to guard on this being None.  Not summable
+    # for the same reason ss_metrics itself is not in _SUM_FIELDS/etc -- a
+    # dict of pre-averaged scalars can't be added across seeds -- so
+    # ss_metrics_smoothed_all (also set in __post_init__) is what merge()
+    # actually pools, per label.
+    ss_metrics_smoothed: dict = None
 
     def __post_init__(self):
         self.errors_km = []
@@ -507,6 +531,11 @@ class Result:
         # whether this Result is a per-seed result or the running aggregate;
         # only the aggregate's list is ever read.
         self.ss_metrics_all = []
+        self.ss_metrics_smoothed = {}
+        # label -> [dict, ...] across seeds, mirroring ss_metrics_all but
+        # keyed per --smoother-leg label since each leg is scored
+        # independently.  Only the running aggregate's is ever read.
+        self.ss_metrics_smoothed_all = defaultdict(list)
 
     @property
     def track_ghost_pct(self):
@@ -590,6 +619,9 @@ class Result:
             self.dopp_rms_by_n[nn].extend(v)
         if other.ss_metrics:
             self.ss_metrics_all.append(other.ss_metrics)
+        for _label, _m in (other.ss_metrics_smoothed or {}).items():
+            if _m:
+                self.ss_metrics_smoothed_all[_label].append(_m)
 
     @property
     def ghost_pct(self):
@@ -653,7 +685,8 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
         cv_fit_mode="inline", claim_policy="strict",
         claim_ttl_s=60.0, solve_fn=solve_multinode,
         claim_mode="off", fov="off",
-        ss_metrics=False, ss_metric_dt=5.0, ss_hold_s=12.0) -> Result:
+        ss_metrics=False, ss_metric_dt=5.0, ss_hold_s=12.0,
+        smoother_legs=None) -> Result:
     import random
 
     random.seed(seed)
@@ -677,6 +710,18 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
         recorder = MetricRecorder(_ref_lat, _ref_lon, duration_s=seconds,
                                   sample_dt_s=ss_metric_dt, hold_max_age_s=ss_hold_s,
                                   match_km=MATCH_KM)
+
+    # --smoother-leg opt-in: buffer the truth/publish series so they can be
+    # replayed once per requested leg at the end of this run (see the replay
+    # block right before `return res`) -- an env sweep then pays the
+    # world/tracker/solver cost once per seed instead of once per config, and
+    # every leg scores the IDENTICAL solve stream.  Stays empty (zero new
+    # work) unless smoother_legs was actually passed on a --mode track run
+    # with --ss-metrics on: any of those false and _buffer_replay is False,
+    # so nothing below ever appends to these lists.
+    _buffer_replay = bool(smoother_legs) and mode == "track" and recorder is not None
+    truth_buf: list = []
+    publish_buf: list = []
 
     # --fov {off,active}: a bench-local NodeAnalyticsManager, fed from the
     # same per-detection ADS-B truth the sim attaches to a match (the sim's
@@ -784,6 +829,14 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
         ts_ms = int(t * 1000)
         if recorder is not None:
             recorder.record_truth(t, world.aircraft)
+            if _buffer_replay:
+                # Same call sequence record_truth itself sees (it grid-snaps
+                # internally) -- the replay recorder built per leg below must
+                # observe an identical sequence of record_truth calls to lay
+                # truth over the same grid the raw recorder used.
+                truth_buf.append((t, [_AcSnap(ac.lat, ac.lon, ac.object_id,
+                                              ac.speed_km_s, ac.heading_deg)
+                                      for ac in world.aircraft]))
         due_nodes = [nid for nid in node_ids if next_send[nid] <= t]
         if not due_nodes:
             continue
@@ -910,6 +963,13 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                         recorder.record_publish(t, _key, out["lat"], out["lon"],
                                                 out.get("vel_east", 0.0) or 0.0,
                                                 out.get("vel_north", 0.0) or 0.0)
+                        if _buffer_replay:
+                            # dict(out): out is reused/mutated by later
+                            # iterations of this loop (it's solve_fn's return
+                            # value, not copied elsewhere), so the buffered
+                            # entry needs its own copy to still describe THIS
+                            # solve when the replay reads it after the run.
+                            publish_buf.append((t, _key, ts_ms, dict(out)))
                     for _k in [k for k, v in bench_mn.items()
                               if ts_ms - v.get("timestamp_ms", 0) > _BENCH_MN_MAX_AGE_MS]:
                         del bench_mn[_k]
@@ -985,7 +1045,101 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
     res.keys_ghost = len(_keys_ghost)
     if recorder is not None:
         res.ss_metrics = recorder.compute()
+        if smoother_legs:
+            # Buffer + replay, never inline: bench_mn (the pipeline's own
+            # accepted-solve store) stayed raw for the whole run above --
+            # only this end-of-run pass ever sees a smoothed position, and
+            # only to feed a throwaway MetricRecorder per leg.  This is what
+            # lets an env sweep (e.g. several TRACK_KF_SIGMA_A values) pay
+            # the world/tracker/solver cost once per seed and score every leg
+            # against the IDENTICAL buffered solve stream, rather than
+            # rebuilding the whole scene once per config.
+            for _label, _smoother, _env in smoother_legs:
+                _saved_env: dict[str, str | None] = {
+                    "TRACK_SMOOTHER": os.environ.get("TRACK_SMOOTHER"),
+                }
+                for _k in _env:
+                    _saved_env[_k] = os.environ.get(_k)
+                try:
+                    os.environ["TRACK_SMOOTHER"] = _smoother
+                    for _k, _v in _env.items():
+                        os.environ[_k] = _v
+                    # track_filter reads TRACK_SMOOTHER fresh on every
+                    # smooth_solve() call, but reads its other numeric
+                    # tunables (TRACK_KF_SIGMA_A etc.) once at import time --
+                    # reload() re-reads the env just set above AND resets the
+                    # module's own _KF_TRACKS state.  reload() mutates the
+                    # module object in place, so the reference
+                    # services.tasks.solver already holds (`from services
+                    # import track_filter`) stays valid -- nothing there
+                    # needs re-importing.
+                    importlib.reload(track_filter_mod)
+                    # Fresh EWMA history (_MN_POS_HISTORY) and KF state
+                    # (track_filter.reset(), called inside this) per leg --
+                    # otherwise leg N would start smoothing against leg
+                    # N-1's trailing state instead of a clean slate.
+                    _solver_reset_for_tests()
+                    rec = MetricRecorder(_ref_lat, _ref_lon, duration_s=seconds,
+                                         sample_dt_s=ss_metric_dt, hold_max_age_s=ss_hold_s,
+                                         match_km=MATCH_KM)
+                    for _t, _snaps in truth_buf:
+                        rec.record_truth(_t, _snaps)
+                    for _t, _key, _ts_ms, _out in publish_buf:
+                        sm_in = dict(_out)
+                        sm_in["timestamp_ms"] = _ts_ms
+                        # adsb_hex=None: state.adsb_aircraft is empty in the
+                        # bench process anyway, so this always takes the
+                        # dark-target path, same as production would for
+                        # every solve the bench can produce.
+                        sm = track_filter_mod.smooth_solve(
+                            sm_in, _key, None,
+                            ewma_fn=(_ewma_smooth_track if _smoother == "ewma" else None))
+                        rec.record_publish(_t, _key, sm["lat"], sm["lon"],
+                                           _out.get("vel_east", 0.0) or 0.0,
+                                           _out.get("vel_north", 0.0) or 0.0)
+                    res.ss_metrics_smoothed[_label] = rec.compute()
+                finally:
+                    # Restore exactly -- pop keys that were absent rather
+                    # than setting them to the string "None" (os.environ
+                    # values must be str).  Deliberately do NOT reload
+                    # track_filter after restoring: the next leg (or the next
+                    # run() call, or main()'s own process-wide env) always
+                    # reloads before its first use, so leaving the module's
+                    # cached tunables mid-leg here for the instant between
+                    # legs is unobservable and saves a reload nobody reads.
+                    for _k, _v in _saved_env.items():
+                        if _v is None:
+                            os.environ.pop(_k, None)
+                        else:
+                            os.environ[_k] = _v
     return res
+
+
+def _print_pooled_ss_metrics(vals_list, indent: str = "    ") -> None:
+    """Mean/sd of each GOSPA/SIAP headline scalar across a list of
+    MetricRecorder.compute() dicts.
+
+    Factored out of report()'s original raw-pooled block so every
+    --smoother-leg pooled block (report() below) prints in the exact same
+    shape -- one helper, reused, rather than a copy that could drift.  The
+    default indent matches that original block's hardcoded four spaces, so
+    calling this with no indent argument reproduces its output byte-for-byte.
+    """
+    _headline = (
+        ("gospa_distance_m", "gospa dist", 1 / 1000.0, "km"),
+        ("siap_completeness", "completeness", 1.0, ""),
+        ("siap_ambiguity", "ambiguity", 1.0, ""),
+        ("siap_spuriousness", "spuriousness", 1.0, ""),
+        ("siap_pos_accuracy_m", "pos-acc", 1 / 1000.0, "km"),
+        ("siap_vel_accuracy_ms", "vel-acc", 1.0, "m/s"),
+    )
+    for key, hlabel, scale, unit in _headline:
+        vals = [m[key] * scale for m in vals_list if key in m]
+        if not vals:
+            continue
+        mean = statistics.mean(vals)
+        sd = statistics.pstdev(vals) if len(vals) > 1 else 0.0
+        print(f"{indent}{hlabel}: mean {mean:.2f}{unit}  sd {sd:.2f}{unit}")
 
 
 def report(label: str, r: Result, truth_max_kt: float | None = None):
@@ -1089,21 +1243,24 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
             print(line)
     elif getattr(r, "ss_metrics_all", None) and len(r.ss_metrics_all) > 1:
         print(f"  stonesoup pooled over {len(r.ss_metrics_all)} seeds:")
-        _headline = (
-            ("gospa_distance_m", "gospa dist", 1 / 1000.0, "km"),
-            ("siap_completeness", "completeness", 1.0, ""),
-            ("siap_ambiguity", "ambiguity", 1.0, ""),
-            ("siap_spuriousness", "spuriousness", 1.0, ""),
-            ("siap_pos_accuracy_m", "pos-acc", 1 / 1000.0, "km"),
-            ("siap_vel_accuracy_ms", "vel-acc", 1.0, "m/s"),
-        )
-        for key, label, scale, unit in _headline:
-            vals = [m[key] * scale for m in r.ss_metrics_all if key in m]
-            if not vals:
-                continue
-            mean = statistics.mean(vals)
-            sd = statistics.pstdev(vals) if len(vals) > 1 else 0.0
-            print(f"    {label}: mean {mean:.2f}{unit}  sd {sd:.2f}{unit}")
+        _print_pooled_ss_metrics(r.ss_metrics_all)
+    # --smoother-leg opt-in blocks.  ss_metrics_smoothed[_all] are empty
+    # unless smoother_legs was actually passed to run() (see its buffer+
+    # replay section), so both loops below are silent no-ops for every
+    # existing call site -- default output is unchanged.
+    for _sm_label in sorted(getattr(r, "ss_metrics_smoothed", None) or {}):
+        _sm_metrics = r.ss_metrics_smoothed[_sm_label]
+        if not _sm_metrics:
+            continue
+        print(f"  stonesoup smoothed[{_sm_label}]:")
+        for line in format_report_lines(_sm_metrics, indent="    "):
+            print(line)
+    for _sm_label in sorted(getattr(r, "ss_metrics_smoothed_all", None) or {}):
+        _sm_vals = r.ss_metrics_smoothed_all[_sm_label]
+        if len(_sm_vals) <= 1:
+            continue
+        print(f"  stonesoup smoothed[{_sm_label}] pooled over {len(_sm_vals)} seeds:")
+        _print_pooled_ss_metrics(_sm_vals)
 
 
 def main():
@@ -1199,6 +1356,21 @@ def main():
                    help="stonesoup: how long (seconds) a track's last publish "
                         "is held, unmoved, across grid points before it counts "
                         "as missing rather than tracked")
+    p.add_argument("--smoother-leg", nargs="+", choices=("kf", "ewma", "off"),
+                   default=None,
+                   help="opt-in: replay the buffered truth/solve stream "
+                        "through services.track_filter.smooth_solve once per "
+                        "named leg and score each replay with its own "
+                        "stonesoup MetricRecorder -- bench_mn itself always "
+                        "stays raw (see run()'s buffer+replay section). "
+                        "--mode track and --ss-metrics on only; omitting "
+                        "this flag is zero new work and byte-identical "
+                        "output to today.")
+    p.add_argument("--smoother-env", action="append", default=None,
+                   metavar="NAME=VALUE",
+                   help="env override applied to every --smoother-leg replay "
+                        "(e.g. TRACK_KF_SIGMA_A=3.0); repeatable, shared by "
+                        "all legs in this invocation")
     args = p.parse_args()
 
     # --ss-metrics auto/on/off resolution.  "on" without stonesoup installed
@@ -1224,6 +1396,20 @@ def main():
                   "auto-disabled (--ss-metrics on to force this to error "
                   "instead, off to silence this notice)")
 
+    # --smoother-leg: dict.fromkeys dedups while preserving first-seen order,
+    # so repeating a leg on the command line scores it once, not twice.
+    # label == smoother name -- there is only one env_dict, shared by every
+    # CLI leg, so the label needs nothing else to stay unique here.
+    smoother_legs = None
+    if args.smoother_leg:
+        _smoother_env: dict[str, str] = {}
+        for _entry in (args.smoother_env or []):
+            if "=" not in _entry:
+                p.error(f"--smoother-env expects NAME=VALUE, got {_entry!r}")
+            _name, _, _value = _entry.partition("=")
+            _smoother_env[_name] = _value
+        smoother_legs = [(m, m, _smoother_env) for m in dict.fromkeys(args.smoother_leg)]
+
     print(f"scene: metro={args.metro} layout={args.layout}/{args.illuminator_band} "
           f"nodes={args.nodes} budget={args.n_cluster} "
           f"{args.seconds:.0f}s @ {args.frame_interval:.0f}s frames, seed {args.seed}, "
@@ -1232,7 +1418,9 @@ def main():
              f"claim-mode={args.claim_mode}"
              if args.mode == "track" else "")
           + f", fov={args.fov}"
-          + f", ss-metrics={'on' if ss_metrics_enabled else 'off'}")
+          + f", ss-metrics={'on' if ss_metrics_enabled else 'off'}"
+          + (f", smoother-legs={','.join(lbl for lbl, _, _ in smoother_legs)}"
+             if smoother_legs else ""))
 
     # chi2 only means anything in track mode; keep one pass otherwise.
     chi2_values = args.chi2_max if args.mode == "track" else [None]
@@ -1255,7 +1443,8 @@ def main():
                          args.cv_fit_mode, args.claim_policy, args.claim_ttl_s,
                          solve_fn=solve_fn, claim_mode=args.claim_mode,
                          fov=args.fov, ss_metrics=ss_metrics_enabled,
-                         ss_metric_dt=args.ss_metric_dt, ss_hold_s=args.ss_hold_s)
+                         ss_metric_dt=args.ss_metric_dt, ss_hold_s=args.ss_hold_s,
+                         smoother_legs=smoother_legs)
               agg.merge(last, tag=f"s{args.seed + k}")
               # Track-level is the comparable metric — solve-level and
               # track-level differ by ~20x on the same data, so mixing them is
