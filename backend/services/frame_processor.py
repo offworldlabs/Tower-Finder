@@ -10,9 +10,11 @@ import threading
 import time
 from collections import defaultdict
 
+from retina_analytics.association import associate_detections_to_adsb
 from retina_tracker.track import TrackState
 
 from config.constants import (
+    ADSB_VIEW_TAG_FRESH_N,
     ARCHIVE_BATCH_MAX,
     ARCHIVE_FLUSH_INTERVAL_S,
     N2_TRACK_HISTORY_MAX,
@@ -206,6 +208,43 @@ _prof_pipeline = 0.0
 _prof_archive = 0.0
 
 
+def _view_adsb_hex(track, hist) -> str | None:
+    """The ADS-B hex this view should export as its seeding tag, or None.
+
+    Each rule below independently forces None — fail toward dark on any
+    doubt, the same discipline ADSB_SEED_MODE applies everywhere else:
+
+    - zero or more than one distinct hex across hist's "adsb" entries
+      (never tagged, or mid-window ambiguity/swap) → None;
+    - track.adsb_hex set and disagreeing with that hex → None (the
+      tracker's own identity call overrides a stale/short-lived detection
+      tag);
+    - none of the newest ADSB_VIEW_TAG_FRESH_N entries carries a tag → None
+      (see ADSB_VIEW_TAG_FRESH_N's identity-swap rationale in
+      config.constants — a single untagged newest frame is a receiver
+      hiccup, N consecutive is the swap signature).
+
+    hist is get_recent_detections output, oldest-first; each entry's
+    "adsb" key is a dict (node/backend-correlated) or None.
+    """
+    hexes = {
+        normalize_hex_key(h["adsb"]["hex"])
+        for h in hist
+        if isinstance(h.get("adsb"), dict) and h["adsb"].get("hex")
+    }
+    if len(hexes) != 1:
+        return None
+    hexn = next(iter(hexes))
+    if track.adsb_hex and normalize_hex_key(track.adsb_hex) != hexn:
+        return None
+    if not any(
+        isinstance(h.get("adsb"), dict) and h["adsb"].get("hex")
+        for h in hist[-ADSB_VIEW_TAG_FRESH_N:]
+    ):
+        return None
+    return hexn
+
+
 def confirmed_track_views(tracker, history_n: int = N2_TRACK_HISTORY_MAX) -> list[dict]:
     """A tracker's confirmed tracks, in the shape submit_tracks takes.
 
@@ -232,6 +271,7 @@ def confirmed_track_views(tracker, history_n: int = N2_TRACK_HISTORY_MAX) -> lis
                          "delay_us": h["delay"],
                          "doppler_hz": h["doppler"],
                          "snr": h["snr"]} for h in hist],
+            "adsb_hex": _view_adsb_hex(tr, hist),
         })
     return views
 
@@ -272,6 +312,20 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # collapses the candidate count from Na x Nb detections to Ta x Tb tracks,
     # and supplies the time history the constant-velocity fit needs.
     _t3 = time.thread_time()
+    # Predictive ADS-B tagging for a node with no receiver of its own.
+    # Never overwrites a node-provided list — the node's own correlation is
+    # authoritative, and an absent list is the only case where the backend
+    # fills in.  Active-only: attaching feeds the tracker's own ADS-B
+    # association directly, so there is no inert way to shadow this.
+    if state.ADSB_SEED_MODE == "active" and not frame.get("adsb"):
+        _geo = state.node_associator.node_geometries.get(node_id)
+        if _geo is not None:
+            _tags = associate_detections_to_adsb(
+                _geo, frame.get("delay", []), frame.get("doppler", []),
+                state._adsb_for_seeding(), frame.get("timestamp", 0))
+            if _tags is not None:
+                frame["adsb"] = _tags
+                state.bump_counter("adsb_seed_frames_autotagged")
     pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
     pipeline.process_frame(frame)
     _d_pipeline = time.thread_time() - _t3
@@ -293,13 +347,16 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     round_ = state.node_associator.submit_tracks_round(
         node_id, _track_views, _ts_ms_assoc,
     )
-    # anchored_inputs (top-down claiming, ASSOC_CLAIM_MODE=active) are
-    # already in solver-input shape — see _claim_round — so they join the
-    # bottom-up pairs' formatted output directly.  Empty in off/shadow mode.
+    # anchored_inputs (top-down claiming, ASSOC_CLAIM_MODE=active) and
+    # adsb_inputs (ADS-B seeding, ADSB_SEED_MODE=active) are already in
+    # solver-input shape — see _claim_round / _adsb_seed_round — so they
+    # join the bottom-up pairs' formatted output directly.  Both empty in
+    # off/shadow mode.
     solver_inputs = (
         (state.node_associator.format_track_pairs_for_solver(round_.pairs)
          if round_.pairs else [])
         + round_.anchored_inputs
+        + round_.adsb_inputs
     )
     if solver_inputs:
         node_cfgs = get_node_configs()

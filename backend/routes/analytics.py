@@ -129,6 +129,22 @@ async def association_status():
             "anchored_inputs": getattr(_a, "anchored_inputs_emitted", 0),
             "tracklets_excluded": getattr(_a, "tracklets_excluded", 0),
         },
+        # ADS-B seeding (ADSB_SEED_MODE), same "cumulative since boot,
+        # shadow moves everything but tracklets_excluded" shape as claiming
+        # above: tagged/no_state/gate_rejects/inputs_emitted move in shadow
+        # too — _adsb_seed_round computes and counts them unconditionally;
+        # tracklets_excluded only moves in active, since the exclusion
+        # filter never runs against an empty tagged-ids map.  off reads
+        # zero everywhere here BY DESIGN.
+        "adsb_seed": {
+            "mode": _a.adsb_seed_mode,
+            "rounds": getattr(_a, "adsb_seed_rounds", 0),
+            "tagged": getattr(_a, "adsb_tracklets_tagged", 0),
+            "no_state": getattr(_a, "adsb_seed_no_state", 0),
+            "gate_rejects": getattr(_a, "adsb_seed_gate_rejects", 0),
+            "tracklets_excluded": getattr(_a, "adsb_tracklets_excluded", 0),
+            "inputs_emitted": getattr(_a, "adsb_inputs_emitted", 0),
+        },
         "overlaps": _a.get_overlap_summary(),
     }
 

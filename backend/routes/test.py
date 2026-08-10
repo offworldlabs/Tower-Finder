@@ -221,6 +221,14 @@ def _build_dashboard_data() -> bytes:
                     "anchor_hits": state.solver_anchor_hits,
                     "anchor_fallbacks": state.solver_anchor_fallbacks,
                 },
+                # ADS-B seeding (ADSB_SEED_MODE) — see
+                # /api/radar/association/status' fuller "adsb_seed" block.
+                "adsb_seed": {
+                    "mode": state.node_associator.adsb_seed_mode,
+                    "tagged": state.node_associator.adsb_tracklets_tagged,
+                    "excluded": state.node_associator.adsb_tracklets_excluded,
+                    "inputs": state.node_associator.adsb_inputs_emitted,
+                },
                 # Empirical FOV beam gate (FOV_MODE).  Since-boot counters,
                 # passthrough only — mode is off/shadow/active; shadow_*
                 # only move once mode isn't "off" (see solver.py's beam

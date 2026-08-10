@@ -92,6 +92,15 @@ CAL_MAX_ADSB_AGE_S = 10.0
 # detected ground.  See services/track_gates.py.
 CAL_DETECTION_FRESH_S = 5.0
 
+# ── ADS-B seeding (ADSB_SEED_MODE) ────────────────────────────────────────────
+# A track view exports its ADS-B tag only if one of the newest N history
+# detections carries it.  A swapped track's newest detections go untagged
+# while track.adsb_hex stays stale — see the identity-swap note in
+# services/track_gates.py — so one untagged newest frame is a receiver
+# hiccup (still export the tag), but N consecutive untagged is the swap
+# signature (withhold it).
+ADSB_VIEW_TAG_FRESH_N = 3
+
 # ── Default antenna parameters ───────────────────────────────────────────────
 YAGI_BEAM_WIDTH_DEG = 42.0            # Half-power beamwidth (°) of the fleet Yagis
 YAGI_MAX_RANGE_KM = 50.0             # Default Yagi max range (km)

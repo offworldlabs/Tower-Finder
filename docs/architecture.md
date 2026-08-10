@@ -94,6 +94,7 @@ gitignored `backend/.env`; unset = the safe default):
 | `SOLVER_CONSENSUS_MODE` | `off/shadow/active` | `off` | `active` | n≥3 consensus-refine hypothesis stage |
 | `ASSOC_CLAIM_MODE` | `off/shadow/active` | `off` | `active` | top-down tracklet claiming from global tracks |
 | `FOV_MODE` | `off/shadow/active` | `off` | `active` | learned empirical FOV as association grid + solver beam gate |
+| `ADSB_SEED_MODE` | `off/shadow/active` | `off` | `shadow` | ADS-B-seeded detection assignment: verified lit tracklets leave dark pairing, re-emitted as `mn-adsb-*` seeded solves |
 | `TRACK_SMOOTHER` | `kf/ewma/off` | `kf` | `kf` | display smoothing for multinode tracks (`ewma` is the rollback) |
 
 `shadow` computes and counts a stage's verdicts (exposed in

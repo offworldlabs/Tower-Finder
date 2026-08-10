@@ -5,6 +5,7 @@ lives here so imports are unambiguous and circular-dependency-free.
 """
 
 import asyncio
+import math
 import os
 import threading
 import time
@@ -21,6 +22,7 @@ from config.constants import (
     ASSOC_MAX_NEIGHBORS,
     ASSOC_MAX_PAIRS_PER_ROUND,
     ASSOC_MIN_INTERVAL_S,
+    FT_TO_M,
     GROUND_TRUTH_MAX,  # noqa: F401 — re-exported, used via state.GROUND_TRUTH_MAX
     N2_CONFIRM_MIN_EPOCHS,
     N2_CONFIRM_MIN_SPAN_S,
@@ -45,6 +47,14 @@ connected_nodes: dict[str, dict] = {}
 FOV_MODE = os.getenv("FOV_MODE", "off").lower()
 if FOV_MODE not in ("off", "shadow", "active"):
     FOV_MODE = "off"
+
+# ADS-B-seeded detection assignment (see retina_analytics.association.
+# _adsb_seed_round).  off/shadow/active, same ASSOC_CLAIM_MODE precedent as
+# FOV_MODE above — an unrecognised value falls back to "off" rather than
+# raising.
+ADSB_SEED_MODE = os.getenv("ADSB_SEED_MODE", "off").lower()
+if ADSB_SEED_MODE not in ("off", "shadow", "active"):
+    ADSB_SEED_MODE = "off"
 
 node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR, fov_mode=FOV_MODE)
 
@@ -118,6 +128,38 @@ def _global_tracks_for_claiming():
     return out
 
 
+def _adsb_for_seeding() -> dict[str, dict]:
+    """Unlocked snapshot of currently-live ADS-B fixes, in the seeding
+    provider contract InterNodeAssociator documents on adsb_provider.
+
+    list(dict.items()) — the same unlocked read pattern
+    _global_tracks_for_claiming uses; a concurrent frame-worker write racing
+    this read loses at worst one entry to a stale round, not a corrupted
+    one.  Dumb snapshot, no age filtering here — the LIB applies freshness
+    and gating, so the offline bench measures the shipped filtering.
+    """
+    out = {}
+    for hexn, rec in list(adsb_aircraft.items()):
+        lat, lon = rec.get("lat"), rec.get("lon")
+        if lat is None or lon is None or not (math.isfinite(lat) and math.isfinite(lon)):
+            continue
+        gs_ms = (rec.get("gs", 0) or 0) * 0.514444
+        trk = math.radians(rec.get("track", 0) or 0)
+        out[hexn] = {
+            "hex": hexn,
+            "lat": lat, "lon": lon,
+            "alt_m": (rec.get("alt_baro", 0) or 0) * FT_TO_M,
+            "vel_east": gs_ms * math.sin(trk),
+            "vel_north": gs_ms * math.cos(trk),
+            "timestamp_ms": rec.get("last_seen_ms", 0),
+            "alt_baro": rec.get("alt_baro", 0),
+            "gs": rec.get("gs", 0),
+            "track": rec.get("track", 0),
+            "flight": rec.get("flight", ""),
+        }
+    return out
+
+
 node_associator = InterNodeAssociator(
     grid_step_km=ASSOC_GRID_STEP_KM,
     coverage_provider=_coverage_limit_for,
@@ -148,6 +190,8 @@ node_associator = InterNodeAssociator(
     # the live one was uncapped.
     max_neighbors=ASSOC_MAX_NEIGHBORS,
     max_pairs_per_round=ASSOC_MAX_PAIRS_PER_ROUND,
+    adsb_seed_mode=ADSB_SEED_MODE,
+    adsb_provider=_adsb_for_seeding,
 )
 
 # ── Per-node tracker pipelines (lazy-created per connecting node) ─────────────
@@ -273,6 +317,10 @@ frames_dropped: int = 0
 frames_processed: int = 0
 solver_successes: int = 0
 solver_failures: int = 0
+# Frames where the backend filled frame["adsb"] itself (ADSB_SEED_MODE=active,
+# node reported no list of its own) — see frame_processor.process_one_frame's
+# predictive-tagging block.
+adsb_seed_frames_autotagged: int = 0
 # n=2 solves withheld from the map because their track pairing has not (yet)
 # passed the constant-velocity fit.  Counted separately from solver_failures:
 # the solve succeeded, it simply has not earned publication, and a real target
@@ -457,6 +505,7 @@ def _reset_for_tests() -> None:
     global latest_mlat_accuracy_bytes, latest_mlat_verification_bytes
     global latest_storage_bytes, simulation_config
     global frames_dropped, frames_processed, solver_successes, solver_failures
+    global adsb_seed_frames_autotagged
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
     global solver_queue_drops, solver_stale_drops, mn_superseded, solver_trimmed
     global solver_consensus_selected, solver_consensus_filtered
@@ -517,6 +566,7 @@ def _reset_for_tests() -> None:
     with counters_lock:
         frames_dropped = frames_processed = 0
         solver_successes = solver_failures = n2_unconfirmed = 0
+        adsb_seed_frames_autotagged = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
         solver_stale_drops = 0
         mn_superseded = 0
