@@ -61,13 +61,14 @@ def _reset_for_tests() -> None:
 
 
 def multinode_to_aircraft(key: str, r: dict) -> dict:
-    speed_ms = math.sqrt(r["vel_east"] ** 2 + r["vel_north"] ** 2)
-    heading = math.degrees(math.atan2(r["vel_east"], r["vel_north"])) % 360
-    # No velocity-plausibility flag: supersonic targets are in scope, so a
-    # high solved speed is reported as-is.  Anomaly flags come from the
-    # contributing tracker tracks, stamped onto the result by the solver
-    # (_collect_track_anomalies) — a dark anomalous target must not go
-    # quiet the moment it graduates from arc to solve.
+    _solve_speed_ms = math.sqrt(r["vel_east"] ** 2 + r["vel_north"] ** 2)
+    _solve_heading_deg = math.degrees(math.atan2(r["vel_east"], r["vel_north"])) % 360
+    # No velocity-plausibility flag on the solve speed itself: supersonic
+    # targets are in scope, so a high solved speed is reported as-is in
+    # max_velocity_ms.  Anomaly flags come from the contributing tracker
+    # tracks, stamped onto the result by the solver (_collect_track_anomalies)
+    # — a dark anomalous target must not go quiet the moment it graduates
+    # from arc to solve.
     _mn_hex = multinode_hex_from_key(key)
     _is_anom = bool(r.get("is_anomalous"))
     _anom_types = r.get("anomaly_types") or []
@@ -79,12 +80,34 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
             # (No GT-meta guard needed: mn* hexes are solver-minted and never
             # appear in ground_truth_meta.)
             state.anomaly_hexes.discard(_mn_hex)
+    # TRACK_GS_SOURCE, read per call like TRACK_DR_SOURCE: "kf" (default)
+    # displays the KF display filter's LEARNED velocity for gs/track instead
+    # of the raw solve vector — the same learned vector the TRACK_DR_SOURCE
+    # block below (build_combined_aircraft_json) already dead-reckons with,
+    # so the icon's motion and its speed/heading readout agree.  "solve"
+    # restores the raw vel_east/vel_north arithmetic (rollback, env only).
+    # The KF accessor returns None whenever it never saw this key (smoother
+    # in ewma/off mode, first solve, TTL-swept), which is also the natural
+    # fallback to solve display, not a separate mode.  max_velocity_ms stays
+    # on the solve speed regardless: it is the max-observed-solve-speed latch
+    # for anomaly display, not a current-motion field.
+    speed_ms = _solve_speed_ms
+    heading = _solve_heading_deg
+    _gs_source_kf = False
+    if (os.getenv("TRACK_GS_SOURCE", "kf") or "kf").strip().lower() != "solve":
+        _lv = track_filter.learned_velocity(key)
+        if _lv is not None:
+            speed_ms = math.sqrt(_lv[0] ** 2 + _lv[1] ** 2)
+            heading = math.degrees(math.atan2(_lv[0], _lv[1])) % 360
+            _gs_source_kf = True
     _vel_untrusted = bool(r.get("vel_untrusted"))
     # VEL_TRUST_MODE, read per call like TRACK_DR_SOURCE: "off" (default)
     # changes nothing — the flag rides along but gs/track stay populated.
-    # "active" additionally drops gs/track from an untrusted entry, since a
-    # solve-velocity vector this unreliable (median vector error 81 vs
-    # 13 m/s unflagged) is worse than not showing a heading/speed at all.
+    # "active" additionally drops gs/track, but only when BOTH vel_untrusted
+    # is set AND the displayed gs/track is solve-sourced (no KF vector was
+    # used): vel_untrusted describes the reliability of the solve/fit
+    # vector, and a KF-sourced gs/track has already replaced that vector
+    # rather than needing to be hidden alongside it.
     _vel_trust_mode = (os.getenv("VEL_TRUST_MODE") or "off").strip().lower()
     entry = {
         "hex": _mn_hex,
@@ -112,12 +135,14 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
         "is_anomalous": _is_anom,
         "anomaly_types": sorted(_anom_types),
         "max_velocity_ms": round(
-            max(speed_ms, r.get("max_velocity_ms", 0.0) or 0.0), 1
+            max(_solve_speed_ms, r.get("max_velocity_ms", 0.0) or 0.0), 1
         ),
     }
+    if _gs_source_kf:
+        entry["gs_source"] = "kf"
     if _vel_untrusted:
         entry["vel_untrusted"] = True
-        if _vel_trust_mode == "active":
+        if _vel_trust_mode == "active" and not _gs_source_kf:
             del entry["gs"]
             del entry["track"]
     return entry
