@@ -65,6 +65,12 @@ server {
         # RETINA_INCLUDE snippets/session.conf
     }
 
+    # Longer still than /api/auth/me, so it wins over the session zone above:
+    # minting and revoking device-claim credentials is not a session read.
+    location /api/auth/me/claim-codes {
+        # RETINA_INCLUDE snippets/claim-codes.conf
+    }
+
     # Frontend SPA at /towers as well as at the root
     location /towers {
         alias /app/frontend/dist;
@@ -104,6 +110,12 @@ server {
 
     location /api/auth/logout {
         # RETINA_INCLUDE snippets/session.conf
+    }
+
+    # Longer still than /api/auth/me, so it wins over the session zone above:
+    # minting and revoking device-claim credentials is not a session read.
+    location /api/auth/me/claim-codes {
+        # RETINA_INCLUDE snippets/claim-codes.conf
     }
 
     location / {
