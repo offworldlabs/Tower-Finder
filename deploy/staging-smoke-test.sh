@@ -98,16 +98,27 @@ check_rate_limit() {
     # `tries` MUST exceed the zone's burst: `burst=N nodelay` admits N+1
     # requests before rejecting one, so a run of exactly N reports a false
     # failure.
-    local codes
-    codes=$(seq 1 "$tries" | xargs -P "$tries" -I{} $CURL -o /dev/null -w '%{http_code}\n' "$url" 2>/dev/null)
+    # `|| true` is load-bearing: xargs exits 123 if ANY child fails, and this
+    # file runs under `set -euo pipefail`, so a bare assignment would abort the
+    # whole script at this line — no FAIL line, no summary, and every later
+    # check silently skipped. One flaky connection inside a 30-way concurrent
+    # burst is precisely what this check provokes (ephemeral-port and TLS
+    # handshake pressure on the runner), so tolerate partial failure and judge
+    # on the codes that did come back, as the old serial loop's `|| continue`
+    # did.
+    local codes summary
+    codes=$(seq 1 "$tries" | xargs -P "$tries" -I{} $CURL -o /dev/null -w '%{http_code}\n' "$url" 2>/dev/null || true)
 
     if printf '%s\n' "$codes" | grep -q '^429$'; then
         echo "OK (429 after burst)"
         PASS=$((PASS+1))
     else
         # Report the whole distribution: "all 200" means the limit never fired,
-        # while "all 000" means nothing was reachable — different diagnoses.
-        echo "FAIL (no 429 in $tries concurrent; got $(printf '%s\n' "$codes" | sort | uniq -c | awk '{printf "%s×%s ", $1, $2}'))"
+        # "all 000" means nothing was reachable, and a short count means the
+        # burst partly failed — three different diagnoses that a single
+        # last-code sample cannot tell apart.
+        summary="${codes:+$(printf '%s\n' "$codes" | sort | uniq -c | awk '{printf "%s×%s ", $1, $2}')}"
+        echo "FAIL (no 429 in $tries concurrent; got ${summary:-no responses})"
         FAIL=$((FAIL+1))
     fi
 }
