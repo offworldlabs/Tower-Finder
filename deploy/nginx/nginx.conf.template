@@ -55,6 +55,16 @@ server {
         # RETINA_INCLUDE snippets/auth.conf
     }
 
+    # Longer prefixes than /api/auth/, so nginx matches these first: session
+    # reads get the `session` zone instead of the credential-grade `auth` one.
+    location /api/auth/me {
+        # RETINA_INCLUDE snippets/session.conf
+    }
+
+    location /api/auth/logout {
+        # RETINA_INCLUDE snippets/session.conf
+    }
+
     # Frontend SPA at /towers as well as at the root
     location /towers {
         alias /app/frontend/dist;
@@ -84,6 +94,16 @@ server {
 
     location /api/auth/ {
         # RETINA_INCLUDE snippets/auth.conf
+    }
+
+    # Longer prefixes than /api/auth/, so nginx matches these first: session
+    # reads get the `session` zone instead of the credential-grade `auth` one.
+    location /api/auth/me {
+        # RETINA_INCLUDE snippets/session.conf
+    }
+
+    location /api/auth/logout {
+        # RETINA_INCLUDE snippets/session.conf
     }
 
     location / {
