@@ -136,7 +136,7 @@ class TestNearestGtVelocity(_SolverTestBase):
         gt = solver_mod._nearest_gt(LAT0, LON0, time.time())
         assert gt == {
             "gt_hex": None, "gt_error_km": None, "gt_lat": None, "gt_lon": None,
-            "gt_speed_ms": None, "gt_heading_deg": None,
+            "gt_speed_ms": None, "gt_heading_deg": None, "gt_source": None,
         }
 
 

@@ -26,7 +26,7 @@ from services import track_filter
 # were consolidated into services.geo.
 from services.geo import bearing_deg, bistatic_differential_km, node_beam_params, offset_latlon_m
 from services.geo import haversine_km as _haversine_km
-from services.id_utils import multinode_hex_from_key
+from services.id_utils import multinode_hex_from_key, normalize_hex_key
 
 _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 
@@ -877,11 +877,15 @@ _MLAT_HISTORY_MAX_AGE_MS = 35 * 60 * 1000
 # GT trail points are pushed every 2 s; beyond this gap the trail is stale
 # enough that a stamp would mislead more than inform.
 _MLAT_HISTORY_GT_MAX_DT_S = 90.0
+# Live-ADS-B scoring reference for identified (seeded) solves whose hex has no
+# synthetic trail: matches ADSB_SEED_MAX_DR_AGE_S in retina-analytics — beyond
+# this a dead-reckoned fix is no longer a credible truth reference.
+_MLAT_HISTORY_ADSB_MAX_DT_S = 45.0
 
 
 _GT_NO_MATCH = {
     "gt_hex": None, "gt_error_km": None, "gt_lat": None, "gt_lon": None,
-    "gt_speed_ms": None, "gt_heading_deg": None,
+    "gt_speed_ms": None, "gt_heading_deg": None, "gt_source": None,
 }
 
 
@@ -917,15 +921,43 @@ def _trail_velocity(trail, pt) -> tuple[float | None, float | None]:
     return speed_ms, heading
 
 
+def _stamp_from_trail(gt_hex: str, trail, pt, err_km: float) -> dict:
+    """GT stamp dict for a matched trail point, gt_source "trail".
+
+    Shared by the proximity scan (_nearest_gt) and the hex-keyed bind in
+    _gt_for_record — gt_speed_ms/gt_heading_deg are truth velocity AT ``pt``
+    (see _trail_velocity), falling back to ground_truth_meta when the trail
+    alone can't derive one (e.g. a single-point trail).  The proximity
+    caller overwrites gt_source to "proximity" afterward.
+    """
+    gt_speed_ms, gt_heading_deg = _trail_velocity(trail, pt)
+    if gt_speed_ms is None:
+        meta = state.ground_truth_meta.get(gt_hex) or {}
+        gt_speed_ms = meta.get("speed_ms")
+        gt_heading_deg = meta.get("heading")
+    return {
+        "gt_hex": gt_hex,
+        "gt_error_km": round(err_km, 3),
+        "gt_lat": round(pt[0], 6),
+        "gt_lon": round(pt[1], 6),
+        "gt_speed_ms": round(gt_speed_ms, 1) if gt_speed_ms is not None else None,
+        "gt_heading_deg": (
+            round(gt_heading_deg, 1) if gt_heading_deg is not None else None
+        ),
+        "gt_source": "trail",
+    }
+
+
 def _nearest_gt(lat: float, lon: float, ts_s: float) -> dict:
     """Nearest ground-truth trail point at solve time, no distance threshold.
 
-    Frozen into each history record so "how far was this solve really off,
-    and from whom" survives later display dead-reckoning and GT re-binding.
-    Timestamp-closest point per trail — the same rule the MLAT verification
-    matcher uses.  gt_speed_ms/gt_heading_deg are truth velocity AT that
-    point (see _trail_velocity), falling back to ground_truth_meta when the
-    trail alone can't derive one (e.g. a single-point trail).
+    The dark-record (identity-less) path: a record with no adsb_hex scans
+    every trail and accepts whichever point is closest.  Identified records
+    go through _gt_for_record instead, which never proximity-binds — see
+    its docstring for why.  Frozen into each history record so "how far was
+    this solve really off, and from whom" survives later display dead-
+    reckoning and GT re-binding.  Timestamp-closest point per trail — the
+    same rule the MLAT verification matcher uses.
     """
     best_hex = best_km = best_pt = None
     best_trail = ()
@@ -945,21 +977,62 @@ def _nearest_gt(lat: float, lon: float, ts_s: float) -> dict:
             best_hex, best_km, best_pt, best_trail = gt_hex, d, pt, trail
     if best_hex is None:
         return dict(_GT_NO_MATCH)
-    gt_speed_ms, gt_heading_deg = _trail_velocity(best_trail, best_pt)
-    if gt_speed_ms is None:
-        meta = state.ground_truth_meta.get(best_hex) or {}
-        gt_speed_ms = meta.get("speed_ms")
-        gt_heading_deg = meta.get("heading")
-    return {
-        "gt_hex": best_hex,
-        "gt_error_km": round(best_km, 3),
-        "gt_lat": round(best_pt[0], 6),
-        "gt_lon": round(best_pt[1], 6),
-        "gt_speed_ms": round(gt_speed_ms, 1) if gt_speed_ms is not None else None,
-        "gt_heading_deg": (
-            round(gt_heading_deg, 1) if gt_heading_deg is not None else None
-        ),
-    }
+    stamp = _stamp_from_trail(best_hex, best_trail, best_pt, best_km)
+    stamp["gt_source"] = "proximity"
+    return stamp
+
+
+def _gt_for_record(adsb_hex, lat: float, lon: float, ts_s: float) -> dict:
+    """Identity-aware GT stamp for one history record.
+
+    A record carrying adsb_hex is scored against that identity ONLY — its
+    GT trail if fresh, else its live dead-reckoned ADS-B fix, else abstain.
+    Never the proximity scan: binding an identified solve to someone else's
+    trail is how real aircraft got 200 km phantom errors (seeded solves of
+    real hexes proximity-bound to whatever synthetic trail was nearest).
+    Dark records (adsb_hex None) keep the legacy proximity scan.
+    """
+    hexn = normalize_hex_key(adsb_hex)
+    if not hexn:
+        return _nearest_gt(lat, lon, ts_s)
+    # (a) own trail, same freshness rule as the proximity scan
+    # tuple() snapshots the deque in one C call — see _nearest_gt above.
+    trail = tuple(state.ground_truth_trails.get(hexn) or ())
+    if trail:
+        pt = min(trail, key=lambda p: abs(p[3] - ts_s))
+        if abs(pt[3] - ts_s) <= _MLAT_HISTORY_GT_MAX_DT_S:
+            return _stamp_from_trail(
+                hexn, trail, pt, _haversine_km(lat, lon, pt[0], pt[1])
+            )
+    # (b) trail missing or stale — fall back to the live ADS-B fix,
+    # dead-reckoned to solve time.  Deliberate: a stale synthetic trail with
+    # a live sim ADS-B fix should still score, source "adsb".
+    fix = state.adsb_aircraft.get(hexn)
+    if fix:
+        f_lat, f_lon = fix.get("lat"), fix.get("lon")
+        ts_fix_s = (fix.get("last_seen_ms") or 0) / 1000.0
+        if (
+            f_lat is not None and f_lon is not None
+            and math.isfinite(f_lat) and math.isfinite(f_lon)
+            and abs(ts_s - ts_fix_s) <= _MLAT_HISTORY_ADSB_MAX_DT_S
+        ):
+            gs_ms = (fix.get("gs", 0) or 0) * 0.514444
+            trk = math.radians(fix.get("track", 0) or 0)
+            ve, vn = gs_ms * math.sin(trk), gs_ms * math.cos(trk)
+            dt = ts_s - ts_fix_s
+            dr_lat, dr_lon = offset_latlon_m(f_lat, f_lon, ve * dt, vn * dt)
+            return {
+                "gt_hex": hexn,
+                "gt_error_km": round(_haversine_km(lat, lon, dr_lat, dr_lon), 3),
+                "gt_lat": round(dr_lat, 6),
+                "gt_lon": round(dr_lon, 6),
+                "gt_speed_ms": round(gs_ms, 1),
+                "gt_heading_deg": round(float(fix.get("track", 0) or 0), 1),
+                "gt_source": "adsb",
+            }
+    # (c) abstain — an identified solve is never scored against another
+    # identity, even a nearby one.
+    return dict(_GT_NO_MATCH)
 
 
 def _record_solve_history(
@@ -1054,7 +1127,9 @@ def _record_solve_history(
         rec.update(extra)
     if raw_lat is not None and raw_lon is not None:
         meas_ts_s = (rec["measurement_ts_ms"] or now_ms) / 1000.0
-        rec.update(_nearest_gt(float(raw_lat), float(raw_lon), meas_ts_s))
+        rec.update(
+            _gt_for_record(rec["adsb_hex"], float(raw_lat), float(raw_lon), meas_ts_s)
+        )
     else:
         rec.update(_GT_NO_MATCH)
     # Direction error: how far off the solved velocity vector points from

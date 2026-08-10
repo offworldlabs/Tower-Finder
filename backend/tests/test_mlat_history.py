@@ -261,3 +261,101 @@ class TestTrailSnapshotRace:
         finally:
             stop.set()
             t.join(timeout=5.0)
+
+
+class TestGtIdentityBinding:
+    """Identified (seeded) solves must never proximity-bind to another
+    aircraft's synthetic trail — real hexes with no GT trail of their own
+    were picking up ~200 km phantom errors from whatever trail happened to
+    be nearest.  A record with adsb_hex set is scored against that identity
+    only (its own trail, else its own live ADS-B fix, else abstain).  Dark
+    records (no adsb_hex) keep the legacy _nearest_gt proximity scan.
+    """
+
+    def setup_method(self):
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+
+    def teardown_method(self):
+        solver_mod._reset_for_tests()
+
+    def _record(self, adsb_hex=None, lat=LAT, lon=LON, ts_ms=None):
+        solver_mod._record_solve_history(
+            "rejected_gate",
+            {"adsb_hex": adsb_hex, "timestamp_ms": ts_ms or int(time.time() * 1000)},
+            None,
+            solve_key="mn-test",
+            raw_lat=lat,
+            raw_lon=lon,
+        )
+        return state.mlat_solve_history[-1]
+
+    def test_dark_record_keeps_proximity_scan(self):
+        _put_gt("abc123")
+        rec = self._record(adsb_hex=None)
+        assert rec["gt_hex"] == "abc123"
+        assert rec["gt_source"] == "proximity"
+
+    def test_seeded_binds_own_trail_not_nearest(self):
+        _put_gt("aaa111", lat=LAT + 0.5)  # own trail, ~55 km away
+        _put_gt("bbb222", lat=LAT + 0.001)  # someone else's, close by
+        rec = self._record(adsb_hex="aaa111")
+        assert rec["gt_hex"] == "aaa111"
+        assert rec["gt_source"] == "trail"
+        assert rec["gt_error_km"] > 50
+
+    def test_seeded_uppercase_hex_normalized(self):
+        _put_gt("aaa111")
+        rec = self._record(adsb_hex="AAA111")
+        assert rec["gt_hex"] == "aaa111"
+        assert rec["gt_source"] == "trail"
+
+    def test_seeded_no_trail_uses_live_adsb(self):
+        state.adsb_aircraft["ac60c4"] = {
+            "lat": LAT + 0.01, "lon": LON, "gs": 0, "track": 0,
+            "last_seen_ms": int(time.time() * 1000),
+        }
+        rec = self._record(adsb_hex="ac60c4")
+        assert rec["gt_hex"] == "ac60c4"
+        assert rec["gt_source"] == "adsb"
+        assert 0.5 < rec["gt_error_km"] < 2.0
+
+    def test_adsb_fix_dead_reckoned(self):
+        # gs=194.384 kt ≈ 100 m/s due north, fix 10 s stale: DR should carry
+        # the fix ~1 km north to meet the solve (without DR, error ~1 km).
+        now_ms = int(time.time() * 1000)
+        state.adsb_aircraft["ac60c4"] = {
+            "lat": LAT, "lon": LON, "gs": 194.384, "track": 0,
+            "last_seen_ms": now_ms - 10_000,
+        }
+        rec = self._record(
+            adsb_hex="ac60c4", lat=LAT + 1000 / 111320, lon=LON, ts_ms=now_ms,
+        )
+        assert rec["gt_source"] == "adsb"
+        assert rec["gt_error_km"] < 0.2
+
+    def test_seeded_unknown_hex_abstains(self):
+        _put_gt("bbb222")  # near, but a different identity — must not bind
+        rec = self._record(adsb_hex="ac60c4")
+        assert rec["gt_hex"] is None
+        assert rec["gt_error_km"] is None
+        assert rec["gt_source"] is None
+
+    def test_seeded_stale_adsb_abstains(self):
+        state.adsb_aircraft["ac60c4"] = {
+            "lat": LAT, "lon": LON, "gs": 0, "track": 0,
+            "last_seen_ms": int(time.time() * 1000) - 120_000,
+        }
+        rec = self._record(adsb_hex="ac60c4")
+        assert rec["gt_hex"] is None
+        assert rec["gt_error_km"] is None
+        assert rec["gt_source"] is None
+
+    def test_seeded_stale_trail_falls_back_to_adsb(self):
+        _put_gt("aaa111", age_s=300)
+        state.adsb_aircraft["aaa111"] = {
+            "lat": LAT, "lon": LON, "gs": 0, "track": 0,
+            "last_seen_ms": int(time.time() * 1000),
+        }
+        rec = self._record(adsb_hex="aaa111")
+        assert rec["gt_source"] == "adsb"
