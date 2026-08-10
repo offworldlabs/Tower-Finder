@@ -77,15 +77,20 @@ check_header() {
     fi
 }
 
-check_auth_rate_limit() {
-    local name="$1" url="$2"
+check_rate_limit() {
+    local name="$1" url="$2" tries="$3"
     printf "  %-40s " "$name"
-    # The `auth` zone is 5r/m with burst=3, so a short run of requests must
-    # start getting 429s. Anything else means the /api/auth/ location is
-    # missing — which is exactly the state staging was in before the nginx
-    # template was shared with production.
+    # A short run of requests must start getting 429s. Anything else means the
+    # location is missing (the state staging was in before the nginx template
+    # was shared with production) or that limit_req is keyed on something that
+    # does not vary per client — behind Cloudflare, an unset `real_ip_header`
+    # buckets per CF edge rather than per user and the limit never fires.
+    #
+    # `tries` MUST exceed the zone's burst: `burst=N nodelay` admits N+1
+    # back-to-back requests before rejecting one, so a run of exactly N sees
+    # only 200s and reports a false failure.
     local code saw_429=0
-    for _ in $(seq 1 10); do
+    for _ in $(seq 1 "$tries"); do
         code=$($CURL -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) || continue
         if [ "$code" = "429" ]; then saw_429=1; break; fi
     done
@@ -94,7 +99,7 @@ check_auth_rate_limit() {
         echo "OK (429 after burst)"
         PASS=$((PASS+1))
     else
-        echo "FAIL (no 429 in 10 requests; last=$code)"
+        echo "FAIL (no 429 in $tries requests; last=$code)"
         FAIL=$((FAIL+1))
     fi
 }
@@ -144,7 +149,12 @@ echo "── Shared nginx config (must match production) ──"
 check_header "CSP on dashboard vhost"       "${DASH_URL}/api/health" "content-security-policy"
 check_header "CSP on frontend vhost"        "${BASE_URL}/api/health" "content-security-policy"
 check_header "HSTS on api subdomain"        "${API_URL}/api/health"  "strict-transport-security"
-check_auth_rate_limit "/api/auth/ is rate limited" "${BASE_URL}/api/auth/me"
+# Two zones, two checks. The credential surface carries the tight limit that
+# actually resists brute force; the session reads a page load spends on every
+# visit carry a looser one. Testing only /api/auth/me would leave the
+# credential limit — the one that matters — unasserted.
+check_rate_limit "credential endpoints rate limited" "${BASE_URL}/api/auth/login/google" 10
+check_rate_limit "session endpoints rate limited"    "${BASE_URL}/api/auth/me"            30
 
 echo ""
 echo "── Detection archive (dash /data) ──"
