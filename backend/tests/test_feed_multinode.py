@@ -158,3 +158,66 @@ class TestMultinodeDeadReckonSource:
         # feature existed.
         exp_lat, _ = offset_latlon_m(LAT, LON, east_m=0.0, north_m=100.0 * age_s)
         assert ac["lat"] == pytest.approx(exp_lat, abs=2e-4)
+
+
+class TestVelTrustDisplay:
+    """VEL_TRUST_MODE selects whether an untrusted-velocity multinode entry
+    still carries gs/track for display (multinode_to_aircraft): "off"
+    (default) changes nothing; "active" additionally drops gs/track from an
+    entry whose vel_untrusted flag is set, since a solve-velocity vector
+    this unreliable is worse than showing no heading/speed at all.  A
+    trusted entry (no vel_untrusted / False) is never affected by the mode.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+        yield
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+
+    def _build_mn(self):
+        from services.frame_processor import build_combined_aircraft_json
+
+        pipeline = types.SimpleNamespace(geolocated_tracks={}, config={})
+        result = build_combined_aircraft_json(pipeline)
+        mn = [a for a in result["aircraft"] if a.get("multinode")]
+        assert len(mn) == 1
+        return mn[0]
+
+    def test_untrusted_default_env_keeps_gs_track(self, monkeypatch):
+        monkeypatch.delenv("VEL_TRUST_MODE", raising=False)
+        entry = _mn_entry(age_s=10.0, vel_north=100.0)
+        entry["vel_untrusted"] = True
+        state.multinode_tracks["mn-dark-x"] = entry
+        ac = self._build_mn()
+        assert "gs" in ac
+        assert "track" in ac
+        assert ac["vel_untrusted"] is True
+
+    def test_untrusted_active_mode_drops_gs_track(self, monkeypatch):
+        monkeypatch.setenv("VEL_TRUST_MODE", "active")
+        age_s = 10.0
+        entry = _mn_entry(age_s=age_s, vel_north=100.0)
+        entry["vel_untrusted"] = True
+        state.multinode_tracks["mn-dark-x"] = entry
+        ac = self._build_mn()
+        assert "gs" not in ac
+        assert "track" not in ac
+        assert ac["vel_untrusted"] is True
+        # lat/lon/seen are computed independently of gs/track — untouched.
+        exp_lat, exp_lon = offset_latlon_m(LAT, LON, east_m=0.0, north_m=100.0 * age_s)
+        assert ac["lat"] == pytest.approx(exp_lat, abs=2e-4)
+        assert ac["lon"] == pytest.approx(exp_lon, abs=2e-4)
+        assert ac["seen"] == pytest.approx(age_s, abs=1.0)
+
+    def test_trusted_active_mode_keeps_gs_track_no_flag(self, monkeypatch):
+        monkeypatch.setenv("VEL_TRUST_MODE", "active")
+        entry = _mn_entry(age_s=10.0, vel_north=100.0)
+        # vel_untrusted absent -> trusted; active mode must leave it alone.
+        state.multinode_tracks["mn-dark-x"] = entry
+        ac = self._build_mn()
+        assert "gs" in ac
+        assert "track" in ac
+        assert "vel_untrusted" not in ac

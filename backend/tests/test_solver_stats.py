@@ -183,11 +183,12 @@ class TestConsensusAndCounters:
         state.solver_consensus_filtered = 8
         state.solver_consensus_fallback = 9
         state.solver_consensus_shadow = 10
+        state.solver_vel_untrusted_published = 11
         out = _solver_window_stats(10.0)
         assert out["counters"] == {
             "successes": 5, "failures": 2, "n2_unconfirmed": 1,
             "solver_trimmed": 3, "stale_drops": 4, "queue_drops": 6,
-            "worker_errors": 0,
+            "worker_errors": 0, "vel_untrusted_published": 11,
         }
         assert out["consensus"]["selected"] == 7
         assert out["consensus"]["filtered"] == 8

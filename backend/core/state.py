@@ -336,6 +336,10 @@ solver_anchor_hits: int = 0
 solver_anchor_fallbacks: int = 0
 solver_anchored_published: int = 0
 
+# Publishes whose velocity carried the vel_untrusted flag (vz saturated, or
+# raw-solve velocity at n<=3) — the denominator is solver_successes.
+solver_vel_untrusted_published: int = 0
+
 # FOV_MODE beam-gate instrumentation (services/tasks/solver.py's
 # fov_gate_verdict).  shadow-mode-only comparison of today's per-node beam
 # verdict against what the learned FOV would have decided: agree covers both
@@ -458,6 +462,7 @@ def _reset_for_tests() -> None:
     global solver_consensus_selected, solver_consensus_filtered
     global solver_consensus_fallback, solver_consensus_shadow
     global solver_anchor_hits, solver_anchor_fallbacks, solver_anchored_published
+    global solver_vel_untrusted_published
     global fov_shadow_agree, fov_shadow_would_pass, fov_shadow_would_reject
     global fov_neg_events
     global solver_worker_errors
@@ -519,6 +524,7 @@ def _reset_for_tests() -> None:
         solver_consensus_selected = solver_consensus_filtered = 0
         solver_consensus_fallback = solver_consensus_shadow = 0
         solver_anchor_hits = solver_anchor_fallbacks = solver_anchored_published = 0
+        solver_vel_untrusted_published = 0
         fov_shadow_agree = fov_shadow_would_pass = fov_shadow_would_reject = 0
         fov_neg_events = 0
         solver_worker_errors = 0

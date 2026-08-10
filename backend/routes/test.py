@@ -899,6 +899,7 @@ def _solver_window_stats(minutes: float) -> dict:
             "stale_drops": state.solver_stale_drops,
             "queue_drops": state.solver_queue_drops,
             "worker_errors": state.solver_worker_errors,
+            "vel_untrusted_published": state.solver_vel_untrusted_published,
         },
     }
 

@@ -1039,6 +1039,8 @@ def _record_solve_history(
         "solve_count": r.get("solve_count"),
         "source_track_ids": list(r.get("source_track_ids") or []),
         "vel_source": r.get("vel_source"),
+        "vz_saturated": bool(r.get("vz_saturated")),
+        "vel_untrusted": bool(r.get("vel_untrusted")),
         "solver_vel_east": (
             round(float(r["solver_vel_east"]), 1)
             if r.get("solver_vel_east") is not None else None
@@ -1600,6 +1602,16 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             result["vel_source"] = "cv_fit"
         else:
             result["vel_source"] = "solve"
+        # Adopted-fit velocity is only untrusted when the same-epoch solve
+        # pinned vz — that is where the fit's error tail lives (fit p90
+        # 274 vs 59 m/s unsat).  Raw solve velocity is additionally
+        # untrusted at n<=3, where Doppler is under/exactly-determined
+        # (median vector error 81 vs 13 m/s unflagged).
+        result["vel_untrusted"] = bool(result.get("vz_saturated")) or (
+            result["vel_source"] == "solve" and int(result.get("n_nodes") or 0) <= 3
+        )
+        if result["vel_untrusted"]:
+            state.bump_counter("solver_vel_untrusted_published")
         with _MN_TRACKS_LOCK:
             # Identity before smoothing: the track key is the smoother's
             # history key, so dark targets accumulate history too.  Key

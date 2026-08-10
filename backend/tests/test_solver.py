@@ -1,5 +1,7 @@
 """Unit tests for the multi-node geolocation solver."""
 
+import time
+
 import numpy as np
 import pytest
 from retina_geolocator.bistatic_models import bistatic_delay, bistatic_doppler
@@ -11,6 +13,9 @@ from retina_geolocator.multinode_solver import (
     _residual_function,
     solve_multinode,
 )
+
+from core import state
+from services.tasks import solver as solver_mod
 
 # ── Coordinate conversions ────────────────────────────────────────────────────
 
@@ -327,3 +332,142 @@ class TestSolveMultinode:
         result = solve_multinode(s_in, two_node_configs)
         assert result is not None
         assert set(result["contributing_node_ids"]) == {"node_a", "node_b"}
+
+
+# ── vel_untrusted derivation ──────────────────────────────────────────────────
+
+
+def _untrusted_s_in(node_ids, **overrides):
+    """Minimal solver-queue input for driving _process_solver_item — no
+    cv_epochs, so the CV fit is a no-op and vel_source falls back to
+    'solve' unless a test supplies its own epochs."""
+    s_in = {
+        "initial_guess": {"lat": 40.73, "lon": -73.95, "alt_km": 8.0},
+        "measurements": [
+            {"node_id": nid, "delay_us": 10.0, "doppler_hz": 1.0, "snr": 15.0}
+            for nid in node_ids
+        ],
+        "n_nodes": len(node_ids),
+        "timestamp_ms": int(time.time() * 1000),
+    }
+    s_in.update(overrides)
+    return s_in
+
+
+def _untrusted_solve_fn(node_ids, vz_saturated, **overrides):
+    """A solve_fn returning the same success dict regardless of altitude
+    layer — _solve_best_altitude calls it once per layer for n>=3 — carrying
+    vz_saturated exactly as solve_multinode itself now does."""
+    base = {
+        "success": True,
+        "lat": 40.73,
+        "lon": -73.95,
+        "alt_m": 8000.0,
+        "timestamp_ms": int(time.time() * 1000),
+        "vel_east": 10.0,
+        "vel_north": 5.0,
+        "vel_up": 0.0,
+        "vz_saturated": vz_saturated,
+        "rms_delay": 1.0,
+        "rms_doppler": 5.0,
+        "n_nodes": len(node_ids),
+        "n_measurements": len(node_ids),
+        "contributing_node_ids": list(node_ids),
+    }
+    base.update(overrides)
+
+    def fn(s_in, cfgs):
+        return dict(base)
+
+    return fn
+
+
+class TestVelUntrustedDerivation:
+    """vel_untrusted = vz_saturated OR (vel_source == "solve" AND n_nodes <=
+    3) — see the comment beside its derivation in _process_solver_item.
+    Bench measurement (n=1764 GT-matched solves): rows flagged this way
+    carry a median vector error of 81 m/s vs 13 m/s unflagged, and the
+    CV-fit-adopted rows' p90 tail (274 vs 59 m/s) rides on the same-epoch
+    solve's vz saturation — so the flag, not a value swap, does the
+    tail-guarding.
+    """
+
+    def setup_method(self):
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+
+    def teardown_method(self):
+        solver_mod._reset_for_tests()
+
+    def _run(self, s_in, solve_fn):
+        return solver_mod._process_solver_item(
+            (dict(s_in), {}, time.time()), solve_fn
+        )
+
+    def test_vz_saturated_with_cv_fit_adopted_is_untrusted(self, monkeypatch):
+        """vz_saturated True on the raw solve, fit adopted (vel_source
+        becomes cv_fit): still untrusted — the adopted fit's own error tail
+        rides on the same-epoch solve's vz saturation."""
+        node_ids = ["n1", "n2", "n3"]
+        calls = []
+
+        def fake_pool_call(target_fn, *args):
+            calls.append((target_fn, args))
+            return {
+                "success": True, "n_epochs": 8, "chi2_per_dof": 0.5,
+                "vel_east": 123.4, "vel_north": -55.5, "vel_up": 3.0,
+            }
+
+        monkeypatch.setattr(solver_mod, "_pool_call", fake_pool_call)
+        s_in = _untrusted_s_in(
+            node_ids, cv_epochs=[{"t_s": float(i)} for i in range(6)],
+        )
+        result = self._run(s_in, _untrusted_solve_fn(node_ids, vz_saturated=True))
+        assert result is not None and result["success"]
+        assert result["vel_source"] == "cv_fit"
+        assert result["vel_untrusted"] is True
+
+    def test_solve_source_n_nodes_3_is_untrusted(self):
+        """No cv_epochs — vel_source stays 'solve'.  n_nodes == 3 sits at
+        the under/exactly-determined Doppler edge, so it is untrusted even
+        with a clean (unsaturated) vz."""
+        node_ids = ["n1", "n2", "n3"]
+        s_in = _untrusted_s_in(node_ids)
+        result = self._run(s_in, _untrusted_solve_fn(node_ids, vz_saturated=False))
+        assert result is not None and result["success"]
+        assert result["vel_source"] == "solve"
+        assert result["vel_untrusted"] is True
+
+    def test_solve_source_n_nodes_4_is_trusted(self):
+        """Same as above but n_nodes == 4: Doppler is overdetermined, so an
+        unsaturated raw solve is trusted."""
+        node_ids = ["n1", "n2", "n3", "n4"]
+        s_in = _untrusted_s_in(node_ids)
+        result = self._run(s_in, _untrusted_solve_fn(node_ids, vz_saturated=False))
+        assert result is not None and result["success"]
+        assert result["vel_source"] == "solve"
+        assert result["vel_untrusted"] is False
+
+    def test_unsaturated_cv_fit_n_nodes_2_is_trusted(self, monkeypatch):
+        """vz_saturated False, fit adopted (vel_source == 'cv_fit') at
+        n_nodes == 2: the n<=3 clause only ever applies to raw 'solve'
+        velocity, so an adopted, unsaturated fit is trusted regardless of
+        n_nodes."""
+        node_ids = ["n1", "n2"]
+        calls = []
+
+        def fake_pool_call(target_fn, *args):
+            calls.append((target_fn, args))
+            return {
+                "success": True, "n_epochs": 8, "chi2_per_dof": 0.5,
+                "vel_east": 200.0, "vel_north": -80.0, "vel_up": 1.0,
+            }
+
+        monkeypatch.setattr(solver_mod, "_pool_call", fake_pool_call)
+        s_in = _untrusted_s_in(
+            node_ids, cv_epochs=[{"t_s": float(i)} for i in range(6)],
+        )
+        result = self._run(s_in, _untrusted_solve_fn(node_ids, vz_saturated=False))
+        assert result is not None and result["success"]
+        assert result["vel_source"] == "cv_fit"
+        assert result["vel_untrusted"] is False

@@ -79,7 +79,14 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
             # (No GT-meta guard needed: mn* hexes are solver-minted and never
             # appear in ground_truth_meta.)
             state.anomaly_hexes.discard(_mn_hex)
-    return {
+    _vel_untrusted = bool(r.get("vel_untrusted"))
+    # VEL_TRUST_MODE, read per call like TRACK_DR_SOURCE: "off" (default)
+    # changes nothing — the flag rides along but gs/track stay populated.
+    # "active" additionally drops gs/track from an untrusted entry, since a
+    # solve-velocity vector this unreliable (median vector error 81 vs
+    # 13 m/s unflagged) is worse than not showing a heading/speed at all.
+    _vel_trust_mode = (os.getenv("VEL_TRUST_MODE") or "off").strip().lower()
+    entry = {
         "hex": _mn_hex,
         "type": "multinode_solve",
         "flight": f"MN{r['n_nodes']}N",
@@ -108,6 +115,12 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
             max(speed_ms, r.get("max_velocity_ms", 0.0) or 0.0), 1
         ),
     }
+    if _vel_untrusted:
+        entry["vel_untrusted"] = True
+        if _vel_trust_mode == "active":
+            del entry["gs"]
+            del entry["track"]
+    return entry
 
 
 # How often to recompute detection arcs and GT snapshot (seconds).
