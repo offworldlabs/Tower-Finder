@@ -56,9 +56,9 @@ COPY deploy/nginx-security.conf /etc/nginx/conf.d/security.conf
 # placeholder is installed here only so the file exists to be chowned below.
 RUN echo "# replaced at boot by deploy/start.sh" > /etc/nginx/sites-available/default
 
-# Deploy scripts + nginx template/snippets + test nginx config
+# Deploy scripts + nginx template/snippets
 COPY deploy/ /app/deploy/
-RUN chmod +x /app/deploy/start.sh /app/deploy/start-test.sh
+RUN chmod +x /app/deploy/start.sh
 
 # Save a pristine copy of source-controlled config files outside the
 # /app/backend/config volume so they always reflect the current image.

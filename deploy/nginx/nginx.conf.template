@@ -15,19 +15,27 @@
 # and CI asserts the two environments render to the same config modulo
 # hostnames (deploy/check-env-parity.sh).
 
+# RETINA_IF TLS
 # Redirect all HTTP → HTTPS
 server {
     listen 80;
-    server_name ${HOST_MAIN} ${HOST_API} ${HOST_MAP} ${HOST_DASH} ${HOST_ADMIN} ${HOST_TESTAPI} ${HOST_TESTMAP} ${HOST_LEGACY_REDIRECT} _;
+    server_name ${HOST_MAIN} ${HOST_API} ${HOST_MAP} ${HOST_DASH} ${HOST_ADMIN} ${HOST_TESTMAP} ${HOST_LEGACY_REDIRECT} _;
     return 301 https://$host$request_uri;
 }
+# RETINA_ENDIF
 
 # ${HOST_MAIN} — tower finder frontend
 server {
+    # RETINA_IF TLS
     listen 443 ssl;
+    # RETINA_ELSE
+    listen 80;
+    # RETINA_ENDIF
     server_name ${HOST_MAIN};
 
+    # RETINA_IF TLS
     # RETINA_INCLUDE snippets/tls.conf
+    # RETINA_ENDIF
     # RETINA_INCLUDE snippets/security-headers-page.conf
 
     root /app/frontend/dist;
@@ -58,10 +66,16 @@ server {
 
 # ${HOST_API} — dedicated API subdomain
 server {
+    # RETINA_IF TLS
     listen 443 ssl;
+    # RETINA_ELSE
+    listen 80;
+    # RETINA_ENDIF
     server_name ${HOST_API};
 
+    # RETINA_IF TLS
     # RETINA_INCLUDE snippets/tls.conf
+    # RETINA_ENDIF
     # RETINA_INCLUDE snippets/security-headers-api.conf
 
     location /ws/ {
@@ -79,10 +93,16 @@ server {
 
 # ${HOST_MAP} — live radar map (React frontend)
 server {
+    # RETINA_IF TLS
     listen 443 ssl;
+    # RETINA_ELSE
+    listen 80;
+    # RETINA_ENDIF
     server_name ${HOST_MAP};
 
+    # RETINA_IF TLS
     # RETINA_INCLUDE snippets/tls.conf
+    # RETINA_ENDIF
     # RETINA_INCLUDE snippets/security-headers-page.conf
 
     root /app/frontend/dist;
@@ -99,29 +119,18 @@ server {
     # RETINA_INCLUDE snippets/spa.conf
 }
 
-# ${HOST_TESTAPI} — test network API (same backend as ${HOST_API})
-server {
-    listen 443 ssl;
-    server_name ${HOST_TESTAPI};
-
-    # RETINA_INCLUDE snippets/tls.conf
-    # RETINA_INCLUDE snippets/security-headers-api.conf
-
-    location /ws/ {
-        # RETINA_INCLUDE snippets/ws.conf
-    }
-
-    location / {
-        # RETINA_INCLUDE snippets/api.conf
-    }
-}
-
 # ${HOST_TESTMAP} — test network live radar map (React frontend)
 server {
+    # RETINA_IF TLS
     listen 443 ssl;
+    # RETINA_ELSE
+    listen 80;
+    # RETINA_ENDIF
     server_name ${HOST_TESTMAP};
 
+    # RETINA_IF TLS
     # RETINA_INCLUDE snippets/tls.conf
+    # RETINA_ENDIF
     # RETINA_INCLUDE snippets/security-headers-page.conf
 
     root /app/frontend/dist;
@@ -140,10 +149,16 @@ server {
 
 # ${HOST_DASH} — user dashboard
 server {
+    # RETINA_IF TLS
     listen 443 ssl;
+    # RETINA_ELSE
+    listen 80;
+    # RETINA_ENDIF
     server_name ${HOST_DASH};
 
+    # RETINA_IF TLS
     # RETINA_INCLUDE snippets/tls.conf
+    # RETINA_ENDIF
     # RETINA_INCLUDE snippets/security-headers-page.conf
 
     root /app/dashboard/dist;
@@ -163,10 +178,16 @@ server {
 # ${HOST_ADMIN} — admin dashboard (same bundle as ${HOST_DASH}; the app gates
 # the admin routes on the authenticated user's role)
 server {
+    # RETINA_IF TLS
     listen 443 ssl;
+    # RETINA_ELSE
+    listen 80;
+    # RETINA_ENDIF
     server_name ${HOST_ADMIN};
 
+    # RETINA_IF TLS
     # RETINA_INCLUDE snippets/tls.conf
+    # RETINA_ENDIF
     # RETINA_INCLUDE snippets/security-headers-page.conf
 
     root /app/dashboard/dist;
@@ -189,10 +210,16 @@ server {
 # harmless — keeping the block identical is what lets the parity check assert
 # the two rendered configs match.
 server {
+    # RETINA_IF TLS
     listen 443 ssl;
+    # RETINA_ELSE
+    listen 80;
+    # RETINA_ENDIF
     server_name ${HOST_LEGACY_REDIRECT};
 
+    # RETINA_IF TLS
     # RETINA_INCLUDE snippets/tls.conf
+    # RETINA_ENDIF
     # RETINA_INCLUDE snippets/security-headers-api.conf
 
     location / {

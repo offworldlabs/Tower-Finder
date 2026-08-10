@@ -961,7 +961,9 @@ export default function LiveAircraftMap() {
   const [displayAircraft, setDisplayAircraft] = useState([]);
   const [showCoverage, setShowCoverage] = usePersistedState("tf.layer.coverage", initialLayers?.coverage ?? false);
   const [showTrails, setShowTrails] = usePersistedState("tf.layer.trails", initialLayers?.trails ?? true);
-  // Default GT on for testmap/staging-testmap (simulation demo); off on map.* and staging-map.* (real only)
+  // Default GT on wherever the radar is synthetic (testmap, staging, test, laptop) —
+  // there the truth overlay is the reference you are comparing against. Off only on
+  // production's map.*, the one real-receiver surface. See utils/domains.ts.
   const [showGroundTruth, setShowGroundTruth] = usePersistedState("tf.layer.groundTruth", initialLayers?.groundTruth ?? !defaultsGroundTruthOff);
   const [showLabels, setShowLabels] = usePersistedState("tf.layer.labels", initialLayers?.labels ?? true);
   const [selectedHex, setSelectedHex] = useState(initialHash.hex ?? null);

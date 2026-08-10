@@ -18,45 +18,104 @@
 services:
   tower-finder:
     container_name: retina-staging-server
+    # No TCP ingest on staging. The base publishes 3012 for real receiver nodes;
+    # staging has none, and its own fleet reaches the server as tower-finder:3012
+    # over the compose network, never via the host port. Verified with `ss`: zero
+    # established connections on it. Publishing it was therefore pure exposure —
+    # and worse than it looks, because RETINA_ENV=test silences the missing
+    # RADAR_NODE_TOKEN warning, so anything on the internet could have registered
+    # itself as a node here. Production keeps 3012; that is where real nodes land.
+    ports: !override
+      - "80:80"
+      - "443:443"
     environment:
-      - RETINA_ENV=staging
-      - CORS_ORIGINS=https://staging.retina.fm,https://staging-api.retina.fm,https://staging-map.retina.fm,https://staging-dash.retina.fm,https://staging-admin.retina.fm
+      # Deliberately `test`, not `production`/`staging`, while admin access stays
+      # open during the build-out. This leaves four backend auth/secret guards
+      # inactive — JWT_SECRET stops being required, AUTH_BYPASS applies when no
+      # OAuth is configured, and the missing-key warnings in radar.py and
+      # tcp_handler.py downgrade. Tracked in ClickUp 86cb1emcx; revert to the
+      # real environment name there, not here.
+      - RETINA_ENV=test
+      - CORS_ORIGINS=https://staging-towers.retina.fm,https://staging-api.retina.fm,https://staging-map.retina.fm,https://staging-dash.retina.fm,https://staging-admin.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
       # at boot to render deploy/nginx/nginx.conf.template. One template serves
       # both environments; only these values change.
       #
       # Every vhost is defined here even where no DNS record exists yet
-      # (staging-admin, staging-testapi): the Cloudflare origin cert is
+      # (staging-admin): the Cloudflare origin cert is
       # *.retina.fm, so an unresolved name costs nothing, and keeping the two
       # variable sets the same shape is what lets the parity check assert the
       # rendered configs are identical.
-      - HOST_MAIN=staging.retina.fm
+      - HOST_MAIN=staging-towers.retina.fm
       - HOST_API=staging-api.retina.fm
       - HOST_MAP=staging-map.retina.fm
       - HOST_DASH=staging-dash.retina.fm
       - HOST_ADMIN=staging-admin.retina.fm
-      - HOST_TESTAPI=staging-testapi.retina.fm
       - HOST_TESTMAP=staging-testmap.retina.fm
       - HOST_LEGACY_REDIRECT=staging-tower-finder.retina.fm
       # The only host-naming part of the CSP. wss://*.retina.fm already covers
       # both environments, so only the two explicit origins vary.
       - CSP_CONNECT_SRC=https://staging-api.retina.fm https://staging-admin.retina.fm wss://*.retina.fm
+    # Sized to the droplet, which is the point of an overlay. staging has 3915 MB
+    # and NO swap, of which ~1.7 GB is already spoken for (dockerd ~460 MB, the
+    # DigitalOcean agent ~760 MB, journald), leaving ~2.2 GB actually available.
+    # Limits are ceilings rather than reservations so it does not fail at boot; it
+    # means the OOM killer picks the victim under load, and with no swap there is
+    # no slack at all to absorb a spike. The dangerous moment is a deploy:
+    # `docker compose up --build` runs the Vite and dashboard builds on-box while
+    # the previous containers are still up.
+    #
+    # 1600 + the fleet's 400 commits 2000M against ~2.2 GB free. Measured on
+    # retina-test under a much heavier fleet than this one, the app sat at 152 MiB
+    # and the fleet at 25 MiB, so this is an order of magnitude of headroom rather
+    # than a tight fit: memory is not what constrains these boxes, CPU is.
     deploy:
       resources:
         limits:
-          cpus: "2"
-          memory: 3G
+          cpus: "1.5"
+          memory: 1600M
 
   fleet:
     container_name: retina-staging-fleet
     environment:
-      # Scoped to the Greenville, SC metro, and ~60% of prod's node count: the
-      # staging droplet is smaller. This is the intended difference between the
-      # two environments — everything else is meant to match.
-      - FLEET_NODES=15
+      # Scoped to the Greenville, SC metro, and run harder than production without
+      # being run into the ground: 50 nodes at a 1.0s per-node detection rate, so
+      # the server sees n_nodes / interval = 50 frames/s against prod's 12.5. Fleet
+      # scale is the one thing the environments are meant to differ on, and this is
+      # what staging differs FOR — prod's 25 nodes at 2.0s is a demo stream, and a
+      # rehearsal that never pushes the pipeline was not catching pipeline problems.
+      #
+      # 4x production's frame rate — but read that against the core count before
+      # reading it as "4x the load". Production has 4 cores; this droplet and
+      # retina-test have 2. So per core this is 25 fps against production's 3.1,
+      # which is 8x, and the solver feels the per-core number.
+      #
+      # Measured on retina-test at this size: the box holds the frame rate (41 of
+      # 50 fps, no frames dropped) but the solver does not keep up. Per-solve cost
+      # runs 45-52s against production's 17s, the solver queue oscillates to ~28%
+      # where production sits at 0%, and 21 solves succeed against 243 failures
+      # where production manages 80%. Nothing is dropping, so this is a usable
+      # environment, but it is NOT a faithful rehearsal of production's solver.
+      #
+      # 200 nodes at 0.5s was tried first and was far worse: 178 of a notional 400
+      # fps, latency past 30s and still climbing, queue filling behind it.
+      #
+      # If you want staging to reproduce production's solver behaviour rather than
+      # merely survive, the fleet has to come down to production's own 25/2.0 —
+      # which on half the cores is still 2x production's per-core load. Measure on
+      # retina-test before changing this in either direction.
+      #
+      # Note the trade either way: staging no longer reproduces production's frame
+      # rate, so a regression that only shows up at 12.5 fps will not surface here
+      # first. Everything structural — image, volumes, healthcheck, nginx template,
+      # authenticated ingest — still matches, and that is what the parity check
+      # holds.
+      - FLEET_NODES=50
       - FLEET_REGIONS=us
       - FLEET_METRO=gvl
-      - FLEET_N_CLUSTER=10
+      # Held at prod's 16/25 proportion of the node count, so changing the fleet
+      # size does not change the share of nodes with designed coverage geometry.
+      - FLEET_N_CLUSTER=32
       - FLEET_N_CLUSTERS=1
       # Undesigned community layout rather than the ring.  The ring surrounds
       # the core with receivers that all share one illuminator and all aim
@@ -67,17 +126,27 @@ services:
       - FLEET_LAYOUT=scatter
       - FLEET_METRO_TRAFFIC_FRAC=0.85
       - FLEET_MODE=adsb
-      # 15 nodes / 2.0s = 7.5 fps
-      - FLEET_INTERVAL=2.0
+      # 50 nodes / 1.0s = 50 fps
+      - FLEET_INTERVAL=1.0
       - FLEET_TIME_SCALE=1.0
-      - FLEET_MIN_AIRCRAFT=10
-      - FLEET_MAX_AIRCRAFT=20
+      # Above prod's 15-30, below the 40-60 the overload run used. Aircraft count
+      # is independent of node count, but it multiplies solver work: pairing cost
+      # goes as nodes x aircraft, so it is the other half of the load knob.
+      - FLEET_MIN_AIRCRAFT=25
+      - FLEET_MAX_AIRCRAFT=40
       - FLEET_BEAM_WIDTH_DEG=0
       - FLEET_MAX_RANGE_KM=0
-      - FLEET_CONCURRENCY=10
-      - FLEET_CONNECT_RETRIES=10
+      # Gates concurrent connection establishment only, not the steady-state send
+      # rate. Half the node count, so the fleet reconnects in two batches after a
+      # deploy rather than the twenty the old value of 10 would have taken.
+      - FLEET_CONCURRENCY=25
+      - FLEET_CONNECT_RETRIES=30
+    # See the app's limits above. The fleet measured 25 MiB on retina-test running
+    # four times this many nodes, so 400M is generous; the app should get the
+    # larger share, and on a swapless box neither ceiling should be discovered by
+    # the OOM killer.
     deploy:
       resources:
         limits:
-          cpus: "1"
-          memory: 1G
+          cpus: "1.0"
+          memory: 400M
