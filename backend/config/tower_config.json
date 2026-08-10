@@ -35,6 +35,10 @@
     },
     "sort_order": [
       {
+        "field": "coverage_area_added_km2",
+        "ascending": false
+      },
+      {
         "field": "band_priority",
         "ascending": true
       },
