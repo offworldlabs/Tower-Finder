@@ -17,7 +17,7 @@ import pytest
 os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
-from config.constants import CAL_DETECTION_FRESH_S  # noqa: E402
+from config.constants import CAL_DETECTION_FRESH_S, CAL_FIX_DETECTION_SKEW_S  # noqa: E402
 from core import state  # noqa: E402
 from services import track_gates  # noqa: E402
 
@@ -136,8 +136,12 @@ class TestFreshDetectionRecordsCalibration:
         assert len(state.accuracy_samples) == 1
 
     def test_stamp_exactly_at_the_budget_still_counts(self, node):
+        # The fix's own age matches the detection's age (skew 0) so this
+        # pins CAL_DETECTION_FRESH_S's boundary alone, not
+        # CAL_FIX_DETECTION_SKEW_S's -- see TestFixDetectionSkewGate for
+        # the skew boundary itself.
         now = time.time()
-        _adsb_fix(now)
+        _adsb_fix(now, age_s=CAL_DETECTION_FRESH_S)
         track = _make_track(
             n_detections=3,
             last_detection_age_s=CAL_DETECTION_FRESH_S,
@@ -211,3 +215,72 @@ class TestDetectionIdentityGate:
                             last_detection_adsb_hex=HEX.upper())
         track_gates.track_entry(HEX, track, dict(_NODE_CFG), now, set())
         assert _points(node) == 1
+
+
+class TestFixDetectionSkewGate:
+    """The exit-smear mechanism: CAL_DETECTION_FRESH_S and the fix's own
+    age gate are both measured against `now`, not against each other, so a
+    track coasting a few seconds past its last real detection with a
+    still-live ADS-B fix used to pass both gates and get its LIVE
+    (post-exit) position recorded as if it were the detection.
+    fix_ts/detection_ts and CAL_FIX_DETECTION_SKEW_S (services/calibration.py)
+    close that: the fix must describe the detection event, not merely be
+    fresh relative to now.
+    """
+
+    def test_a_track_coasting_past_its_detection_with_a_live_fix_records_nothing(self, node):
+        """3+ s of coasting is still inside CAL_DETECTION_FRESH_S (5 s), so
+        the old gate alone would have let this through -- age_s/skew is what
+        must catch it now."""
+        now = time.time()
+        _adsb_fix(now, age_s=0.1)   # a live, essentially-current fix
+        track = _make_track(n_detections=5,
+                            last_detection_age_s=CAL_FIX_DETECTION_SKEW_S + 1.5,
+                            now=now)
+        entry = track_gates.track_entry(HEX, track, dict(_NODE_CFG), now, set())
+
+        assert entry is not None   # display path unaffected
+        assert _points(node) == 0
+        assert _furthest_count(node) == 0
+
+    def test_record_verified_detection_is_not_called_when_the_recorder_returns_zero(self, node):
+        """area.record_verified_detection is gated on record_adsb_calibration's
+        return value now, not duplicated on _detection_fresh alone -- the
+        detection-range record was fed by the same exit smear."""
+        now = time.time()
+        _adsb_fix(now, age_s=0.1)
+        track = _make_track(n_detections=5,
+                            last_detection_age_s=CAL_FIX_DETECTION_SKEW_S + 1.5,
+                            now=now)
+        track_gates.track_entry(HEX, track, dict(_NODE_CFG), now, set())
+        assert _furthest_count(node) == 0
+
+    def test_a_matching_fix_and_detection_age_still_records(self, node):
+        """Sanity check on the two skew tests above: with zero skew the
+        emit path records exactly as before."""
+        now = time.time()
+        _adsb_fix(now, age_s=1.0)
+        track = _make_track(n_detections=3, last_detection_age_s=1.0, now=now)
+        track_gates.track_entry(HEX, track, dict(_NODE_CFG), now, set())
+        assert _points(node) == 1
+        assert _furthest_count(node) == 1
+
+    def test_emit_path_forwards_fix_ts_and_detection_ts(self, node, monkeypatch):
+        """Wiring check: track_entry must pass the actual fix/detection
+        timestamps through to the one place the skew rule is enforced,
+        not recompute or approximate them."""
+        now = time.time()
+        _adsb_fix(now, age_s=1.0)
+        track = _make_track(n_detections=3, last_detection_age_s=1.0, now=now)
+        captured = {}
+
+        def _spy(node_ids, lat, lon, age_s, fix_ts, detection_ts):
+            captured["fix_ts"] = fix_ts
+            captured["detection_ts"] = detection_ts
+            return 1
+
+        monkeypatch.setattr(track_gates, "record_adsb_calibration", _spy)
+        track_gates.track_entry(HEX, track, dict(_NODE_CFG), now, set())
+
+        assert captured["fix_ts"] == pytest.approx(now - 1.0, abs=0.01)
+        assert captured["detection_ts"] == pytest.approx(now - 1.0, abs=0.01)

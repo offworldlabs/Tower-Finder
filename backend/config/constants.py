@@ -92,6 +92,23 @@ CAL_MAX_ADSB_AGE_S = 10.0
 # detected ground.  See services/track_gates.py.
 CAL_DETECTION_FRESH_S = 5.0
 
+# Tightest bound between a calibration point's ADS-B fix and the detection
+# event it is supposed to describe.  A calibration point must describe where
+# the target WAS WHEN THE NODE DETECTED IT — but CAL_DETECTION_FRESH_S and
+# CAL_MAX_ADSB_AGE_S above are both gates measured against `now`, the moment
+# the emit loop happens to run, not against each other.  So for up to
+# CAL_DETECTION_FRESH_S after the last real detection, the emit loop kept
+# recording the LIVE fix while the aircraft flew on: past the wedge edge at
+# medium range, or — near the RX, where 1 km of travel is on the order of 60°
+# of bearing — at an arbitrary bearing entirely.  Bounding
+# |fix_ts - detection_ts| pins the recorded position to the detection event
+# itself, independent of how fresh either one is relative to now: 2 s at
+# 250 m/s is <= 0.5 km of skew, well inside the 5°-bin quantisation at the
+# ranges where this matters.  See services/calibration.py, the one place
+# that enforces it, and services/track_gates.py, which supplies both
+# timestamps.
+CAL_FIX_DETECTION_SKEW_S = 2.0
+
 # ── ADS-B seeding (ADSB_SEED_MODE) ────────────────────────────────────────────
 # A track view exports its ADS-B tag only if one of the newest N history
 # detections carries it.  A swapped track's newest detections go untagged

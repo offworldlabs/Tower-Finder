@@ -608,23 +608,44 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
         # neutral, it is the signature of exactly that state, so None
         # abstains: only a detection the node itself ADS-B-correlated to
         # this hex may characterize coverage.
+        #
+        # Freshness alone is still not enough, though: CAL_DETECTION_FRESH_S
+        # and the fix's own age gate above are both measured against `now`,
+        # the moment this emit cycle happens to run — neither is measured
+        # against the OTHER one.  So for up to CAL_DETECTION_FRESH_S after
+        # the last real detection, the live ADS-B fix kept being recorded
+        # while the aircraft flew on past what the node actually saw (the
+        # exit-smear mechanism; staging 2026-08-10, 32/32 directional nodes
+        # showed learned-FOV lobes from it, some out to 160 km).
+        # services.calibration.record_adsb_calibration holds the
+        # fix-vs-detection skew rule that closes this — this call just
+        # supplies both timestamps and trusts the one rule to enforce it.
         _det_tag = getattr(track, "last_detection_adsb_hex", None)
+        _det_ts = getattr(track, "last_detection_wall_ts", 0.0)
+        _fix_ts = (adsb.get("last_seen_ms", 0) or 0) / 1000.0
         _detection_fresh = (
-            now - getattr(track, "last_detection_wall_ts", 0.0) <= CAL_DETECTION_FRESH_S
+            now - _det_ts <= CAL_DETECTION_FRESH_S
             and getattr(track, "n_detections", 0) >= 3
             and isinstance(_det_tag, str)
             and _det_tag.strip().lower() == (ac_hex or "").strip().lower()
         )
         if nid and _detection_fresh:
-            record_adsb_calibration(
+            _n_recorded = record_adsb_calibration(
                 [nid], adsb_lat, adsb_lon,
-                age_s=now - (adsb.get("last_seen_ms", 0) or 0) / 1000.0,
+                age_s=now - _fix_ts,
+                fix_ts=_fix_ts,
+                detection_ts=_det_ts,
             )
-        if nid and _detection_fresh:
-            # Track furthest verified detections per node (for detection range)
-            area = state.node_analytics.detection_areas.get(nid)
-            if area:
-                area.record_verified_detection(adsb_lat, adsb_lon, ac_hex)
+            if _n_recorded > 0:
+                # Track furthest verified detections per node (for detection
+                # range).  Gated on the recorder's verdict, not just
+                # _detection_fresh: the detection-range record was fed by the
+                # same exit smear, and gating it here — rather than
+                # duplicating the skew check — keeps calibration.py the one
+                # place that rule lives.
+                area = state.node_analytics.detection_areas.get(nid)
+                if area:
+                    area.record_verified_detection(adsb_lat, adsb_lon, ac_hex)
         # Track accuracy: haversine(solver, adsb) per aircraft per update.
         # NOT gated on _detection_fresh — accuracy of what's painted is
         # honest even while coasting on ADS-B enrichment; only coverage
