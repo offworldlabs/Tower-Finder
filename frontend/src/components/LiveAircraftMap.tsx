@@ -46,7 +46,7 @@ import {
   InBeamDiagnostic,
 } from "./map";
 
-import { fetchNodeVerification, fetchNodeDetectionRange, fetchMlatVerification } from "../api";
+import { fetchNodeDetectionRange, fetchMlatVerification } from "../api";
 import { defaultsGroundTruthOff } from "../utils/domains";
 import { usePersistedState } from "./map/usePersistedState";
 import { parseHash, useHashWriter, encodeLayers, decodeLayers } from "./map/useUrlHashState";
@@ -224,94 +224,6 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
       markers.clear();
     };
   }, [map, radarAircraftRef, groundTruthRef, smoothRef]);
-
-  return null;
-});
-
-/* ── NodeVerificationLayer: shows solver tracks vs ADS-B truth for one node.
-      Fetches verification data every 15s and renders cyan truth dots,
-      yellow error lines, and distance labels.  Pass nodeId=null to hide. ── */
-const _verifyCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5 }) : null;
-
-const NodeVerificationLayer = memo(function NodeVerificationLayer({ nodeId }) {
-  const map = useMap();
-  const markersRef = useRef(new Map());
-
-  useEffect(() => {
-    if (!nodeId) {
-      // Clean up when hidden
-      for (const entry of markersRef.current.values()) {
-        entry.dot.remove();
-        entry.line.remove();
-        }
-      markersRef.current.clear();
-      return;
-    }
-
-    let cancelled = false;
-
-    const refresh = async () => {
-      try {
-        const data = await fetchNodeVerification(nodeId);
-        if (cancelled || !data) return;
-
-        const markers = markersRef.current;
-        const seen = new Set();
-
-        for (const t of data.tracks || []) {
-          if (!validLatLon(t.truth_lat, t.truth_lon) || !validLatLon(t.solver_lat, t.solver_lon)) continue;
-          seen.add(t.hex);
-
-          let entry = markers.get(t.hex);
-          if (!entry) {
-            const dot = L.circleMarker([t.truth_lat, t.truth_lon], {
-              renderer: _verifyCanvas,
-              radius: 5,
-              color: "#22d3ee",
-              weight: 2,
-              fillColor: "#22d3ee",
-              fillOpacity: 0.8,
-            });
-            const line = L.polyline(
-              [[t.truth_lat, t.truth_lon], [t.solver_lat, t.solver_lon]],
-              { color: "#facc15", weight: 1.5, opacity: 0.7, dashArray: "3 4" },
-            );
-            line.bindTooltip(`${t.position_error_km.toFixed(1)} km`, { direction: "center", className: "radar3-error-label" });
-            dot.addTo(map);
-            line.addTo(map);
-            entry = { dot, line };
-            markers.set(t.hex, entry);
-          } else {
-            entry.dot.setLatLng([t.truth_lat, t.truth_lon]);
-            entry.line.setLatLngs([[t.truth_lat, t.truth_lon], [t.solver_lat, t.solver_lon]]);
-            entry.line.setTooltipContent(`${t.position_error_km.toFixed(1)} km`);
-          }
-        }
-
-        for (const [hex, entry] of markers) {
-          if (!seen.has(hex)) {
-            entry.dot.remove();
-            entry.line.remove();
-            markers.delete(hex);
-          }
-        }
-      } catch {
-        // Silently ignore fetch errors
-      }
-    };
-
-    refresh();
-    const intervalId = setInterval(refresh, 15000);
-    return () => {
-      cancelled = true;
-      clearInterval(intervalId);
-      for (const entry of markersRef.current.values()) {
-        entry.dot.remove();
-        entry.line.remove();
-      }
-      markersRef.current.clear();
-    };
-  }, [map, nodeId]);
 
   return null;
 });
@@ -1317,10 +1229,10 @@ export default function LiveAircraftMap() {
     [nodes, viewport],
   );
 
-  /* The verification/range overlays only mean anything for real nodes —
-     synthetic simulation nodes have no ADS-B truth to compare against.
-     Null hides both layers. */
-  const verificationNodeId = useMemo(() => {
+  /* The range overlay only means anything for real nodes — synthetic
+     simulation nodes have no recorded detections to measure against.
+     Null hides the layer. */
+  const rangeNodeId = useMemo(() => {
     if (!selectedNodeId) return null;
     const node = nodes.find((n) => n.node_id === selectedNodeId);
     return node && !node.is_synthetic ? selectedNodeId : null;
@@ -1975,14 +1887,11 @@ export default function LiveAircraftMap() {
               />
             )}
 
-            {/* Radar3 solver verification overlay — truth dots + error lines + km labels */}
-            <NodeVerificationLayer nodeId={verificationNodeId} />
-
-            {/* Radar3 detection range circle + furthest detection markers */}
-            <NodeRangeLayer nodeId={verificationNodeId} />
+            {/* Node detection range circle + furthest detection markers */}
+            <NodeRangeLayer nodeId={rangeNodeId} />
 
             {/* MLAT (multinode) solver verification — magenta truth dots + pink error lines */}
-            {/* Gated like the Radar3 layers: this polls /api/test/
+            {/* Gated like the node range layer: this polls /api/test/
                 mlat-verification and draws truth-vs-solver error lines, which
                 is meaningless (and a wasted poll) when ground truth is off —
                 as it is by default on the production map domains. */}

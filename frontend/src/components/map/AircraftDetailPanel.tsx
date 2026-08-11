@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { fetchMlatAccuracy, fetchMlatVerification, fetchNodeVerification } from "../../api";
+import { fetchMlatAccuracy, fetchMlatVerification } from "../../api";
 import { POSITION_SOURCE_ARC_ONLY } from "./constants";
 import { classifyHex, emergencySquawkLabel } from "./hexInfo";
 import { trailToCsv, downloadCsv } from "./trailExport";
@@ -251,11 +251,6 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
           </div>
         )}
 
-        {/* Solver verification — renders only when this node has truth-matched data */}
-        {ac.node_id && (
-          <NodeVerificationSection hex={ac.hex} nodeId={ac.node_id} />
-        )}
-
         {/* MLAT solver verification — show when this is a multinode solve */}
         {ac.position_source === "multinode_solve" && (
           <MlatVerificationSection solverHex={ac.hex} />
@@ -318,55 +313,6 @@ function Field({ label, value }) {
     <div className="detail-field">
       <span className="detail-label">{label}</span>
       <span className="detail-value">{value}</span>
-    </div>
-  );
-}
-
-function NodeVerificationSection({ hex, nodeId }) {
-  // Tagged with the node it came from, so selecting an aircraft on a different
-  // node never shows the previous node's numbers while the new fetch is in
-  // flight.
-  const [fetched, setFetched] = useState(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = () => {
-      fetchNodeVerification(nodeId).then((d) => {
-        if (!cancelled && d) setFetched({ nodeId, payload: d });
-      });
-    };
-    load();
-    const interval = setInterval(load, 15000);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, [nodeId]);
-
-  const data = fetched && fetched.nodeId === nodeId ? fetched.payload : null;
-  if (!data || !data.n_matched) return null;
-
-  // Find this aircraft's specific match
-  const match = (data.tracks || []).find((t) => t.hex === hex);
-
-  return (
-    <div className="detail-section">
-      <div className="detail-section-title" style={{ color: "#f97316" }}>
-        📡 {String(nodeId).replace(/-retnode$/, "")} Verification
-      </div>
-      {match && (
-        <>
-          <Field label="Pos Error" value={
-            <span className={match.position_error_km < 5 ? "good" : match.position_error_km < 15 ? "warn" : "bad"}>
-              {match.position_error_km.toFixed(1)} km
-            </span>
-          } />
-          <Field label="Vel Error" value={`${match.velocity_error_ms.toFixed(1)} m/s`} />
-          <Field label="Alt Error" value={`${match.altitude_error_m} m`} />
-        </>
-      )}
-      <Field label="Tracked" value={`${data.n_matched}/${data.n_tracks}`} />
-      {data.position && <Field label="Median Pos" value={`${data.position.median_km} km`} />}
-      {data.position && <Field label="P95 Pos" value={`${data.position.p95_km} km`} />}
-      {data.velocity && <Field label="Median Vel" value={`${data.velocity.median_ms} m/s`} />}
-      {data.altitude && <Field label="Median Alt" value={`${data.altitude.median_m} m`} />}
     </div>
   );
 }
