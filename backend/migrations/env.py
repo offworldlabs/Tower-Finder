@@ -11,6 +11,7 @@ import asyncio
 from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from core import nodes  # noqa: F401  registers the node tables on Base.metadata
 from core.users import DATABASE_URL, Base
 
 target_metadata = Base.metadata

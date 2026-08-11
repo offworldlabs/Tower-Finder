@@ -2,6 +2,7 @@ import asyncio
 import os
 
 import pytest
+from sqlalchemy import event
 
 # Must be set before any backend module imports auth.py or routes/radar.py
 os.environ.setdefault("RETINA_ENV", "test")
@@ -62,4 +63,47 @@ def _reset_module_state():
                 tcp_handler):
         mod._reset_for_tests()
     yield
+
+
+@pytest.fixture
+async def node_session(tmp_path):
+    """An AsyncSession against a per-test database with migrations applied.
+
+    A separate engine from the suite's shared one, so each test gets a clean
+    file and the node tests exercise the migrated schema rather than the one
+    create_all builds. Nothing is shared between tests, so ordering cannot
+    matter.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    backend = Path(__file__).resolve().parent.parent
+    db_path = tmp_path / "nodes.db"
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=backend,
+        env=os.environ | {"RETINA_ENV": "test", "RETINA_DB_PATH": str(db_path)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _pragmas(dbapi_conn, _record):
+        # test_a_config_for_an_unknown_node_is_rejected depends on this. SQLite
+        # does not enforce foreign keys unless asked, per connection.
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
+
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as session:
+        yield session
+    await engine.dispose()
 

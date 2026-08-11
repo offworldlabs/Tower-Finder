@@ -86,18 +86,25 @@ def _schema(db_path: Path) -> dict:
         con.close()
 
 
-def _create_all(db_path: Path) -> subprocess.CompletedProcess:
-    """Build a database the pre-Alembic way, for comparison."""
+def _create_all(db_path: Path, *, with_nodes: bool = True) -> subprocess.CompletedProcess:
+    """Build a database the pre-Alembic way, for comparison.
+
+    with_nodes=False reproduces the droplets: core.nodes did not exist when
+    their schema was built, so they carry the four auth tables and nothing else.
+    """
     env = os.environ | {
         "RETINA_ENV": "test",
         "RETINA_DB_PATH": str(db_path),
         "RETINA_SCHEMA_SOURCE": "create_all",
     }
+    nodes_import = "import core.nodes;  # noqa: F401  registers the tables\n" if with_nodes else ""
     return subprocess.run(  # noqa: S603
         [
             sys.executable,
             "-c",
-            "import asyncio; from core.users import create_db_and_tables; asyncio.run(create_db_and_tables())",
+            f"import asyncio; {nodes_import}"
+            "from core.users import create_db_and_tables; "
+            "asyncio.run(create_db_and_tables())",
         ],
         cwd=BACKEND,
         env=env,
@@ -121,13 +128,14 @@ def test_migrations_produce_the_schema_create_all_produces(tmp_path):
 
 
 def test_upgrading_a_create_all_database_succeeds(tmp_path):
-    """The state of all three droplets: tables present, no alembic_version.
+    """The state of all three droplets: the four auth tables, no alembic_version,
+    and no node tables, since core.nodes did not exist when they were built.
 
     Without the early return in 0001 this fails on `table user already exists`,
     and every deploy after the guard lands would refuse to boot.
     """
     db = tmp_path / "pre_existing.db"
-    built = _create_all(db)
+    built = _create_all(db, with_nodes=False)
     assert built.returncode == 0, built.stderr
 
     up = _alembic("upgrade", "head", db_path=db)
