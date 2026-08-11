@@ -1,0 +1,12 @@
+# The dead-code gate lives in offworldlabs/ops and is pinned here. Do not
+# vendor it back into this repo. See 86cb417ty.
+#
+# args: [backend] scopes the scan to the backend tree. Without it the gate
+# would also walk libs/, which holds the five retina-* submodules — they run
+# their own copy of this hook in their own repos.
+repos:
+  - repo: https://github.com/offworldlabs/ops
+    rev: dead-code-v1.0
+    hooks:
+      - id: dead-code
+        args: [backend]
