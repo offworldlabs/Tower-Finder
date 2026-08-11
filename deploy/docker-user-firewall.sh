@@ -25,14 +25,20 @@ set -euo pipefail
 
 RANGES="${1:-$(dirname "$0")/cloudflare-ranges.txt}"
 PORTS="80,443"
+TAG="retina-cf-boundary"
 
 if [ ! -f "$RANGES" ]; then
     echo "✗ Ranges file not found: ${RANGES}" >&2
     exit 1
 fi
 
-mapfile -t v4 < <(grep -vE '^#|^$' "$RANGES" | grep -E '^[0-9.]+/[0-9]+$')
-mapfile -t v6 < <(grep -vE '^#|^$' "$RANGES" | grep -E ':' )
+# Trim leading/trailing whitespace before classifying each line. Without this a
+# line with a trailing space matches neither the IPv4 nor the IPv6 pattern and
+# is silently dropped from both arrays — a corruption that a shorter-than-usual
+# count would catch, but a single dropped line among many would not.
+RANGES_CLEAN="$(grep -vE '^#|^$' "$RANGES" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+mapfile -t v4 < <(printf '%s\n' "$RANGES_CLEAN" | grep -E '^[0-9.]+/[0-9]+$')
+mapfile -t v6 < <(printf '%s\n' "$RANGES_CLEAN" | grep -E ':')
 
 # A short list means a truncated or corrupted file. Applying it would lock the
 # edge out of the origin, which is a self-inflicted outage with no external
@@ -43,19 +49,48 @@ if [ "${#v4[@]}" -lt 10 ]; then
     exit 1
 fi
 
+# Surface a missing chain as a diagnosis, not a raw "iptables: No chain/target/
+# match by that name" error from the first -D/-I call below. DOCKER-USER is
+# created by Docker at startup, so its absence means Docker is not installed,
+# not running, or has not yet created its chains.
+if ! iptables -L DOCKER-USER -n >/dev/null 2>&1; then
+    echo "✗ DOCKER-USER chain not found (iptables -L DOCKER-USER failed)." >&2
+    echo "  This chain is created by Docker at startup — is docker.service running?" >&2
+    exit 1
+fi
+
 echo "→ Applying DOCKER-USER boundary (${#v4[@]} IPv4, ${#v6[@]} IPv6 ranges)"
 
-# Flush only our own rules. DOCKER-USER may carry rules from elsewhere, and
-# `iptables -F DOCKER-USER` would remove those too. Every rule this script adds
-# is tagged with a comment, so it can find exactly its own on re-run — which is
-# what makes this script idempotent.
-TAG="retina-cf-boundary"
-while iptables -D DOCKER-USER -m comment --comment "$TAG" -j DROP 2>/dev/null; do :; done
-while iptables -D DOCKER-USER -m comment --comment "$TAG" -j RETURN 2>/dev/null; do :; done
-for cidr in "${v4[@]}"; do
-    while iptables -D DOCKER-USER -s "$cidr" -p tcp -m multiport --dports "$PORTS" \
-        -m comment --comment "$TAG" -j RETURN 2>/dev/null; do :; done
-done
+# Delete every rule in the given chain (iptables or ip6tables, on DOCKER-USER)
+# that carries our "$TAG" comment, by line number, repeating until none remain.
+#
+# `iptables -D <full-rule-spec>` requires an exact match against the rule as the
+# kernel stored it — get the argument order, or a missing match module, subtly
+# wrong and the delete silently fails to match nothing, leaving stale rules
+# behind on every re-run. That is what happened before this fix: the DROP
+# deletion omitted `-p tcp -m multiport --dports "$PORTS"` and the conntrack
+# RETURN rule had no deletion loop at all, so the chain grew by two rules per
+# boot despite the script claiming to be idempotent.
+#
+# Deleting by line number instead only requires the tag comment to be present,
+# which is true of every rule-spec this script inserts (DROP, per-CIDR RETURN,
+# and the conntrack RETURN) regardless of its shape, so one function covers all
+# three. It is also what keeps this safe: the tag comment is a literal string
+# unique to rules this script wrote. Docker's own trailing `-j RETURN` in
+# DOCKER-USER carries no comment at all, and any rule a third party added would
+# carry a different (or no) comment — neither ever contains the exact substring
+# "/* $TAG */", so grep -F never selects them and they are never deleted.
+delete_tagged_rules() {
+    local ipt="$1"
+    local line
+    while line="$("$ipt" -L DOCKER-USER -n --line-numbers 2>/dev/null \
+                  | grep -F "/* ${TAG} */" | head -1 | awk '{print $1}')" \
+          && [ -n "$line" ]; do
+        "$ipt" -D DOCKER-USER "$line"
+    done
+}
+
+delete_tagged_rules iptables
 
 # Order matters: accept Cloudflare first, then drop everything else on these
 # ports. Rules are inserted at the head in reverse so the final order reads
@@ -73,7 +108,7 @@ iptables -I DOCKER-USER 1 -m conntrack --ctstate ESTABLISHED,RELATED \
     -m comment --comment "$TAG" -j RETURN
 
 echo "✓ DOCKER-USER boundary applied (IPv4)"
-iptables -L DOCKER-USER -n --line-numbers | head -5
+iptables -L DOCKER-USER -n --line-numbers | head -5 || true
 
 # IPv6. nginx.conf.template has no `listen [::]` directive, so nginx is IPv4-only
 # and Docker publishes no IPv6 path to it — in which case there is nothing to
@@ -81,15 +116,39 @@ iptables -L DOCKER-USER -n --line-numbers | head -5
 # about the droplet, not about the template, so check rather than assume: if a
 # v6 path does exist, an IPv4-only boundary is bypassable and silently so.
 if ip6tables -L DOCKER-USER -n >/dev/null 2>&1; then
-    v6_published="$(ss -lntH '( sport = :80 or sport = :443 )' 2>/dev/null | grep -c ':::\|\[::\]' || true)"
+    # The `ss` probe answers "a listener exists" and "the probe could not tell
+    # me" with the same shape of output (a count of zero) unless we look at how
+    # it failed. Treat "ss is missing" and "ss errored" as distinct from "ss
+    # ran cleanly and found nothing", and in the uncertain case apply the IPv6
+    # boundary anyway rather than print a reassuring "sufficient" message that
+    # may be wrong: an unnecessary set of IPv6 rules is inert, but a skipped
+    # set on a box that does publish IPv6 is a silent bypass of the boundary.
+    if ! command -v ss >/dev/null 2>&1; then
+        echo "  ! ss not found — cannot determine whether nginx has an IPv6" >&2
+        echo "    listener on 80/443. Applying the IPv6 boundary defensively." >&2
+        v6_published=1
+    elif ! ss_output="$(ss -lntH '( sport = :80 or sport = :443 )' 2>&1)"; then
+        echo "  ! ss failed (${ss_output}) — cannot determine whether nginx has" >&2
+        echo "    an IPv6 listener on 80/443. Applying the IPv6 boundary defensively." >&2
+        v6_published=1
+    else
+        v6_published="$(printf '%s\n' "$ss_output" | grep -c ':::\|\[::\]' || true)"
+    fi
+
     if [ "$v6_published" -gt 0 ]; then
-        echo "  ! An IPv6 listener on 80/443 was found (${v6_published})." >&2
+        echo "  ! An IPv6 listener on 80/443 was found or assumed (${v6_published})." >&2
         echo "    The IPv4 boundary above does not cover it. Applying v6 rules." >&2
-        for cidr in "${v6[@]}"; do
-            while ip6tables -D DOCKER-USER -s "$cidr" -p tcp -m multiport --dports "$PORTS" \
-                -m comment --comment "$TAG" -j RETURN 2>/dev/null; do :; done
-        done
-        while ip6tables -D DOCKER-USER -m comment --comment "$TAG" -j DROP 2>/dev/null; do :; done
+
+        # Same short-list protection as IPv4: a truncated file with no v6 lines
+        # would otherwise insert a bare DROP with no allow rules above it,
+        # blackholing Cloudflare over IPv6 rather than leaving it unfiltered.
+        if [ "${#v6[@]}" -lt 5 ]; then
+            echo "✗ Only ${#v6[@]} IPv6 ranges parsed from ${RANGES}; refusing to apply" >&2
+            echo "  IPv6 rules. Expected 5+. Regenerate with deploy/refresh-cloudflare-ranges.sh" >&2
+            exit 1
+        fi
+
+        delete_tagged_rules ip6tables
         ip6tables -I DOCKER-USER 1 -p tcp -m multiport --dports "$PORTS" \
             -m comment --comment "$TAG" -j DROP
         for cidr in "${v6[@]}"; do

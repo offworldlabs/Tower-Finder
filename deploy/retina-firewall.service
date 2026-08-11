@@ -5,6 +5,7 @@
 Description=RETINA DOCKER-USER Cloudflare boundary
 After=docker.service
 Requires=docker.service
+PartOf=docker.service
 
 [Service]
 Type=oneshot

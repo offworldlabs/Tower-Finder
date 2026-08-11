@@ -155,8 +155,22 @@ chmod +x "${APP_DIR}/deploy/docker-user-firewall.sh"
 cp "${APP_DIR}/deploy/retina-firewall.service" /etc/systemd/system/retina-firewall.service
 systemctl daemon-reload
 systemctl enable retina-firewall.service
-systemctl start retina-firewall.service
-systemctl --no-pager status retina-firewall.service | head -5
+# Fail-closed but not silently: under `set -euo pipefail` a bare `systemctl
+# start` that fails would abort the whole script right here, before .env is
+# written and before `docker compose up`, leaving the operator with a raw
+# systemd/iptables error and a half-configured box. Naming the failure and
+# dumping the unit's status and recent logs first turns that into a diagnosis
+# — the script still stops (an origin without this boundary must not proceed
+# to serve traffic), it just says why before it does.
+if ! systemctl start retina-firewall.service; then
+    echo "✗ retina-firewall.service failed to start — the Cloudflare origin" >&2
+    echo "  boundary is not in place. Provisioning stops here rather than" >&2
+    echo "  continue with an unprotected origin." >&2
+    systemctl --no-pager status retina-firewall.service >&2 || true
+    journalctl -u retina-firewall.service --no-pager -n 30 >&2 || true
+    exit 1
+fi
+systemctl --no-pager status retina-firewall.service | head -5 || true
 
 # Select the environment overlay for this host. Every `docker compose` command
 # below — and every one a human types over SSH later — resolves through this, so
