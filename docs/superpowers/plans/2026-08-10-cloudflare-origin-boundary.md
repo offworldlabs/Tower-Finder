@@ -637,6 +637,27 @@ Run the full acceptance list from the spec's §7 once Tasks 1–5 are complete:
 - [ ] Reboot both droplets; `iptables -L DOCKER-USER -n` still shows the tagged rules
 - [ ] `ss -lntH '( sport = :80 or sport = :443 )'` on each droplet — record whether any IPv6 listener exists, and confirm the script's IPv6 branch took the matching path
 
+### Items that can only be settled on a live droplet
+
+Raised by the Task 4 review as "cannot verify from diff". Each is a real question,
+not a formality — check them during the staging apply, before production.
+
+- [ ] **Does `DOCKER-USER` survive `systemctl restart docker`?** The chain's
+  documented contract says its contents persist, but `setup-server.sh` restarts
+  Docker *after* applying the boundary in the same provisioning run. If the
+  contract does not hold on this Docker version, the boundary is already gone by
+  the end of the run that created it. Verify: apply, `systemctl restart docker`,
+  then `iptables -L DOCKER-USER -n` and confirm the tagged rules are still there.
+- [ ] **Does the droplet's `iproute2` accept the script's `ss` filter?** The IPv6
+  branch keys off `ss -lntH '( sport = :80 or sport = :443 )'`. A rejected filter
+  syntax is handled defensively now (it applies IPv6 rules rather than claiming
+  IPv4 is sufficient), but confirm which path actually runs so the behaviour is
+  known rather than merely safe.
+- [ ] **Does `DOCKER-USER` exist by the time provisioning applies the rules?** On
+  a genuinely fresh droplet the chain is created by Docker on first start. The
+  script checks for it and fails with a diagnosis if absent, so a fresh-droplet
+  provision is the case to test.
+
 ## Rollback
 
 - **nginx half:** revert the `tls.conf` commit and redeploy, or on a droplet comment out the two directives and `docker compose restart tower-finder`.
