@@ -4,18 +4,74 @@
 
 ---
 
+## Environments
+
+Three droplets. Each holds a gitignored `./.env` in `/opt/tower-finder` carrying
+`COMPOSE_FILE`, which selects that host's overlay, so a bare `docker compose up -d
+--build` / `logs` / `ps` resolves correctly on all three and every command below is
+identical everywhere.
+
+On prod and staging the deploy writes that file itself each run, so it cannot be
+missing, stale or wrong — if you find one naming the wrong environment, the deploy
+stops before touching anything rather than deploying one environment onto
+another's hostnames. The test droplet has no CI, so its `.env` is placed by hand
+once: `cp deploy/env.test.example .env`.
+
+| | prod | staging | test |
+|---|---|---|---|
+| **Overlay** | `docker-compose.prod.yml` | `docker-compose.staging.yml` | `docker-compose.test.yml` |
+| **Deployed by** | CI, on push to `main` | CI, on push to `main` | `just deploy-test` (rsync from a working tree) |
+| **Hostnames** | `*.retina.fm` | `staging-*.retina.fm` | `test-*.retina.fm` |
+| **RAM / swap** | 7941 MB / 4 GB | 3915 MB / none | 3915 MB / 2 GB |
+| **Fleet** | 25 nodes @ 2.0s (12.5 fps) | 50 @ 1.0s (50 fps) | 50 @ 1.0s (50 fps) |
+| **TCP 3012** | published (real nodes) | closed | closed |
+
+prod is the reference environment: `deploy/check-env-parity.py` compares the other
+two against it in CI and fails on any difference not listed in its
+`ALLOWED_DIVERGENCE`. staging and test differ from prod deliberately on fleet
+scale, hostnames, container names and resource limits, and on nothing else.
+
+staging and test run the fleet 4x faster than production, on **half the cores** —
+production has 4, they have 2 — so per core it is 8x. The frame path copes (41 of
+50 fps sustained, nothing dropped, frame queue at zero); the solver does not.
+Expect per-solve times of 45-52s against production's 17s, a solver queue
+oscillating to ~28% where production sits at 0%, and a much lower solve success
+rate. Nothing drops, so it is a usable environment, but a solver measurement taken
+there does not transfer to production.
+
+Do not raise the fleet without measuring on the test droplet first: at 200 nodes / 0.5s
+the solver never reached steady state at all. And read `solver_avg_latency_s` over
+minutes rather than seconds — it is a cumulative mean that starts low after a boot
+and takes several minutes to converge. `solver_last_latency_s` is the honest
+per-solve figure.
+
+Note when reading alerts from any environment: production currently reports
+`degraded` with `geolocated_tracks` at 0, so seeing that on staging or test is not
+evidence of a problem with the fleet size or with a branch under test.
+
+Only `test-towers`, `test-api`, `test-map` and `test-dash` have DNS and certificate
+coverage on the test droplet. Its other three vhosts render but are unreachable by
+design.
+
+---
+
 ## Server basics
+
+Production unless stated otherwise. Every command in this document runs **on the
+droplet**, from `/opt/tower-finder`, unless it says otherwise. Connection details
+(addresses, key names, SSH aliases) are deliberately not recorded here: this repo
+is public, and the origin addresses sit behind Cloudflare precisely so they are not
+advertised. Get them from the DigitalOcean console or your own `~/.ssh/config`.
 
 | | |
 |---|---|
-| **SSH** | `ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30` |
 | **Working dir** | `/opt/tower-finder` |
 | **Logs** | `docker compose logs -f --tail=200` |
 | **Restart (no rebuild)** | `docker compose restart` |
 | **Rebuild and restart** | `docker compose up -d --build` (wait ~5 s before testing) |
-| **Health endpoint** | `curl -sk https://157.245.214.30/api/health` |
-| **Metrics endpoint** | `curl -sk https://157.245.214.30/api/admin/metrics` |
-| **Dashboard** | `curl -sk https://157.245.214.30/api/test/dashboard` |
+| **Health endpoint** | `curl -sk https://localhost/api/health` |
+| **Metrics endpoint** | `curl -sk https://localhost/api/admin/metrics` |
+| **Dashboard** | `curl -sk https://localhost/api/test/dashboard` |
 
 All state is **in-memory**. A container restart loses all connected nodes, active tracks, and in-flight frame data. State is snapshotted to disk every 60 s and restored on next startup (trust scores, reputations, accuracy samples, node identities).
 
@@ -60,7 +116,7 @@ uptime monitor). Details are never exposed on the endpoint — read them from lo
 
 ```bash
 docker compose logs --tail=200 | grep "Health check degraded"
-curl -sk https://157.245.214.30/api/admin/metrics | python3 -m json.tool
+curl -sk https://localhost/api/admin/metrics | python3 -m json.tool
 ```
 
 ---
@@ -72,7 +128,7 @@ curl -sk https://157.245.214.30/api/admin/metrics | python3 -m json.tool
 
 **Check load:**
 ```bash
-ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 'top -bn1 | head -8'
+top -bn1 | head -8
 ```
 
 **Common causes:**
@@ -147,7 +203,7 @@ Bad geometry passes validation, and `position.median_km` will *not* reliably cat
 
 **Check:**
 ```bash
-curl -sk https://157.245.214.30/api/admin/metrics | python3 -c \
+curl -sk https://localhost/api/admin/metrics | python3 -c \
   "import sys,json; m=json.load(sys.stdin); print('queue_pct:', m['solver_queue_pct'], 'drops:', m['solver_queue_drops'], 'avg_latency:', m['solver_avg_latency_s'])"
 ```
 
@@ -184,7 +240,7 @@ No immediate action required. Watch `solver_queue_pct` over the next few minutes
 
 **Check which nodes are gone:**
 ```bash
-curl -sk https://157.245.214.30/api/radar/nodes | python3 -c \
+curl -sk https://localhost/api/radar/nodes | python3 -c \
   "import sys,json; nodes=json.load(sys.stdin); [print(n['node_id'], n['status']) for n in nodes if n['status']=='disconnected']"
 ```
 
@@ -205,7 +261,7 @@ curl -sk https://157.245.214.30/api/radar/nodes | python3 -c \
 
 **Check ADS-B feed:**
 ```bash
-curl -sk https://157.245.214.30/api/radar/data/aircraft.json | python3 -c \
+curl -sk https://localhost/api/radar/data/aircraft.json | python3 -c \
   "import sys,json; d=json.load(sys.stdin); print(len(d.get('aircraft',[])), 'aircraft')"
 ```
 
@@ -224,7 +280,7 @@ If aircraft exist but `multinode_tracks == 0`: check node count — multinode tr
 
 **Check current anomaly state:**
 ```bash
-curl -sk https://157.245.214.30/api/test/dashboard | python3 -c \
+curl -sk https://localhost/api/test/dashboard | python3 -c \
   "import sys,json; d=json.load(sys.stdin); p=d['pipeline']; print('aircraft:', p['aircraft_on_map'], 'anomalies:', p.get('anomaly_count', '?'))"
 ```
 
@@ -256,7 +312,7 @@ Check `/api/radar/analytics` for per-node data. If specific nodes have bad calib
 
 **Check per-node miss rates:**
 ```bash
-curl -sk https://157.245.214.30/api/admin/leaderboard | python3 -c \
+curl -sk https://localhost/api/admin/leaderboard | python3 -c \
   "import sys,json; rows=json.load(sys.stdin); [print(r['node_id'], r.get('miss_rate','?')) for r in rows]"
 ```
 
@@ -275,7 +331,7 @@ curl -sk https://157.245.214.30/api/admin/leaderboard | python3 -c \
 ```bash
 # On server — check if backup exists on R2:
 # (if R2 is configured)
-curl -sk https://157.245.214.30/api/admin/storage
+curl -sk https://localhost/api/admin/storage
 ```
 
 Server will start with empty state if snapshot is corrupt. Trust scores and reputation data need to rebuild from scratch — this takes hours under normal node load. Not a functional outage.
@@ -306,8 +362,7 @@ Not an emergency. The local snapshot still runs every 60 s. Urgent only if combi
 
 **Check current usage:**
 ```bash
-ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 \
-  'df -h /opt/tower-finder/backend/coverage_data && du -sh /opt/tower-finder/backend/coverage_data/*'
+df -h /opt/tower-finder/backend/coverage_data && du -sh /opt/tower-finder/backend/coverage_data/*
 ```
 
 **What to clean first:**
@@ -318,8 +373,7 @@ ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 \
 **If you need space immediately:**
 ```bash
 # Check archive files (oldest first)
-ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 \
-  'find /opt/tower-finder/backend/coverage_data -name "*.json.gz" | sort | head -20'
+find /opt/tower-finder/backend/coverage_data -name "*.json.gz" | sort | head -20
 ```
 
 > **Do not delete the `state_snapshot.json` or `state_snapshot.json.sha256` files** — those are the restore point. Delete archive `.json.gz` files instead.
@@ -333,10 +387,9 @@ ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 \
 
 **Check current memory:**
 ```bash
-ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 \
-  'cat /proc/$(docker compose -f /opt/tower-finder/docker-compose.yml top | grep uvicorn | awk "{print \$1}" | head -1)/status | grep VmRSS'
+cat /proc/$(docker compose -f /opt/tower-finder/docker-compose.yml top | grep uvicorn | awk "{print \$1}" | head -1)/status | grep VmRSS
 # Simpler:
-ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 'free -h && top -bn1 | head -10'
+free -h && top -bn1 | head -10
 ```
 
 **Common causes:**
@@ -359,31 +412,28 @@ If memory climbs back over 3 GB within an hour, there is a leak. File an issue w
 git add -A && git commit -m "..." && git push
 
 # Server
-ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 \
-  'cd /opt/tower-finder && git pull && docker compose up -d --build'
+cd /opt/tower-finder && git pull && docker compose up -d --build
 
 # After ~5 s, verify
-curl -sk https://157.245.214.30/api/health
+curl -sk https://localhost/api/health
 ```
 
 > **Always `git push` before deploying.** `git pull` on the server does nothing if the commit isn't pushed.
 
 ### Restart without deploying
 ```bash
-ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 \
-  'cd /opt/tower-finder && docker compose restart'
+cd /opt/tower-finder && docker compose restart
 ```
 
 ### Tail live logs
 ```bash
-ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 \
-  'cd /opt/tower-finder && docker compose logs -f --tail=100'
+cd /opt/tower-finder && docker compose logs -f --tail=100
 ```
 
 ### Check resource usage
 ```bash
-ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 'top -bn1 | head -20'
-ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 'df -h /opt/tower-finder/backend/coverage_data'
+top -bn1 | head -20
+df -h /opt/tower-finder/backend/coverage_data
 ```
 
 ### Start / bounce the fleet simulator
@@ -391,23 +441,26 @@ The fleet is a Compose service (`fleet` in `/opt/tower-finder/docker-compose.yml
 `restart: unless-stopped`). It starts automatically on deploy (CI `docker compose
 up -d --build`) and on reboot (docker is enabled) — you normally do NOT start it by
 hand. To manually bounce just the fleet (it loses its TCP connections and
-regenerates ~200 nodes, taking a minute+):
+regenerates its nodes — 25 on production — taking up to a minute):
 ```bash
-ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 \
-  'bash /opt/tower-finder/deploy/restart-fleet-prod.sh'   # docker compose up -d --no-deps fleet
+cd /opt/tower-finder && docker compose up -d --build --force-recreate --no-deps fleet
 ```
+`--no-deps` is the important flag: `fleet` declares `depends_on: tower-finder`, so
+without it Compose would also rebuild and recreate the running app, turning a fleet
+bounce into a full redeploy and an outage. The host's `./.env` sets `COMPOSE_FILE`,
+so the bare `docker compose` above resolves to base + the production overlay.
+
 Params (nodes/interval/mode/aircraft) live in the `fleet` service block in
 `docker-compose.yml` — edit them there, not on the command line.
 
-⚠️ Do NOT start the fleet with `systemd-run`/`python3 -m retina_simulation.orchestrator`
-by hand while the Compose `fleet` service is running — two fleets double-count nodes
-and aircraft on testmap. The host-process path exists only as the disabled fallback
-in `deploy/fleet.service` (see its header for the mutual-exclusion procedure).
+⚠️ Do NOT start the fleet as a host process (`systemd-run`, a systemd unit, or a
+bare `python3 -m retina_simulation.orchestrator`) while the Compose `fleet` service
+is running — two fleets both push synthetic traffic and double-count nodes and
+aircraft. Compose is the only supported way to run it.
 
 ### Quick fleet health snapshot
 ```bash
-ssh -i ~/.ssh/id_digital_ocean root@157.245.214.30 \
-  'curl -sk https://157.245.214.30/api/test/dashboard' | python3 -c \
+curl -sk https://localhost/api/test/dashboard | python3 -c \
   "import sys,json; d=json.load(sys.stdin); n=d['nodes']; h=d['server_health']; p=d['pipeline']; \
   print(f\"nodes={n['active']}/200  queue={h['frame_queue_utilization_pct']}%  drops={h['frames_dropped']}  on_map={p['aircraft_on_map']}\")"
 ```

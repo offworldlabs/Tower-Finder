@@ -1,47 +1,105 @@
-# ── Local override for the test stack ────────────────────────────────────────
-# Runs docker-compose.test.yml (server + fleet simulator) on a laptop: no
-# Cloudflare cert mount, no 443, HTTP on a high port. Everything else (image,
-# fleet shape, resource limits, env) is inherited from the test compose file so
-# this stays a faithful pre-deploy smoke check rather than a second config to
-# maintain.
+# ── Laptop overlay on the shared base ────────────────────────────────────────
+# Runs the deployed stack on a developer machine over plain HTTP. Combined with
+# docker-compose.yml, exactly like the prod and staging overlays:
 #
-# Usage:
-#   docker compose -f docker-compose.test.yml -f docker-compose.local.yml up -d --build
-#   docker compose -f docker-compose.test.yml -f docker-compose.local.yml logs -f
-#   docker compose -f docker-compose.test.yml -f docker-compose.local.yml down
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml logs -f
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml down
 #
-# Endpoints (nginx routing lives in deploy/nginx-local.conf, selected via
-# NGINX_PROFILE=local; *.localhost resolves to 127.0.0.1):
-#   http://testmap.localhost:8080  → React live-radar frontend (also plain localhost:8080)
-#   http://testapi.localhost:8080  → API reverse proxy
+# Endpoints (nginx is rendered from deploy/nginx/nginx.conf.template, same as
+# every other environment; *.localhost resolves to 127.0.0.1 without a hosts entry
+# on macOS and most Linux):
+#   http://testmap.localhost:8080  → live radar map, synthetic fleet
+#   http://towers.localhost:8080   → tower search (also plain localhost:8080)
+#   http://api.localhost:8080      → API + WebSocket
+#   http://dash.localhost:8080     → dashboard
 #
-# The fleet reaches the server over the compose network, so this publishes no
-# host ports beyond 8080 and cannot clash with a concurrent `just up`.
+# This previously overlaid docker-compose.test.yml and booted the legacy
+# start-test.sh, which copied a hand-maintained deploy/nginx-local.conf. That was
+# the last config outside the shared template, and so the last place a header,
+# rate limit or route could silently differ from what production serves. It now
+# renders the same template with TLS_ENABLED=false, which is the only thing a
+# laptop genuinely cannot do — it has no Cloudflare origin certificate.
+#
+# Requires Docker Compose >= 2.24 for the !reset / !override merge tags.
 
 services:
-  tower-finder-test:
+  tower-finder:
+    container_name: retina-local-server
+    # The base pins tower-finder:latest for the rollback tooling on the droplets.
+    # Reset it so a laptop build cannot collide with a tag the deploy scripts key
+    # on, and gets Compose's implicit per-project name instead.
+    image: !reset null
+    environment:
+      # Same value the droplets run; keeps the backend inside the dev/test auth
+      # allowlist rather than demanding a JWT secret for a throwaway stack.
+      - RETINA_ENV=test
+      # The one thing a laptop cannot do. Renders the template's plain-HTTP
+      # branch: no 443 listeners, no cert paths, no HSTS, no HTTP→HTTPS redirect.
+      # Never set this on a deployed host; check-env-parity.py asserts prod and
+      # staging still render TLS.
+      - TLS_ENABLED=false
+      # The template needs a name for every vhost it renders. *.localhost is
+      # reserved for loopback (RFC 6761), so these need no /etc/hosts entry.
+      - HOST_MAIN=towers.localhost
+      - HOST_API=api.localhost
+      - HOST_MAP=map.localhost
+      - HOST_DASH=dash.localhost
+      - HOST_ADMIN=admin.localhost
+      - HOST_TESTMAP=testmap.localhost
+      - HOST_LEGACY_REDIRECT=tower-finder.localhost
+      - CORS_ORIGINS=http://towers.localhost:8080,http://api.localhost:8080,http://map.localhost:8080,http://testmap.localhost:8080,http://dash.localhost:8080
+      # The published port is part of the origin, so these carry :8080 where the
+      # deployed values do not. ws:// rather than wss:// for the same reason the
+      # TLS branch is off. The old hand-written config dropped the CSP entirely to
+      # avoid this; rendering it properly means the laptop now exercises the same
+      # policy production does, which is where CSP regressions should surface.
+      - CSP_CONNECT_SRC=http://api.localhost:8080 ws://localhost:8080 ws://*.localhost:8080
+    # Only 8080 on the host. No 443 (no certificate) and 3012 is not needed
+    # off-host: the fleet reaches the server over the compose network.
     ports: !override
       - "8080:80"
-    # Same data volumes as the test stack, minus the /etc/ssl/cloudflare bind
-    # mount (absent on a laptop; nginx-local.conf does not reference certs).
+    # Drop the /etc/ssl/cloudflare bind mount, which does not exist on a laptop.
+    # Keep the data volumes so restarts behave as they do on a droplet.
     volumes: !override
-      - test-coverage-data:/app/backend/coverage_data
-      - test-archive-data:/app/backend/coverage_data/archive
-    # backend/.env holds deploy secrets (Maprad key) that the testmap does not
-    # need; make it optional so a fresh clone can run this without `just setup`.
+      - backend-data:/app/backend/data
+      - backend-coverage-data:/app/backend/coverage_data
+    # backend/.env carries deploy secrets a laptop has no use for. Optional, so a
+    # fresh clone comes up without `just setup` having run.
+    env_file: !override
+      - path: backend/.env
+        required: false
+    # Don't resurrect the stack every time Docker Desktop starts.
+    restart: "no"
+
+  fleet:
+    container_name: retina-local-fleet
+    image: !reset null
     env_file: !override
       - path: backend/.env
         required: false
     environment:
-      # Leave RETINA_ENV=test (inherited from the base file): that is the
-      # environment the droplet actually runs, so the backend behaves identically
-      # here, and it stays inside the dev/test allowlists (JWT secret, auth
-      # bypass) rather than tripping the production-only guards. The cert-free
-      # nginx is selected on a separate axis so transport (plain HTTP) is not
-      # entangled with the app environment.
-      - NGINX_PROFILE=local
-    # Don't resurrect the stack on every Docker Desktop start
-    restart: "no"
-
-  fleet-simulator:
+      # Mirrors the production overlay's fleet shape rather than inventing a
+      # laptop-specific one, so this stack stays a faithful pre-deploy check.
+      # Keep in step with docker-compose.prod.yml when that changes; there is no
+      # automated tie-back, because the sizing lives in the overlays rather than
+      # the base. For a denser dev stream with hot reload, use `just up` instead.
+      - FLEET_NODES=25
+      - FLEET_REGIONS=us
+      - FLEET_METRO=gvl
+      - FLEET_N_CLUSTER=16
+      - FLEET_N_CLUSTERS=1
+      - FLEET_METRO_TRAFFIC_FRAC=0.85
+      - FLEET_MODE=adsb
+      - FLEET_INTERVAL=2.0
+      - FLEET_TIME_SCALE=1.0
+      - FLEET_MIN_AIRCRAFT=15
+      - FLEET_MAX_AIRCRAFT=30
+      - FLEET_BEAM_WIDTH_DEG=0
+      - FLEET_MAX_RANGE_KM=0
+      - FLEET_CONCURRENCY=20
+      - FLEET_CONNECT_RETRIES=30
+      # Log the read-only accuracy self-check every 30s. Worth having locally,
+      # where you are usually watching; the droplets leave it off.
+      - FLEET_VALIDATE=true
     restart: "no"

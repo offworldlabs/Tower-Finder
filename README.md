@@ -26,9 +26,9 @@ docs/             Architecture, pipeline, runbook, simulation, arc-display
 libs/             Git submodules
   retina-geolocator/   Bistatic passive radar geolocation solver
   retina-tracker/      Multi-target Kalman tracker with anomaly detection
-  retina-analytics/    Inter-node association, coverage, trust/reputation
-  retina-simulation/   Synthetic fleet generator (testmap + CI)
-  retina-custody/      Node custody protocol
+  retina-custody/      Chain-of-custody signing for node detections
+  retina-analytics/    Coverage and detection analytics
+  retina-simulation/   Synthetic node fleet and world model
 ```
 
 ## Quick Start
@@ -46,26 +46,44 @@ git submodule update --init --recursive
 ### Backend
 
 ```bash
-cd backend
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-pip install -e ../libs/retina-geolocator -e ../libs/retina-tracker \
-            -e ../libs/retina-analytics -e ../libs/retina-simulation -e ../libs/retina-custody
-cp .env.example .env    # add your Maprad.io API key
-uvicorn main:app --reload
+just setup
 ```
 
-The API runs at `http://localhost:8000`. Interactive docs at `/docs`.
+That is the supported path: it initialises the submodules, builds the backend venv
+with `uv`, installs all five `libs/` packages editable, seeds `backend/.env` from
+the example, and installs the frontend dependencies. Install all five even if you
+only care about tower search: `retina-simulation` imports the other four, so a
+partial install fails at import time rather than at use.
+
+Then either run the whole local stack:
+
+```bash
+just up      # uvicorn + synthetic fleet + Vite, with hot reload
+just status  # what is alive
+just down    # stop it
+```
+
+or just the API on its own:
+
+```bash
+cd backend && .venv/bin/uvicorn main:app --reload
+```
+
+The API runs at `http://localhost:8000`. Interactive docs at `/docs`. Add your
+Maprad.io API key to `backend/.env` for tower search; the live map does not need
+it.
 
 ### Frontend
 
+`just setup` already installed the dependencies, and `just up` runs this alongside
+the backend. To run it on its own:
+
 ```bash
-cd frontend
-npm install
-npm run dev
+cd frontend && npm run dev
 ```
 
-Opens at `http://localhost:5173`. API calls are proxied to the backend during development.
+Opens at `http://localhost:5173`. API calls are proxied to the backend during
+development.
 
 ## API
 

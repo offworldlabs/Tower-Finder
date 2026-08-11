@@ -13,29 +13,21 @@ whitelisted.
 # B018 — intentional bare-name expressions; this is how vulture whitelists work.
 # F821 — names are defined in other modules; this file is only read by vulture.
 
-# ── Dummy object ──────────────────────────────────────────────────────────────
-# Attribute accesses below (_.foo) tell vulture that "foo" is referenced
-# somewhere, suppressing the unused-attribute/method finding.
-_ = type("_", (), {})()
 
-
-# ── config/constants.py ───────────────────────────────────────────────────────
+# ── A note on discipline ──────────────────────────────────────────────────────
 # (The "intentional named literals for future wiring" that used to sit here
 # were dead config laundered through this whitelist — deleted, per this
 # file's own preamble.  ANALYTICS_REFRESH_INTERVAL_S is now wired;
 # ASSOC_MIN_INTERVAL_S is passed by core/state.)
 
-
 # ── core/types.py ─────────────────────────────────────────────────────────────
+
 # TypedDict definitions — used as type annotations; fields are accessed via
 # dict keys at runtime, not attribute access, so vulture misses the usage.
 NodeState
-_.last_heartbeat
-_.is_synthetic
 _.capabilities
 AircraftPosition
 _.hex
-_.alt_baro
 _.baro_rate
 _.squawk
 _.rssi
@@ -44,16 +36,13 @@ _.flight
 _.alt_geom
 _.multi_node
 _.anomaly
-_.type
 TaskHealth
 _.last_success
 _.error_counts
 
-
 # ── pipeline/passive_radar.py ─────────────────────────────────────────────────
+
 # EventWriter public API — tested in tests/test_pipeline.py
-_.write_event
-_.write_event_lazy
 
 # Track / Pipeline attributes SET internally; may be read by external
 # inspection tools, serialisers, or future instrumentation.
@@ -62,42 +51,21 @@ _._frame_count
 
 # geo_config fields — SET on the retina_geolocator SolverConfig object;
 # retina_geolocator reads them during solve_track().
-_.altitude_bounds
 _.velocity_bounds
 _.initial_altitude_m
 
-
-# ── routes/custody.py ─────────────────────────────────────────────────────────
-# Pydantic request-body fields passed through body.model_dump() → HashChainEntry.from_dict()
-# and verified by HashChainVerifier. Vulture can't trace dict access.
-payload_hash
-signature
-
-
-# ── clients/adsb_lol.py ───────────────────────────────────────────────────────
-# Used as OpenSky fallback in services/tasks/periodic.py _fetch_adsb_lol().
-AdsbLolClient
-
-
-# ── services/r2_client.py ─────────────────────────────────────────────────────
-# R2 / S3-compatible storage API — all functions are tested in
-# tests/test_r2_client.py and form the public storage interface.
-upload_bytes
-list_keys
-delete_key
-delete_keys
-_clear_cache
-
 # ── Pydantic v2 model config ──────────────────────────────────────────────────
+
 # model_config is consumed by Pydantic internals; vulture cannot see this.
 _.model_config
 
 # ── ASGI / Starlette middleware ───────────────────────────────────────────────
+
 # dispatch() is the required override entry-point for BaseHTTPMiddleware.
 _.dispatch
 
-
 # ── core/users.py ─────────────────────────────────────────────────────────────
+
 # fastapi-users schemas — UserRead/UserUpdate are the public API shapes
 # consumed by fastapi-users' router factory and the OpenAPI schema.
 UserRead
@@ -111,45 +79,31 @@ _.verification_token_secret
 fastapi_users
 # SQLAlchemy model attributes — accessed via ORM column descriptors,
 # not direct attribute lookups that vulture can trace.
-_.token
-_.email
-_.role
-_.created_by
-_.created_at
-_.expires_at
-_.used_at
-_.node_id
-_.user_id
-_.code
-_.used_by_node_id
-
-
-# ── analysis/weather.py ───────────────────────────────────────────────────────
-# Public helper used by backfill scripts and future pipeline tasks.
-fetch_historical
-
-
-# ── backfill/json_to_parquet.py ───────────────────────────────────────────────
-# Public API for one-off and streaming backfill runners; called from CLI
-# scripts not visible to vulture's static scan.
-convert_payload_to_parquet
-convert_legacy_bytes
-
 
 # ── services/storage.py ───────────────────────────────────────────────────────
+
 # `tag` is a keyword-only parameter on archive_detections(); kept for
 # callsite compatibility with callers that pass tag= explicitly.
 tag
 
-
 # ── core/users.py ─────────────────────────────────────────────────────────────
+
 # Registered with SQLAlchemy via @event.listens_for(engine.sync_engine, "connect").
 # Vulture doesn't follow the decorator's dynamic dispatch.
 _set_sqlite_pragmas
 
-
 # ── services/tasks/solver.py ──────────────────────────────────────────────────
+
 # Public alias consumed by scripts/association_bench.py (scripts/ is excluded
 # from the vulture scan) — the bench resolves chi2 through the worker's own
 # code path rather than a copy.
 resolve_n2_chi2
+
+
+# ── Framework attributes (previously CI --ignore-names) ───────────────────────
+# Moved out of the vulture invocation so the reason lives with the name.
+# `model_config` is the pydantic v2 class-level config attribute, read by
+# pydantic itself. `dispatch` is the Starlette BaseHTTPMiddleware hook, called
+# by the middleware stack. Neither has a call site in our code.
+model_config
+_.dispatch
