@@ -83,9 +83,19 @@ cannot quietly close it.
 | CA presence assertion | `deploy/start.sh` |
 | `DOCKER-USER` rules + systemd unit | `deploy/setup-server.sh`, new unit file |
 | Range source and refresh script | `deploy/cloudflare-ranges.txt`, `deploy/refresh-cloudflare-ranges.sh` |
+| Absolute assertion on the rendered config | `deploy/check-env-parity.py:217-229` |
+
+The assertion is the regression test for this work. `check-env-parity.py` already
+carries an "absolute assertion, not a comparison" block, added because a parity
+diff proves only that the two environments match *each other* — a change dropping
+TLS from both would sail through it. The same hole applies here: without an
+absolute assertion, deleting `ssl_verify_client` from the shared snippet would
+leave staging and production identical and equally unprotected. So the boundary
+gets pinned the same way `listen 443 ssl` and HSTS already are.
 
 `snippets/tls.conf` is inlined into every TLS server block by
-`render-nginx-config.py`, so one edit covers all six vhosts.
+`render-nginx-config.py`, so one edit covers all seven vhosts
+(`EXPECTED_TLS_VHOSTS` in `check-env-parity.py:55`).
 
 The origin-pull CA goes to `/etc/ssl/cloudflare/origin-pull-ca.pem`, beside the
 existing cert and key. That directory is already bind-mounted read-only into the
