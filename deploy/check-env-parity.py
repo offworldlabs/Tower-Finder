@@ -227,6 +227,23 @@ def check_nginx(tmp: Path) -> list[str]:
             problems.append(f"  {env}: rendered config has no ssl_certificate directive.")
         if "Strict-Transport-Security" not in text:
             problems.append(f"  {env}: rendered config has no HSTS header.")
+        # Authenticated Origin Pulls. Absolute for the same reason as the TLS
+        # count above: this lives in one shared snippet, so deleting it would
+        # drop the boundary from both environments at once and leave them in
+        # perfect parity with each other. See the 2026-08-10 origin-boundary
+        # spec; the firewall half of that boundary cannot be asserted from here.
+        verify = text.count("ssl_verify_client on;")
+        if verify != EXPECTED_TLS_VHOSTS:
+            problems.append(
+                f"  {env}: {verify} `ssl_verify_client on` directives, expected "
+                f"{EXPECTED_TLS_VHOSTS}. Every TLS vhost must reject handshakes "
+                f"that do not present Cloudflare's client certificate."
+            )
+        if "ssl_client_certificate " not in text:
+            problems.append(
+                f"  {env}: rendered config has no ssl_client_certificate "
+                f"directive, so ssl_verify_client has no CA to verify against."
+            )
     if problems:
         return problems
 

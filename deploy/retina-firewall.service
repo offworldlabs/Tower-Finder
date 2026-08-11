@@ -1,0 +1,24 @@
+[Unit]
+# Docker recreates its chains when it starts, so these rules must be applied
+# after it, on every boot. Without this the boundary silently disappears on the
+# first reboot and the origin is wide open with nothing to indicate it.
+Description=RETINA DOCKER-USER Cloudflare boundary
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/tower-finder/deploy/docker-user-firewall.sh
+# No Restart=. With RemainAfterExit=yes the unit is "active" the moment the
+# script succeeds and is never re-run, so a restart policy could only ever act
+# on the failure path — and every way this script fails is a refusal to install
+# (missing DOCKER-USER chain, short ranges file, undeterminable external
+# interface), none of which a retry ten seconds later would resolve. Retrying
+# would only bury the diagnosis under repeated identical output. A failed unit
+# stays failed and visible in `systemctl status`, which is the intended signal:
+# the boundary is not applied and someone has to look.
+
+[Install]
+WantedBy=multi-user.target

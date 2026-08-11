@@ -51,6 +51,23 @@ fi
 # own ($host, $remote_addr, …) untouched; it exits non-zero on a missing or
 # unknown variable. `set -e` turns that into a failed boot, which the deploy's
 # health gate reports — far better than silently serving a half-rendered site.
+
+# Fail with the actual cause rather than a generic nginx config error. `nginx -t`
+# below does catch this, but names only the directive. Mirrors how
+# setup-server.sh refuses to run without the origin certificate.
+#
+# Deliberately fail-closed: a missing CA must never degrade to serving TLS
+# without verification, because that is indistinguishable from the boundary
+# working.
+if [ "${TLS_ENABLED:-true}" != "false" ] && [ ! -f /etc/ssl/cloudflare/origin-pull-ca.pem ]; then
+    echo "[start.sh] ✗ /etc/ssl/cloudflare/origin-pull-ca.pem is missing." >&2
+    echo "[start.sh]   nginx is configured for Authenticated Origin Pulls and" >&2
+    echo "[start.sh]   cannot start without Cloudflare's origin-pull CA. Fetch it:" >&2
+    echo "[start.sh]     curl -fsS -o /etc/ssl/cloudflare/origin-pull-ca.pem \\" >&2
+    echo "[start.sh]       https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem" >&2
+    exit 1
+fi
+
 python3 /app/deploy/render-nginx-config.py \
     /app/deploy/nginx/nginx.conf.template \
     /etc/nginx/sites-available/default
