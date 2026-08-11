@@ -71,9 +71,9 @@ In `deploy/check-env-parity.py`, inside the `for env, text in rendered.items():`
 
 Run: `touch backend/.env && python3 deploy/check-env-parity.py`
 
-Expected: exit status 1, output naming both `staging` and `test` with `0 ssl_verify_client on directives, expected 7`, and `rendered config has no ssl_client_certificate directive`.
+Expected: exit status 1, output naming `production`, `staging` and `test`, each with `0 ssl_verify_client on directives, expected 7` and `rendered config has no ssl_client_certificate directive`.
 
-Note: production is the reference environment and is not itself listed in the per-environment loop output; staging and test are. If the command exits 0, the assertion is not wired into the `problems` list — check the indentation places it inside the `for` loop.
+Note: all three environments appear, production included. The `env == REFERENCE` skip exists only in the later diff-printing loop, not in this assertion loop — production is checked absolutely, like the others. If the command exits 0, the assertion is not wired into the `problems` list; check that the indentation places it inside the `for` loop.
 
 - [ ] **Step 3: Commit the failing assertion**
 
