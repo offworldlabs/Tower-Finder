@@ -1,6 +1,6 @@
 /**
  * Tower Finder frontend E2E tests.
- * Tests the main retina.fm / staging.retina.fm interface:
+ * Tests the main towers.retina.fm / staging-towers.retina.fm interface:
  * - Page load and header rendering
  * - Tab navigation
  * - Search form validation and submission

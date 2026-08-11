@@ -38,36 +38,42 @@ setup:
     echo "✓ setup complete — now: just up"
 
 # Bring up backend + synthetic fleet + frontend (background). Open http://testmap.localhost:5173/
-# Fleet profile: `just up` (local, dense) · `just up testmap` (8s) · `just up prod` (40s).
-# testmap/prod read their fleet params LIVE from the real deploy configs so they can't drift.
+# Fleet profile: `just up` (local, dense) · `just up test` (50 fps) · `just up prod` (12.5 fps).
+# test/prod read their fleet params LIVE from the real deploy configs so they can't drift.
 up profile="local":
     #!/usr/bin/env bash
     set -euo pipefail
     [ -x "{{py}}" ] || { echo "no backend venv — run: just setup"; exit 1; }
     [ -d "{{fe}}/node_modules" ] || { echo "no frontend deps — run: just setup"; exit 1; }
     # ── Resolve fleet params by profile ────────────────────────────────────────
-    #  local   — dev-only dense stream (~1 ellipse/s); no deployed equivalent.
-    #  testmap — sourced from docker-compose.test.yml   (the testmap.retina.fm test stack).
-    #  prod    — sourced from docker-compose.prod.yml's `fleet` service (the
-    #            Compose service that actually serves the live
-    #            testmap.retina.fm + map.retina.fm). The FLEET_* sizing lives in
-    #            the prod overlay rather than the shared base: fleet scale is the
-    #            one thing staging is meant to differ on.
+    #  local — dev-only dense stream (~1 ellipse/s); no deployed equivalent.
+    #  test  — the retina-test droplet's fleet: 50 nodes at a 1.0s per-node
+    #          detection rate, so 50 frames/s reach the server. staging runs the
+    #          same shape; there is no separate profile for it.
+    #  prod  — docker-compose.prod.yml's `fleet` service, the one that actually
+    #          serves live testmap.retina.fm + map.retina.fm: 25 nodes at 2.0s,
+    #          12.5 fps.
+    #
+    # Both read the overlay PLUS docker-compose.yml, because the connection
+    # settings the environments share live in the base. The extraction matches
+    # only list entries (`- FLEET_X=y`), never prose: the overlays discuss
+    # variables like FLEET_METRO="" in their comments, and an unanchored grep
+    # would eval those too.
+    fleet_env() {
+        grep -hoE '^[[:space:]]*-[[:space:]]*FLEET_[A-Z_]+=[^[:space:]]+' "$@" \
+            | sed -E 's/^[[:space:]]*-[[:space:]]*//'
+    }
     case "{{profile}}" in
       local)
         FLEET_NODES=200; FLEET_MODE=detection; FLEET_INTERVAL=0.5
         FLEET_TIME_SCALE=1.0; FLEET_MIN_AIRCRAFT=40; FLEET_MAX_AIRCRAFT=60
         FLEET_METRO=gvl; FLEET_N_CLUSTER=30; FLEET_N_CLUSTERS=1 ;;
-      testmap)
-        # every FLEET_* value comes straight from the compose file's fleet-simulator block
-        eval "$(grep -oE 'FLEET_[A-Z_]+=[^[:space:]]+' "{{root}}/docker-compose.test.yml")" ;;
+      test)
+        eval "$(fleet_env "{{root}}/docker-compose.yml" "{{root}}/docker-compose.test.yml")" ;;
       prod)
-        # every FLEET_* value comes straight from docker-compose.prod.yml's
-        # `fleet` block, plus the connection settings it shares with staging in
-        # docker-compose.yml (same extraction the testmap profile uses)
-        eval "$(grep -hoE 'FLEET_[A-Z_]+=[^[:space:]]+' "{{root}}/docker-compose.yml" "{{root}}/docker-compose.prod.yml")" ;;
+        eval "$(fleet_env "{{root}}/docker-compose.yml" "{{root}}/docker-compose.prod.yml")" ;;
       *)
-        echo "✗ unknown profile '{{profile}}' — use: local | testmap | prod"; exit 1 ;;
+        echo "✗ unknown profile '{{profile}}' — use: local | test | prod"; exit 1 ;;
     esac
     # fail loudly if extraction ever silently breaks, rather than launch a wrong fleet
     : "${FLEET_INTERVAL:?could not resolve fleet params for profile '{{profile}}'}"
@@ -91,7 +97,7 @@ up profile="local":
         exit 1
     fi
 
-    # Metro scoping must be forwarded too, or the testmap/prod profiles would
+    # Metro scoping must be forwarded too, or the test/prod profiles would
     # silently run a nationwide fleet while claiming to mirror the compose files.
     METRO_ARGS=()
     if [ -n "${FLEET_METRO:-}" ]; then METRO_ARGS+=(--metro "${FLEET_METRO}"); fi
@@ -114,7 +120,7 @@ up profile="local":
     echo
     echo "✓ up [{{profile}}].  Open →  http://testmap.localhost:5173/"
     echo "  (plain localhost shows tower search — the testmap.* host selects the live map)"
-    echo "  fleet [{{profile}}]: ${FLEET_NODES} nodes @ ${FLEET_INTERVAL}s.  Profiles: local | testmap (8s) | prod (40s)"
+    echo "  fleet [{{profile}}]: ${FLEET_NODES} nodes @ ${FLEET_INTERVAL}s/node.  Profiles: local | test (50 fps) | prod (12.5 fps)"
     echo "  logs: just logs    status: just status    stop: just down"
 
 # Stop everything (by port for the servers, by pattern for the portless fleet client)
@@ -131,6 +137,22 @@ down:
     # parent reloader that owns no socket — pattern-kill catches both
     pkill -f 'retina_simulation.orchestrator' 2>/dev/null && echo "→ killed fleet orchestrator" || true
     pkill -f 'uvicorn main:app' 2>/dev/null || true
+    # Wait for them to actually go. SIGTERM only *asks*, and uvicorn --reload's
+    # child plus the fleet orchestrator can take ~25s to unwind. Reporting "down"
+    # on the strength of having sent the signal makes the very next `just status`
+    # contradict it, which is exactly the sequence anyone types.
+    for _ in $(seq 1 40); do
+        alive=0
+        for port in 8000 3012 5173; do
+            lsof -nP -tiTCP:$port -sTCP:LISTEN >/dev/null 2>&1 && alive=1
+        done
+        pgrep -f 'retina_simulation.orchestrator' >/dev/null 2>&1 && alive=1
+        [ "$alive" = 0 ] && break
+        sleep 1
+    done
+    if [ "${alive:-0}" != 0 ]; then
+        echo "⚠ still running after 40s — inspect: just status"; exit 1
+    fi
     echo "✓ down"
 
 # Which of the three are alive (port-based, so it never lies due to stale pids)
@@ -143,3 +165,161 @@ status:
 # Tail all three logs (Ctrl-C to stop tailing; services keep running)
 logs:
     tail -n +1 -f "{{run}}/backend.log" "{{run}}/fleet.log" "{{run}}/frontend.log"
+
+# ── retina-test droplet ──────────────────────────────────────────────────────
+# The test droplet is deployed by rsync from the working tree, not by git. That is
+# deliberate: staging and production deploy from `main` through CI precisely so
+# nothing unreviewed reaches them, and the whole point of retina-test is to run a
+# branch under load BEFORE it is reviewed. Giving it a git remote would either
+# duplicate that pipeline or invite pushing to it directly.
+#
+# The consequence is that what runs there is whatever was in your tree, including
+# uncommitted edits, so `deploy-test-status` prints the local HEAD it was cut from
+# and whether that tree was dirty. Read it as a label, not a guarantee.
+
+# The ssh target for the test droplet. Overridable, and deliberately not a
+# hostname or an address: this repo is public, so it should not be where anyone
+# learns what the infrastructure is called or where it lives. Set RETINA_TEST_HOST
+# to whatever your own ~/.ssh/config calls it.
+host_test := env_var_or_default("RETINA_TEST_HOST", "retina-test")
+app_test  := "/opt/tower-finder"
+
+# rsync the working tree to retina-test and rebuild the stack there
+deploy-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "→ syncing working tree to {{host_test}}:{{app_test}}"
+    # --delete so a file removed here is removed there: without it the droplet
+    # accumulates the very stale configs this branch spent its time deleting.
+    # (Excluded paths are NOT deleted on the receiver — no --delete-excluded — so
+    # the droplet's own .env, secrets and data volumes survive every sync.)
+    #
+    # Rules are evaluated in the order given and the first match wins, which is
+    # what makes the three groups below meaningful:
+    #
+    # 1. Protect the receiver's state and keep .git out — there deliberately is
+    #    not one there, and rsync must not create one.
+    # 2. Force back in the things git IGNORES but the build needs. rsync has no
+    #    notion of "tracked anyway", which git does: a tracked file still ships
+    #    even when a pattern matches it. Without these the gitignore filter below
+    #    silently drops them and --delete removes them from the droplet.
+    #      tar1090/          — gitignored, but the Dockerfile COPYs it
+    #      metro_tower_cache — tracked in retina-simulation, whose own .gitignore
+    #                          says *.json; it is what spares fleet generation the
+    #                          Tower API round-trips
+    #      .gitkeep          — tracked placeholders inside ignored data dirs
+    # 3. Honour .gitignore. This is a REMOTE host, and .gitignore marks paths as
+    #    local-only precisely because they must not leave the machine —
+    #    .github/instructions/, .github/prompts/ and .claude/ are labelled
+    #    "server credentials, ops, private prompts — never push" in it. A
+    #    hand-maintained exclude list silently ships every one of them the day
+    #    someone creates it; deferring to .gitignore cannot go stale that way.
+    rsync_rules=(
+        --exclude '.git'
+        --exclude '.env'
+        --exclude 'backend/.env'
+        --exclude 'backend/data'
+        --exclude 'backend/coverage_data'
+        --include 'tar1090/'
+        --include 'tar1090/**'
+        --include '**/metro_tower_cache.json'
+        --include '**/.gitkeep'
+        --filter=':- .gitignore'
+        --exclude '.venv'
+        --exclude 'node_modules'
+        --exclude '__pycache__'
+        --exclude '.testmap-run'
+    )
+    # Preflight: prove the rules above do not drop anything git tracks. The two
+    # systems disagree by design — git keeps tracked files regardless of ignore
+    # rules, rsync does not — so every new ignore pattern is a chance to silently
+    # stop shipping a source file and then delete it on the far side. Assert it
+    # instead of trusting the include list to stay complete.
+    #
+    # Two deliberate omissions are allowed through:
+    #   .claude/      tracked inside a submodule; agent config, no business on a
+    #                 server, and .gitignore marks it never-push anyway
+    #   backend/data/ excluded above to protect the droplet's live users.db and
+    #                 archive; its tracked README is collateral and not needed
+    dropped=$(comm -23 \
+        <({ git -C "{{root}}" ls-files; \
+            git -C "{{root}}" submodule --quiet foreach --recursive 'git ls-files | sed "s#^#$sm_path/#"'; \
+          } | sort -u) \
+        <(rsync -an --out-format='%n' "${rsync_rules[@]}" "{{root}}/" "{{root}}/.rsync-check/" 2>/dev/null \
+            | sed 's#/$##' | sort -u) \
+        | grep -vE '/\.claude/|^backend/data/' || true)
+    rmdir "{{root}}/.rsync-check" 2>/dev/null || true
+    if [ -n "$dropped" ]; then
+        echo "✗ these tracked files would NOT reach the droplet — fix the rsync rules:"
+        printf '    %s\n' $dropped
+        exit 1
+    fi
+    rsync -az --delete "${rsync_rules[@]}" "{{root}}/" "{{host_test}}:{{app_test}}/"
+    # Record what was sent, so deploy-test-status can report it. Written after the
+    # rsync rather than before, or --delete would remove it again. Built with
+    # printf rather than a heredoc: just indents every recipe line, and an indented
+    # terminator does not close a <<EOF (nor does <<- strip spaces, only tabs).
+    if git -C "{{root}}" diff --quiet && git -C "{{root}}" diff --cached --quiet; then
+        dirty=no
+    else
+        dirty=YES
+    fi
+    printf 'commit=%s\nbranch=%s\ndirty=%s\ndeployed=%s\n' \
+        "$(git -C "{{root}}" rev-parse --short HEAD)" \
+        "$(git -C "{{root}}" rev-parse --abbrev-ref HEAD)" \
+        "$dirty" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        | ssh "{{host_test}}" "cat > {{app_test}}/.deployed-from"
+    # Select the test overlay, from the tree we just synced — the same thing the
+    # CI deploys do for prod and staging, and for the same reason. This is the one
+    # box with no CI, so it was also the one box where a missing ./.env stayed a
+    # silent, hand-fixed failure: compose would resolve the base alone, start.sh
+    # would abort on the unset RETINA_ENV, and the only symptom would be the
+    # health gate below timing out after 120s saying nothing about the cause.
+    # The example file is already on the droplet by now, so just use it.
+    echo "→ rebuilding on {{host_test}}"
+    ssh "{{host_test}}" "cd {{app_test}} && cp deploy/env.test.example .env && docker compose up -d --build"
+    # Ask uvicorn directly, inside the container, exactly as the compose
+    # healthcheck does. Going through nginx on plain HTTP would only prove the
+    # template's HTTP->HTTPS redirect works: it answers 301, and curl -sf treats a
+    # 301 as success, so a crash-looping app would still have reported healthy.
+    #
+    # The retry loop runs HERE rather than on the far side, so the remote command
+    # stays a single-quoting-level string. A loop sent through ssh would need the
+    # python source escaped through both shells, which is how this went wrong the
+    # first time.
+    echo "→ waiting for health..."
+    healthy=no
+    for _ in $(seq 1 24); do
+        if ssh "{{host_test}}" "cd {{app_test}} && docker compose exec -T tower-finder python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/api/health\")'" >/dev/null 2>&1; then
+            healthy=yes; break
+        fi
+        sleep 5
+    done
+    if [ "$healthy" != yes ]; then
+        echo "  ✗ not healthy after 120s — inspect: just deploy-test-logs tower-finder"
+        exit 1
+    fi
+    echo "  ✓ healthy"
+    just --justfile "{{justfile()}}" deploy-test-status
+
+# What retina-test is running, and what it was cut from
+deploy-test-status:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    echo "── {{host_test}} ──"
+    ssh "{{host_test}}" "cat {{app_test}}/.deployed-from 2>/dev/null || echo '(no deploy marker — provisioned by hand?)'"
+    # Four opening braces is just's escape for two literal ones; the closing pair
+    # needs no escaping. Do not put backticks in a recipe comment — just evaluates
+    # them as shell substitution even inside a comment, and the recipe dies.
+    ssh "{{host_test}}" "cd {{app_test}} && docker compose ps --format 'table {{{{.Name}}\t{{{{.Status}}'"
+    # Same reason as the health gate above: in-container, straight to uvicorn, so
+    # this reports the app rather than nginx's redirect. Single-quoted python
+    # inside a double-quoted remote command — one level of escaping, no heredoc
+    # (just indents every recipe line, so a heredoc terminator never closes).
+    echo "── fleet ──"
+    ssh "{{host_test}}" "cd {{app_test}} && docker compose exec -T tower-finder python3 -c 'import json,urllib.request; d=json.load(urllib.request.urlopen(\"http://localhost:8000/api/radar/nodes\")); n=d[\"nodes\"]; print(\"  nodes:\", len(n), \"total,\", sum(1 for v in n.values() if v.get(\"is_synthetic\")), \"synthetic,\", d.get(\"connected\"), \"connected\")'" 2>/dev/null || echo "  (nodes endpoint unreachable)"
+
+# Tail retina-test's container logs (Ctrl-C to stop; the stack keeps running)
+deploy-test-logs service="":
+    ssh "{{host_test}}" "cd {{app_test}} && docker compose logs -f --tail 100 {{service}}"

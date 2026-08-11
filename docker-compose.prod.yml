@@ -15,7 +15,13 @@ services:
   tower-finder:
     container_name: retina-prod-server
     environment:
-      - RETINA_ENV=production
+      # Deliberately `test`, not `production`/`staging`, while admin access stays
+      # open during the build-out. This leaves four backend auth/secret guards
+      # inactive — JWT_SECRET stops being required, AUTH_BYPASS applies when no
+      # OAuth is configured, and the missing-key warnings in radar.py and
+      # tcp_handler.py downgrade. Tracked in ClickUp 86cb1emcx; revert to the
+      # real environment name there, not here.
+      - RETINA_ENV=test
       - CORS_ORIGINS=https://towers.retina.fm,https://api.retina.fm,https://map.retina.fm,https://dash.retina.fm,https://admin.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
       # at boot to render deploy/nginx/nginx.conf.template. One template serves
@@ -25,7 +31,6 @@ services:
       - HOST_MAP=map.retina.fm
       - HOST_DASH=dash.retina.fm
       - HOST_ADMIN=admin.retina.fm
-      - HOST_TESTAPI=testapi.retina.fm
       - HOST_TESTMAP=testmap.retina.fm
       - HOST_LEGACY_REDIRECT=tower-finder.retina.fm
       # The only host-naming part of the CSP. wss://*.retina.fm already covers

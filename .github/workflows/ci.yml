@@ -26,12 +26,7 @@ jobs:
       - name: Lint (ruff)
         run: ruff check .
       - name: Dead code (vulture)
-        run: |
-          vulture . vulture_whitelist.py \
-            --min-confidence 60 \
-            --exclude ".venv,tests,scripts,htmlcov,__pycache__" \
-            --ignore-decorators "@router.*,@app.*" \
-            --ignore-names "model_config,dispatch"
+        run: tools/check-dead-code.sh
       - run: pytest tests/ -v --tb=short -m "not external"
 
   frontend-build:
@@ -156,6 +151,14 @@ jobs:
           username: root
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
+            # Same identity assertion the deploy carries, and for a stronger
+            # reason: rollback.sh resets the tree, retags images over :latest and
+            # cycles the stack, so a SERVER_HOST pointed at the wrong droplet
+            # does more damage here than a deploy would. Inline rather than in
+            # rollback.sh itself, so it holds even when the box is checked out at
+            # a tree that predates the script. See deploy-production for why the
+            # match is exact.
+            [ "$(hostname)" = "retina-prod" ] || { echo "::error::Refusing to roll back on '$(hostname)' — expected retina-prod."; exit 1; }
             echo "E2E tests failed — rolling back production..."
             cd /opt/tower-finder && bash deploy/rollback.sh
 
@@ -183,6 +186,28 @@ jobs:
             set -e
             cd /opt/tower-finder
 
+            # Same two wrong-environment checks production runs, first and in the
+            # same order, for the same reasons. The hostname is the only signal
+            # that holds on a box with no .env at all, which is exactly the state
+            # a droplet awaiting its first deploy is in; see the production block
+            # for why it is an exact match rather than a pattern.
+            if [ "$(hostname)" != "retina-staging" ]; then
+              echo "::error::Refusing to deploy staging onto '$(hostname)' — expected retina-staging. If this droplet was rebuilt, finish provisioning it (hostnamectl set-hostname retina-staging); otherwise this job is pointed at the wrong box."
+              exit 1
+            fi
+
+            # A .env naming another environment means this job is pointed
+            # at a box it does not own. Without this the write further down simply
+            # takes that box over — overwriting its .env and running `down` then
+            # `up` would bring production back on staging's hostnames, fleet size
+            # and container names. A MISSING .env is allowed through; that is the
+            # normal state of a box awaiting its first deploy, and we write it
+            # below.
+            if [ -f .env ] && ! grep -q '^COMPOSE_FILE=.*docker-compose\.staging\.yml' .env; then
+              echo "::error::/opt/tower-finder/.env exists but does not select the staging overlay — this host is not staging. Inspect it; do not deploy."
+              exit 1
+            fi
+
             # Pre-flight: refuse to deploy when the disk is near full. Without
             # this, git fetch silently writes a partial pack, the source tree
             # never advances, and `docker compose --build` happily caches every
@@ -205,13 +230,13 @@ jobs:
             # Ensure tar1090 static assets are present
             [ -d tar1090/html ] || git clone --depth 1 https://github.com/wiedehopf/tar1090.git tar1090
             # The host's ./.env sets COMPOSE_FILE (base + staging overlay), so
-            # every command below is character-identical to the production
-            # deploy block. Fail loudly rather than silently deploying the
-            # base-only stack if the host was never set up with one.
-            grep -q '^COMPOSE_FILE=' .env 2>/dev/null || {
-              echo "::error::No COMPOSE_FILE in /opt/tower-finder/.env — run: cp deploy/env.staging.example .env"
-              exit 1
-            }
+            # every command below is character-identical to the production deploy
+            # block. Written from the tree we just checked out rather than assumed
+            # to be present: this job knows perfectly well which environment it is
+            # deploying, so making that depend on someone having copied the right
+            # file by hand only creates a way to get it wrong. A rebuilt droplet,
+            # a restored snapshot or a hand-mangled file now self-heals here.
+            cp deploy/env.staging.example .env
             docker compose down --timeout 30
             # Cap build cache at ~10GB (LRU eviction) rather than wiping it all:
             # keeps recent layers so incremental builds stay fast, and bounds
@@ -291,6 +316,51 @@ jobs:
             set -e
             cd /opt/tower-finder
 
+            # Identity pre-flight, and deliberately the first thing of all: it is
+            # the only check here that does not depend on the state of the box.
+            # The .env check below cannot catch a droplet that has never been
+            # deployed to, because such a box has no .env and absence has to be
+            # allowed through (see below) — but it still knows its own name.
+            #
+            # An exact match rather than a pattern, because substring matching on
+            # environment names is a trap: `latest`, `testnet` and `contest` all
+            # contain `test`, so a droplet named retina-prod-latest or sitting
+            # under a *.testnet. domain would be refused as if it were the test
+            # box. setup-server.sh sets this name from RETINA_TARGET_ENV, so a
+            # fully provisioned droplet always satisfies it; anything else is
+            # either the wrong box or a rebuild that never finished, and neither
+            # should take a production deploy.
+            if [ "$(hostname)" != "retina-prod" ]; then
+              echo "::error::Refusing to deploy production onto '$(hostname)' — expected retina-prod. If this droplet was rebuilt, finish provisioning it (hostnamectl set-hostname retina-prod); otherwise this job is pointed at the wrong box."
+              exit 1
+            fi
+
+            # Second pre-flight, before anything below mutates the box: a .env
+            # naming the WRONG environment is the one remaining error that has to
+            # be caught before pre-deploy.sh runs. That script
+            # reads the current image through `docker compose images`, so it
+            # resolves through whatever this file says; staging's .env here would
+            # have it snapshot the wrong service and then deploy production onto
+            # staging's hostnames, fleet and container names.
+            #
+            # A MISSING .env is deliberately allowed through. It used to be a hard
+            # refusal, which turned out to be unshippable: production has never had
+            # one, and the file it would name (docker-compose.prod.yml) does not
+            # exist in the tree production is currently checked out at — it arrives
+            # with the git reset below. Refusing here meant the deploy could never
+            # run, and writing the file by hand beforehand was worse: compose would
+            # then resolve against an overlay that is not there yet, pre-deploy.sh
+            # would warn "no running image found" and carry on, and the largest
+            # deploy this box has taken would have gone out with no rollback point.
+            # With no .env at all, compose resolves the base alone, which is
+            # exactly production's current config, so the snapshot is correct.
+            #
+            # The file is then written from the checked-out tree, below.
+            if [ -f .env ] && ! grep -q '^COMPOSE_FILE=.*docker-compose\.prod\.yml' .env; then
+              echo "::error::/opt/tower-finder/.env exists but does not select the production overlay — it names another environment. Inspect it; do not deploy."
+              exit 1
+            fi
+
             # Pre-deploy: save rollback image + git tag. NOT `|| true`: if we
             # cannot capture a rollback point, abort the deploy rather than ship
             # with no way back. A swallowed failure here previously let a deploy
@@ -321,6 +391,15 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
             git submodule update --init --recursive
+
+            # Select the production overlay, now that the reset has actually put
+            # docker-compose.prod.yml on disk. This must sit after the reset and
+            # before the first compose command below — the whole chicken-and-egg
+            # is that the file naming the overlay is useless until the overlay
+            # exists. pre-deploy.sh above has already taken its snapshot against
+            # the previous config, which is what a rollback needs to restore.
+            cp deploy/env.prod.example .env
+
             pip3 install -e libs/retina-custody/ --break-system-packages --ignore-installed -q
             pip3 install -e libs/retina-simulation/ --break-system-packages -q
             # Cap build cache at ~10GB (LRU eviction) rather than wiping it all,
@@ -468,5 +547,7 @@ jobs:
           username: root
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
+            # See the identical assertion in e2e-prod's rollback step.
+            [ "$(hostname)" = "retina-prod" ] || { echo "::error::Refusing to roll back on '$(hostname)' — expected retina-prod."; exit 1; }
             echo "Production smoke tests failed — rolling back production..."
             cd /opt/tower-finder && bash deploy/rollback.sh
