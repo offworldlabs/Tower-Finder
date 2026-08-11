@@ -11,3 +11,23 @@ deploy/DEPLOY.md
 tar1090/.git
 tar1090/.gitignore
 other/
+
+# Local runtime state (database, snapshots, node config, coverage/track
+# archives) must never ship in the image. Docker seeds a fresh named volume
+# from whatever the image holds at that path, so a developer's own
+# create_all-built users.db baked in here means every clean deploy boots
+# against a database that already has the auth tables: 0001 early-returns
+# and stamps itself, then 0002's plain CREATE TABLE hits "table nodes already
+# exists" and the (correct) migration-failure abort refuses to boot.
+# The directory itself is kept: core/users.py expects backend/data to exist,
+# and backend/data/README.md is what holds it in git.
+backend/data/*
+!backend/data/README.md
+# Same problem, no tracked placeholder needed: purely local synthetic-fleet
+# and coverage-run output, recreated on demand by services/storage.py.
+backend/coverage_data/
+# Same problem, no tracked placeholder needed: the built image would otherwise
+# carry a stale aircraft.json snapshot and a receiver.json holding the lat/lon
+# of whichever machine last wrote it. Not needed at build time; the Dockerfile
+# creates the directory unconditionally.
+backend/tar1090_data/
