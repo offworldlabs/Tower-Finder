@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import PhysicsSettings from "./PhysicsSettings";
 
 // Config payload shaped like a fresh backend: the fraction keys are always
@@ -12,17 +12,20 @@ const BARE_CONFIG = {
   ground_truth_counts: { total: 0, anomalous: 0, drone: 0, aircraft: 0 },
 };
 
-function installFetchMock() {
+function installFetchMock(configRef?: { current: Record<string, unknown> }) {
   const fetchMock = vi.fn((url: string, opts?: RequestInit) => {
     const u = String(url);
     if (u.includes("/simulation/config")) {
       if (opts?.method === "PUT") {
         return Promise.resolve({
           ok: true,
-          json: async () => ({ ok: true, config: BARE_CONFIG }),
+          json: async () => ({ ok: true, config: configRef?.current ?? BARE_CONFIG }),
         } as Response);
       }
-      return Promise.resolve({ ok: true, json: async () => BARE_CONFIG } as Response);
+      return Promise.resolve({
+        ok: true,
+        json: async () => configRef?.current ?? BARE_CONFIG,
+      } as Response);
     }
     if (u.includes("/simulation/ground-truth")) {
       return Promise.resolve({ ok: true, json: async () => ({ aircraft: [] }) } as Response);
@@ -39,9 +42,18 @@ function installFetchMock() {
   return fetchMock;
 }
 
+// Every range input on the page, in DOM order:
+// [0] anomalous, [1] drone, [2] dark, [3] total objects target, then scene.
+function ranges() {
+  return Array.from(
+    document.querySelectorAll('input[type="range"]'),
+  ) as HTMLInputElement[];
+}
+
 describe("PhysicsSettings", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
+    vi.useRealTimers();
   });
 
   it("falls back to numeric draft defaults when the config payload omits min/max_aircraft and max_range_km (no NaN)", async () => {
@@ -107,5 +119,106 @@ describe("PhysicsSettings", () => {
       expect(body).toHaveProperty("max_range_km");
       expect(typeof body.max_range_km).toBe("number");
     });
+  });
+
+  // ── Drift detection ───────────────────────────────────────────────────
+  // A backend restart drops simulation_config back to boot state and
+  // re-stamps _updated_at at import. The drafts used to seed once and never
+  // re-sync, so the sliders kept showing an applied scene while the
+  // simulator had already been pushed back to defaults.
+
+  const APPLIED = {
+    frac_anomalous: 0.0,
+    frac_drone: 0.30,
+    frac_dark: 0.15,
+    min_aircraft: 64,
+    max_aircraft: 80,
+    _updated_at: 2000,
+    ground_truth_counts: { total: 0, anomalous: 0, drone: 0, aircraft: 0 },
+  };
+
+  // What a restarted backend serves: boot defaults, stamped at import — an
+  // earlier wall-clock than the operator's PUT, so the stamp moves backwards.
+  const AFTER_RESTART = {
+    frac_anomalous: 0.0,
+    frac_drone: 0.0,
+    frac_dark: 0.15,
+    _updated_at: 1000,
+    ground_truth_counts: { total: 0, anomalous: 0, drone: 0, aircraft: 0 },
+  };
+
+  async function pollOnce() {
+    // The config poll is on a 10 s interval; advance past one tick and let
+    // the fetch promises settle inside act.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+  }
+
+  it("re-syncs the sliders when the backend reverts and there are no unsaved edits", async () => {
+    const configRef = { current: APPLIED as Record<string, unknown> };
+    installFetchMock(configRef);
+    vi.useFakeTimers();
+    render(<PhysicsSettings />);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(ranges()[1].value).toBe("30");   // drone, as applied
+    expect(ranges()[3].value).toBe("80");   // total objects target
+
+    configRef.current = AFTER_RESTART;
+    await pollOnce();
+
+    // Sliders now show what the simulator is actually running, not the
+    // stale applied values.
+    expect(ranges()[1].value).toBe("0");
+    expect(ranges()[3].value).toBe("40");   // key absent → documented fallback
+    expect(document.body.textContent).toMatch(/reverted to boot state/);
+    expect(document.body.textContent).toMatch(/actually running/);
+
+    vi.useRealTimers();
+  });
+
+  it("keeps unapplied edits when the backend reverts, and warns instead", async () => {
+    const configRef = { current: APPLIED as Record<string, unknown> };
+    installFetchMock(configRef);
+    vi.useFakeTimers();
+    render(<PhysicsSettings />);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    fireEvent.change(ranges()[1], { target: { value: "25" } });
+    expect(ranges()[1].value).toBe("25");
+
+    configRef.current = AFTER_RESTART;
+    await pollOnce();
+
+    // The operator's in-progress edit is theirs — never overwritten.
+    expect(ranges()[1].value).toBe("25");
+    expect(document.body.textContent).toMatch(/no longer sit on top of what/);
+    expect(screen.getByRole("button", { name: /Reload from simulator/i })).toBeInTheDocument();
+
+    vi.useRealTimers();
+  });
+
+  it("does not flag drift for the page's own apply", async () => {
+    const configRef = { current: APPLIED as Record<string, unknown> };
+    installFetchMock(configRef);
+    vi.useFakeTimers();
+    render(<PhysicsSettings />);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    fireEvent.change(ranges()[1], { target: { value: "25" } });
+
+    // The PUT echoes the new config back with a fresh stamp; the poll that
+    // follows must read that as our own write, not somebody else's.
+    configRef.current = { ...APPLIED, frac_drone: 0.25, _updated_at: 3000 };
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Apply to Simulator/i }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await pollOnce();
+
+    expect(document.body.textContent).not.toMatch(/changed outside this page/);
+
+    vi.useRealTimers();
   });
 });

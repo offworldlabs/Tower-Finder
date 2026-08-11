@@ -273,6 +273,47 @@
   margin-bottom: 1.25rem;
 }
 
+/* Drift banner — the config moved under the page (usually a backend
+   restart). Amber for "your unapplied edits are now stale", slate for the
+   quieter "we re-synced the sliders for you". */
+.ps-drift {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  border-radius: 6px;
+  padding: 0.6rem 0.9rem;
+  font-size: 0.82rem;
+  margin-bottom: 1.25rem;
+}
+
+.ps-drift-stale {
+  background: #3b2708;
+  border: 1px solid #92400e;
+  color: #fcd34d;
+}
+
+.ps-drift-resynced {
+  background: #0f172a;
+  border: 1px solid #334155;
+  color: #94a3b8;
+}
+
+.ps-drift-btn {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid currentColor;
+  color: inherit;
+  border-radius: 4px;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.ps-drift-btn:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
 /* ── Settings grid ──────────────────────────────────────────── */
 .ps-settings-grid {
   display: grid;

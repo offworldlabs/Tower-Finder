@@ -53,6 +53,21 @@ services:
       # knob that most directly shapes throughput behaviour.
       - FRAME_WORKERS=6
       - FRAME_QUEUE_SIZE=10000
+      # Simulation scene mix, read at boot by core/state.py. Lives here (not in
+      # an overlay) because both environments are meant to run the same mix —
+      # fleet *scale* is what legitimately differs, and that is already
+      # per-overlay via FLEET_MIN/MAX_AIRCRAFT.
+      #
+      # These exist so a rebuild boots into the intended scene: before them the
+      # dict was hardcoded-defaults-only, so `up -d --build` silently reverted
+      # whatever the Physics tab had applied — and because _updated_at is
+      # stamped at import, the fleet's poll pushed those defaults into the
+      # running world within 5 s. A runtime PUT still outranks these until the
+      # values below themselves change — see
+      # services/state_snapshot.py:_restore_simulation_config.
+      - SIM_FRAC_ANOMALOUS=0.0
+      - SIM_FRAC_DRONE=0.0
+      - SIM_FRAC_DARK=0.15
     # bash, not sh: start.sh's supervisor uses `wait -n`, a bash builtin that
     # dash rejects ("Illegal option -n"), which crash-loops the server. The
     # script's shebang already says bash; naming it here keeps that true even if
