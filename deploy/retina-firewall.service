@@ -11,10 +11,14 @@ PartOf=docker.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/opt/tower-finder/deploy/docker-user-firewall.sh
-# A failed firewall must be loud. Without this the unit fails quietly at boot and
-# the origin serves the whole internet.
-Restart=on-failure
-RestartSec=10s
+# No Restart=. With RemainAfterExit=yes the unit is "active" the moment the
+# script succeeds and is never re-run, so a restart policy could only ever act
+# on the failure path — and every way this script fails is a refusal to install
+# (missing DOCKER-USER chain, short ranges file, undeterminable external
+# interface), none of which a retry ten seconds later would resolve. Retrying
+# would only bury the diagnosis under repeated identical output. A failed unit
+# stays failed and visible in `systemctl status`, which is the intended signal:
+# the boundary is not applied and someone has to look.
 
 [Install]
 WantedBy=multi-user.target
