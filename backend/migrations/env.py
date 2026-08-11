@@ -9,6 +9,7 @@ rebuild the table instead.
 import asyncio
 
 from alembic import context
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from core import nodes  # noqa: F401  registers the node tables on Base.metadata
@@ -28,7 +29,28 @@ def _run(connection) -> None:
 
 
 async def run_online() -> None:
-    engine = create_async_engine(DATABASE_URL)
+    # deploy/start.sh runs `alembic upgrade head` on every boot, including
+    # restarts where another process may briefly still hold the database file.
+    # This engine takes the same lock tolerance as core.users.engine
+    # (connect_args timeout + busy_timeout) so a routine restart does not fail
+    # fast on transient contention. It deliberately does not take
+    # core.users.engine's `PRAGMA foreign_keys=ON`: render_as_batch above means
+    # a column-altering migration rebuilds a table by copy, drop and rename,
+    # and foreign-key enforcement during that rebuild can break tables that
+    # reference the one being rebuilt (Alembic's batch-mode docs warn against
+    # it). Nor does it set WAL/synchronous: those are properties of the
+    # database file itself, not the connection, so whichever engine connects
+    # first (migrations on a fresh database, otherwise the app) sets them once
+    # and they persist; a short-lived, single-connection migration run has no
+    # durability or concurrency need of its own to justify setting them again.
+    engine = create_async_engine(DATABASE_URL, connect_args={"timeout": 30})
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_busy_timeout(dbapi_conn, _conn_rec):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA busy_timeout=5000")
+        cur.close()
+
     async with engine.connect() as connection:
         await connection.run_sync(_run)
         await connection.commit()

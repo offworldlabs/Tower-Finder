@@ -14,6 +14,14 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Unlike 0001, this creates unconditionally rather than inspecting for a
+    # pre-existing table. 0001's reconciliation exists only because the three
+    # droplets were built by create_all before Alembic existed; the node
+    # tables have never been created any other way than by this revision, so
+    # no equivalent pre-Alembic state can exist for them to reconcile with. A
+    # guard was tried here earlier in this branch and removed after review: it
+    # turned a loud, correct "table nodes already exists" failure into a
+    # silent skip, and it only inspected one of the three tables below.
     op.create_table(
         "nodes",
         sa.Column("node_id", sa.String(length=32), nullable=False),

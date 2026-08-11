@@ -92,6 +92,14 @@ tag
 # Vulture doesn't follow the decorator's dynamic dispatch.
 _set_sqlite_pragmas
 
+# ── migrations/env.py ─────────────────────────────────────────────────────────
+
+# The same @event.listens_for dispatch as _set_sqlite_pragmas above, on the
+# engine Alembic runs migrations through. That engine takes the application's
+# lock tolerance but deliberately not its foreign-key pragma, so it registers
+# its own listener rather than reusing core.users'.
+_set_busy_timeout
+
 # ── services/tasks/solver.py ──────────────────────────────────────────────────
 
 # Public alias consumed by scripts/association_bench.py (scripts/ is excluded
