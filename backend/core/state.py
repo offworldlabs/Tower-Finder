@@ -5,6 +5,7 @@ lives here so imports are unambiguous and circular-dependency-free.
 """
 
 import asyncio
+import logging
 import math
 import os
 import threading
@@ -587,15 +588,69 @@ def _reset_for_tests() -> None:
 
 
 # ── Simulation physics config (read by fleet orchestrator, written by UI) ─────
-simulation_config: dict = {
+
+# Hardcoded last-resort fractions.  SIM_FRAC_* env overrides these at boot
+# (see _env_frac below), and a restored snapshot overrides that in turn — see
+# services/state_snapshot.py for the precedence rule between the last two.
+_SIM_FRAC_FALLBACKS: dict = {
     # Anomalies off by default. Raise via PUT /api/simulation/config (or the
-    # Physics tab) to turn them back on; note this dict is not persisted in the
-    # state snapshot, so a backend restart returns it to these defaults.
+    # Physics tab) to turn them back on.
     "frac_anomalous": 0.0,
     # Drones off by default (user call, 2026-08: fixed-wing scene only);
     # raise via the Physics tab / PUT when a drone scenario is wanted.
     "frac_drone": 0.0,
     "frac_dark": 0.15,
+}
+
+
+def _env_frac(name: str, default: float) -> float:
+    """Read one 0.0–1.0 spawn fraction from the environment.
+
+    Deployment intent belongs in compose, not in this file: an operator who
+    wants dark traffic on staging sets SIM_FRAC_DARK there and every rebuild
+    boots into it instead of into the fallbacks above.  A bad value is logged
+    and ignored rather than raised — a typo'd env var must not stop the
+    backend booting into a working scene.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        v = float(raw)
+    except ValueError:
+        logging.warning("%s=%r is not a number — falling back to %.2f", name, raw, default)
+        return default
+    if not (0.0 <= v <= 1.0):
+        logging.warning("%s=%r outside 0.0–1.0 — falling back to %.2f", name, raw, default)
+        return default
+    return v
+
+
+def _seed_sim_fracs_from_env() -> dict:
+    """Build the boot fraction set from SIM_FRAC_*, rejecting an over-100% mix.
+
+    The PUT route enforces sum ≤ 1.0 because commercial traffic is the
+    remainder; env has to enforce the same or the world spawns against a
+    negative commercial share.  An over-budget env set is refused whole
+    rather than partially applied — a half-honoured scene is harder to
+    diagnose than one that is loudly ignored.
+    """
+    seeded = {
+        key: _env_frac(f"SIM_{key.upper()}", fallback)
+        for key, fallback in _SIM_FRAC_FALLBACKS.items()
+    }
+    total = sum(seeded.values())
+    if total > 1.0:
+        logging.error(
+            "SIM_FRAC_* sum to %.2f (> 1.0) — ignoring all three, using fallbacks %s",
+            total, _SIM_FRAC_FALLBACKS,
+        )
+        return dict(_SIM_FRAC_FALLBACKS)
+    return seeded
+
+
+simulation_config: dict = {
+    **_seed_sim_fracs_from_env(),
     # aircraft (commercial) fraction = 1 - sum of above
     #
     # Deliberately NO defaults for max_range_km / min_aircraft / max_aircraft:
@@ -613,3 +668,9 @@ simulation_config: dict = {
     "_updated_at": time.time(),
 }
 _SIMULATION_CONFIG_DEFAULTS: dict = dict(simulation_config)
+
+# The SIM_FRAC_* set this process booted with, recorded so a restored snapshot
+# can distinguish "an operator tuned this at runtime" (the snapshot wins, which
+# is the whole point of persisting it) from "the deploy changed the intended
+# scene" (env wins).  See services/state_snapshot.py:restore_snapshot.
+_SIMULATION_ENV_BASELINE: dict = {k: simulation_config[k] for k in _SIM_FRAC_FALLBACKS}

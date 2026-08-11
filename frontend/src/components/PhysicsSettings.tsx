@@ -96,6 +96,28 @@ const OBJECT_TYPES = [
 function pct(v) { return Math.round(v * 100); }
 function frac(p) { return Math.round(p) / 100; }
 
+// min/max_aircraft and the scene keys are only-if-set on the backend (a fresh
+// backend ships none of them — see core/state.py), so a sensible default fills
+// in until an operator PUTs one. Shared by the initial seed and the drift
+// re-sync so both paths can never disagree about what "the server says".
+function serverToDraft(data) {
+  return {
+    frac_anomalous: data.frac_anomalous,
+    frac_drone:     data.frac_drone,
+    frac_dark:      data.frac_dark,
+    min_aircraft:   data.min_aircraft ?? 20,
+    max_aircraft:   data.max_aircraft ?? 40,
+  };
+}
+
+function serverToScene(data) {
+  return {
+    n_nodes:       data.n_nodes ?? 30,
+    dual_fraction: data.dual_fraction ?? 0.0,
+    max_range_km:  data.max_range_km ?? 0,
+  };
+}
+
 export default function PhysicsSettings() {
   const [config, setConfig] = useState(null);
   const [draft, setDraft] = useState(null);
@@ -122,6 +144,19 @@ export default function PhysicsSettings() {
   const fixesRef = useRef({});
   const [animatedAircraft, setAnimatedAircraft] = useState([]);
 
+  // ── Drift detection ────────────────────────────────────────────────────
+  // `_updated_at` changes on every accepted PUT and is re-stamped when the
+  // backend imports core/state.py, so a value this page did not write means
+  // the config moved underneath it — nearly always a backend restart landing
+  // on boot state. Without this the drafts seeded once and never re-synced,
+  // so the sliders kept showing an applied scene while the simulator had
+  // already been pushed back to defaults. Compared, never displayed.
+  const lastStampRef  = useRef(null);
+  const seededRef     = useRef(false);
+  const dirtyRef      = useRef(false);
+  const sceneDirtyRef = useRef(false);
+  const [drift, setDrift] = useState(null);
+
   // Aborted on unmount — in-flight responses used to resolve into setState
   // on an unmounted component.
   const abortRef = useRef(null);
@@ -137,29 +172,54 @@ export default function PhysicsSettings() {
       const data = await res.json();
       if (abortRef.current?.signal.aborted) return;
       setConfig(data);
-      // min_aircraft/max_aircraft are only-if-set on the backend (staging
-      // fleet env FLEET_MIN/MAX_AIRCRAFT; a fresh backend ships neither —
-      // see core/state.py:545), same only-if-set reasoning as the scene
-      // keys below, so a sensible default fills in until the operator PUTs.
-      setDraft(prev => prev ? prev : {
-        frac_anomalous: data.frac_anomalous,
-        frac_drone:     data.frac_drone,
-        frac_dark:      data.frac_dark,
-        min_aircraft:   data.min_aircraft ?? 20,
-        max_aircraft:   data.max_aircraft ?? 40,
-      });
-      // Separate draft — NEVER merged into the above. Scene keys are
-      // only-if-set on the backend (fresh backend ships neither), so a
-      // sensible slider default fills in until the operator has PUT one.
-      setSceneDraft(prev => prev ? prev : {
-        n_nodes:       data.n_nodes ?? 30,
-        dual_fraction: data.dual_fraction ?? 0.0,
-        max_range_km:  data.max_range_km ?? 0,
-      });
+
+      const stamp = typeof data._updated_at === "number" ? data._updated_at : null;
+      const prevStamp = lastStampRef.current;
+      lastStampRef.current = stamp;
+
+      // First payload seeds both drafts. sceneDraft is seeded here too but is
+      // NEVER merged into `draft` — the two PUT different payloads.
+      if (!seededRef.current) {
+        seededRef.current = true;
+        setDraft(serverToDraft(data));
+        setSceneDraft(serverToScene(data));
+        return;
+      }
+
+      // Nothing to compare against on the first stamp we see, and a payload
+      // without one (older backend) can't be reasoned about at all.
+      if (prevStamp === null || stamp === null || stamp === prevStamp) return;
+
+      // A restart reverting to boot state usually moves the stamp *backwards*
+      // (import time of the new process vs the operator's later PUT), but a
+      // long-running backend restarted after a stale snapshot can move it
+      // forwards — either way it is a change this page did not make.
+      const reverted = stamp < prevStamp;
+      if (dirtyRef.current || sceneDirtyRef.current) {
+        // Unapplied edits belong to the operator — never overwrite them.
+        // Say the baseline moved and let them apply or discard.
+        setDrift({ kind: "stale", reverted });
+      } else {
+        setDraft(serverToDraft(data));
+        setSceneDraft(serverToScene(data));
+        setDrift({ kind: "resynced", reverted });
+      }
     } catch (e) {
       setError(e.message);
     }
   }, []);
+
+  // Discard unapplied edits and take whatever the simulator is running.
+  // Clearing seededRef makes the next payload seed instead of compare, so
+  // there is no window where the drafts and the stamp disagree.
+  const reloadFromSimulator = useCallback(async () => {
+    dirtyRef.current = false;
+    sceneDirtyRef.current = false;
+    seededRef.current = false;
+    lastStampRef.current = null;
+    setDrift(null);
+    await fetchConfig();
+  }, [fetchConfig]);
 
   useEffect(() => {
     fetchConfig();
@@ -262,10 +322,17 @@ export default function PhysicsSettings() {
           max_aircraft:   Number(draft.max_aircraft),
         }),
       });
+      const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || `HTTP ${res.status}`);
       }
+      // Adopt the stamp our own PUT produced, so the poll below doesn't read
+      // this write back as somebody else's change. A response without one
+      // leaves it null, which just re-baselines on the next payload.
+      const stamp = body?.config?._updated_at;
+      lastStampRef.current = typeof stamp === "number" ? stamp : null;
+      dirtyRef.current = false;
+      setDrift(null);
       setSaveMsg("Applied — new objects will spawn with updated fractions.");
       setTimeout(() => setSaveMsg(null), 4000);
       await fetchConfig();
@@ -277,6 +344,7 @@ export default function PhysicsSettings() {
   }
 
   function handleSlider(key, pctVal) {
+    dirtyRef.current = true;
     setDraft(prev => ({ ...prev, [key]: frac(pctVal) }));
   }
 
@@ -335,10 +403,14 @@ export default function PhysicsSettings() {
           max_range_km: sceneDraft.max_range_km,
         }),
       });
+      const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || `HTTP ${res.status}`);
       }
+      const stamp = body?.config?._updated_at;
+      lastStampRef.current = typeof stamp === "number" ? stamp : null;
+      sceneDirtyRef.current = false;
+      setDrift(null);
       setSceneMsg("Applied — fleet is restarting (~30–60s), the map will go quiet briefly.");
       setScenePending(true);
       setTimeout(() => setSceneMsg(null), 6000);
@@ -389,6 +461,36 @@ export default function PhysicsSettings() {
           Changes apply to newly-spawned objects (next spawn cycle ~40 s).
         </p>
       </div>
+
+      {/* ── Drift banner ─────────────────────────────────────────────── */}
+      {drift && (
+        <div className={`ps-drift ps-drift-${drift.kind}`}>
+          {drift.kind === "stale" ? (
+            <>
+              <span>
+                The simulator&rsquo;s config changed outside this page
+                {drift.reverted ? " (it reverted to boot state — most likely a backend restart)" : ""}
+                . Your unapplied edits no longer sit on top of what&rsquo;s running —
+                apply them to push, or reload to take the running values.
+              </span>
+              <button className="ps-drift-btn" onClick={reloadFromSimulator}>
+                Reload from simulator
+              </button>
+            </>
+          ) : (
+            <>
+              <span>
+                The simulator&rsquo;s config changed outside this page
+                {drift.reverted ? " (it reverted to boot state — most likely a backend restart)" : ""}
+                . The sliders now show what the simulator is actually running.
+              </span>
+              <button className="ps-drift-btn" onClick={() => setDrift(null)}>
+                Dismiss
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       {/* ── Live Count Grid ──────────────────────────────────────────── */}
       <div className="ps-count-grid">
@@ -532,6 +634,7 @@ export default function PhysicsSettings() {
               value={draft.max_aircraft}
               onChange={e => {
                 const v = Number(e.target.value);
+                dirtyRef.current = true;
                 setDraft(prev => ({ ...prev, max_aircraft: v, min_aircraft: Math.max(1, Math.floor(v * 0.8)) }));
               }}
               className="ps-range"
@@ -586,7 +689,10 @@ export default function PhysicsSettings() {
                     max={60}
                     step={2}
                     value={sceneDraft.n_nodes}
-                    onChange={e => setSceneDraft(prev => ({ ...prev, n_nodes: Number(e.target.value) }))}
+                    onChange={e => {
+                      sceneDirtyRef.current = true;
+                      setSceneDraft(prev => ({ ...prev, n_nodes: Number(e.target.value) }));
+                    }}
                     className="ps-range"
                     style={{
                       "--thumb-color": "#a78bfa",
@@ -613,7 +719,10 @@ export default function PhysicsSettings() {
                     max={100}
                     step={5}
                     value={dualPct}
-                    onChange={e => setSceneDraft(prev => ({ ...prev, dual_fraction: Number(e.target.value) / 100 }))}
+                    onChange={e => {
+                      sceneDirtyRef.current = true;
+                      setSceneDraft(prev => ({ ...prev, dual_fraction: Number(e.target.value) / 100 }));
+                    }}
                     className="ps-range"
                     style={{
                       "--thumb-color": "#a78bfa",
@@ -635,7 +744,10 @@ export default function PhysicsSettings() {
                     max={300}
                     step={10}
                     value={sceneDraft.max_range_km}
-                    onChange={e => setSceneDraft(prev => ({ ...prev, max_range_km: Number(e.target.value) }))}
+                    onChange={e => {
+                      sceneDirtyRef.current = true;
+                      setSceneDraft(prev => ({ ...prev, max_range_km: Number(e.target.value) }));
+                    }}
                     className="ps-range"
                     style={{
                       "--thumb-color": "#a78bfa",

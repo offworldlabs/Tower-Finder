@@ -37,6 +37,27 @@ def _clean_db():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_state_snapshot(tmp_path):
+    """Point the snapshot at a per-test path so runs cannot pollute each other.
+
+    restore_snapshot() runs in the app lifespan and save_snapshot() on its way
+    out, so any test that builds a TestClient was reading — and rewriting —
+    the developer's real backend/data/state_snapshot.json.  That was invisible
+    while the snapshot held only trust/reputation data, but simulation_config
+    is now persisted too, so one run's PUTs came back as the next run's "fresh
+    backend" and broke the only-if-set assertions in test_sim_ingest.
+    Function-scoped rather than session-scoped: a shared path just relocates
+    the leak from the repo into tmp.
+    """
+    from services import state_snapshot
+
+    orig = state_snapshot._SNAPSHOT_PATH
+    state_snapshot._SNAPSHOT_PATH = str(tmp_path / "state_snapshot.json")
+    yield
+    state_snapshot._SNAPSHOT_PATH = orig
+
+
+@pytest.fixture(autouse=True)
 def _reset_module_state():
     """Reset every module-level mutable store before each test.
 
