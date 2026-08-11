@@ -636,6 +636,14 @@ Run the full acceptance list from the spec's §7 once Tasks 1–5 are complete:
 - [ ] `docker compose -f docker-compose.yml -f docker-compose.local.yml up` comes up on the laptop
 - [ ] Reboot both droplets; `iptables -L DOCKER-USER -n` still shows the tagged rules
 - [ ] `ss -lntH '( sport = :80 or sport = :443 )'` on each droplet — record whether any IPv6 listener exists, and confirm the script's IPv6 branch took the matching path
+- [ ] **Container egress still works.** `DOCKER-USER` hangs off `FORWARD`, which
+  carries container→internet traffic too, so an ingress rule written without `-i`
+  would blackhole every outbound call to :443 — silently, as a hang. From a
+  droplet: `docker compose exec -T tower-finder curl -sS -o /dev/null -w '%{http_code}\n' --max-time 10 https://api.adsb.lol/v2/point/51.5/-0.1/5`
+  → expect an HTTP code, not a timeout. Then `docker compose build --no-cache tower-finder`
+  and confirm `npm install` completes.
+- [ ] `iptables -S DOCKER-USER | grep retina-cf-boundary` — every tagged rule
+  carries `-i <uplink>`, and that name matches `ip -4 route show default`.
 
 ### Items that can only be settled on a live droplet
 

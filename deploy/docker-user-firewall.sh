@@ -19,6 +19,11 @@
 # Port 80 is narrowed to Cloudflare rather than closed: every server block in the
 # nginx template listens on it, including the redirect vhost.
 #
+# Every rule here is scoped to the external interface with `-i`. DOCKER-USER
+# hangs off FORWARD, which carries container→internet egress as well as inbound
+# traffic to published ports; see resolve_external_if below for why an
+# unqualified rule would sever the former.
+#
 # Usage: deploy/docker-user-firewall.sh [ranges-file]
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -66,7 +71,77 @@ if ! iptables -L DOCKER-USER -n >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "→ Applying DOCKER-USER boundary (${#v4[@]} IPv4, ${#v6[@]} IPv6 ranges)"
+# ── Which interface does the internet arrive on? ─────────────────────────────
+# DOCKER-USER is reached from FORWARD, and FORWARD carries container→internet
+# egress as well as inbound traffic to published ports. An unqualified
+# `--dports 80,443 -j DROP` therefore matches an outbound HTTPS SYN from a
+# container just as readily as an inbound one from a stranger: the packet is
+# NEW so the conntrack RETURN above it does not match, and its source is a
+# 172.x container address so no Cloudflare RETURN matches either. That would
+# break `npm install` and `pip install` during `docker compose up --build`, and
+# every backend call to api.adsb.lol, opensky-network.org, api.open-meteo.com
+# and oauth2.googleapis.com — as a hang rather than an error, because DROP
+# sends nothing back.
+#
+# Scoping every rule with `-i` fixes it: egress leaves via this interface (-o),
+# it never arrives on it, so it can no longer match anything this script wrote.
+#
+# The name is read from the default route rather than hardcoded. These are
+# DigitalOcean droplets and the answer is eth0 today, but that is a convention,
+# not a guarantee — a rebuilt or migrated box can present a predictable name
+# (ens3, enp0s3). Anything other than exactly one answer is fatal, and
+# deliberately so: a rule bound to the wrong interface does not fail closed, it
+# fails OPEN and silently — the DROP matches nothing, the origin serves the
+# whole internet, and this script still prints ✓. Refusing to install is the
+# strictly better outcome, because it is visible.
+EXT_IF=""
+resolve_external_if() {
+    local fam="$1" routes candidates count
+    if ! command -v ip >/dev/null 2>&1; then
+        echo "✗ 'ip' not found; cannot determine the external interface." >&2
+        echo "  Install iproute2, or pass the interface explicitly by editing" >&2
+        echo "  this script — do not guess." >&2
+        exit 1
+    fi
+    # `dev <name>` can sit anywhere in a route line, and a box may carry several
+    # default routes (differing metrics) that all name the same interface, so
+    # collect every `dev` token and deduplicate before counting.
+    routes="$(ip "$fam" route show default 2>/dev/null || true)"
+    candidates="$(printf '%s\n' "$routes" \
+                  | awk '{ for (i = 1; i < NF; i++) if ($i == "dev") print $(i + 1) }' \
+                  | sort -u)"
+    count="$(printf '%s\n' "$candidates" | grep -c . || true)"
+    if [ "$count" -ne 1 ]; then
+        echo "✗ Expected exactly one default-route interface for 'ip ${fam}', found ${count}." >&2
+        echo "  Output of 'ip ${fam} route show default':" >&2
+        printf '%s\n' "$routes" >&2
+        echo "  Refusing to install: a boundary bound to the wrong interface is" >&2
+        echo "  worse than none, because it looks applied and filters nothing." >&2
+        if [ "$fam" = "-6" ] && [ "$count" -eq 0 ]; then
+            echo "  No IPv6 default route, yet Docker has an ip6tables DOCKER-USER" >&2
+            echo "  chain and a v6 listener on 80/443 was found or assumed. Resolve" >&2
+            echo "  that contradiction on the droplet — either IPv6 is unreachable" >&2
+            echo "  off-host (nothing to filter) or its routing is broken." >&2
+        fi
+        exit 1
+    fi
+    case "$candidates" in
+        lo | docker* | br-* | veth*)
+            echo "✗ Default route points at '${candidates}', which is a loopback or" >&2
+            echo "  Docker-managed interface, not the droplet's uplink. Refusing to" >&2
+            echo "  install; inspect routing on this box before re-running." >&2
+            exit 1
+            ;;
+    esac
+    EXT_IF="$candidates"
+}
+
+# Resolved before the first delete or insert, so a box this script cannot read
+# keeps whatever boundary it already had rather than being torn down and left
+# with nothing.
+resolve_external_if -4
+
+echo "→ Applying DOCKER-USER boundary on ${EXT_IF} (${#v4[@]} IPv4, ${#v6[@]} IPv6 ranges)"
 
 # Delete every rule in the given chain (iptables or ip6tables, on DOCKER-USER)
 # that carries our "$TAG" comment, by line number, repeating until none remain.
@@ -82,7 +157,10 @@ echo "→ Applying DOCKER-USER boundary (${#v4[@]} IPv4, ${#v6[@]} IPv6 ranges)"
 # Deleting by line number instead only requires the tag comment to be present,
 # which is true of every rule-spec this script inserts (DROP, per-CIDR RETURN,
 # and the conntrack RETURN) regardless of its shape, so one function covers all
-# three. It is also what keeps this safe: the tag comment is a literal string
+# three — and a droplet still carrying an earlier, differently-shaped generation
+# of these rules (before they were scoped with `-i`) has them cleaned out by the
+# next run rather than accumulating alongside the new ones. It is also what
+# keeps this safe: the tag comment is a literal string
 # unique to rules this script wrote. Docker's own trailing `-j RETURN` in
 # DOCKER-USER carries no comment at all, and any rule a third party added would
 # carry a different (or no) comment — neither ever contains the exact substring
@@ -107,19 +185,21 @@ delete_tagged_rules iptables
 # Order matters: accept Cloudflare first, then drop everything else on these
 # ports. Rules are inserted at the head in reverse so the final order reads
 # allow-allow-...-drop.
-iptables -I DOCKER-USER 1 -p tcp -m multiport --dports "$PORTS" \
+iptables -I DOCKER-USER 1 -i "$EXT_IF" -p tcp -m multiport --dports "$PORTS" \
     -m comment --comment "$TAG" -j DROP
 for cidr in "${v4[@]}"; do
-    iptables -I DOCKER-USER 1 -s "$cidr" -p tcp -m multiport --dports "$PORTS" \
+    iptables -I DOCKER-USER 1 -i "$EXT_IF" -s "$cidr" -p tcp -m multiport --dports "$PORTS" \
         -m comment --comment "$TAG" -j RETURN
 done
 
 # Established connections must survive, or the rule set would cut off in-flight
-# responses to the origin's own outbound requests.
-iptables -I DOCKER-USER 1 -m conntrack --ctstate ESTABLISHED,RELATED \
+# responses to the origin's own outbound requests. `-i` for the same reason as
+# the rules above, and at no cost: those responses arrive on the external
+# interface, so they still match.
+iptables -I DOCKER-USER 1 -i "$EXT_IF" -m conntrack --ctstate ESTABLISHED,RELATED \
     -m comment --comment "$TAG" -j RETURN
 
-echo "✓ DOCKER-USER boundary applied (IPv4)"
+echo "✓ DOCKER-USER boundary applied (IPv4, ingress on ${EXT_IF})"
 iptables -L DOCKER-USER -n --line-numbers | head -5 || true
 
 # IPv6. nginx.conf.template has no `listen [::]` directive, so nginx is IPv4-only
@@ -160,16 +240,21 @@ if ip6tables -L DOCKER-USER -n >/dev/null 2>&1; then
             exit 1
         fi
 
+        # Resolved from the v6 routing table, not reused from the v4 pass: the
+        # two are separate tables and nothing guarantees they agree. Same
+        # fail-loud contract, and again before the first delete.
+        resolve_external_if -6
+
         delete_tagged_rules ip6tables
-        ip6tables -I DOCKER-USER 1 -p tcp -m multiport --dports "$PORTS" \
+        ip6tables -I DOCKER-USER 1 -i "$EXT_IF" -p tcp -m multiport --dports "$PORTS" \
             -m comment --comment "$TAG" -j DROP
         for cidr in "${v6[@]}"; do
-            ip6tables -I DOCKER-USER 1 -s "$cidr" -p tcp -m multiport --dports "$PORTS" \
+            ip6tables -I DOCKER-USER 1 -i "$EXT_IF" -s "$cidr" -p tcp -m multiport --dports "$PORTS" \
                 -m comment --comment "$TAG" -j RETURN
         done
-        ip6tables -I DOCKER-USER 1 -m conntrack --ctstate ESTABLISHED,RELATED \
+        ip6tables -I DOCKER-USER 1 -i "$EXT_IF" -m conntrack --ctstate ESTABLISHED,RELATED \
             -m comment --comment "$TAG" -j RETURN
-        echo "✓ DOCKER-USER boundary applied (IPv6, ${#v6[@]} ranges)"
+        echo "✓ DOCKER-USER boundary applied (IPv6, ${#v6[@]} ranges, ingress on ${EXT_IF})"
     else
         echo "  No IPv6 listener on 80/443; IPv4 boundary is sufficient."
     fi
