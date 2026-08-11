@@ -202,6 +202,27 @@ committed file, even though the history means they are already public.
   since #146; re-verified, not rebuilt.
 - Laptop stack (`docker-compose.local.yml`) comes up.
 
+## 7a. Known limitations of the shipped boundary
+
+Both fall out of the fix for the egress bug described below, and neither is
+internet-reachable. Recorded so they are known rather than discovered.
+
+- **The firewall filters only the default-route interface.** Every `DOCKER-USER`
+  rule is scoped with `-i "$EXT_IF"`, resolved from the default route. Ingress
+  arriving on any other interface — a DigitalOcean private-network `eth1`, for
+  instance — is unfiltered by this boundary. The scoping is not optional: without
+  it the DROP also matches container egress, because `DOCKER-USER` hangs off
+  `FORWARD`, which carries both directions.
+- **A box with no IPv6 default route but an `ip6tables DOCKER-USER` chain and an
+  unreadable `ss` now exits 1** after applying the IPv4 rules, where it
+  previously succeeded silently. Deliberate: that combination is contradictory
+  and worth a human look. IPv4 protection is already in place when it fires.
+
+The interface resolution refuses to guess. A rule bound to the wrong interface
+fails **open**, not closed — the DROP matches nothing, the origin serves the
+whole internet, and the script still prints success. Ambiguity therefore exits
+non-zero rather than picking a candidate.
+
 ## 8. Out of scope
 
 - **Origin IP rotation.** Both addresses are permanently public in this repo's
