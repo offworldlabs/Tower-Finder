@@ -35,7 +35,7 @@ setup:
     [ -f .env ] || cp .env.example .env   # Maprad key not needed for the testmap
     echo "→ database schema (alembic)"
     # env.py does not load .env (only main.py does), and a fresh clone has no
-    # database yet — create_all is guarded off outside tests, so without this a
+    # database yet, and create_all is guarded off outside tests, so without this a
     # fresh `just up` boots against an empty file and fails later on the first
     # query, at "no such table", instead of here where the cause is obvious.
     RETINA_ENV=dev "{{py}}" -m alembic upgrade head

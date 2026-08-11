@@ -99,6 +99,49 @@ _set_sqlite_pragmas
 # code path rather than a copy.
 resolve_n2_chi2
 
+# ── core/nodes.py ───────────────────────────────────────────────────────────
+
+# SQLAlchemy's declarative mapper reads these class-level attributes to build
+# the table metadata; that metadata is what create_all and the autogenerate
+# comparison in migrations/env.py both consume, so vulture cannot see the
+# usage statically. These are columns of a table that already exists, not
+# speculative config kept alive through this file. The consumers (token
+# minting, node registration, the config endpoint) land in later tickets.
+NODE_STATUSES
+node_ref
+board_model
+licence_version
+licence_accepted_at
+remote_management_version
+remote_management_accepted_at
+publication_version
+publication_chosen_at
+first_seen_at
+rx_alt_ft
+tx_alt_ft
+tx_callsign
+superseded_at
+token_hash
+issued_at
+revoked_at
+revoked_reason
+last_used_at
+
+# ── migrations/versions/*.py ──────────────────────────────────────────────
+
+# Alembic loads each revision module by file path at runtime and reads these
+# module-level names and the two functions reflectively (revision identity,
+# chain order, upgrade/downgrade direction); nothing in the tree references
+# them statically. Vulture whitelists match by name rather than by file, so
+# these six entries also cover every revision added in future, and the
+# alternative is a whitelist entry per migration file, forever.
+revision
+down_revision
+branch_labels
+depends_on
+upgrade
+downgrade
+
 
 # ── Framework attributes (previously CI --ignore-names) ───────────────────────
 # Moved out of the vulture invocation so the reason lives with the name.

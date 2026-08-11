@@ -7,23 +7,12 @@ RETINA_DB_PATH, which is the only way the round trip can be trusted.
 """
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-BACKEND = Path(__file__).resolve().parent.parent
-
-
-def _alembic(*args: str, db_path: Path) -> subprocess.CompletedProcess:
-    env = os.environ | {"RETINA_ENV": "test", "RETINA_DB_PATH": str(db_path)}
-    return subprocess.run(  # noqa: S603
-        [sys.executable, "-m", "alembic", *args],
-        cwd=BACKEND,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+from tests.migration_helpers import BACKEND, ROLLBACK_AHEAD_SENTINEL, _alembic
 
 
 def test_upgrade_downgrade_upgrade_round_trips(tmp_path):
@@ -80,7 +69,13 @@ def _schema(db_path: Path) -> dict:
                     for (column,) in con.execute("SELECT name FROM pragma_index_info(?) ORDER BY seqno", (index_name,))
                 )
                 indexes.add((index_name, bool(unique), index_columns))
-            out[table] = (columns, indexes)
+            foreign_keys = {
+                (referenced_table, from_col, to_col, on_update, on_delete)
+                for referenced_table, from_col, to_col, on_update, on_delete in con.execute(
+                    'SELECT "table", "from", "to", on_update, on_delete FROM pragma_foreign_key_list(?)', (table,)
+                )
+            }
+            out[table] = (columns, indexes, foreign_keys)
         return out
     finally:
         con.close()
@@ -144,3 +139,43 @@ def test_upgrading_a_create_all_database_succeeds(tmp_path):
     stamped = _alembic("current", db_path=db)
     assert stamped.returncode == 0, stamped.stderr
     assert "head" in stamped.stdout, stamped.stdout + stamped.stderr
+
+
+def test_rollback_ahead_sentinel_matches_alembics_wording(tmp_path):
+    """deploy/start.sh greps a failed `alembic upgrade head`'s output for the
+    literal substring ROLLBACK_AHEAD_SENTINEL to tell a tolerable rollback
+    apart from a genuine migration failure (see the comment above that `elif`).
+    Alembic controls the wording, not us, so this reproduces the actual
+    scenario a rolled-back image sees: a database stamped ahead of the
+    revisions its (older) migrations/versions/ directory knows about.
+
+    A future Alembic release rewording the message fails this test loudly in
+    CI, instead of start.sh's grep silently no longer matching in production.
+    """
+    db = tmp_path / "ahead.db"
+    up = _alembic("upgrade", "head", db_path=db)
+    assert up.returncode == 0, up.stderr
+
+    # An "older image": the same backend tree minus the newest revision. Only
+    # core/ (env.py imports core.users and core.nodes to build target_metadata)
+    # and migrations/ are needed; core/__init__.py does not import its sibling
+    # modules eagerly, so copying the two files env.py touches is enough.
+    old_image = tmp_path / "old_image"
+    shutil.copytree(BACKEND / "core", old_image / "core", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(BACKEND / "migrations", old_image / "migrations", ignore=shutil.ignore_patterns("__pycache__"))
+    (old_image / "migrations" / "versions" / "0002_nodes.py").unlink()
+    shutil.copyfile(BACKEND / "alembic.ini", old_image / "alembic.ini")
+
+    env = os.environ | {"RETINA_ENV": "test", "RETINA_DB_PATH": str(db)}
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=old_image,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    combined = result.stdout + result.stderr
+    assert ROLLBACK_AHEAD_SENTINEL in combined, combined

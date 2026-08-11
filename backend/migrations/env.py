@@ -36,7 +36,11 @@ async def run_online() -> None:
 
 
 if context.is_offline_mode():
-    context.configure(url=DATABASE_URL, target_metadata=target_metadata, literal_binds=True)
+    # render_as_batch matches the online path in _run() above: SQLite cannot
+    # ALTER TABLE, so any future column-altering migration needs the batch
+    # rebuild here too, or `alembic upgrade head --sql` would emit SQL SQLite
+    # rejects.
+    context.configure(url=DATABASE_URL, target_metadata=target_metadata, literal_binds=True, render_as_batch=True)
     with context.begin_transaction():
         context.run_migrations()
 else:

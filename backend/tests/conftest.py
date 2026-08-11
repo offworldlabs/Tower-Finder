@@ -1,11 +1,14 @@
 import asyncio
 import atexit
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
 import pytest
 from sqlalchemy import event
+
+from tests.migration_helpers import _alembic
 
 # Must be set before any backend module imports auth.py or routes/radar.py
 os.environ.setdefault("RETINA_ENV", "test")
@@ -102,32 +105,36 @@ def _reset_module_state():
     yield
 
 
+@pytest.fixture(scope="session")
+def _node_schema_template(tmp_path_factory):
+    """Migrate once into a template database that node_session copies per test.
+
+    A full `alembic upgrade head` subprocess per test made suite time grow
+    linearly as node-model tests were added. Session scope makes pytest build
+    this exactly once regardless of test order or which test asks for it
+    first, and a failure here surfaces as this fixture's own error rather than
+    a confusing per-test one.
+    """
+    db_path = tmp_path_factory.mktemp("node_schema_template") / "nodes.db"
+    result = _alembic("upgrade", "head", db_path=db_path)
+    assert result.returncode == 0, result.stderr
+    return db_path
+
+
 @pytest.fixture
-async def node_session(tmp_path):
+async def node_session(tmp_path, _node_schema_template):
     """An AsyncSession against a per-test database with migrations applied.
 
-    A separate engine from the suite's shared one, so each test gets a clean
-    file and the node tests exercise the migrated schema rather than the one
-    create_all builds. Nothing is shared between tests, so ordering cannot
-    matter.
+    Copied (shutil.copyfile) from the session-scoped template built by
+    _node_schema_template rather than migrated fresh, so each test still gets
+    its own file and the node tests still exercise the migrated schema rather
+    than the one create_all builds, without paying for a fresh subprocess per
+    test. Nothing is shared between tests, so ordering cannot matter.
     """
-    import subprocess
-    import sys
-    from pathlib import Path
-
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    backend = Path(__file__).resolve().parent.parent
     db_path = tmp_path / "nodes.db"
-    result = subprocess.run(  # noqa: S603
-        [sys.executable, "-m", "alembic", "upgrade", "head"],
-        cwd=backend,
-        env=os.environ | {"RETINA_ENV": "test", "RETINA_DB_PATH": str(db_path)},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
+    shutil.copyfile(_node_schema_template, db_path)
 
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
 
