@@ -36,7 +36,14 @@ fi
 # line with a trailing space matches neither the IPv4 nor the IPv6 pattern and
 # is silently dropped from both arrays — a corruption that a shorter-than-usual
 # count would catch, but a single dropped line among many would not.
-RANGES_CLEAN="$(grep -vE '^#|^$' "$RANGES" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+#
+# `|| true` on the pipeline, not on the assignment: a plain-comment or empty
+# ranges file makes `grep -vE '^#|^$'` match nothing and exit 1, and unlike the
+# `mapfile < <(...)` process substitutions below, this is a bare command
+# substitution — under `set -e` its failure would kill the script right here,
+# silently, before reaching the "Only N IPv4 ranges parsed" guard a few lines
+# down that exists precisely to name this failure mode.
+RANGES_CLEAN="$(grep -vE '^#|^$' "$RANGES" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' || true)"
 mapfile -t v4 < <(printf '%s\n' "$RANGES_CLEAN" | grep -E '^[0-9.]+/[0-9]+$')
 mapfile -t v6 < <(printf '%s\n' "$RANGES_CLEAN" | grep -E ':')
 
@@ -86,7 +93,12 @@ delete_tagged_rules() {
     while line="$("$ipt" -L DOCKER-USER -n --line-numbers 2>/dev/null \
                   | grep -F "/* ${TAG} */" | head -1 | awk '{print $1}')" \
           && [ -n "$line" ]; do
-        "$ipt" -D DOCKER-USER "$line"
+        if ! "$ipt" -D DOCKER-USER "$line"; then
+            echo "✗ Failed to delete tagged rule at line ${line} (${ipt} DOCKER-USER)." >&2
+            echo "  The chain may be left in a partially torn-down state; inspect it" >&2
+            echo "  with '${ipt} -L DOCKER-USER -n --line-numbers' before re-running." >&2
+            exit 1
+        fi
     done
 }
 
