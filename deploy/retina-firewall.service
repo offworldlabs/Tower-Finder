@@ -1,0 +1,19 @@
+[Unit]
+# Docker recreates its chains when it starts, so these rules must be applied
+# after it, on every boot. Without this the boundary silently disappears on the
+# first reboot and the origin is wide open with nothing to indicate it.
+Description=RETINA DOCKER-USER Cloudflare boundary
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/tower-finder/deploy/docker-user-firewall.sh
+# A failed firewall must be loud. Without this the unit fails quietly at boot and
+# the origin serves the whole internet.
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target

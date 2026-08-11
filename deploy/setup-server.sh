@@ -66,6 +66,14 @@ ufw allow 80/tcp    # HTTP
 ufw allow 443/tcp   # HTTPS
 ufw --force enable
 
+# ufw governs host services only: SSH on 22, and anything added later running
+# outside a container. It cannot govern nginx, whose ports are published by
+# Docker and never traverse INPUT — see deploy/docker-user-firewall.sh. That
+# boundary is applied in section 4, once the repo carrying the script is on disk.
+#
+# The separation is also what makes the DOCKER-USER rules safe to get wrong: they
+# cannot lock anyone out of SSH, which stays governed by the rules above.
+
 echo ""
 echo "→ Hardening SSH..."
 # Disable password authentication (key-only)
@@ -138,6 +146,17 @@ else
     git clone --recursive https://github.com/offworldlabs/Tower-Finder.git "$APP_DIR"
     cd "$APP_DIR"
 fi
+
+# The origin boundary. Applied here rather than beside the ufw rules because it
+# needs the scripts this repo carries, which only reached disk a few lines above.
+echo ""
+echo "→ Applying the Cloudflare origin boundary (DOCKER-USER)..."
+chmod +x "${APP_DIR}/deploy/docker-user-firewall.sh"
+cp "${APP_DIR}/deploy/retina-firewall.service" /etc/systemd/system/retina-firewall.service
+systemctl daemon-reload
+systemctl enable retina-firewall.service
+systemctl start retina-firewall.service
+systemctl --no-pager status retina-firewall.service | head -5
 
 # Select the environment overlay for this host. Every `docker compose` command
 # below — and every one a human types over SSH later — resolves through this, so
