@@ -213,6 +213,26 @@ jobs:
               exit 1
             fi
 
+            # Pre-flight: Cloudflare's origin-pull CA, checked BEFORE anything
+            # stops or rebuilds the stack. nginx renders `ssl_verify_client on`
+            # (deploy/nginx/snippets/tls.conf) and start.sh refuses to boot
+            # without the CA, so on a droplet where the human half of this work
+            # is not done — enable Authenticated Origin Pulls for the zone, put
+            # the CA on the box — a deploy would run `docker compose down`,
+            # rebuild, fail to start, and leave the environment DOWN. Refusing
+            # here converts that outage into a refused deploy: everything above
+            # this line only reads the box.
+            CF_CA=/etc/ssl/cloudflare/origin-pull-ca.pem
+            if [ ! -f "$CF_CA" ]; then
+              echo "::error::${CF_CA} is missing on $(hostname). nginx requires Cloudflare's origin-pull CA and will not start without it. Enable Authenticated Origin Pulls for the zone, then fetch the CA onto this droplet (curl -fsS --create-dirs -o ${CF_CA} https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem) and re-run. Refusing to deploy; the running stack is untouched."
+              exit 1
+            fi
+            if ! openssl x509 -in "$CF_CA" -noout >/dev/null 2>&1; then
+              echo "::error::${CF_CA} exists on $(hostname) but is not a parseable PEM certificate — a truncated download or an error page saved to the path would look exactly like this. nginx would fail to start. Replace it and re-run. Refusing to deploy; the running stack is untouched."
+              exit 1
+            fi
+            echo "Origin-pull CA present and parseable: ${CF_CA}"
+
             # Pre-flight: refuse to deploy when the disk is near full. Without
             # this, git fetch silently writes a partial pack, the source tree
             # never advances, and `docker compose --build` happily caches every
@@ -283,8 +303,16 @@ jobs:
       - name: Wait for fleet to connect
         run: |
           echo "Waiting for fleet nodes to connect..."
+          # Through the edge, not at the droplet's address: the origin now requires
+          # Cloudflare's client certificate (ssl_verify_client in
+          # deploy/nginx/snippets/tls.conf) and the DOCKER-USER boundary drops
+          # anything on 443 that is not from a Cloudflare range, so a direct-to-IP
+          # request can only ever time out or 400. `-k` does not help — that flag
+          # governs verification of the SERVER's certificate, not presentation of
+          # a client one. Same hostname deploy/staging-smoke-test.sh uses for this
+          # endpoint (BASE_URL there), so both agree on what "staging" means.
           for i in $(seq 1 24); do
-            COUNT=$(curl -sk https://${{ secrets.STAGING_HOST }}/api/test/dashboard \
+            COUNT=$(curl -s https://staging-towers.retina.fm/api/test/dashboard \
               | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['active'])" 2>/dev/null) || COUNT=0
             if [ "${COUNT:-0}" -ge 1 ]; then
               echo "Fleet ready: ${COUNT} node(s) connected after ~$((i*5))s"
@@ -365,6 +393,31 @@ jobs:
               echo "::error::/opt/tower-finder/.env exists but does not select the production overlay — it names another environment. Inspect it; do not deploy."
               exit 1
             fi
+
+            # Pre-flight: Cloudflare's origin-pull CA, checked BEFORE anything
+            # stops or rebuilds the stack. nginx renders `ssl_verify_client on`
+            # (deploy/nginx/snippets/tls.conf) and start.sh refuses to boot
+            # without the CA, so on a droplet where the human half of this work
+            # is not done — enable Authenticated Origin Pulls for the zone, put
+            # the CA on the box — the rebuild below would fail to start and
+            # leave production DOWN. It would also not roll back: both rollback
+            # paths are gated on the smoke/E2E jobs, and those are skipped when
+            # this job itself fails. Refusing here converts that outage into a
+            # refused deploy; everything above this line only reads the box.
+            #
+            # Staging carries the identical check, but staging passing proves
+            # nothing about this droplet — the CA is per-box state, not
+            # something the pipeline ships.
+            CF_CA=/etc/ssl/cloudflare/origin-pull-ca.pem
+            if [ ! -f "$CF_CA" ]; then
+              echo "::error::${CF_CA} is missing on $(hostname). nginx requires Cloudflare's origin-pull CA and will not start without it. Enable Authenticated Origin Pulls for the zone, then fetch the CA onto this droplet (curl -fsS --create-dirs -o ${CF_CA} https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem) and re-run. Refusing to deploy; the running stack is untouched."
+              exit 1
+            fi
+            if ! openssl x509 -in "$CF_CA" -noout >/dev/null 2>&1; then
+              echo "::error::${CF_CA} exists on $(hostname) but is not a parseable PEM certificate — a truncated download or an error page saved to the path would look exactly like this. nginx would fail to start. Replace it and re-run. Refusing to deploy; the running stack is untouched."
+              exit 1
+            fi
+            echo "Origin-pull CA present and parseable: ${CF_CA}"
 
             # Pre-deploy: save rollback image + git tag. NOT `|| true`: if we
             # cannot capture a rollback point, abort the deploy rather than ship
@@ -465,8 +518,18 @@ jobs:
           sleep 60
           stable=0
           last=0
+          # Through the edge, not at the droplet's address: the origin now
+          # requires Cloudflare's client certificate (ssl_verify_client in
+          # deploy/nginx/snippets/tls.conf) and the DOCKER-USER boundary drops
+          # anything on 443 that is not from a Cloudflare range, so a
+          # direct-to-IP request can only ever time out or 400 — and this loop
+          # ends in `exit 1`, so it would fail every production deploy. `-k`
+          # does not help: that flag governs verification of the SERVER's
+          # certificate, not presentation of a client one. api.retina.fm is the
+          # same host this job's own smoke tests hit for this endpoint (BASE_URL
+          # below).
           for i in $(seq 1 18); do
-            COUNT=$(curl -sk https://${{ secrets.SERVER_HOST }}/api/test/dashboard \
+            COUNT=$(curl -s https://api.retina.fm/api/test/dashboard \
               | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['active'])" 2>/dev/null) || COUNT=0
             if [ "${COUNT:-0}" -ge "$MIN_NODES" ] && [ "${COUNT:-0}" -ge "$last" ]; then
               stable=$((stable + 1))
