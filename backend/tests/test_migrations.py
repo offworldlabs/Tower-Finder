@@ -142,4 +142,5 @@ def test_upgrading_a_create_all_database_succeeds(tmp_path):
     assert up.returncode == 0, up.stderr
 
     stamped = _alembic("current", db_path=db)
+    assert stamped.returncode == 0, stamped.stderr
     assert "head" in stamped.stdout, stamped.stdout + stamped.stderr

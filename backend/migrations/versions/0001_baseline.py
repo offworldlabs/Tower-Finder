@@ -7,6 +7,13 @@ Phase 1 removes or rebuilds three of these four. The baseline creates them
 anyway, because a revision chain has to start from what the databases actually
 hold: a later revision cannot drop `invites` unless something upstream created
 it, and all three droplets carry all four tables today.
+
+The upgrade checks all four tables, not just one, and handles three outcomes:
+all four present (a create_all database from before Alembic existed: record
+the revision, create nothing), none present (a fresh database: create all
+four), or some but not all (an inconsistent database that no legitimate state
+produces: refuse to guess and fail loudly instead of stamping a half-built
+schema as migrated).
 """
 
 import sqlalchemy as sa
@@ -18,15 +25,32 @@ down_revision = None
 branch_labels = None
 depends_on = None
 
+_BASELINE_TABLES = ("user", "invites", "node_owners", "claim_codes")
+
 
 def upgrade() -> None:
-    if sa.inspect(op.get_bind()).has_table("user"):
+    inspector = sa.inspect(op.get_bind())
+    existing = {table for table in _BASELINE_TABLES if inspector.has_table(table)}
+
+    if existing == set(_BASELINE_TABLES):
         # A database built by create_all before Alembic existed. Its tables are
         # already correct, so recording the revision is the whole job and
         # creating them again would fail. This is the state of all three
         # droplets, and it is what lets them adopt migrations on a plain deploy
         # rather than needing `alembic stamp` run by hand on each.
         return
+
+    if existing:
+        # Some but not all of the four: no legitimate history produces this, so
+        # stamping it as migrated would hide a broken database behind a healthy
+        # `alembic current`. Fail loudly instead, naming what's missing, so the
+        # boot refuses rather than serving requests that 500 on a missing table.
+        missing = sorted(set(_BASELINE_TABLES) - existing)
+        raise RuntimeError(
+            f"Database has some but not all baseline tables (missing: {', '.join(missing)}); "
+            "refusing to guess whether this is a fresh database or a partially built one. "
+            "Inspect it by hand before running migrations."
+        )
 
     op.create_table(
         "user",

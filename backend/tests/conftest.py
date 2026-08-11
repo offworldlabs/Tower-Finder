@@ -1,4 +1,5 @@
 import asyncio
+import atexit
 import os
 import tempfile
 from pathlib import Path
@@ -15,7 +16,25 @@ os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 # to export RETINA_DB_PATH to try a migration against a scratch file, and a
 # setdefault would leave that value in place for a suite run in the same shell,
 # which would then truncate whatever database the developer just pointed at.
-os.environ["RETINA_DB_PATH"] = str(Path(tempfile.gettempdir()) / "retina-test-users.db")
+# The pid makes the name unique per run: tempfile.gettempdir() resolves to the
+# same per-user directory for every worktree of this repo on the machine, so a
+# fixed filename is shared by concurrent suite runs. The autouse _clean_db
+# fixture then DELETEs from another run's tables mid-test, and SQLite's WAL
+# mode adds locking contention on top, producing nondeterministic failures.
+_TEST_DB_PATH = Path(tempfile.gettempdir()) / f"retina-test-users-{os.getpid()}.db"
+os.environ["RETINA_DB_PATH"] = str(_TEST_DB_PATH)
+
+
+def _cleanup_test_db() -> None:
+    # Safe to unlink unconditionally: the path is generated above from the
+    # tempdir and this process's pid, so it can never alias a developer's real
+    # database. WAL mode also leaves -wal/-shm siblings, and a crashed run can
+    # leave a -journal; missing_ok covers a suite that never created the file.
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        Path(f"{_TEST_DB_PATH}{suffix}").unlink(missing_ok=True)
+
+
+atexit.register(_cleanup_test_db)
 # The suite builds its schema with create_all rather than a migration run per
 # session. tests/test_migrations.py asserts the two agree.
 os.environ.setdefault("RETINA_SCHEMA_SOURCE", "create_all")
@@ -23,7 +42,7 @@ os.environ.setdefault("RETINA_SCHEMA_SOURCE", "create_all")
 
 @pytest.fixture(autouse=True)
 def _clean_db():
-    """Truncate auth tables before each test.
+    """Truncate auth and node tables before each test.
 
     Uses asyncio.run() for the setup, then immediately restores a fresh event
     loop. asyncio.run() calls set_event_loop(None) on exit (Python 3.12), which
@@ -33,6 +52,7 @@ def _clean_db():
     """
     from sqlalchemy import delete
 
+    from core.nodes import Node, NodeConfig, NodeToken
     from core.users import ClaimCode, Invite, NodeOwner, async_session_maker, create_db_and_tables
 
     async def _setup():
@@ -41,6 +61,12 @@ def _clean_db():
             await session.execute(delete(ClaimCode))
             await session.execute(delete(NodeOwner))
             await session.execute(delete(Invite))
+            # Children before parent: node_configs and node_tokens both carry a
+            # foreign key to nodes, and PRAGMA foreign_keys=ON (core/users.py)
+            # enforces it on every connection.
+            await session.execute(delete(NodeConfig))
+            await session.execute(delete(NodeToken))
+            await session.execute(delete(Node))
             await session.commit()
 
     asyncio.run(_setup())

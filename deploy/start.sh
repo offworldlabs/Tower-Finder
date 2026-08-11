@@ -109,7 +109,26 @@ echo "[start.sh] Rendered nginx config for RETINA_ENV=${RETINA_ENV} (${HOST_MAIN
 echo "[start.sh] Applying database migrations..."
 if MIGRATION_OUTPUT=$(cd /app/backend && python3 -m alembic upgrade head 2>&1); then
     echo "[start.sh] Migrations applied"
-    printf '%s\n' "${MIGRATION_OUTPUT}"
+    if [ -n "${MIGRATION_OUTPUT}" ]; then
+        printf '%s\n' "${MIGRATION_OUTPUT}"
+    fi
+    # Logged separately from the upgrade above because the root logger is
+    # pinned to WARN (alembic.ini), so a successful upgrade prints nothing and
+    # an applied revision would otherwise be indistinguishable in the logs from
+    # a boot where nothing needed doing. `alembic current` prints the revision
+    # itself regardless of that logger level.
+    #
+    # Purely diagnostic: the migration has already succeeded by this point, so
+    # a failure here (a transient lock, say) must not fail the boot. The `if`
+    # form is required for the same set -e reason as the upgrade call above —
+    # a bare `x=$(cmd)` would still trigger errexit on failure.
+    if CURRENT_OUTPUT=$(cd /app/backend && python3 -m alembic current 2>&1); then
+        echo "[start.sh] Database is now at:"
+        printf '%s\n' "${CURRENT_OUTPUT}"
+    else
+        echo "[start.sh] Could not determine current revision (non-fatal):"
+        printf '%s\n' "${CURRENT_OUTPUT}"
+    fi
 elif printf '%s\n' "${MIGRATION_OUTPUT}" | grep -q "Can't locate revision"; then
     echo "[start.sh] Database is ahead of this image's migrations (rollback); continuing without downgrading"
     printf '%s\n' "${MIGRATION_OUTPUT}"
