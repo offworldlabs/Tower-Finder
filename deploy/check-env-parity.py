@@ -121,9 +121,7 @@ def compose_config(overlay: str) -> dict:
                 "and compose will not resolve without one. `touch backend/.env` — this "
                 "check compares the overlays with each other and reads nothing from it."
             )
-        raise SystemExit(
-            f"`docker compose -f {BASE} -f {overlay} config` failed:\n{out.stderr}{hint}"
-        )
+        raise SystemExit(f"`docker compose -f {BASE} -f {overlay} config` failed:\n{out.stderr}{hint}")
     return json.loads(out.stdout)
 
 
@@ -164,9 +162,7 @@ def check_compose() -> list[str]:
             if in_ref == in_env or allowed(path):
                 continue
             problems.append(
-                f"  {path}\n"
-                f"      {REFERENCE:<{_LABEL_WIDTH}}: {in_ref!r}\n"
-                f"      {env:<{_LABEL_WIDTH}}: {in_env!r}"
+                f"  {path}\n      {REFERENCE:<{_LABEL_WIDTH}}: {in_ref!r}\n      {env:<{_LABEL_WIDTH}}: {in_env!r}"
             )
     return problems
 
@@ -211,9 +207,7 @@ def check_nginx(tmp: Path) -> list[str]:
         # a substring of a longer one (`map.retina.fm` inside
         # `staging-map.retina.fm`), and replacing the short one first would
         # corrupt the comparison.
-        for var, value in sorted(
-            values.items(), key=lambda kv: len(kv[1]), reverse=True
-        ):
+        for var, value in sorted(values.items(), key=lambda kv: len(kv[1]), reverse=True):
             text = text.replace(value, f"<{var}>")
         rendered[env] = text
 
@@ -232,9 +226,7 @@ def check_nginx(tmp: Path) -> list[str]:
                 f"plain HTTP; check TLS_ENABLED and the RETINA_IF TLS blocks."
             )
         if "ssl_certificate " not in text:
-            problems.append(
-                f"  {env}: rendered config has no ssl_certificate directive."
-            )
+            problems.append(f"  {env}: rendered config has no ssl_certificate directive.")
         if "Strict-Transport-Security" not in text:
             problems.append(f"  {env}: rendered config has no HSTS header.")
         # Authenticated Origin Pulls. Absolute for the same reason as the TLS
@@ -283,8 +275,7 @@ def main() -> int:
             "Compose: an environment differs from production at key paths that are not\n"
             "in ALLOWED_DIVERGENCE. Either move the setting into docker-compose.yml so every\n"
             "environment shares it, or — if the difference is genuinely intended — add the\n"
-            "key to ALLOWED_DIVERGENCE in this file, in the same commit.\n\n"
-            + "\n".join(compose_problems)
+            "key to ALLOWED_DIVERGENCE in this file, in the same commit.\n\n" + "\n".join(compose_problems)
         )
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -293,18 +284,14 @@ def main() -> int:
         failures.append(
             "nginx: the shared template renders differently across environments once\n"
             "hostnames are normalised. Every vhost, header, rate limit and location must\n"
-            "match — that is what makes staging a valid rehearsal for production.\n\n"
-            + "\n".join(nginx_problems)
+            "match — that is what makes staging a valid rehearsal for production.\n\n" + "\n".join(nginx_problems)
         )
 
     if failures:
         print("\n\n".join(failures), file=sys.stderr)
         return 1
 
-    print(
-        f"in parity with {REFERENCE} (compose + nginx): "
-        f"{', '.join(e for e in OVERLAYS if e != REFERENCE)}"
-    )
+    print(f"in parity with {REFERENCE} (compose + nginx): {', '.join(e for e in OVERLAYS if e != REFERENCE)}")
     return 0
 
 

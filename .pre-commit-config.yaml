@@ -1,14 +1,21 @@
-# The ops hooks are scoped to backend/ with args: [backend] — dead-code must not
-# walk libs/, which holds the retina-* submodules that run these same hooks in
-# their own repos, and ruff-config must find backend/pyproject.toml rather than
-# a root one that does not exist.
+# The ops hooks are scoped with args: [<dir>] — dead-code must not walk libs/,
+# which holds the retina-* submodules that run these same hooks in their own
+# repos, and ruff-config needs pointing at each pyproject.toml explicitly.
 #
-# The ruff hooks are unrestricted: they cover backend/ and deploy/ alike.
+# ruff-config runs twice, once per copy of the shared standard in this repo:
+# backend/pyproject.toml and the root pyproject.toml. The root copy exists so
+# Python outside backend/ inherits the standard rather than ruff's defaults;
+# see the comment in that file. Checking both is what stops the duplication
+# becoming drift.
+#
+# The ruff hooks are unrestricted: every tracked .py in this repo now resolves
+# to the same standard. libs/ is not covered because submodule contents are
+# gitlinks, so pre-commit never passes them to a hook.
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.2
     hooks:
-      - id: ruff
+      - id: ruff-check
       - id: ruff-format
 
   - repo: https://github.com/offworldlabs/ops
@@ -18,3 +25,7 @@ repos:
         args: [backend]
       - id: ruff-config
         args: [backend]
+      - id: ruff-config
+        alias: ruff-config-root
+        name: ruff config matches the shared standard (root)
+        args: ["."]
