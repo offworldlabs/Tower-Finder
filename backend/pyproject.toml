@@ -43,6 +43,11 @@ exclude_lines = [
 skip_covered = true
 show_missing = true
 
+# Shared ruff standard for offworldlabs Python repos. The keys below are checked
+# against offworldlabs/ops:ruff-shared.toml by the `ruff-config` pre-commit hook
+# — edit them there, not here. target-version is deliberately per-repo and
+# tracks this package's requires-python. The extra per-file-ignores entry for
+# simulation/* is a permitted local addition.
 [tool.ruff]
 target-version = "py312"
 line-length = 120
