@@ -97,6 +97,11 @@ def test_a_board_model_over_64_characters_is_rejected():
         RegisterRequest(**_registration(board_model="x" * 65))
 
 
+def test_an_acceptance_version_over_32_characters_is_rejected():
+    with pytest.raises(ValidationError):
+        AcceptanceRecord(version="x" * 33, accepted_at="2026-07-31T09:12:00Z")
+
+
 def test_agreements_missing_publication_are_rejected():
     agreements = {k: v for k, v in AGREEMENTS.items() if k != "publication"}
     with pytest.raises(ValidationError):
@@ -139,6 +144,19 @@ def test_the_registration_response_round_trips_with_a_z_suffixed_time():
         "config_version": 7,
         "server_time": "2026-07-31T09:12:01Z",
     }
+
+
+def test_a_naive_server_time_is_rejected():
+    """`ServerTime` is `AwareDatetime`, so a handler passing a naive value gets a
+    validation error rather than a `server_time` silently shifted by
+    `astimezone(UTC)` reading it as local time."""
+    with pytest.raises(ValidationError):
+        RegisterResponse(
+            token="k" * 40,
+            node_ref="nde4f2k9xq7m3b8",
+            config_version=7,
+            server_time=datetime(2026, 7, 31, 9, 12, 1),  # naive on purpose
+        )
 
 
 @pytest.mark.parametrize("token", ["k" * 31, "k" * 129])
@@ -212,6 +230,33 @@ def test_a_boolean_is_not_a_measurement(field):
         DetectionFrame(**(FRAME | {field: [True, 1.0]}))
 
 
+def test_a_numeric_string_is_not_a_measurement():
+    """Pydantic's lax mode coerces a numeric string for a float field, so `"14.2"`
+    would otherwise be filed as 14.2 rather than refused."""
+    with pytest.raises(ValidationError):
+        DetectionFrame(**(FRAME | {"t": "1753900000.123"}))
+
+
+def test_a_numeric_string_is_not_a_count():
+    """The same coercion applies to an integer field."""
+    with pytest.raises(ValidationError):
+        DetectionFrame(**(FRAME | {"seq": "918273"}))
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_a_non_finite_value_is_rejected_on_t(value):
+    """Starlette parses bodies with the stdlib `json` module, which accepts the
+    bare `NaN` and `Infinity` literals, so this is reachable from the wire."""
+    with pytest.raises(ValidationError):
+        DetectionFrame(**(FRAME | {"t": value}))
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_a_non_finite_value_is_rejected_inside_snr(value):
+    with pytest.raises(ValidationError):
+        DetectionFrame(**(FRAME | {"snr": [value, 9.8]}))
+
+
 def test_the_array_bound_is_512():
     filled = {"delay": [1.0] * 512, "doppler": [1.0] * 512, "snr": [1.0] * 512, "adsb_hex": [None] * 512}
     assert len(DetectionFrame(**(FRAME | filled)).snr) == 512
@@ -271,9 +316,7 @@ HEARTBEAT = {
 
 def test_the_documented_heartbeat_round_trips():
     beat = HeartbeatRequest(**HEARTBEAT)
-    assert beat.state == "streaming"
-    assert beat.health.cpu_pct == 31
-    assert beat.versions.blah2_image == "sha-9f21c4e"
+    assert beat.model_dump(mode="json") == HEARTBEAT
 
 
 def test_the_minimal_heartbeat_is_state_uptime_boot_id_and_version():
@@ -302,6 +345,16 @@ def test_every_documented_state_is_accepted(state):
 def test_an_undocumented_state_is_rejected():
     with pytest.raises(ValidationError):
         HeartbeatRequest(**(HEARTBEAT | {"state": "wedged"}))
+
+
+def test_a_negative_uptime_is_rejected():
+    with pytest.raises(ValidationError):
+        HeartbeatRequest(**(HEARTBEAT | {"uptime_s": -1}))
+
+
+def test_a_versions_field_over_64_characters_is_rejected():
+    with pytest.raises(ValidationError):
+        HeartbeatRequest(**(HEARTBEAT | {"versions": {"owl_os": "x" * 65}}))
 
 
 def test_health_says_known_to_be_unknown_with_nulls():
@@ -384,3 +437,13 @@ def test_an_error_body_omits_detail_when_there_is_none():
 def test_an_error_body_may_name_the_condition():
     body = ErrorBody(error="invalid_config", detail="rx_lat")
     assert body.model_dump(mode="json") == {"error": "invalid_config", "detail": "rx_lat"}
+
+
+def test_an_error_over_64_characters_is_rejected():
+    with pytest.raises(ValidationError):
+        ErrorBody(error="x" * 65)
+
+
+def test_a_detail_over_512_characters_is_rejected():
+    with pytest.raises(ValidationError):
+        ErrorBody(error="invalid_config", detail="x" * 513)

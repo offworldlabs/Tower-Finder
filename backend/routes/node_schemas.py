@@ -24,14 +24,17 @@ from pydantic import (
 )
 
 
-def _reject_bool(value: Any) -> Any:
-    """`bool` subclasses `int`, so Pydantic accepts `true` for a numeric field.
+def _reject_non_number(value: Any) -> Any:
+    """Three shapes that are not a JSON `number` but that Pydantic's lax mode
+    would otherwise accept for one.
 
-    JSON `true` is not a `number`, and a frame carrying `"snr": [true]` would
-    otherwise be filed as 1.0 rather than refused.
+    `bool` subclasses `int`, so `true` would be filed as 1.0. A numeric string
+    coerces, so `"14.2"` would be filed as 14.2. Both would leave a frame
+    carrying `"snr": [true]` or `"config_version": "7"` silently accepted
+    instead of refused.
     """
-    if isinstance(value, bool):
-        raise ValueError("expected a number, not a boolean")
+    if isinstance(value, bool | str):
+        raise ValueError("expected a number, not a boolean or a string")
     return value
 
 
@@ -44,13 +47,34 @@ def _rfc3339_z(value: datetime) -> str:
     return value.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-Number = Annotated[float, BeforeValidator(_reject_bool)]
-Count = Annotated[int, BeforeValidator(_reject_bool)]
-ServerTime = Annotated[datetime, PlainSerializer(_rfc3339_z, return_type=str)]
+# `allow_inf_nan=False` closes the third hole `_reject_non_number` cannot: Starlette
+# parses bodies with the stdlib `json` module, which accepts the bare `NaN` and
+# `Infinity` literals, and a non-finite delay or SNR would otherwise reach the
+# solver. Confirmed to survive the merge with a field's own `Field(ge=...)`.
+Number = Annotated[float, BeforeValidator(_reject_non_number), Field(allow_inf_nan=False)]
+# Ints cannot be non-finite, so only the shared string/bool guard applies here.
+Count = Annotated[int, BeforeValidator(_reject_non_number)]
+# AwareDatetime rather than datetime: `_rfc3339_z` calls `astimezone(UTC)`, which
+# reads a naive value as local time, so a handler passing `datetime.utcnow()` would
+# silently emit a `server_time` an hour wrong under BST instead of raising. This is
+# the one field a node uses to detect clock skew, so a silent shift is the worst
+# failure mode available.
+ServerTime = Annotated[AwareDatetime, PlainSerializer(_rfc3339_z, return_type=str)]
 NodeId = Annotated[str, Field(pattern=r"^ret[0-9a-f]{8}$")]
 NodeRef = Annotated[str, Field(pattern=r"^(nde|sim)[0-9a-z]{12}$")]
 BootId = Annotated[str, Field(pattern=r"^[0-9a-z]{8,32}$")]
-ConfigVersion = Annotated[int, BeforeValidator(_reject_bool), Field(ge=1)]
+ConfigVersion = Annotated[int, BeforeValidator(_reject_non_number), Field(ge=1)]
+
+# A body guard rather than a statement about how many detections a CPI produces,
+# which is single figures in practice.
+MAX_DETECTIONS = 512
+
+AdsbHex = Annotated[str, Field(pattern=r"^[0-9a-f]{6}$")] | None
+
+# Six values as of contract 1.1.0. `stalled` is a healthy node whose radar has
+# stopped, which the server cannot tell from a network fault on its own.
+NodeState = Literal["starting", "streaming", "stalled", "paused", "error", "stopping"]
+ServiceState = Literal["up", "down", "unknown"]
 
 
 class _RequestModel(BaseModel):
@@ -108,13 +132,6 @@ class RegisterResponse(BaseModel):
     server_time: ServerTime
 
 
-# A body guard rather than a statement about how many detections a CPI produces,
-# which is single figures in practice.
-MAX_DETECTIONS = 512
-
-AdsbHex = Annotated[str, Field(pattern=r"^[0-9a-f]{6}$")] | None
-
-
 class DetectionFrame(_RequestModel):
     """One CPI's worth of detections.
 
@@ -153,12 +170,6 @@ class DetectionAck(BaseModel):
     streaming_allowed: bool
 
 
-# Six values as of contract 1.1.0. `stalled` is a healthy node whose radar has
-# stopped, which the server cannot tell from a network fault on its own.
-NodeState = Literal["starting", "streaming", "stalled", "paused", "error", "stopping"]
-ServiceState = Literal["up", "down", "unknown"]
-
-
 class NodeHealth(_RequestModel):
     """Diagnostic only. The server decides whether a node is working from its own
     record of frame arrivals, not from this.
@@ -169,9 +180,9 @@ class NodeHealth(_RequestModel):
     the first beat after a start has no percentage to report.
     """
 
-    cpu_pct: Annotated[float, BeforeValidator(_reject_bool), Field(ge=0, le=100)] | None
-    disk_free_mb: Annotated[int, BeforeValidator(_reject_bool), Field(ge=0)] | None
-    temp_c: Annotated[float, BeforeValidator(_reject_bool), Field(ge=-50, le=150)] | None
+    cpu_pct: Number | None = Field(ge=0, le=100)
+    disk_free_mb: Count | None = Field(ge=0)
+    temp_c: Number | None = Field(ge=-50, le=150)
     blah2: ServiceState | None
     # Omitted entirely when ADS-B is disabled in node configuration, so absence
     # means disabled rather than unknown. An explicit null reads the same way.
