@@ -443,6 +443,22 @@ def test_an_error_body_may_name_the_condition():
     assert body.model_dump(mode="json") == {"error": "invalid_config", "detail": "rx_lat"}
 
 
+def test_the_error_body_still_honours_the_dump_arguments():
+    """A plain serialiser would build the dict itself and ignore these."""
+    body = ErrorBody(error="invalid_config", detail="rx_lat")
+    assert body.model_dump(exclude={"detail"}) == {"error": "invalid_config"}
+    assert body.model_dump(include={"error"}) == {"error": "invalid_config"}
+
+
+def test_the_error_body_documents_its_fields_on_the_serialisation_side():
+    """FastAPI documents responses in serialization mode, where a model
+    serialiser otherwise replaces the shape with a free-form object."""
+    schema = ErrorBody.model_json_schema(mode="serialization")
+    assert schema["required"] == ["error"]
+    assert schema["properties"]["error"]["maxLength"] == 64
+    assert schema["properties"]["detail"]["anyOf"][0]["maxLength"] == 512
+
+
 def test_an_error_over_64_characters_is_rejected():
     with pytest.raises(ValidationError):
         ErrorBody(error="x" * 65)

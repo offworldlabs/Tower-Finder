@@ -19,10 +19,14 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    GetJsonSchemaHandler,
     PlainSerializer,
+    SerializerFunctionWrapHandler,
     model_serializer,
     model_validator,
 )
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import CoreSchema
 
 
 def _reject_non_number(value: Any) -> Any:
@@ -236,9 +240,23 @@ class ErrorBody(BaseModel):
     error: str = Field(max_length=64)
     detail: Annotated[str, Field(max_length=512)] | None = None
 
-    @model_serializer
-    def _omit_absent_detail(self) -> dict[str, str]:
-        body = {"error": self.error}
-        if self.detail is not None:
-            body["detail"] = self.detail
+    @model_serializer(mode="wrap")
+    def _omit_absent_detail(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        # Wrap rather than plain, so `exclude`, `include` and `by_alias` still do
+        # what a caller expects. A plain serialiser builds the dict itself and
+        # silently ignores all three.
+        body = handler(self)
+        if body.get("detail") is None:
+            body.pop("detail", None)
         return body
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema: CoreSchema, handler: GetJsonSchemaHandler) -> JsonSchemaValue:
+        # A model serialiser replaces the serialization schema with a free-form
+        # object, and FastAPI documents responses in serialization mode, so an
+        # error response would otherwise publish as an untyped map with the two
+        # field names and their bounds gone. The fields are the same on both
+        # sides of the wire, so the validation shape describes both honestly.
+        if handler.mode == "serialization":
+            return cls.model_json_schema(mode="validation")
+        return handler(core_schema)
