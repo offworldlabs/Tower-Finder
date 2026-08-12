@@ -20,6 +20,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PlainSerializer,
+    model_serializer,
     model_validator,
 )
 
@@ -224,9 +225,20 @@ class ConfigResponse(BaseModel):
 
 
 class ErrorBody(BaseModel):
-    """The spec's `Error`. Registration errors carry no detail by design, so
-    serialise with `exclude_none=True` rather than emitting `"detail": null`.
+    """The spec's `Error`. Registration errors carry no detail by design.
+
+    The contract types `detail` as a string with no null member, so the key is
+    dropped rather than serialised as `"detail": null`. Doing it here rather
+    than asking every call site for `exclude_none=True` means a handler cannot
+    emit a body the frozen schema rejects by forgetting the flag.
     """
 
     error: str = Field(max_length=64)
     detail: Annotated[str, Field(max_length=512)] | None = None
+
+    @model_serializer
+    def _omit_absent_detail(self) -> dict[str, str]:
+        body = {"error": self.error}
+        if self.detail is not None:
+            body["detail"] = self.detail
+        return body

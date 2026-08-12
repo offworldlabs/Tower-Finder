@@ -430,7 +430,11 @@ def test_the_config_response_carries_the_active_version():
 
 
 def test_an_error_body_omits_detail_when_there_is_none():
-    """Registration errors carry no detail by design."""
+    """Registration errors carry no detail by design, and the contract types
+    `detail` as a string with no null member, so the key goes rather than the
+    value. No call site has to remember `exclude_none`."""
+    assert ErrorBody(error="forbidden").model_dump(mode="json") == {"error": "forbidden"}
+    assert ErrorBody(error="forbidden").model_dump_json() == '{"error":"forbidden"}'
     assert ErrorBody(error="forbidden").model_dump(mode="json", exclude_none=True) == {"error": "forbidden"}
 
 
