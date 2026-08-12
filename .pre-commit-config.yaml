@@ -1,12 +1,23 @@
-# The dead-code gate lives in offworldlabs/ops and is pinned here. Do not
-# vendor it back into this repo. See 86cb417ty.
-#
-# args: [backend] scopes the scan to the backend tree. Without it the gate
-# would also walk libs/, which holds the five retina-* submodules — they run
-# their own copy of this hook in their own repos.
+# All four hooks are scoped to backend/. The Python in this repo lives there;
+# deploy/*.py has never been linted (the CI step this replaces ran
+# `ruff check .` with working-directory: backend), and bringing it under lint
+# is a deliberate change with its own consequences — PLW1510 cannot be
+# resolved without deciding whether those subprocess calls should raise.
+# Tracked separately. libs/ holds the retina-* submodules, which run these
+# same hooks in their own repos.
 repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.2
+    hooks:
+      - id: ruff
+        files: ^backend/
+      - id: ruff-format
+        files: ^backend/
+
   - repo: https://github.com/offworldlabs/ops
-    rev: dead-code-v1.1
+    rev: hooks-v1.0
     hooks:
       - id: dead-code
+        args: [backend]
+      - id: ruff-config
         args: [backend]
