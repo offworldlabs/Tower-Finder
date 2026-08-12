@@ -12,6 +12,8 @@ from pydantic import ValidationError
 from routes.node_schemas import (
     AcceptanceRecord,
     Agreements,
+    DetectionAck,
+    DetectionFrame,
     PublicationChoice,
     RegisterRequest,
     RegisterResponse,
@@ -159,3 +161,93 @@ def test_a_config_version_below_one_is_rejected():
             config_version=0,
             server_time=datetime.now(UTC),
         )
+
+
+FRAME = {
+    "t": 1753900000.123,
+    "seq": 918273,
+    "boot_id": "k3n8v2qp71ab",
+    "config_version": 7,
+    "delay": [12.4, 30.1],
+    "doppler": [-118.0, 44.5],
+    "snr": [14.2, 9.8],
+    "adsb_hex": ["4ca1f2", None],
+}
+
+
+def test_the_documented_frame_round_trips():
+    frame = DetectionFrame(**FRAME)
+    assert frame.model_dump(mode="json") == FRAME
+
+
+def test_an_empty_frame_is_valid():
+    """All four arrays empty is a real frame and worth sending."""
+    frame = DetectionFrame(**(FRAME | {"delay": [], "doppler": [], "snr": [], "adsb_hex": []}))
+    assert frame.delay == []
+
+
+@pytest.mark.parametrize("field", ["delay", "doppler", "snr", "adsb_hex"])
+def test_arrays_of_different_lengths_are_rejected(field):
+    short = {"adsb_hex": ["4ca1f2"]} if field == "adsb_hex" else {field: [1.0]}
+    with pytest.raises(ValidationError):
+        DetectionFrame(**(FRAME | short))
+
+
+def test_a_frame_carrying_a_node_identifier_is_rejected():
+    """The token resolves to a node. A frame that could disagree with its own
+    credential would need a rule for what a mismatch means, and every available
+    rule is wrong."""
+    with pytest.raises(ValidationError):
+        DetectionFrame(**(FRAME | {"node_ref": "nde4f2k9xq7m3b8"}))
+
+
+@pytest.mark.parametrize("field", ["delay", "doppler", "snr"])
+def test_a_boolean_is_not_a_measurement(field):
+    with pytest.raises(ValidationError):
+        DetectionFrame(**(FRAME | {field: [True, 1.0]}))
+
+
+def test_the_array_bound_is_512():
+    filled = {"delay": [1.0] * 512, "doppler": [1.0] * 512, "snr": [1.0] * 512, "adsb_hex": [None] * 512}
+    assert len(DetectionFrame(**(FRAME | filled)).snr) == 512
+    over = {key: value + value[:1] for key, value in filled.items()}
+    with pytest.raises(ValidationError):
+        DetectionFrame(**(FRAME | over))
+
+
+def test_an_unassociated_detection_is_null_rather_than_absent():
+    frame = DetectionFrame(**(FRAME | {"adsb_hex": [None, None]}))
+    assert frame.adsb_hex == [None, None]
+
+
+@pytest.mark.parametrize("value", ["4CA1F2", "4ca1f", "4ca1f22", "zzzzzz"])
+def test_a_malformed_icao_address_is_rejected(value):
+    with pytest.raises(ValidationError):
+        DetectionFrame(**(FRAME | {"adsb_hex": [value, None]}))
+
+
+@pytest.mark.parametrize("override", [{"t": -1}, {"seq": -1}, {"config_version": 0}])
+def test_a_frame_below_a_documented_bound_is_rejected(override):
+    with pytest.raises(ValidationError):
+        DetectionFrame(**(FRAME | override))
+
+
+@pytest.mark.parametrize("boot_id", ["k3n8v2q", "K3N8V2QP71AB", "k" * 33])
+def test_a_malformed_boot_id_is_rejected(boot_id):
+    with pytest.raises(ValidationError):
+        DetectionFrame(**(FRAME | {"boot_id": boot_id}))
+
+
+@pytest.mark.parametrize("field", ["t", "seq", "boot_id", "config_version", "delay", "doppler", "snr", "adsb_hex"])
+def test_every_frame_field_is_required(field):
+    with pytest.raises(ValidationError):
+        DetectionFrame(**{k: v for k, v in FRAME.items() if k != field})
+
+
+def test_the_acknowledgement_round_trips():
+    ack = DetectionAck(accepted=2, config_stale=False, streaming_allowed=True)
+    assert ack.model_dump(mode="json") == {
+        "accepted": 2,
+        "config_stale": False,
+        "streaming_allowed": True,
+    }

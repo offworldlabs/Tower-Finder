@@ -20,6 +20,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PlainSerializer,
+    model_validator,
 )
 
 
@@ -105,3 +106,48 @@ class RegisterResponse(BaseModel):
     node_ref: NodeRef
     config_version: ConfigVersion
     server_time: ServerTime
+
+
+# A body guard rather than a statement about how many detections a CPI produces,
+# which is single figures in practice.
+MAX_DETECTIONS = 512
+
+AdsbHex = Annotated[str, Field(pattern=r"^[0-9a-f]{6}$")] | None
+
+
+class DetectionFrame(_RequestModel):
+    """One CPI's worth of detections.
+
+    The frame carries no node identifier: the token resolves to a node and the
+    frame is stamped server side, so `extra="forbid"` on the base class is load
+    bearing rather than tidiness.
+    """
+
+    # Unix epoch seconds, node clock, the end of the capture window. The samples
+    # behind a frame span [t - cpi_s, t], and cpi_s lives in the node's
+    # configuration rather than on the hot path.
+    t: Number = Field(ge=0)
+    # Restart-local, so it is only interpretable alongside boot_id.
+    seq: Count = Field(ge=0)
+    boot_id: BootId
+    config_version: ConfigVersion
+    delay: list[Number] = Field(max_length=MAX_DETECTIONS)
+    doppler: list[Number] = Field(max_length=MAX_DETECTIONS)
+    snr: list[Number] = Field(max_length=MAX_DETECTIONS)
+    adsb_hex: list[AdsbHex] = Field(max_length=MAX_DETECTIONS)
+
+    @model_validator(mode="after")
+    def _arrays_are_parallel(self) -> "DetectionFrame":
+        """The four arrays are one table on its side, so a mismatch is a 422."""
+        if len({len(self.delay), len(self.doppler), len(self.snr), len(self.adsb_hex)}) > 1:
+            raise ValueError("delay, doppler, snr and adsb_hex must be the same length")
+        return self
+
+
+class DetectionAck(BaseModel):
+    # v1 accepts a frame whole or not at all, so this always equals the array
+    # length. The field exists so a later plausibility gate can accept fewer
+    # without a new response shape.
+    accepted: Count = Field(ge=0)
+    config_stale: bool
+    streaming_allowed: bool
