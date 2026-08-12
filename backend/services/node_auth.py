@@ -1,0 +1,82 @@
+"""Node bearer tokens and the public identifier.
+
+Only the SHA-256 of a bearer is stored: a per-row salted hash could carry neither
+a unique index nor a lookup. There is no cache, so revocation takes effect on the
+next request rather than needing an invalidation path, and the service is not
+pinned to a single uvicorn worker. Twelve nodes at 2 Hz is 24 indexed reads a
+second against WAL-mode SQLite, which the read budget absorbs.
+
+Nothing here commits. Registration writes a node, an agreement set, a config
+version, a revocation and a token; the route owns that transaction so a failure
+part-way through cannot leave a node with its old token revoked and no new one.
+"""
+
+import hashlib
+import secrets
+from datetime import UTC, datetime
+
+from fastapi import Depends, HTTPException, Request
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from core.nodes import NodeToken
+from core.users import get_async_session
+
+_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+
+def mint_node_ref() -> str:
+    """Fifteen characters, roughly 62 bits after the prefix."""
+    return "nde" + "".join(secrets.choice(_ALPHABET) for _ in range(12))
+
+
+def token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+async def mint_token(session: AsyncSession, node_id: str) -> str:
+    """Mint a bearer and flush it. The caller commits."""
+    token = secrets.token_urlsafe(32)
+    session.add(NodeToken(node_id=node_id, token_hash=token_hash(token)))
+    await session.flush()
+    return token
+
+
+async def revoke_tokens(session: AsyncSession, node_id: str, *, reason: str) -> int:
+    """Revoke every live token for a node and flush. The caller commits."""
+    rows = (
+        (await session.execute(select(NodeToken).where(NodeToken.node_id == node_id, NodeToken.revoked_at.is_(None))))
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    for row in rows:
+        row.revoked_at = now
+        row.revoked_reason = reason
+    await session.flush()
+    return len(rows)
+
+
+async def bearer_node(
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+) -> str:
+    """Resolve the Authorization header to a node_id, or raise 401.
+
+    The only authentication predicate is a live row: there is no expiry, so a
+    token dies by being revoked and by nothing else.
+    """
+    header = request.headers.get("authorization", "")
+    if not header.startswith("Bearer ") or not header[7:].strip():
+        raise HTTPException(status_code=401, detail="unauthorized")
+    row = (
+        await session.execute(
+            select(NodeToken).where(
+                NodeToken.token_hash == token_hash(header[7:].strip()),
+                NodeToken.revoked_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return row.node_id

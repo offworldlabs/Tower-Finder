@@ -168,3 +168,19 @@ async def node_session(tmp_path, _node_schema_template):
     async with maker() as session:
         yield session
     await engine.dispose()
+
+
+@pytest.fixture
+async def seeded_node(node_session):
+    """One active node, flushed but not committed, for tests that need a token's
+    foreign key to hold.
+
+    Flushed rather than committed so a test can still exercise the rollback path
+    the flush-not-commit contract in services/node_auth.py rests on.
+    """
+    from core.nodes import Node
+
+    node = Node(node_id="ret1a2b3c4d", node_ref="nde1a2b3c4d00", board_model="raspberrypi5-4gb")
+    node_session.add(node)
+    await node_session.flush()
+    return node
