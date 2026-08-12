@@ -108,7 +108,9 @@ def strip_conditionals(text: str, flags: dict[str, bool], path: Path) -> str:
             if not stack:
                 raise RuntimeError(f"{path}:{lineno}: RETINA_ELSE without RETINA_IF")
             if stack[-1][1]:
-                raise RuntimeError(f"{path}:{lineno}: second RETINA_ELSE for one RETINA_IF")
+                raise RuntimeError(
+                    f"{path}:{lineno}: second RETINA_ELSE for one RETINA_IF"
+                )
             stack[-1] = [not stack[-1][0], True]
             continue
         if _ENDIF_RE.match(line):

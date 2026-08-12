@@ -1,18 +1,15 @@
-# All four hooks are scoped to backend/. The Python in this repo lives there;
-# deploy/*.py has never been linted (the CI step this replaces ran
-# `ruff check .` with working-directory: backend), and bringing it under lint
-# is a deliberate change with its own consequences — PLW1510 cannot be
-# resolved without deciding whether those subprocess calls should raise.
-# Tracked separately. libs/ holds the retina-* submodules, which run these
-# same hooks in their own repos.
+# The ops hooks are scoped to backend/ with args: [backend] — dead-code must not
+# walk libs/, which holds the retina-* submodules that run these same hooks in
+# their own repos, and ruff-config must find backend/pyproject.toml rather than
+# a root one that does not exist.
+#
+# The ruff hooks are unrestricted: they cover backend/ and deploy/ alike.
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.2
     hooks:
       - id: ruff
-        files: ^backend/
       - id: ruff-format
-        files: ^backend/
 
   - repo: https://github.com/offworldlabs/ops
     rev: hooks-v1.0

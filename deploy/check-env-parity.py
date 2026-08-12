@@ -104,11 +104,14 @@ HOST_VARS = (
 
 
 def compose_config(overlay: str) -> dict:
+    # check=False: the return code is handled below, which produces a better
+    # message than CalledProcessError would — including the backend/.env hint.
     out = subprocess.run(
         ["docker", "compose", "-f", BASE, "-f", overlay, "config", "--format", "json"],
         cwd=REPO,
         capture_output=True,
         text=True,
+        check=False,
     )
     if out.returncode != 0:
         hint = ""
@@ -171,6 +174,8 @@ def check_compose() -> list[str]:
 def render(env_values: dict[str, str], out_path: Path) -> str:
     env_file = out_path.with_suffix(".env")
     env_file.write_text("".join(f"{k}={v}\n" for k, v in env_values.items()))
+    # check=False: the return code is handled below, which surfaces the child's
+    # stderr rather than a bare CalledProcessError.
     result = subprocess.run(
         [
             sys.executable,
@@ -182,6 +187,7 @@ def render(env_values: dict[str, str], out_path: Path) -> str:
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
     if result.returncode != 0:
         raise SystemExit(f"rendering nginx config failed:\n{result.stderr}")
@@ -205,7 +211,9 @@ def check_nginx(tmp: Path) -> list[str]:
         # a substring of a longer one (`map.retina.fm` inside
         # `staging-map.retina.fm`), and replacing the short one first would
         # corrupt the comparison.
-        for var, value in sorted(values.items(), key=lambda kv: len(kv[1]), reverse=True):
+        for var, value in sorted(
+            values.items(), key=lambda kv: len(kv[1]), reverse=True
+        ):
             text = text.replace(value, f"<{var}>")
         rendered[env] = text
 
@@ -224,7 +232,9 @@ def check_nginx(tmp: Path) -> list[str]:
                 f"plain HTTP; check TLS_ENABLED and the RETINA_IF TLS blocks."
             )
         if "ssl_certificate " not in text:
-            problems.append(f"  {env}: rendered config has no ssl_certificate directive.")
+            problems.append(
+                f"  {env}: rendered config has no ssl_certificate directive."
+            )
         if "Strict-Transport-Security" not in text:
             problems.append(f"  {env}: rendered config has no HSTS header.")
         # Authenticated Origin Pulls. Absolute for the same reason as the TLS
@@ -291,8 +301,10 @@ def main() -> int:
         print("\n\n".join(failures), file=sys.stderr)
         return 1
 
-    print(f"in parity with {REFERENCE} (compose + nginx): "
-          f"{', '.join(e for e in OVERLAYS if e != REFERENCE)}")
+    print(
+        f"in parity with {REFERENCE} (compose + nginx): "
+        f"{', '.join(e for e in OVERLAYS if e != REFERENCE)}"
+    )
     return 0
 
 
