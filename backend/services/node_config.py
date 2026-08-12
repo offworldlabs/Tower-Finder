@@ -68,6 +68,13 @@ def _number(field: str, value: Any) -> float:
 
 def validate_config(payload: dict[str, Any]) -> dict[str, Any]:
     """Return the normalised configuration, or raise ConfigInvalid naming one field."""
+    # A JSON body is not necessarily an object, and every check below assumes it is:
+    # set(None) and sorted() over mixed types both raise TypeError, which would leave
+    # the route with no ConfigInvalid to map and answer a malformed body with a 500.
+    # "config" is the key registration nests this under, and the whole body on PUT.
+    if not isinstance(payload, dict):
+        raise ConfigInvalid("config", "not an object")
+
     # Sorted so that a payload wrong in several places always names the same field,
     # and a node retrying unchanged always gets the same answer.
     unknown = sorted(set(payload) - _REQUIRED)

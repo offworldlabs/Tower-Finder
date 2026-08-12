@@ -59,8 +59,15 @@ def test_zero_beam_azimuth_is_not_null():
         ("rx_lat", 91),
         ("rx_lat", -91),
         ("rx_lon", 181),
+        ("rx_lon", -181),
         ("rx_alt_ft", -1501),
         ("rx_alt_ft", 30001),
+        ("tx_lat", 91),
+        ("tx_lat", -91),
+        ("tx_lon", 181),
+        ("tx_lon", -181),
+        ("tx_alt_ft", -1501),
+        ("tx_alt_ft", 30001),
         ("fc_hz", 999_999),
         ("fc_hz", 6_000_000_001),
         ("fs_hz", 99_999),
@@ -174,6 +181,10 @@ def test_a_non_string_callsign_is_rejected(value):
         ("rx_lon", -180),
         ("rx_alt_ft", -1500),
         ("rx_alt_ft", 30000),
+        ("tx_lat", 90),
+        ("tx_lat", -90),
+        ("tx_lon", 180),
+        ("tx_lon", -180),
         ("tx_alt_ft", -1500),
         ("tx_alt_ft", 30000),
         ("fc_hz", 1_000_000),
@@ -295,3 +306,28 @@ def test_integers_are_normalised_to_floats():
 
 def test_the_output_carries_exactly_the_contract_fields():
     assert set(validate_config(dict(VALID))) == set(VALID)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,  # set(None) is a TypeError
+        5,  # so is set(5)
+        "rx_lat",  # iterable, but of characters
+        [],
+        [{}],  # unhashable, so set() raises rather than building
+        [1, "a"],  # hashable but not mutually orderable, so sorted() raises
+    ],
+)
+def test_a_payload_that_is_not_an_object_is_rejected_not_raised_through(payload):
+    """A JSON body can be any type, and the route has only ConfigInvalid to map to 400."""
+    with pytest.raises(ConfigInvalid) as excinfo:
+        validate_config(payload)
+    assert excinfo.value.field == "config"
+
+
+def test_the_field_named_is_always_a_string():
+    """The route interpolates .field into the error detail, so an int would be a lie."""
+    with pytest.raises(ConfigInvalid) as excinfo:
+        validate_config([1, 2])
+    assert isinstance(excinfo.value.field, str)
