@@ -205,7 +205,9 @@ def check_nginx(tmp: Path) -> list[str]:
         # a substring of a longer one (`map.retina.fm` inside
         # `staging-map.retina.fm`), and replacing the short one first would
         # corrupt the comparison.
-        for var, value in sorted(values.items(), key=lambda kv: len(kv[1]), reverse=True):
+        for var, value in sorted(
+            values.items(), key=lambda kv: len(kv[1]), reverse=True
+        ):
             text = text.replace(value, f"<{var}>")
         rendered[env] = text
 
@@ -224,7 +226,9 @@ def check_nginx(tmp: Path) -> list[str]:
                 f"plain HTTP; check TLS_ENABLED and the RETINA_IF TLS blocks."
             )
         if "ssl_certificate " not in text:
-            problems.append(f"  {env}: rendered config has no ssl_certificate directive.")
+            problems.append(
+                f"  {env}: rendered config has no ssl_certificate directive."
+            )
         if "Strict-Transport-Security" not in text:
             problems.append(f"  {env}: rendered config has no HSTS header.")
         # Authenticated Origin Pulls. Absolute for the same reason as the TLS
@@ -291,8 +295,10 @@ def main() -> int:
         print("\n\n".join(failures), file=sys.stderr)
         return 1
 
-    print(f"in parity with {REFERENCE} (compose + nginx): "
-          f"{', '.join(e for e in OVERLAYS if e != REFERENCE)}")
+    print(
+        f"in parity with {REFERENCE} (compose + nginx): "
+        f"{', '.join(e for e in OVERLAYS if e != REFERENCE)}"
+    )
     return 0
 
 
