@@ -233,15 +233,25 @@ if ip6tables -L DOCKER-USER -n >/dev/null 2>&1; then
     # has IPv6 at all. The boundary cares about reachability, so ask that
     # question directly before demanding a v6 uplink to bind rules to.
     #
-    # Both conditions, not either: no route AND no global address. A global
-    # address with no default route is a genuinely broken box and still fails
-    # loudly below, rather than being quietly downgraded to "nothing to filter".
+    # Both conditions, not either: no route AND no global address on the uplink.
+    # A global address there with no default route is a genuinely broken box and
+    # still fails loudly below, rather than being quietly downgraded to "nothing
+    # to filter".
+    #
+    # Scoped to $EXT_IF, like every rule this script installs. An unscoped
+    # `scope global` check sees addresses that have nothing to do with the
+    # droplet's uplink — the kernel classifies ULAs as global, so a Docker bridge
+    # with IPv6 enabled (fd00::/8) or Tailscale (fd7a:115c:a1e0::/48) would keep
+    # this guard from firing and land the box back on the fatal exit below.
     if [ "$v6_published" -gt 0 ] &&
        [ -z "$(ip -6 route show default 2>/dev/null)" ] &&
-       [ -z "$(ip -6 addr show scope global 2>/dev/null)" ]; then
-        echo "  ! [::] listeners on 80/443 exist, but this host has no global IPv6"
-        echo "    address and no IPv6 default route — nothing off-host can reach"
-        echo "    them. Skipping the IPv6 boundary; there is nothing to filter."
+       [ -z "$(ip -6 addr show dev "$EXT_IF" scope global 2>/dev/null)" ]; then
+        # States what was measured, not what was inferred: when ss could not be
+        # read, v6_published was assumed rather than observed, and asserting
+        # "listeners exist" here would contradict the line that said so.
+        echo "  ! No global IPv6 address on ${EXT_IF} and no IPv6 default route:" >&2
+        echo "    nothing off-host can reach 80/443 over IPv6, whatever the [::]" >&2
+        echo "    listeners suggest. Skipping the IPv6 boundary." >&2
         v6_published=0
         v6_unreachable=1
     fi
