@@ -12,8 +12,13 @@ from pydantic import ValidationError
 from routes.node_schemas import (
     AcceptanceRecord,
     Agreements,
+    ConfigResponse,
     DetectionAck,
     DetectionFrame,
+    ErrorBody,
+    HeartbeatRequest,
+    HeartbeatResponse,
+    NodeHealth,
     PublicationChoice,
     RegisterRequest,
     RegisterResponse,
@@ -251,3 +256,131 @@ def test_the_acknowledgement_round_trips():
         "config_stale": False,
         "streaming_allowed": True,
     }
+
+
+HEARTBEAT = {
+    "state": "streaming",
+    "uptime_s": 84213,
+    "boot_id": "k3n8v2qp71ab",
+    "config_version": 7,
+    "health": {"cpu_pct": 31, "disk_free_mb": 9100, "temp_c": 58, "blah2": "up", "adsb": "up"},
+    "versions": {"owl_os": "1.4.0", "retina_node": "2.2.1", "blah2_image": "sha-9f21c4e"},
+    "errors": [],
+}
+
+
+def test_the_documented_heartbeat_round_trips():
+    beat = HeartbeatRequest(**HEARTBEAT)
+    assert beat.state == "streaming"
+    assert beat.health.cpu_pct == 31
+    assert beat.versions.blah2_image == "sha-9f21c4e"
+
+
+def test_the_minimal_heartbeat_is_state_uptime_boot_id_and_version():
+    beat = HeartbeatRequest(state="starting", uptime_s=3, boot_id="k3n8v2qp71ab", config_version=None)
+    assert beat.health is None
+    assert beat.versions is None
+    assert beat.errors == []
+
+
+def test_a_node_with_no_version_yet_sends_null():
+    """Nullable rather than optional, so the heartbeat really is unconditional."""
+    assert HeartbeatRequest(**(HEARTBEAT | {"config_version": None})).config_version is None
+
+
+@pytest.mark.parametrize("field", ["state", "uptime_s", "boot_id", "config_version"])
+def test_the_four_required_heartbeat_fields_are_required(field):
+    with pytest.raises(ValidationError):
+        HeartbeatRequest(**{k: v for k, v in HEARTBEAT.items() if k != field})
+
+
+@pytest.mark.parametrize("state", ["starting", "streaming", "stalled", "paused", "error", "stopping"])
+def test_every_documented_state_is_accepted(state):
+    assert HeartbeatRequest(**(HEARTBEAT | {"state": state})).state == state
+
+
+def test_an_undocumented_state_is_rejected():
+    with pytest.raises(ValidationError):
+        HeartbeatRequest(**(HEARTBEAT | {"state": "wedged"}))
+
+
+def test_health_says_known_to_be_unknown_with_nulls():
+    health = NodeHealth(cpu_pct=None, disk_free_mb=None, temp_c=None, blah2=None)
+    assert health.cpu_pct is None
+    assert health.adsb is None
+
+
+@pytest.mark.parametrize("field", ["cpu_pct", "disk_free_mb", "temp_c", "blah2"])
+def test_an_absent_health_field_is_rejected(field):
+    """The four are required and nullable, so absence never carries meaning."""
+    full = {"cpu_pct": 31, "disk_free_mb": 9100, "temp_c": 58, "blah2": "up"}
+    with pytest.raises(ValidationError):
+        NodeHealth(**{k: v for k, v in full.items() if k != field})
+
+
+@pytest.mark.parametrize(
+    "override",
+    [{"cpu_pct": 101}, {"cpu_pct": -1}, {"temp_c": 151}, {"temp_c": -51}, {"disk_free_mb": -1}, {"blah2": "sideways"}],
+)
+def test_health_outside_a_documented_bound_is_rejected(override):
+    with pytest.raises(ValidationError):
+        NodeHealth(**({"cpu_pct": 31, "disk_free_mb": 9100, "temp_c": 58, "blah2": "up"} | override))
+
+
+def test_absent_adsb_means_disabled_rather_than_unknown():
+    beat = HeartbeatRequest(
+        **(HEARTBEAT | {"health": {"cpu_pct": None, "disk_free_mb": None, "temp_c": None, "blah2": "up"}})
+    )
+    assert beat.health.adsb is None
+
+
+def test_the_error_list_is_bounded_at_32():
+    assert len(HeartbeatRequest(**(HEARTBEAT | {"errors": ["x"] * 32})).errors) == 32
+    with pytest.raises(ValidationError):
+        HeartbeatRequest(**(HEARTBEAT | {"errors": ["x"] * 33}))
+
+
+def test_an_over_long_error_string_is_rejected():
+    with pytest.raises(ValidationError):
+        HeartbeatRequest(**(HEARTBEAT | {"errors": ["x" * 513]}))
+
+
+def test_an_unknown_heartbeat_key_is_rejected():
+    with pytest.raises(ValidationError):
+        HeartbeatRequest(**(HEARTBEAT | {"node_ref": "nde4f2k9xq7m3b8"}))
+
+
+def test_the_heartbeat_response_round_trips_with_a_z_suffixed_time():
+    response = HeartbeatResponse(
+        server_time=datetime(2026, 7, 31, 9, 12, 1, tzinfo=UTC),
+        config_stale=True,
+        streaming_allowed=False,
+        node_ref="nde4f2k9xq7m3b8",
+    )
+    assert response.model_dump(mode="json") == {
+        "server_time": "2026-07-31T09:12:01Z",
+        "config_stale": True,
+        "streaming_allowed": False,
+        "node_ref": "nde4f2k9xq7m3b8",
+    }
+
+
+def test_a_synthetic_node_ref_is_accepted():
+    response = HeartbeatResponse(
+        server_time=datetime.now(UTC), config_stale=False, streaming_allowed=True, node_ref="sim4f2k9xq7m3b8"
+    )
+    assert response.node_ref.startswith("sim")
+
+
+def test_the_config_response_carries_the_active_version():
+    assert ConfigResponse(config_version=7).model_dump(mode="json") == {"config_version": 7}
+
+
+def test_an_error_body_omits_detail_when_there_is_none():
+    """Registration errors carry no detail by design."""
+    assert ErrorBody(error="forbidden").model_dump(mode="json", exclude_none=True) == {"error": "forbidden"}
+
+
+def test_an_error_body_may_name_the_condition():
+    body = ErrorBody(error="invalid_config", detail="rx_lat")
+    assert body.model_dump(mode="json") == {"error": "invalid_config", "detail": "rx_lat"}

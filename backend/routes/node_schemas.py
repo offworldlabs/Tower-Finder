@@ -151,3 +151,71 @@ class DetectionAck(BaseModel):
     accepted: Count = Field(ge=0)
     config_stale: bool
     streaming_allowed: bool
+
+
+# Six values as of contract 1.1.0. `stalled` is a healthy node whose radar has
+# stopped, which the server cannot tell from a network fault on its own.
+NodeState = Literal["starting", "streaming", "stalled", "paused", "error", "stopping"]
+ServiceState = Literal["up", "down", "unknown"]
+
+
+class NodeHealth(_RequestModel):
+    """Diagnostic only. The server decides whether a node is working from its own
+    record of frame arrivals, not from this.
+
+    The four values a node can always attempt to read are required and nullable,
+    so a value it could not obtain arrives as an explicit null rather than as an
+    absent key. `cpu_pct` is the motivating case: /proc/stat is cumulative, so
+    the first beat after a start has no percentage to report.
+    """
+
+    cpu_pct: Annotated[float, BeforeValidator(_reject_bool), Field(ge=0, le=100)] | None
+    disk_free_mb: Annotated[int, BeforeValidator(_reject_bool), Field(ge=0)] | None
+    temp_c: Annotated[float, BeforeValidator(_reject_bool), Field(ge=-50, le=150)] | None
+    blah2: ServiceState | None
+    # Omitted entirely when ADS-B is disabled in node configuration, so absence
+    # means disabled rather than unknown. An explicit null reads the same way.
+    adsb: ServiceState | None = None
+
+
+class NodeVersions(_RequestModel):
+    owl_os: Annotated[str, Field(max_length=64)] | None = None
+    retina_node: Annotated[str, Field(max_length=64)] | None = None
+    blah2_image: Annotated[str, Field(max_length=64)] | None = None
+
+
+class HeartbeatRequest(_RequestModel):
+    state: NodeState
+    uptime_s: Count = Field(ge=0)
+    boot_id: BootId
+    # Required and nullable. Only the server issues a version, so there is a
+    # window at every start where the node genuinely holds none, and a node that
+    # cannot build a configuration at all is the one most worth hearing from.
+    config_version: ConfigVersion | None
+    health: NodeHealth | None = None
+    versions: NodeVersions | None = None
+    # Accumulated since the last beat rather than a single slot, so transient
+    # faults between beats are not lost. Anything beyond the bound is dropped
+    # node side rather than truncating the request.
+    errors: list[Annotated[str, Field(max_length=512)]] = Field(default_factory=list, max_length=32)
+
+
+class HeartbeatResponse(BaseModel):
+    server_time: ServerTime
+    config_stale: bool
+    streaming_allowed: bool
+    # The only place the node learns its public identifier has rotated.
+    node_ref: NodeRef
+
+
+class ConfigResponse(BaseModel):
+    config_version: ConfigVersion
+
+
+class ErrorBody(BaseModel):
+    """The spec's `Error`. Registration errors carry no detail by design, so
+    serialise with `exclude_none=True` rather than emitting `"detail": null`.
+    """
+
+    error: str = Field(max_length=64)
+    detail: Annotated[str, Field(max_length=512)] | None = None
