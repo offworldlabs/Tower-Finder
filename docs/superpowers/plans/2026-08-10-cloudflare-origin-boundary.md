@@ -639,9 +639,17 @@ Run the full acceptance list from the spec's §7 once Tasks 1–5 are complete:
 - [ ] **Container egress still works.** `DOCKER-USER` hangs off `FORWARD`, which
   carries container→internet traffic too, so an ingress rule written without `-i`
   would blackhole every outbound call to :443 — silently, as a hang. From a
-  droplet: `docker compose exec -T tower-finder curl -sS -o /dev/null -w '%{http_code}\n' --max-time 10 https://api.adsb.lol/v2/point/51.5/-0.1/5`
-  → expect an HTTP code, not a timeout. Then `docker compose build --no-cache tower-finder`
-  and confirm `npm install` completes.
+  droplet: `docker compose exec -T tower-finder python3 -c "import urllib.request; print(urllib.request.urlopen('https://api.adsb.lol/v2/point/51.5/-0.1/5', timeout=10).status)"`
+  → expect `200`, not a timeout. **Not `curl`:** the image is `python:3.12-slim`
+  and installs only `nginx tini libcap2-bin` (`Dockerfile:22-24`), so `curl` is
+  not present and the probe dies with "executable file not found in $PATH" —
+  which reads as a failure of the thing being tested rather than of the tool.
+  `urllib` is what the compose healthcheck and `deploy-test` already use, for the
+  same reason. Then `docker compose build --no-cache tower-finder` and confirm
+  `npm install` completes: a `--no-cache` build pulls from registry.npmjs.org and
+  pypi.org over :443 from inside a build container, which traverses the same
+  `FORWARD` → `DOCKER-USER` path, so its normal completion time is itself the
+  egress evidence — a blackholing DROP would hang it rather than fail it.
 - [ ] `iptables -S DOCKER-USER | grep retina-cf-boundary` — every tagged rule
   carries `-i <uplink>`, and that name matches `ip -4 route show default`.
 
