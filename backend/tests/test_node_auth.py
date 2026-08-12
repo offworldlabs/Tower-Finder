@@ -4,6 +4,7 @@ import re
 import pytest
 from fastapi import HTTPException, Request
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from core.nodes import NodeToken
 from services.node_auth import bearer_node, mint_node_ref, mint_token, revoke_tokens
@@ -41,6 +42,34 @@ async def test_a_minted_token_resolves(node_session, seeded_node):
     assert await bearer_node(_request(token), node_session) == "ret1a2b3c4d"
 
 
+async def test_a_committed_token_resolves_in_a_later_session(node_session, seeded_node):
+    """The shape the server actually runs: registration commits, and the next
+    request resolves the bearer through a session of its own.
+
+    Minting and resolving through one session cannot tell a row that reached the
+    database from one the identity map is still holding.
+    """
+    token = await mint_token(node_session, "ret1a2b3c4d")
+    await node_session.commit()
+
+    engine = create_async_engine(node_session.get_bind().url)
+    try:
+        async with async_sessionmaker(engine)() as other:
+            assert await bearer_node(_request(token), other) == "ret1a2b3c4d"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize("scheme", ["Bearer", "bearer", "BEARER"])
+async def test_the_scheme_is_case_insensitive(node_session, seeded_node, scheme):
+    """RFC 7235 auth-scheme is case-insensitive. Our nodes send the capitalised
+    form, but a conformant client sending another is not an authentication
+    failure, and it would be an unhelpful one to debug from a bare 401."""
+    token = await mint_token(node_session, "ret1a2b3c4d")
+    await node_session.commit()
+    assert await bearer_node(_request_raw(f"{scheme} {token}"), node_session) == "ret1a2b3c4d"
+
+
 async def test_a_revoked_token_does_not_resolve(node_session, seeded_node):
     token = await mint_token(node_session, "ret1a2b3c4d")
     await revoke_tokens(node_session, "ret1a2b3c4d", reason="reissue")
@@ -54,9 +83,13 @@ async def test_revoking_reports_how_many_it_revoked(node_session, seeded_node):
     await mint_token(node_session, "ret1a2b3c4d")
     await mint_token(node_session, "ret1a2b3c4d")
     assert await revoke_tokens(node_session, "ret1a2b3c4d", reason="reissue") == 2
-    # Already-revoked rows are not revoked twice, so a second call reports nothing
-    # and does not overwrite the reason the first one recorded.
+
+    # Already-revoked rows are not revoked twice: the second call reports nothing
+    # and leaves the reason the first one recorded, so why a credential died
+    # survives whatever happens to the node afterwards.
     assert await revoke_tokens(node_session, "ret1a2b3c4d", reason="retired") == 0
+    rows = await _tokens(node_session, "ret1a2b3c4d")
+    assert [r.revoked_reason for r in rows] == ["reissue", "reissue"]
 
 
 async def test_an_uncommitted_registration_leaves_no_usable_token(node_session, seeded_node):

@@ -66,13 +66,16 @@ async def bearer_node(
     The only authentication predicate is a live row: there is no expiry, so a
     token dies by being revoked and by nothing else.
     """
-    header = request.headers.get("authorization", "")
-    if not header.startswith("Bearer ") or not header[7:].strip():
+    scheme, _, presented = request.headers.get("authorization", "").partition(" ")
+    # RFC 7235 makes auth-scheme case-insensitive, so `bearer` is as good as
+    # `Bearer`. Our own nodes send the capitalised form the spec writes, but a
+    # conformant client sending the other one is not an authentication failure.
+    if scheme.lower() != "bearer" or not presented.strip():
         raise HTTPException(status_code=401, detail="unauthorized")
     row = (
         await session.execute(
             select(NodeToken).where(
-                NodeToken.token_hash == token_hash(header[7:].strip()),
+                NodeToken.token_hash == token_hash(presented.strip()),
                 NodeToken.revoked_at.is_(None),
             )
         )
