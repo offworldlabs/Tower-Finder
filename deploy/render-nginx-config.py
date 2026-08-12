@@ -108,9 +108,7 @@ def strip_conditionals(text: str, flags: dict[str, bool], path: Path) -> str:
             if not stack:
                 raise RuntimeError(f"{path}:{lineno}: RETINA_ELSE without RETINA_IF")
             if stack[-1][1]:
-                raise RuntimeError(
-                    f"{path}:{lineno}: second RETINA_ELSE for one RETINA_IF"
-                )
+                raise RuntimeError(f"{path}:{lineno}: second RETINA_ELSE for one RETINA_IF")
             stack[-1] = [not stack[-1][0], True]
             continue
         if _ENDIF_RE.match(line):
@@ -125,9 +123,7 @@ def strip_conditionals(text: str, flags: dict[str, bool], path: Path) -> str:
     return "\n".join(out) + "\n" if out else ""
 
 
-def expand_includes(
-    path: Path, root: Path, flags: dict[str, bool], _depth: int = 0, _stack: tuple = ()
-) -> str:
+def expand_includes(path: Path, root: Path, flags: dict[str, bool], _depth: int = 0, _stack: tuple = ()) -> str:
     """Inline every ``# RETINA_INCLUDE`` marker, recursively.
 
     Conditionals are resolved per file *before* its includes are scanned, so a

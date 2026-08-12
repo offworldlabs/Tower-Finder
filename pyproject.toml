@@ -1,0 +1,59 @@
+# Root ruff configuration. This file exists solely so that Python outside
+# backend/ — currently deploy/*.py — is linted to the shared offworldlabs
+# standard rather than ruff's built-in defaults.
+#
+# ruff resolves config by walking UP from each file. Without this, deploy/
+# never reaches backend/pyproject.toml and falls through to defaults:
+# line-length 88 instead of 120, and rules the standard does not select
+# (EXE001, PLW1510) firing while ones it does select do not apply.
+#
+# These keys duplicate backend/pyproject.toml's [tool.ruff] block, which is
+# unavoidable — ruff's `extend` is not followed by the ruff-config hook, so
+# pointing one at the other would silently disable the drift check. Instead
+# BOTH copies are checked against offworldlabs/ops:ruff-shared.toml by two
+# invocations of that hook. Duplication that is enforced is not drift.
+#
+# target-version is deliberately absent: it is per-package.
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "S",   # flake8-bandit (security)
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",  # line too long — handled by formatter
+    "E402",  # module-level import not at top — env setup before imports is intentional
+    "S101",  # assert in tests is fine
+    "S104",  # binding to 0.0.0.0 is intentional (Docker)
+    "S105",  # hardcoded password false positives on dev defaults
+    "S106",  # hardcoded password false positives
+    "S110",  # try-except-pass is used intentionally
+    "S112",  # try-except-continue is intentional in iteration
+    "S310",  # URL open audit — URLs are constructed internally
+    "S311",  # pseudo-random is fine for non-crypto uses
+    "S501",  # requests without verify — internal calls
+    "S603",  # subprocess calls are in controlled scripts
+    "S607",  # partial executable path is fine for scripts
+    "B008",  # function call in default arg — Depends() is FastAPI pattern
+    "B905",  # zip strict — not needed everywhere
+    "SIM105", # contextlib.suppress — try/except is more explicit
+    "SIM102", # nested if — readability preference
+    "SIM108", # ternary operator — readability preference
+    "SIM117", # combine with statements — readability preference
+    "UP017", # datetime.UTC — cosmetic, timezone.utc is fine
+    "UP028", # yield from — explicit loop is clearer
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "B"]
+"scripts/*" = ["S", "E"]
+"simulation/*" = ["S"]
