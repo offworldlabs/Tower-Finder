@@ -213,10 +213,23 @@ internet-reachable. Recorded so they are known rather than discovered.
   instance — is unfiltered by this boundary. The scoping is not optional: without
   it the DROP also matches container egress, because `DOCKER-USER` hangs off
   `FORWARD`, which carries both directions.
-- **A box with no IPv6 default route but an `ip6tables DOCKER-USER` chain and an
+- ~~**A box with no IPv6 default route but an `ip6tables DOCKER-USER` chain and an
   unreadable `ss` now exits 1** after applying the IPv4 rules, where it
   previously succeeded silently. Deliberate: that combination is contradictory
-  and worth a human look. IPv4 protection is already in place when it fires.
+  and worth a human look. IPv4 protection is already in place when it fires.~~
+
+  **Resolved 2026-08-12.** It fired on the first staging apply, and the
+  combination is not contradictory — it is the normal state of a droplet without
+  IPv6. `docker-proxy` binds every published port dual-stack on any kernel with
+  IPv6 compiled in, so `ss` reports `[::]:80` and `[::]:443` on a box whose only
+  v6 address is link-local and whose v6 routing table is empty. The `ss` probe
+  answers "is a socket bound in AF_INET6?", while the boundary cares about "can
+  anything off-host reach it?" — different questions with different answers here.
+
+  The v6 branch now asks the second question directly: with no v6 default route
+  **and** no global-scope v6 address, it logs that there is nothing to filter and
+  skips the v6 rules. A global address with no default route still fails loudly,
+  because that box is genuinely broken rather than simply v4-only.
 
 The interface resolution refuses to guess. A rule bound to the wrong interface
 fails **open**, not closed — the DROP matches nothing, the origin serves the
