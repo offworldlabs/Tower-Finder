@@ -22,6 +22,7 @@ def client():
 class TestLiveWebSocket:
     def test_live_ws_accepts_no_token(self, client, monkeypatch):
         from routes import streaming as streaming_mod
+
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "")
         state.ws_live_clients.clear()
         with client.websocket_connect("/ws/aircraft/live") as ws:
@@ -31,12 +32,15 @@ class TestLiveWebSocket:
 
     def test_live_ws_sends_initial_snapshot(self, client, monkeypatch):
         from routes import streaming as streaming_mod
+
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "")
 
-        snapshot = orjson.dumps({
-            "aircraft": [{"hex": "abc123", "lat": 0, "lon": 0}],
-            "now": 1.0,
-        })
+        snapshot = orjson.dumps(
+            {
+                "aircraft": [{"hex": "abc123", "lat": 0, "lon": 0}],
+                "now": 1.0,
+            }
+        )
         monkeypatch.setattr(state, "latest_real_aircraft_json_bytes", snapshot)
 
         with client.websocket_connect("/ws/aircraft/live") as ws:
@@ -46,14 +50,17 @@ class TestLiveWebSocket:
 
     def test_live_ws_rejects_invalid_token(self, client, monkeypatch):
         from routes import streaming as streaming_mod
+
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "secret-xyz")
         from starlette.websockets import WebSocketDisconnect
+
         with pytest.raises(WebSocketDisconnect):
             with client.websocket_connect("/ws/aircraft/live?token=wrong") as ws:
                 ws.receive_text()
 
     def test_live_ws_accepts_valid_token(self, client, monkeypatch):
         from routes import streaming as streaming_mod
+
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "secret-xyz")
         state.ws_live_clients.clear()
         with client.websocket_connect("/ws/aircraft/live?token=secret-xyz") as ws:
@@ -64,6 +71,7 @@ class TestLiveWebSocket:
 class TestAircraftWSInitialSnapshot:
     def test_initial_snapshot_sent_if_aircraft_present(self, client, monkeypatch):
         from routes import streaming as streaming_mod
+
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "")
 
         payload = {"aircraft": [{"hex": "d00d", "lat": 1, "lon": 2}], "now": 1.0}
@@ -78,6 +86,7 @@ class TestAircraftWSInitialSnapshot:
 
     def test_no_initial_send_when_empty(self, client, monkeypatch):
         from routes import streaming as streaming_mod
+
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "")
         monkeypatch.setattr(state, "latest_aircraft_json", {})
         # If we don't call receive, the socket will just stay open; close it.

@@ -16,6 +16,7 @@ from services.frame_processor import _bearing_deg, _build_single_node_arc, _enu_
 
 # ─── Minimal fake track ─────────────────────────────────────────────────────
 
+
 class _FakeTrack:
     def __init__(self, delay_us):
         self.latest_delay_us = delay_us
@@ -36,6 +37,7 @@ _NODE_CFG = {
 
 
 # ─── _bearing_deg tests ──────────────────────────────────────────────────────
+
 
 class TestBearingDeg:
     def test_north(self):
@@ -65,6 +67,7 @@ class TestBearingDeg:
 
 # ─── _enu_to_lla tests ───────────────────────────────────────────────────────
 
+
 class TestEnuToLla:
     def test_zero_enu_is_rx(self):
         """Zero offset → returns the RX position."""
@@ -87,6 +90,7 @@ class TestEnuToLla:
 
 
 # ─── _build_single_node_arc tests ───────────────────────────────────────────
+
 
 class TestBuildSingleNodeArc:
     def test_returns_none_for_zero_delay(self):
@@ -193,6 +197,7 @@ class TestBuildSingleNodeArc:
         if arc_small and arc_large:
             rx_lat = _NODE_CFG["rx_lat"]
             rx_lon = _NODE_CFG["rx_lon"]
+
             def mean_range(arc):
                 ranges = []
                 for lat, lon in arc:
@@ -200,10 +205,12 @@ class TestBuildSingleNodeArc:
                     dlon = (lon - rx_lon) * 111.0 * math.cos(math.radians(lat))
                     ranges.append(math.hypot(dlat, dlon))
                 return sum(ranges) / len(ranges)
+
             assert mean_range(arc_large) > mean_range(arc_small)
 
 
 # ─── Aircraft JSON builder path (single_node_ellipse_arc) ───────────────────
+
 
 class TestTrackEntryPaths:
     """Smoke tests for _track_entry() output via build_combined_aircraft_json.
@@ -214,6 +221,7 @@ class TestTrackEntryPaths:
     def _make_track(self, delay_us=80.0, lat=33.85, lon=-84.5, target_class="aircraft"):
         """Create a minimal GeolocatedTrack-like object."""
         from pipeline.passive_radar import GeolocatedTrack
+
         t = GeolocatedTrack(
             track_id="test_track",
             lat=lat,
@@ -251,6 +259,7 @@ class TestTrackEntryPaths:
 
 # ─── Regression: gates revert position but preserve arc ──────────────────────
 
+
 class TestGatePreservesArc:
     """Speed and RMS gates must keep ambiguity_arc on the wire.
 
@@ -264,8 +273,7 @@ class TestGatePreservesArc:
 
     HEX = "rgtest"
 
-    def _setup_state(self, *, rms_delay, prev_lat, prev_lon, now_lat, now_lon,
-                     prev_age_s=120.0):
+    def _setup_state(self, *, rms_delay, prev_lat, prev_lon, now_lat, now_lon, prev_age_s=120.0):
         import time as _time
 
         from pipeline.passive_radar import GeolocatedTrack
@@ -296,7 +304,9 @@ class TestGatePreservesArc:
         # prev_age_s defaults to 120 s so the speed gate (which only acts on
         # 0 < dt < 60 s) doesn't fire on the test inputs unless we want it to.
         state.track_last_emit[self.HEX] = [
-            prev_lat, prev_lon, _time.time() - prev_age_s,
+            prev_lat,
+            prev_lon,
+            _time.time() - prev_age_s,
         ]
         return track
 
@@ -322,6 +332,7 @@ class TestGatePreservesArc:
         import types
 
         from services.frame_processor import build_combined_aircraft_json
+
         # Minimal pipeline shim — build_combined_aircraft_json reads
         # default_pipeline.geolocated_tracks and .config only.
         pipeline = types.SimpleNamespace(geolocated_tracks={}, config=dict(_NODE_CFG))
@@ -335,8 +346,9 @@ class TestGatePreservesArc:
     NOW_LAT, NOW_LON = 33.65, -84.95
 
     def test_rms_gate_keeps_arc_and_reverts_lat_lon(self):
-        self._setup_state(rms_delay=12.5, prev_lat=self.PREV_LAT, prev_lon=self.PREV_LON,
-                          now_lat=self.NOW_LAT, now_lon=self.NOW_LON)
+        self._setup_state(
+            rms_delay=12.5, prev_lat=self.PREV_LAT, prev_lon=self.PREV_LON, now_lat=self.NOW_LAT, now_lon=self.NOW_LON
+        )
         ac = self._build()
         assert ac is not None, "aircraft must still appear in feed"
         # Arc preserved — the whole point of this regression test.
@@ -350,8 +362,9 @@ class TestGatePreservesArc:
     def test_clean_rms_keeps_arc_and_new_position(self):
         # Sanity baseline: when rms_delay is well within tolerance the gate
         # never fires and lat/lon track the current solve.
-        self._setup_state(rms_delay=1.2, prev_lat=self.PREV_LAT, prev_lon=self.PREV_LON,
-                          now_lat=self.NOW_LAT, now_lon=self.NOW_LON)
+        self._setup_state(
+            rms_delay=1.2, prev_lat=self.PREV_LAT, prev_lon=self.PREV_LON, now_lat=self.NOW_LAT, now_lon=self.NOW_LON
+        )
         ac = self._build()
         assert ac is not None
         assert ac["ambiguity_arc"] is not None
@@ -363,9 +376,14 @@ class TestGatePreservesArc:
         # Speed gate fires when arc midpoint jumps > 800 m/s from last emit
         # within the last 60 s.  Set prev_age = 1 s with ~10 km of move so
         # the gate trips on speed alone (rms_delay stays clean).
-        self._setup_state(rms_delay=1.2, prev_lat=self.PREV_LAT, prev_lon=self.PREV_LON,
-                          now_lat=self.NOW_LAT, now_lon=self.NOW_LON,
-                          prev_age_s=1.0)
+        self._setup_state(
+            rms_delay=1.2,
+            prev_lat=self.PREV_LAT,
+            prev_lon=self.PREV_LON,
+            now_lat=self.NOW_LAT,
+            now_lon=self.NOW_LON,
+            prev_age_s=1.0,
+        )
         ac = self._build()
         assert ac is not None
         # Arc preserved even though the gate fired.
@@ -377,6 +395,7 @@ class TestGatePreservesArc:
 
 
 # ─── Regression: gates must not latch ────────────────────────────────────────
+
 
 class TestGateHoldIsBounded:
     """A gate may suppress a bad frame; it may not freeze the track forever.
@@ -448,11 +467,15 @@ class TestGateHoldIsBounded:
         # prev_age 120 s keeps the speed gate (0 < dt < 60) out of it, so this
         # exercises the RMS gate in isolation.
         state.track_last_emit[self.HEX] = [
-            self.PREV_LAT, self.PREV_LON, _time.time() - 120.0,
+            self.PREV_LAT,
+            self.PREV_LON,
+            _time.time() - 120.0,
         ]
         if hold_age_s is not None:
             state.track_gate_hold[self.HEX] = (
-                _time.time() - hold_age_s, self.PREV_LAT, self.PREV_LON,
+                _time.time() - hold_age_s,
+                self.PREV_LAT,
+                self.PREV_LON,
             )
         return track
 
@@ -529,6 +552,7 @@ class TestGateHoldIsBounded:
 
 # ─── Regression: arc-motion gs/heading fallback ──────────────────────────────
 
+
 class TestArcMotionVelocityFallback:
     """When ADS-B is unavailable and the LM solver gives track.speed_knots
     ~ 0 (typical for synthetic single-node tracks), the gs/heading fields
@@ -560,10 +584,12 @@ class TestArcMotionVelocityFallback:
 
     def test_estimator_returns_none_without_log(self):
         from services.frame_processor import _estimate_velocity_from_motion
+
         assert _estimate_velocity_from_motion("nope", 33.7, -84.85, 1_700_000_000) is None
 
     def test_estimator_returns_gs_and_track_from_two_samples(self):
         from services.frame_processor import _estimate_velocity_from_motion
+
         # Aircraft was at (33.70, -84.85) 40 s ago, now at (33.75, -84.80) —
         # roughly 7 km north-east → ~340 kt heading ~45°.
         now = 1_700_000_000.0
@@ -577,6 +603,7 @@ class TestArcMotionVelocityFallback:
 
     def test_estimator_rejects_too_recent(self):
         from services.frame_processor import _estimate_velocity_from_motion
+
         now = 1_700_000_000.0
         # Sample 5 s old — below the 15 s minimum window.
         state.track_arc_motion[self.HEX] = [(33.70, -84.85, now - 5.0)]
@@ -587,6 +614,7 @@ class TestArcMotionVelocityFallback:
         displacement as-is rather than reject it as implausible.  (The 340 m/s
         upper bound this used to assert was removed deliberately.)"""
         from services.frame_processor import _estimate_velocity_from_motion
+
         now = 1_700_000_000.0
         # 100 km north in 20 s = 5000 m/s = ~9700 kt.
         state.track_arc_motion[self.HEX] = [(33.70, -84.85, now - 20.0)]
@@ -598,6 +626,7 @@ class TestArcMotionVelocityFallback:
 
 
 # ─── Regression: position-jump (teleport) anomaly ────────────────────────────
+
 
 class TestPositionJumpAnomaly:
     """A track whose emitted position teleports across the map must be flagged
@@ -613,13 +642,22 @@ class TestPositionJumpAnomaly:
         import time as _time
 
         from pipeline.passive_radar import GeolocatedTrack
+
         track = GeolocatedTrack(
             track_id=f"track-{self.HEX}",
-            lat=now_lat, lon=now_lon, alt_m=3000,
-            vel_east=0.0, vel_north=0.0, vel_up=0.0,
-            rms_delay=1.0, rms_doppler=1.0, n_detections=10,
+            lat=now_lat,
+            lon=now_lon,
+            alt_m=3000,
+            vel_east=0.0,
+            vel_north=0.0,
+            vel_up=0.0,
+            rms_delay=1.0,
+            rms_doppler=1.0,
+            n_detections=10,
             timestamp_ms=int(_time.time() * 1000),
-            adsb_hex=None, latest_delay_us=80.0, target_class="aircraft",
+            adsb_hex=None,
+            latest_delay_us=80.0,
+            target_class="aircraft",
         )
         track.wall_clock_ts = _time.time()
         state.active_geo_aircraft[self.HEX] = (track, dict(_NODE_CFG))
@@ -627,17 +665,27 @@ class TestPositionJumpAnomaly:
 
     @pytest.fixture(autouse=True)
     def _clean_state(self):
-        for d in (state.active_geo_aircraft, state.track_last_emit,
-                  state.track_arc_motion, state.adsb_aircraft,
-                  state.external_adsb_cache, state.multinode_tracks,
-                  state.track_histories):
+        for d in (
+            state.active_geo_aircraft,
+            state.track_last_emit,
+            state.track_arc_motion,
+            state.adsb_aircraft,
+            state.external_adsb_cache,
+            state.multinode_tracks,
+            state.track_histories,
+        ):
             d.clear()
         state.anomaly_hexes.discard(self.HEX)
         yield
-        for d in (state.active_geo_aircraft, state.track_last_emit,
-                  state.track_arc_motion, state.adsb_aircraft,
-                  state.external_adsb_cache, state.multinode_tracks,
-                  state.track_histories):
+        for d in (
+            state.active_geo_aircraft,
+            state.track_last_emit,
+            state.track_arc_motion,
+            state.adsb_aircraft,
+            state.external_adsb_cache,
+            state.multinode_tracks,
+            state.track_histories,
+        ):
             d.clear()
         state.anomaly_hexes.discard(self.HEX)
 
@@ -645,6 +693,7 @@ class TestPositionJumpAnomaly:
         import types
 
         from services.frame_processor import build_combined_aircraft_json
+
         pipeline = types.SimpleNamespace(geolocated_tracks={}, config=dict(_NODE_CFG))
         result = build_combined_aircraft_json(pipeline)
         return next((a for a in result["aircraft"] if a["hex"] == self.HEX), None)
@@ -653,8 +702,7 @@ class TestPositionJumpAnomaly:
         # Previous emit ~200 km south, 90 s ago (dt ≥ 60 so the speed gate is
         # skipped → the jump is emitted, not reverted).  Current arc midpoint
         # lands SW of the Atlanta RX.  Absolute leap >> 30 km → flagged.
-        self._setup(now_lat=33.70, now_lon=-84.85,
-                    prev_lat=31.90, prev_lon=-84.85, prev_age_s=90.0)
+        self._setup(now_lat=33.70, now_lon=-84.85, prev_lat=31.90, prev_lon=-84.85, prev_age_s=90.0)
         ac = self._build()
         assert ac is not None
         assert ac["is_anomalous"] is True
@@ -663,8 +711,7 @@ class TestPositionJumpAnomaly:
 
     def test_normal_motion_not_flagged(self):
         # Previous emit ~1 km away, 3 s ago → ~330 kt, well within normal.
-        self._setup(now_lat=33.70, now_lon=-84.85,
-                    prev_lat=33.691, prev_lon=-84.85, prev_age_s=3.0)
+        self._setup(now_lat=33.70, now_lon=-84.85, prev_lat=33.691, prev_lon=-84.85, prev_age_s=3.0)
         ac = self._build()
         assert ac is not None
         assert "position_jump" not in (ac["anomaly_types"] or [])
@@ -690,6 +737,7 @@ def _spy_build_count(monkeypatch):
     through — not on the frame_processor re-export, which is just a binding.
     """
     from services import track_gates as _tg
+
     calls = {"n": 0}
     real = _tg._build_single_node_arc
 
@@ -788,18 +836,29 @@ class TestArcCacheIntegration:
         import time as _time
 
         from pipeline.passive_radar import GeolocatedTrack
+
         track = GeolocatedTrack(
-            track_id=f"t-{hexid}", lat=lat, lon=lon, alt_m=3000,
-            vel_east=100.0, vel_north=50.0, vel_up=0.0,
-            rms_delay=1.0, rms_doppler=1.0, n_detections=10,
-            timestamp_ms=int(_time.time() * 1000), adsb_hex=None,
-            latest_delay_us=80.0, target_class="aircraft",
+            track_id=f"t-{hexid}",
+            lat=lat,
+            lon=lon,
+            alt_m=3000,
+            vel_east=100.0,
+            vel_north=50.0,
+            vel_up=0.0,
+            rms_delay=1.0,
+            rms_doppler=1.0,
+            n_detections=10,
+            timestamp_ms=int(_time.time() * 1000),
+            adsb_hex=None,
+            latest_delay_us=80.0,
+            target_class="aircraft",
         )
         track.wall_clock_ts = _time.time()
         state.active_geo_aircraft[hexid] = (track, dict(_NODE_CFG))
 
     def _build(self):
         import types
+
         pipeline = types.SimpleNamespace(geolocated_tracks={}, config=dict(_NODE_CFG))
         return _fp.build_combined_aircraft_json(pipeline)
 

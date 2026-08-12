@@ -18,7 +18,7 @@ TASK_EXPECTED_INTERVAL_S: dict[str, int] = {
     "prune_synthetic_nodes": 21600,  # Every 6 hours
     "adsb_truth_fetcher": 300,
     "solver": 120,
-    "storage_refresh": 720,   # expected every 300 s; alert if >2× late
+    "storage_refresh": 720,  # expected every 300 s; alert if >2× late
     "track_archive_flush": 180,  # flush every 60 s; alert if >3× late
     "users_db_backup": 86400 * 2,  # daily; alert if it hasn't run in 2 days
     # The blah2 bridge registers one key per configured live node at startup
@@ -42,9 +42,10 @@ def get_stale_tasks() -> list[str]:
     A task with no recorded success has not started yet and is not stale.
     """
     from core import state
+
     now = time.time()
     return [
-        name for name, expected_s in TASK_EXPECTED_INTERVAL_S.items()
-        if (last := state.task_last_success.get(name)) is not None
-        and (now - last) > expected_s * 2
+        name
+        for name, expected_s in TASK_EXPECTED_INTERVAL_S.items()
+        if (last := state.task_last_success.get(name)) is not None and (now - last) > expected_s * 2
     ]

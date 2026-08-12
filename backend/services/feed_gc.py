@@ -32,7 +32,8 @@ def prune_stale_stores(now: float) -> None:
     # 300 s paints a stationary blue dot on the map for five minutes.  A track
     # history is the *trail behind* an aircraft, where a long tail is wanted.
     stale_gt = [
-        h for h, trail in list(state.ground_truth_trails.items())
+        h
+        for h, trail in list(state.ground_truth_trails.items())
         if not trail or (now - trail[-1][3]) > GT_DISPLAY_STALE_S
     ]
     for h in stale_gt:
@@ -42,8 +43,7 @@ def prune_stale_stores(now: float) -> None:
             state.anomaly_hexes.discard(h)
 
     stale_th = [
-        h for h, trail in list(state.track_histories.items())
-        if not trail or (now - trail[-1][3]) > TRAIL_STALE_S
+        h for h, trail in list(state.track_histories.items()) if not trail or (now - trail[-1][3]) > TRAIL_STALE_S
     ]
     for h in stale_th:
         state.track_histories.pop(h, None)
@@ -59,8 +59,7 @@ def prune_stale_stores(now: float) -> None:
     # capped list per hex for the process lifetime — the dict itself had no
     # eviction anywhere.
     stale_motion = [
-        h for h, log in list(state.track_arc_motion.items())
-        if not log or (now - log[-1][2]) > TRAIL_STALE_S
+        h for h, log in list(state.track_arc_motion.items()) if not log or (now - log[-1][2]) > TRAIL_STALE_S
     ]
     for h in stale_motion:
         state.track_arc_motion.pop(h, None)

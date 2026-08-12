@@ -41,6 +41,7 @@ def _make_bucket(bucket_name: str = "retina-data"):
 
 # ── Fixtures / setup ──────────────────────────────────────────────────────────
 
+
 class TestR2Client(unittest.TestCase):
     """Unit tests for r2_client.py — each test gets a fresh moto context."""
 
@@ -51,6 +52,7 @@ class TestR2Client(unittest.TestCase):
 
         # Re-import to pick up patched env vars, then clear cache
         import services.r2_client as r2
+
         # Patch the module-level _ENABLED and _BUCKET so they see test values
         self._orig_enabled = r2._ENABLED
         self._orig_bucket = r2._BUCKET
@@ -69,6 +71,7 @@ class TestR2Client(unittest.TestCase):
 
     def tearDown(self):
         import services.r2_client as r2
+
         r2._ENABLED = self._orig_enabled
         r2._BUCKET = self._orig_bucket
         r2._ACCOUNT_ID = self._orig_account
@@ -83,10 +86,12 @@ class TestR2Client(unittest.TestCase):
     @mock_aws
     def test_is_enabled_true(self):
         import services.r2_client as r2
+
         self.assertTrue(r2.is_enabled())
 
     def test_is_enabled_false_when_no_creds(self):
         import services.r2_client as r2
+
         r2._ENABLED = False
         self.assertFalse(r2.is_enabled())
 
@@ -96,6 +101,7 @@ class TestR2Client(unittest.TestCase):
     def test_upload_bytes_success(self):
         _make_bucket()
         import services.r2_client as r2
+
         ok = r2.upload_bytes("test/hello.json", b'{"hello": "world"}')
         self.assertTrue(ok)
 
@@ -103,6 +109,7 @@ class TestR2Client(unittest.TestCase):
     def test_upload_bytes_content_is_stored(self):
         _make_bucket()
         import services.r2_client as r2
+
         payload = b'{"answer": 42}'
         r2.upload_bytes("test/data.json", payload)
         result = r2.download_bytes("test/data.json")
@@ -110,6 +117,7 @@ class TestR2Client(unittest.TestCase):
 
     def test_upload_bytes_noop_when_disabled(self):
         import services.r2_client as r2
+
         r2._ENABLED = False
         r2._clear_cache()
         ok = r2.upload_bytes("test/x.json", b"data")
@@ -121,6 +129,7 @@ class TestR2Client(unittest.TestCase):
     def test_upload_file_success(self):
         _make_bucket()
         import services.r2_client as r2
+
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             f.write(b'{"snapshot": true}')
             tmp_path = f.name
@@ -135,6 +144,7 @@ class TestR2Client(unittest.TestCase):
 
     def test_upload_file_noop_when_disabled(self):
         import services.r2_client as r2
+
         r2._ENABLED = False
         r2._clear_cache()
         ok = r2.upload_file("k", "/nonexistent/path")
@@ -146,6 +156,7 @@ class TestR2Client(unittest.TestCase):
     def test_download_bytes_returns_none_for_missing_key(self):
         _make_bucket()
         import services.r2_client as r2
+
         result = r2.download_bytes("does/not/exist.json")
         self.assertIsNone(result)
 
@@ -153,6 +164,7 @@ class TestR2Client(unittest.TestCase):
     def test_download_bytes_round_trip(self):
         _make_bucket()
         import services.r2_client as r2
+
         data = b'{"key": "value", "n": 123}'
         r2.upload_bytes("round/trip.json", data)
         result = r2.download_bytes("round/trip.json")
@@ -160,6 +172,7 @@ class TestR2Client(unittest.TestCase):
 
     def test_download_bytes_noop_when_disabled(self):
         import services.r2_client as r2
+
         r2._ENABLED = False
         r2._clear_cache()
         self.assertIsNone(r2.download_bytes("any/key"))
@@ -170,6 +183,7 @@ class TestR2Client(unittest.TestCase):
     def test_list_keys_empty_bucket(self):
         _make_bucket()
         import services.r2_client as r2
+
         keys = r2.list_keys("archive/")
         self.assertEqual(keys, [])
 
@@ -177,19 +191,24 @@ class TestR2Client(unittest.TestCase):
     def test_list_keys_with_prefix(self):
         _make_bucket()
         import services.r2_client as r2
+
         r2.upload_bytes("archive/2025/01/file1.json", b"1")
         r2.upload_bytes("archive/2025/02/file2.json", b"2")
         r2.upload_bytes("snapshots/state.json", b"3")
         keys = r2.list_keys("archive/")
-        self.assertEqual(sorted(keys), [
-            "archive/2025/01/file1.json",
-            "archive/2025/02/file2.json",
-        ])
+        self.assertEqual(
+            sorted(keys),
+            [
+                "archive/2025/01/file1.json",
+                "archive/2025/02/file2.json",
+            ],
+        )
 
     @mock_aws
     def test_list_keys_no_prefix(self):
         _make_bucket()
         import services.r2_client as r2
+
         r2.upload_bytes("a.json", b"a")
         r2.upload_bytes("b.json", b"b")
         keys = r2.list_keys()
@@ -197,6 +216,7 @@ class TestR2Client(unittest.TestCase):
 
     def test_list_keys_noop_when_disabled(self):
         import services.r2_client as r2
+
         r2._ENABLED = False
         r2._clear_cache()
         self.assertEqual(r2.list_keys(), [])
@@ -207,6 +227,7 @@ class TestR2Client(unittest.TestCase):
     def test_delete_key_removes_object(self):
         _make_bucket()
         import services.r2_client as r2
+
         r2.upload_bytes("to_delete.json", b"bye")
         ok = r2.delete_key("to_delete.json")
         self.assertTrue(ok)
@@ -217,11 +238,13 @@ class TestR2Client(unittest.TestCase):
         # S3 delete_object on missing key is idempotent (returns 204)
         _make_bucket()
         import services.r2_client as r2
+
         ok = r2.delete_key("ghost.json")
         self.assertTrue(ok)
 
     def test_delete_key_noop_when_disabled(self):
         import services.r2_client as r2
+
         r2._ENABLED = False
         r2._clear_cache()
         self.assertFalse(r2.delete_key("x"))
@@ -232,6 +255,7 @@ class TestR2Client(unittest.TestCase):
     def test_delete_keys_bulk(self):
         _make_bucket()
         import services.r2_client as r2
+
         keys = [f"file/{i}.json" for i in range(10)]
         for k in keys:
             r2.upload_bytes(k, b"x")
@@ -245,10 +269,12 @@ class TestR2Client(unittest.TestCase):
     def test_delete_keys_empty_list(self):
         _make_bucket()
         import services.r2_client as r2
+
         self.assertEqual(r2.delete_keys([]), 0)
 
     def test_delete_keys_noop_when_disabled(self):
         import services.r2_client as r2
+
         r2._ENABLED = False
         r2._clear_cache()
         self.assertEqual(r2.delete_keys(["a", "b"]), 0)
@@ -266,37 +292,44 @@ class TestR2Client(unittest.TestCase):
 
     def test_upload_bytes_exception_returns_false(self):
         import services.r2_client as r2
+
         with self._make_failing_client("put_object", r2):
             self.assertFalse(r2.upload_bytes("k", b"data"))
 
     def test_upload_file_exception_returns_false(self):
         import services.r2_client as r2
+
         with self._make_failing_client("upload_file", r2):
             self.assertFalse(r2.upload_file("k", "/some/path"))
 
     def test_download_bytes_exception_returns_none(self):
         import services.r2_client as r2
+
         with self._make_failing_client("get_object", r2):
             self.assertIsNone(r2.download_bytes("k"))
 
     def test_list_keys_exception_returns_empty(self):
         import services.r2_client as r2
+
         with self._make_failing_client("get_paginator", r2):
             self.assertEqual(r2.list_keys(), [])
 
     def test_delete_key_exception_returns_false(self):
         import services.r2_client as r2
+
         with self._make_failing_client("delete_object", r2):
             self.assertFalse(r2.delete_key("k"))
 
     def test_delete_keys_exception_returns_zero(self):
         import services.r2_client as r2
+
         with self._make_failing_client("delete_objects", r2):
             self.assertEqual(r2.delete_keys(["a", "b"]), 0)
 
     def test_get_client_exception_returns_none(self):
         """boto3.client() itself raises → _get_client returns None."""
         import services.r2_client as r2
+
         with unittest.mock.patch("boto3.client", side_effect=Exception("no boto3")):
             r2._clear_cache()
             result = r2._get_client()

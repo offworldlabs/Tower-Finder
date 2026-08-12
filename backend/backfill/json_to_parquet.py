@@ -63,10 +63,7 @@ def target_key_for(payload: dict) -> str:
     """Compute the Hive-partitioned R2 key for a given legacy payload."""
     node_id = _resolve_node_id(payload)
     ts = _resolve_write_ts(payload)
-    return (
-        f"archive/year={ts:%Y}/month={ts:%m}/day={ts:%d}/"
-        f"node_id={node_id}/part-{ts:%H%M%S}.parquet"
-    )
+    return f"archive/year={ts:%Y}/month={ts:%m}/day={ts:%d}/node_id={node_id}/part-{ts:%H%M%S}.parquet"
 
 
 def _build_table(payload: dict, ingest_ts_ms: int) -> pa.Table:

@@ -90,10 +90,7 @@ async def association_status():
         "overlap_zones": len(_a.overlap_zones),
         # Confirmed single-node tracks each node last submitted; these are what
         # pairings are drawn from.
-        "pending_tracks": {
-            nid: len(tracks)
-            for nid, tracks in list(_a._pending_tracks.items())
-        },
+        "pending_tracks": {nid: len(tracks) for nid, tracks in list(_a._pending_tracks.items())},
         # Track-pairing outcomes since boot.  gated is everything past the
         # coarse delay grid; unfitted counts the pairings handed to the solver
         # worker (which runs the fit and the n=2 gate); deferred counts rounds
@@ -179,12 +176,14 @@ async def radar_anomalies():
     clusters = []
     for (glat, glon), reasons in geo_grid.items():
         dominant = Counter(reasons).most_common(1)[0][0] if reasons else "unknown"
-        clusters.append({
-            "lat": glat,
-            "lon": glon,
-            "count": len(reasons),
-            "dominant_type": dominant,
-        })
+        clusters.append(
+            {
+                "lat": glat,
+                "lon": glon,
+                "count": len(reasons),
+                "dominant_type": dominant,
+            }
+        )
     clusters.sort(key=lambda c: c["count"], reverse=True)
 
     # --- Most common anomaly type ---

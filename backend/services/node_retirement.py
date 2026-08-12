@@ -48,8 +48,12 @@ def stale_node_ids() -> list[str]:
     analytics = getattr(state, "node_analytics", None)
     if analytics is not None:
         for store in (
-            analytics.trust_scores, analytics.detection_areas, analytics.metrics,
-            analytics.reputations, analytics.coverage_maps, analytics.empirical_coverages,
+            analytics.trust_scores,
+            analytics.detection_areas,
+            analytics.metrics,
+            analytics.reputations,
+            analytics.coverage_maps,
+            analytics.empirical_coverages,
         ):
             held |= set(store)
     held |= set(state.node_identities)

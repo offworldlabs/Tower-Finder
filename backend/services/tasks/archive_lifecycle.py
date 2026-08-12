@@ -34,6 +34,7 @@ _ARCHIVE_DIR = _COVERAGE_DIR / "archive"
 # Parquet accumulated forever (observed: 67 GB filling a 77 GB prod disk).
 _TRACKS_DIR = _COVERAGE_DIR / "tracks"
 
+
 def _archive_roots():
     """Local dir → R2 prefix pairs swept every cycle.
 
@@ -44,6 +45,7 @@ def _archive_roots():
         (_ARCHIVE_DIR, "archive"),
         (_TRACKS_DIR, "tracks"),
     ]
+
 
 # Caps to prevent runaway work in a single cycle
 _MAX_UPLOAD_PER_CYCLE = 500
@@ -91,12 +93,7 @@ def run_archive_lifecycle() -> dict:
         already_uploaded = sentinel.exists()
 
         # Phase 1: Upload to R2 if old enough and not yet uploaded
-        if (
-            use_r2
-            and mtime < offload_cutoff
-            and not already_uploaded
-            and stats["uploaded"] < _MAX_UPLOAD_PER_CYCLE
-        ):
+        if use_r2 and mtime < offload_cutoff and not already_uploaded and stats["uploaded"] < _MAX_UPLOAD_PER_CYCLE:
             if r2_upload(r2_key, str(json_file)):
                 # Mark as uploaded — local deletion is only allowed once this
                 # sentinel exists, so an upload failure can never cascade into
@@ -130,7 +127,10 @@ def run_archive_lifecycle() -> dict:
     if stats["uploaded"] or stats["deleted"]:
         logger.info(
             "Archive lifecycle: uploaded=%d deleted=%d errors=%d skipped=%d",
-            stats["uploaded"], stats["deleted"], stats["errors"], stats["skipped"],
+            stats["uploaded"],
+            stats["deleted"],
+            stats["errors"],
+            stats["skipped"],
         )
 
     return stats

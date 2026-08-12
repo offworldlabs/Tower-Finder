@@ -18,8 +18,7 @@ from config.constants import CAL_MAX_ADSB_AGE_S  # noqa: E402
 from core import state  # noqa: E402
 from services.calibration import record_adsb_calibration  # noqa: E402
 
-_CFG = dict(rx_lat=34.85, rx_lon=-82.40, tx_lat=34.90, tx_lon=-82.30,
-            max_range_km=50, max_bistatic_range_km=60)
+_CFG = dict(rx_lat=34.85, rx_lon=-82.40, tx_lat=34.90, tx_lon=-82.30, max_range_km=50, max_bistatic_range_km=60)
 
 
 @pytest.fixture()
@@ -42,8 +41,7 @@ class TestAgeGate:
         assert _points("cal-a") == 1
 
     def test_a_fix_at_the_limit_is_recorded(self, nodes):
-        assert record_adsb_calibration(nodes, 34.9, -82.35,
-                                       age_s=CAL_MAX_ADSB_AGE_S) == 2
+        assert record_adsb_calibration(nodes, 34.9, -82.35, age_s=CAL_MAX_ADSB_AGE_S) == 2
 
     def test_a_stale_fix_is_refused(self, nodes):
         """60 s was what the frame path accepted — 15 km at cruise."""
@@ -65,8 +63,7 @@ class TestPositionGuard:
         assert record_adsb_calibration(nodes, 0, 0, age_s=1.0) == 0
 
     def test_blank_node_ids_are_skipped(self, nodes):
-        assert record_adsb_calibration([None, "", "cal-a"], 34.9, -82.35,
-                                       age_s=1.0) == 1
+        assert record_adsb_calibration([None, "", "cal-a"], 34.9, -82.35, age_s=1.0) == 1
 
 
 class TestFanOut:
@@ -84,8 +81,10 @@ class TestBothCallSitesUseIt:
         # The frame path's call site moved to services.track_gates with the
         # feed split; that module's binding is the one that matters now.
         import services.track_gates as tg
+
         assert tg.record_adsb_calibration is record_adsb_calibration
 
     def test_solver_routes_through_the_helper(self):
         import services.tasks.solver as sv
+
         assert sv.record_adsb_calibration is record_adsb_calibration

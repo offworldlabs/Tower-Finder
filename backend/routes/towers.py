@@ -28,6 +28,7 @@ API_KEY = os.getenv("MAPRAD_API_KEY", "")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _detect_source(lat: float, lon: float) -> str:
     if -45 <= lat <= -10 and 112 <= lon <= 155:
         return "au"
@@ -74,6 +75,7 @@ async def _batch_lookup_elevations(
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
+
 @router.get("/api/towers")
 async def find_towers(
     lat: float = Query(..., ge=-90, le=90),
@@ -100,7 +102,11 @@ async def find_towers(
             if API_KEY:
                 try:
                     maprad_raw = await fetch_broadcast_systems(
-                        API_KEY, lat, lon, radius_km=effective_radius, source=source,
+                        API_KEY,
+                        lat,
+                        lon,
+                        radius_km=effective_radius,
+                        source=source,
                     )
                     raw.extend(maprad_raw)
                 except Exception:
@@ -109,7 +115,11 @@ async def find_towers(
             if not API_KEY:
                 raise HTTPException(status_code=500, detail="MAPRAD_API_KEY not configured")
             raw = await fetch_broadcast_systems(
-                API_KEY, lat, lon, radius_km=effective_radius, source=source,
+                API_KEY,
+                lat,
+                lon,
+                radius_km=effective_radius,
+                source=source,
             )
     except HTTPException:
         raise
@@ -123,7 +133,9 @@ async def find_towers(
         if elev is not None:
             resolved_altitude = elev
 
-    towers = process_and_rank(raw, lat, lon, limit=effective_limit, user_frequencies=user_freqs, radius_km=effective_radius)
+    towers = process_and_rank(
+        raw, lat, lon, limit=effective_limit, user_frequencies=user_freqs, radius_km=effective_radius
+    )
 
     tower_coords = [(t["latitude"], t["longitude"]) for t in towers]
     elevations = await _batch_lookup_elevations(tower_coords)
@@ -141,7 +153,8 @@ async def find_towers(
     return {
         "towers": towers,
         "query": {
-            "latitude": lat, "longitude": lon,
+            "latitude": lat,
+            "longitude": lon,
             "altitude_m": resolved_altitude,
             "radius_km": effective_radius,
             "source": source,

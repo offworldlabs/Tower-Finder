@@ -20,40 +20,45 @@ from services.tcp_handler import (
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _msg(d: dict) -> bytes:
     """Encode a dict as a newline-terminated JSON message."""
     return json.dumps(d).encode("utf-8") + b"\n"
 
 
 def _make_hello(node_id: str = "test-node-1", is_synthetic: bool = False) -> bytes:
-    return _msg({
-        "type": "HELLO",
-        "node_id": node_id,
-        "version": "1.0",
-        "is_synthetic": is_synthetic,
-    })
+    return _msg(
+        {
+            "type": "HELLO",
+            "node_id": node_id,
+            "version": "1.0",
+            "is_synthetic": is_synthetic,
+        }
+    )
 
 
 def _make_config(node_id: str = "test-node-1", is_synthetic: bool = False) -> bytes:
-    return _msg({
-        "type": "CONFIG",
-        "node_id": node_id,
-        "config_hash": "abc123",
-        "is_synthetic": is_synthetic,
-        "config": {
+    return _msg(
+        {
+            "type": "CONFIG",
             "node_id": node_id,
-            "rx_lat": 33.94,
-            "rx_lon": -84.65,
-            "rx_alt_ft": 950,
-            "tx_lat": 33.76,
-            "tx_lon": -84.33,
-            "tx_alt_ft": 1600,
-            "frequency_mhz": 195,
-            "beam_width_deg": 41,
-            "max_range_km": 50,
-        },
-        "capabilities": {"adsb_report": True},
-    })
+            "config_hash": "abc123",
+            "is_synthetic": is_synthetic,
+            "config": {
+                "node_id": node_id,
+                "rx_lat": 33.94,
+                "rx_lon": -84.65,
+                "rx_alt_ft": 950,
+                "tx_lat": 33.76,
+                "tx_lon": -84.33,
+                "tx_alt_ft": 1600,
+                "frequency_mhz": 195,
+                "beam_width_deg": 41,
+                "max_range_km": 50,
+            },
+            "capabilities": {"adsb_report": True},
+        }
+    )
 
 
 class MockStreamReader:
@@ -105,6 +110,7 @@ class MockStreamWriter:
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
+
 class TestIsSyntheticNode:
     def test_synthetic_prefix(self):
         assert is_synthetic_node("synth-atl-001") is True
@@ -138,11 +144,13 @@ class TestHandshake:
 
     def test_hello_config_registers_node(self):
         """HELLO + CONFIG → node appears in state.connected_nodes."""
-        reader = MockStreamReader([
-            _make_hello("test-node-1"),
-            _make_config("test-node-1"),
-            b"",  # EOF
-        ])
+        reader = MockStreamReader(
+            [
+                _make_hello("test-node-1"),
+                _make_config("test-node-1"),
+                b"",  # EOF
+            ]
+        )
         writer = MockStreamWriter()
 
         asyncio.run(handle_tcp_client(reader, writer))
@@ -154,11 +162,13 @@ class TestHandshake:
 
     def test_config_ack_sent(self):
         """Server replies with CONFIG_ACK after receiving CONFIG."""
-        reader = MockStreamReader([
-            _make_hello("test-node-2"),
-            _make_config("test-node-2"),
-            b"",
-        ])
+        reader = MockStreamReader(
+            [
+                _make_hello("test-node-2"),
+                _make_config("test-node-2"),
+                b"",
+            ]
+        )
         writer = MockStreamWriter()
 
         asyncio.run(handle_tcp_client(reader, writer))
@@ -170,11 +180,13 @@ class TestHandshake:
 
     def test_disconnection_marks_status(self):
         """After disconnect, node status is set to 'disconnected'."""
-        reader = MockStreamReader([
-            _make_hello("test-node-1"),
-            _make_config("test-node-1"),
-            b"",  # EOF triggers disconnect
-        ])
+        reader = MockStreamReader(
+            [
+                _make_hello("test-node-1"),
+                _make_config("test-node-1"),
+                b"",  # EOF triggers disconnect
+            ]
+        )
         writer = MockStreamWriter()
 
         asyncio.run(handle_tcp_client(reader, writer))
@@ -183,12 +195,14 @@ class TestHandshake:
 
     def test_malformed_json_skipped(self):
         """Malformed JSON lines are skipped without crashing."""
-        reader = MockStreamReader([
-            _make_hello("test-node-1"),
-            b"not valid json\n",
-            _make_config("test-node-1"),
-            b"",
-        ])
+        reader = MockStreamReader(
+            [
+                _make_hello("test-node-1"),
+                b"not valid json\n",
+                _make_config("test-node-1"),
+                b"",
+            ]
+        )
         writer = MockStreamWriter()
 
         asyncio.run(handle_tcp_client(reader, writer))
@@ -198,11 +212,13 @@ class TestHandshake:
 
     def test_synthetic_node_flag(self):
         """Synthetic nodes are correctly flagged."""
-        reader = MockStreamReader([
-            _make_hello("synth-test-1", is_synthetic=True),
-            _make_config("synth-test-1", is_synthetic=True),
-            b"",
-        ])
+        reader = MockStreamReader(
+            [
+                _make_hello("synth-test-1", is_synthetic=True),
+                _make_config("synth-test-1", is_synthetic=True),
+                b"",
+            ]
+        )
         writer = MockStreamWriter()
 
         asyncio.run(handle_tcp_client(reader, writer))
@@ -238,6 +254,7 @@ class TestEnqueueDetection:
         }
         # Reset rate limiter for this node
         from services.tcp_handler import _per_node_last_enqueue
+
         _per_node_last_enqueue.pop("test-enq", None)
 
         _enqueue_detection(msg, "test-enq")
@@ -277,9 +294,9 @@ class TestApplySyntheticAdsb:
             "data": {
                 "timestamp": 1000,
                 "adsb": [
-                    {"hex": "", "lat": 33.9, "lon": -84.6},      # empty hex
-                    {"hex": "testbad", "lat": 0, "lon": 0},       # zero coords
-                    "not a dict",                                   # wrong type
+                    {"hex": "", "lat": 33.9, "lon": -84.6},  # empty hex
+                    {"hex": "testbad", "lat": 0, "lon": 0},  # zero coords
+                    "not a dict",  # wrong type
                 ],
             },
         }

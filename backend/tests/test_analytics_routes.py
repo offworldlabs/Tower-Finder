@@ -20,6 +20,7 @@ def client():
 
 # ── Analytics ─────────────────────────────────────────────────────────────────
 
+
 class TestAnalytics:
     def test_analytics_returns_bytes(self, client):
         r = client.get("/api/radar/analytics")
@@ -58,6 +59,7 @@ class TestAnalytics:
 
 # ── ADS-B Report ─────────────────────────────────────────────────────────────
 
+
 class TestAdsbReport:
     _HEADERS = {"X-API-Key": "test-key-abc123"}
 
@@ -85,6 +87,7 @@ class TestAdsbReport:
 
 # ── Overlaps ─────────────────────────────────────────────────────────────────
 
+
 class TestOverlaps:
     def test_overlaps_returns_bytes(self, client):
         r = client.get("/api/radar/association/overlaps")
@@ -93,6 +96,7 @@ class TestOverlaps:
 
 
 # ── Accuracy ─────────────────────────────────────────────────────────────────
+
 
 class TestAccuracy:
     def test_accuracy_returns_bytes(self, client):
@@ -115,6 +119,7 @@ class TestAccuracy:
 
 # ── Association status ────────────────────────────────────────────────────────
 
+
 class TestAssociationStatus:
     def test_status_returns_expected_fields(self, client):
         r = client.get("/api/radar/association/status")
@@ -126,6 +131,7 @@ class TestAssociationStatus:
 
 
 # ── Anomalies ────────────────────────────────────────────────────────────────
+
 
 class TestAnomalies:
     def test_anomalies_empty(self, client):
@@ -141,13 +147,15 @@ class TestAnomalies:
         import time
 
         with state.anomaly_lock:
-            state.anomaly_log.append({
-                "ts": time.time(),
-                "hex": "ANOM01",
-                "reason": "speed_violation",
-                "lat": 33.45,
-                "lon": -112.07,
-            })
+            state.anomaly_log.append(
+                {
+                    "ts": time.time(),
+                    "hex": "ANOM01",
+                    "reason": "speed_violation",
+                    "lat": 33.45,
+                    "lon": -112.07,
+                }
+            )
             state.anomaly_hexes.add("ANOM01")
         try:
             r = client.get("/api/radar/anomalies")

@@ -94,6 +94,7 @@ async def _set_auth_cookie(response: Response, user) -> None:
 
 # ── Google OAuth ──────────────────────────────────────────────────────────────
 
+
 @router.get("/login/google")
 async def login_google(request: Request, redirect: str = "/"):
     callback = _fix_scheme(str(request.url_for("callback_google")))
@@ -105,9 +106,7 @@ async def login_google(request: Request, redirect: str = "/"):
         "state": _make_oauth_state(redirect),
         "prompt": "select_account",
     }
-    return RedirectResponse(
-        f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
-    )
+    return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}")
 
 
 @router.get("/callback/google", name="callback_google")
@@ -156,6 +155,7 @@ async def callback_google(request: Request, code: str = "", state: str = ""):
 
 # ── GitHub OAuth ──────────────────────────────────────────────────────────────
 
+
 @router.get("/login/github")
 async def login_github(request: Request, redirect: str = "/"):
     callback = _fix_scheme(str(request.url_for("callback_github")))
@@ -165,9 +165,7 @@ async def login_github(request: Request, redirect: str = "/"):
         "scope": "read:user user:email",
         "state": _make_oauth_state(redirect),
     }
-    return RedirectResponse(
-        f"https://github.com/login/oauth/authorize?{urlencode(params)}"
-    )
+    return RedirectResponse(f"https://github.com/login/oauth/authorize?{urlencode(params)}")
 
 
 @router.get("/callback/github", name="callback_github")
@@ -226,6 +224,7 @@ async def callback_github(request: Request, code: str = "", state: str = ""):
 
 # ── Session endpoints ─────────────────────────────────────────────────────────
 
+
 @router.get("/me")
 async def me(request: Request):
     if AUTH_BYPASS:
@@ -243,6 +242,7 @@ async def logout():
 
 # ── Node ownership self-service ───────────────────────────────────────────────
 
+
 @router.get("/me/nodes")
 async def my_nodes(request: Request):
     user = await get_current_user(request)
@@ -253,16 +253,18 @@ async def my_nodes(request: Request):
     for nid in node_ids:
         info = snapshot.get(nid) or {}
         cfg = info.get("config", {}) or {}
-        out.append({
-            "node_id": nid,
-            "name": cfg.get("name", nid),
-            "status": info.get("status", "never_connected"),
-            "last_heartbeat": info.get("last_heartbeat"),
-            "is_synthetic": info.get("is_synthetic", False),
-            "rx_lat": cfg.get("rx_lat"),
-            "rx_lon": cfg.get("rx_lon"),
-            "frequency": cfg.get("FC", cfg.get("frequency")),
-        })
+        out.append(
+            {
+                "node_id": nid,
+                "name": cfg.get("name", nid),
+                "status": info.get("status", "never_connected"),
+                "last_heartbeat": info.get("last_heartbeat"),
+                "is_synthetic": info.get("is_synthetic", False),
+                "rx_lat": cfg.get("rx_lat"),
+                "rx_lon": cfg.get("rx_lon"),
+                "frequency": cfg.get("FC", cfg.get("frequency")),
+            }
+        )
     return out
 
 

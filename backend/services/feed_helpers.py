@@ -159,7 +159,10 @@ def _record_arc_motion(ac_hex: str, lat: float, lon: float, ts: float) -> None:
 
 
 def _estimate_velocity_ms_from_motion(
-    ac_hex: str, lat: float, lon: float, now: float,
+    ac_hex: str,
+    lat: float,
+    lon: float,
+    now: float,
 ) -> tuple[float, float] | None:
     """Return (vel_east_ms, vel_north_ms) inferred from arc-midpoint motion.
 
@@ -189,7 +192,10 @@ def _estimate_velocity_ms_from_motion(
 
 
 def _estimate_velocity_from_motion(
-    ac_hex: str, lat: float, lon: float, now: float,
+    ac_hex: str,
+    lat: float,
+    lon: float,
+    now: float,
 ) -> tuple[float, float] | None:
     """Return (gs_knots, track_deg) inferred from arc-midpoint motion, or None.
 
@@ -206,7 +212,10 @@ def _estimate_velocity_from_motion(
 
 
 def resolve_ground_truth_hex(
-    ac_hex: str, lat: float, lon: float, max_distance_km: float = 8.0,
+    ac_hex: str,
+    lat: float,
+    lon: float,
+    max_distance_km: float = 8.0,
 ) -> str | None:
     """Find the best ground-truth hex for a solved aircraft."""
     norm_hex = normalize_hex_key(ac_hex)
@@ -224,4 +233,3 @@ def resolve_ground_truth_hex(
             best_distance = dist
             best_hex = gt_hex
     return best_hex
-

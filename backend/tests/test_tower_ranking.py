@@ -355,7 +355,7 @@ class TestProcessAndRank:
     def test_deduplication_keeps_stronger_signal(self):
         # Two devices with the same callsign+frequency but different distances
         # The closer one (stronger signal) should win
-        closer = _device(95.5, 33.85, -84.388, callsign="KDUP", eirp_dbm=60.0)   # ~11 km
+        closer = _device(95.5, 33.85, -84.388, callsign="KDUP", eirp_dbm=60.0)  # ~11 km
         farther = _device(95.5, 33.99, -84.388, callsign="KDUP", eirp_dbm=60.0)  # ~27 km
         result = process_and_rank([_system([closer, farther])], _USER_LAT, _USER_LON)
         assert len(result) == 1
@@ -393,31 +393,27 @@ class TestProcessAndRank:
             for i in range(DEFAULT_LIMIT + 1)
         ]
         result_default = process_and_rank([_system(devices)], _USER_LAT, _USER_LON, limit=0)
-        assert len(result_default) == DEFAULT_LIMIT, (
-            f"limit=0 should fall back to DEFAULT_LIMIT ({DEFAULT_LIMIT})"
-        )
+        assert len(result_default) == DEFAULT_LIMIT, f"limit=0 should fall back to DEFAULT_LIMIT ({DEFAULT_LIMIT})"
         result_one = process_and_rank([_system(devices)], _USER_LAT, _USER_LON, limit=1)
         assert len(result_one) == 1
 
     # ── frequency_matched flag ───────────────────────────────────────────────
 
     def test_frequency_matched_exact(self):
-        result = process_and_rank(
-            [_FM_SYSTEM], _USER_LAT, _USER_LON, user_frequencies=[95.5]
-        )
+        result = process_and_rank([_FM_SYSTEM], _USER_LAT, _USER_LON, user_frequencies=[95.5])
         assert result[0]["frequency_matched"] is True
 
     def test_frequency_matched_within_tolerance(self):
         # 95.5 - 4.9 = 90.6 MHz, still within ±5 MHz
-        result = process_and_rank(
-            [_FM_SYSTEM], _USER_LAT, _USER_LON, user_frequencies=[90.6]
-        )
+        result = process_and_rank([_FM_SYSTEM], _USER_LAT, _USER_LON, user_frequencies=[90.6])
         assert result[0]["frequency_matched"] is True
 
         # Boundary check: exactly ±FREQUENCY_MATCH_TOLERANCE_MHZ is inclusive (uses <=)
         # Tower at 95.5 MHz, user_freq = 95.5 - 5.0 = 90.5 → diff == 5.0 → matched
         result_boundary = process_and_rank(
-            [_FM_SYSTEM], _USER_LAT, _USER_LON,
+            [_FM_SYSTEM],
+            _USER_LAT,
+            _USER_LON,
             user_frequencies=[95.5 - FREQUENCY_MATCH_TOLERANCE_MHZ],
         )
         assert result_boundary[0]["frequency_matched"] is True, (
@@ -426,9 +422,7 @@ class TestProcessAndRank:
 
     def test_frequency_not_matched_outside_tolerance(self):
         # 95.5 - 6 = 89.5, outside ±5 MHz
-        result = process_and_rank(
-            [_FM_SYSTEM], _USER_LAT, _USER_LON, user_frequencies=[89.5]
-        )
+        result = process_and_rank([_FM_SYSTEM], _USER_LAT, _USER_LON, user_frequencies=[89.5])
         assert result[0]["frequency_matched"] is False
 
     def test_frequency_matched_false_when_no_user_frequencies(self):
@@ -529,11 +523,24 @@ class TestProcessAndRank:
         result = process_and_rank([_FM_SYSTEM], _USER_LAT, _USER_LON)
         t = result[0]
         expected_fields = {
-            "callsign", "name", "state", "frequency_mhz", "band",
-            "latitude", "longitude", "antenna_height_m", "distance_km",
-            "bearing_deg", "bearing_cardinal", "received_power_dbm",
-            "distance_class", "eirp_dbm", "licence_type", "licence_subtype",
-            "frequency_matched", "rank",
+            "callsign",
+            "name",
+            "state",
+            "frequency_mhz",
+            "band",
+            "latitude",
+            "longitude",
+            "antenna_height_m",
+            "distance_km",
+            "bearing_deg",
+            "bearing_cardinal",
+            "received_power_dbm",
+            "distance_class",
+            "eirp_dbm",
+            "licence_type",
+            "licence_subtype",
+            "frequency_matched",
+            "rank",
         }
         assert expected_fields.issubset(t.keys())
 

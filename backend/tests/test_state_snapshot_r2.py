@@ -50,13 +50,13 @@ def _minimal_snapshot() -> dict:
 
 
 class TestStateSnapshotR2(unittest.TestCase):
-
     def setUp(self):
         # Redirect snapshot to a temp dir
         self._tmpdir = tempfile.TemporaryDirectory()
         self._snapshot_path = os.path.join(self._tmpdir.name, "state_snapshot.json")
 
         import services.state_snapshot as ss
+
         self._ss = ss
         self._orig_path = ss._SNAPSHOT_PATH
         self._orig_dir = ss._SNAPSHOT_DIR
@@ -65,6 +65,7 @@ class TestStateSnapshotR2(unittest.TestCase):
 
         # Patch R2 module-level vars
         import services.r2_client as r2
+
         self._r2 = r2
         self._orig_enabled = r2._ENABLED
         self._orig_bucket = r2._BUCKET
@@ -95,6 +96,7 @@ class TestStateSnapshotR2(unittest.TestCase):
         _make_bucket()
 
         from services.state_snapshot import save_snapshot
+
         save_snapshot()
 
         # Local file written
@@ -102,6 +104,7 @@ class TestStateSnapshotR2(unittest.TestCase):
 
         # R2 has the snapshot
         from services.r2_client import download_bytes
+
         data = download_bytes("snapshots/state_snapshot.json")
         self.assertIsNotNone(data, "Snapshot should be in R2")
         snap = json.loads(json.loads(data)["payload"])  # schema-2 envelope
@@ -114,12 +117,14 @@ class TestStateSnapshotR2(unittest.TestCase):
         _make_bucket()
 
         from services.state_snapshot import save_snapshot
+
         save_snapshot()
 
         with open(self._snapshot_path) as f:
             local = json.load(f)
 
         from services.r2_client import download_bytes
+
         r2_data = download_bytes("snapshots/state_snapshot.json")
         r2_snap = json.loads(r2_data)
 
@@ -134,6 +139,7 @@ class TestStateSnapshotR2(unittest.TestCase):
         # Make R2 upload_file raise an exception
         with unittest.mock.patch("services.r2_client.upload_file", return_value=False):
             from services.state_snapshot import save_snapshot
+
             save_snapshot()
 
         self.assertTrue(os.path.exists(self._snapshot_path), "Local snapshot must exist")
@@ -144,6 +150,7 @@ class TestStateSnapshotR2(unittest.TestCase):
         self._r2._clear_cache()
 
         from services.state_snapshot import save_snapshot
+
         save_snapshot()
 
         self.assertTrue(os.path.exists(self._snapshot_path))
@@ -161,12 +168,14 @@ class TestStateSnapshotR2(unittest.TestCase):
         # Upload a snapshot to R2 directly (no local file)
         snap = _minimal_snapshot()
         from services.r2_client import upload_bytes
+
         upload_bytes("snapshots/state_snapshot.json", json.dumps(snap).encode())
 
         # Ensure local file does not exist
         self.assertFalse(os.path.exists(self._snapshot_path))
 
         from services.state_snapshot import restore_snapshot
+
         result = restore_snapshot()
 
         self.assertTrue(result, "restore_snapshot() should return True after R2 restore")
@@ -185,13 +194,13 @@ class TestStateSnapshotR2(unittest.TestCase):
         r2_snap = _minimal_snapshot()
         r2_snap["anomaly_log"] = [{"source": "r2"}]
         from services.r2_client import upload_bytes
+
         upload_bytes("snapshots/state_snapshot.json", json.dumps(r2_snap).encode())
 
         # Track which source gets used by watching download_bytes calls
-        with unittest.mock.patch.object(
-            self._r2, "download_bytes", wraps=self._r2.download_bytes
-        ) as mock_download:
+        with unittest.mock.patch.object(self._r2, "download_bytes", wraps=self._r2.download_bytes) as mock_download:
             from services.state_snapshot import restore_snapshot
+
             result = restore_snapshot()
             # R2 download should NOT have been called since local file existed
             mock_download.assert_not_called()
@@ -204,6 +213,7 @@ class TestStateSnapshotR2(unittest.TestCase):
         _make_bucket()  # empty bucket
 
         from services.state_snapshot import restore_snapshot
+
         result = restore_snapshot()
 
         self.assertFalse(result)
@@ -214,6 +224,7 @@ class TestStateSnapshotR2(unittest.TestCase):
         self._r2._clear_cache()
 
         from services.state_snapshot import restore_snapshot
+
         result = restore_snapshot()
 
         self.assertFalse(result)
@@ -223,9 +234,11 @@ class TestStateSnapshotR2(unittest.TestCase):
         """Corrupt JSON in R2 → restore_snapshot() returns False cleanly."""
         _make_bucket()
         from services.r2_client import upload_bytes
+
         upload_bytes("snapshots/state_snapshot.json", b"NOT VALID JSON{{{{")
 
         from services.state_snapshot import restore_snapshot
+
         result = restore_snapshot()
 
         self.assertFalse(result)
@@ -238,6 +251,7 @@ class TestStateSnapshotR2(unittest.TestCase):
         _make_bucket()
 
         from services.state_snapshot import save_snapshot
+
         save_snapshot()
 
         tmp_path = self._snapshot_path + ".tmp"

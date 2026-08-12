@@ -22,8 +22,7 @@ from services import geo as _helpers  # noqa: E402  (shim collapsed; same surfac
 
 
 def _rng_positions(rng, n, around=(34.85, -82.40), spread=1.2):
-    return [(around[0] + rng.uniform(-spread, spread),
-             around[1] + rng.uniform(-spread, spread)) for _ in range(n)]
+    return [(around[0] + rng.uniform(-spread, spread), around[1] + rng.uniform(-spread, spread)) for _ in range(n)]
 
 
 def _rng_node_cfg(rng):
@@ -56,9 +55,7 @@ def _old_haversine_km(lat1, lon1, lat2, lon2):
     """services/tasks/solver.py:21 — atan2 form."""
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
-    a = (math.sin(dlat / 2) ** 2
-         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
-         * math.sin(dlon / 2) ** 2)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
     return _R_EARTH_KM * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
@@ -67,8 +64,7 @@ def _old_bearing_deg_geo(lat1, lon1, lat2, lon2):
     dlon = math.radians(lon2 - lon1)
     lat1r, lat2r = math.radians(lat1), math.radians(lat2)
     x = math.sin(dlon) * math.cos(lat2r)
-    y = (math.cos(lat1r) * math.sin(lat2r)
-         - math.sin(lat1r) * math.cos(lat2r) * math.cos(dlon))
+    y = math.cos(lat1r) * math.sin(lat2r) - math.sin(lat1r) * math.cos(lat2r) * math.cos(dlon)
     return math.degrees(math.atan2(x, y)) % 360
 
 
@@ -92,8 +88,9 @@ def _old_in_node_beam(lat, lon, node_cfg):
     if "beam_azimuth_deg" in node_cfg:
         beam_az = float(node_cfg["beam_azimuth_deg"])
     elif node_cfg.get("tx_lat") and node_cfg.get("tx_lon"):
-        beam_az = (_old_bearing_deg_geo(rx_lat, rx_lon, float(node_cfg["tx_lat"]),
-                                        float(node_cfg["tx_lon"])) + 90.0) % 360.0
+        beam_az = (
+            _old_bearing_deg_geo(rx_lat, rx_lon, float(node_cfg["tx_lat"]), float(node_cfg["tx_lon"])) + 90.0
+        ) % 360.0
     else:
         beam_az = None
     if beam_az is None:
@@ -105,35 +102,34 @@ def _old_in_node_beam(lat, lon, node_cfg):
 
 # ── Equivalence ───────────────────────────────────────────────────────────────
 
+
 class TestPrimitives:
     def test_haversine_matches(self):
         rng = random.Random(7)
         for (a, b), (c, d) in zip(_rng_positions(rng, 400), _rng_positions(rng, 400)):
-            assert geo.haversine_km(a, b, c, d) == pytest.approx(
-                _old_haversine_km(a, b, c, d), abs=1e-9)
+            assert geo.haversine_km(a, b, c, d) == pytest.approx(_old_haversine_km(a, b, c, d), abs=1e-9)
 
     def test_haversine_matches_the_helpers_asin_form(self):
         """_helpers used asin where solver used atan2 — algebraically the same,
         and this pins that they stay so."""
         rng = random.Random(8)
         for (a, b), (c, d) in zip(_rng_positions(rng, 400), _rng_positions(rng, 400)):
-            assert geo.haversine_km(a, b, c, d) == pytest.approx(
-                _helpers.haversine_km(a, b, c, d), abs=1e-9)
+            assert geo.haversine_km(a, b, c, d) == pytest.approx(_helpers.haversine_km(a, b, c, d), abs=1e-9)
 
     def test_bearing_matches(self):
         rng = random.Random(9)
         for (a, b), (c, d) in zip(_rng_positions(rng, 400), _rng_positions(rng, 400)):
             if (a, b) == (c, d):
                 continue
-            assert geo.bearing_deg(a, b, c, d) == pytest.approx(
-                _old_bearing_deg_geo(a, b, c, d), abs=1e-9)
+            assert geo.bearing_deg(a, b, c, d) == pytest.approx(_old_bearing_deg_geo(a, b, c, d), abs=1e-9)
 
     def test_bistatic_delay_matches_the_helper(self):
         rng = random.Random(10)
         for _ in range(300):
             tx, rx, tgt = _rng_positions(rng, 3)
             assert geo.bistatic_delay_us(*tx, *rx, *tgt) == pytest.approx(
-                _helpers.bistatic_delay_us(*tx, *rx, *tgt), abs=1e-9)
+                _helpers.bistatic_delay_us(*tx, *rx, *tgt), abs=1e-9
+            )
 
 
 class TestInNodeBeam:
@@ -150,15 +146,20 @@ class TestInNodeBeam:
                 got = geo.in_node_beam(lat, lon, cfg)
                 if want != got:
                     disagreements.append((cfg, lat, lon, want, got))
-        assert not disagreements, (
-            f"{len(disagreements)} of 16000 disagree; first: {disagreements[0]}")
+        assert not disagreements, f"{len(disagreements)} of 16000 disagree; first: {disagreements[0]}"
 
     def test_a_zero_beam_width_is_treated_as_missing(self):
         """The one deliberate divergence: solver read `or 41` and manager read
         `.get(k, YAGI)`. A zero width is always a missing value, never a real
         antenna, so the forgiving form wins in both."""
-        cfg = {"rx_lat": 34.85, "rx_lon": -82.40, "tx_lat": 34.90,
-               "tx_lon": -82.30, "beam_width_deg": 0, "max_range_km": 50.0}
+        cfg = {
+            "rx_lat": 34.85,
+            "rx_lon": -82.40,
+            "tx_lat": 34.90,
+            "tx_lon": -82.30,
+            "beam_width_deg": 0,
+            "max_range_km": 50.0,
+        }
         assert geo.node_beam_params(cfg)["beam_width_deg"] == geo.YAGI_BEAM_WIDTH_DEG
 
     def test_no_tx_and_no_aim_skips_the_bearing_test(self):
@@ -167,6 +168,5 @@ class TestInNodeBeam:
         assert geo.in_node_beam(34.95, -82.30, cfg)
 
     def test_an_explicit_aim_wins_over_broadside(self):
-        cfg = {"rx_lat": 34.85, "rx_lon": -82.40, "tx_lat": 34.90,
-               "tx_lon": -82.30, "beam_azimuth_deg": 123.0}
+        cfg = {"rx_lat": 34.85, "rx_lon": -82.40, "tx_lat": 34.90, "tx_lon": -82.30, "beam_azimuth_deg": 123.0}
         assert geo.node_beam_params(cfg)["beam_azimuth_deg"] == 123.0

@@ -33,6 +33,7 @@ def _hello(node_id: str = _NODE_ID, claim_code: str | None = None) -> bytes:
 @pytest.fixture(autouse=True)
 def _clean_state():
     from core import state
+
     state.connected_nodes.pop(_NODE_ID, None)
     yield
     state.connected_nodes.pop(_NODE_ID, None)
@@ -59,10 +60,12 @@ class TestTCPClaimACK:
         from core.auth import create_claim_code, get_node_owner
 
         rec = asyncio.run(create_claim_code("user-Y"))
-        asyncio.run(handle_tcp_client(
-            FakeReader([_hello(claim_code=rec["code"]), b""]),
-            FakeWriter(),
-        ))
+        asyncio.run(
+            handle_tcp_client(
+                FakeReader([_hello(claim_code=rec["code"]), b""]),
+                FakeWriter(),
+            )
+        )
 
         assert asyncio.run(get_node_owner(_NODE_ID)) == "user-Y"
 
@@ -71,10 +74,12 @@ class TestTCPClaimACK:
         from core.auth import consume_claim_code, create_claim_code
 
         rec = asyncio.run(create_claim_code("user-Z"))
-        asyncio.run(handle_tcp_client(
-            FakeReader([_hello(claim_code=rec["code"]), b""]),
-            FakeWriter(),
-        ))
+        asyncio.run(
+            handle_tcp_client(
+                FakeReader([_hello(claim_code=rec["code"]), b""]),
+                FakeWriter(),
+            )
+        )
 
         assert asyncio.run(consume_claim_code(rec["code"], "other-node")) is None
 
@@ -95,10 +100,12 @@ class TestTCPClaimNACK:
     def test_invalid_code_does_not_send_claim_ack(self):
         """An invalid code must not result in any CLAIM_ACK."""
         writer = FakeWriter()
-        asyncio.run(handle_tcp_client(
-            FakeReader([_hello(claim_code="BADCODE123X"), b""]),
-            writer,
-        ))
+        asyncio.run(
+            handle_tcp_client(
+                FakeReader([_hello(claim_code="BADCODE123X"), b""]),
+                writer,
+            )
+        )
         assert not any(m.get("type") == "CLAIM_ACK" for m in writer.messages())
 
     def test_expired_claim_code_sends_claim_nack(self):
@@ -117,10 +124,12 @@ class TestTCPClaimNACK:
         asyncio.run(_expire())
 
         writer = FakeWriter()
-        asyncio.run(handle_tcp_client(
-            FakeReader([_hello(claim_code=rec["code"]), b""]),
-            writer,
-        ))
+        asyncio.run(
+            handle_tcp_client(
+                FakeReader([_hello(claim_code=rec["code"]), b""]),
+                writer,
+            )
+        )
 
         nacks = [m for m in writer.messages() if m.get("type") == "CLAIM_NACK"]
         assert len(nacks) == 1, f"Expected CLAIM_NACK for expired code; got: {writer.messages()}"
@@ -129,10 +138,12 @@ class TestTCPClaimNACK:
         """An invalid claim code must not create any node ownership record."""
         from core.auth import get_node_owner
 
-        asyncio.run(handle_tcp_client(
-            FakeReader([_hello(claim_code="NOTACODE9999"), b""]),
-            FakeWriter(),
-        ))
+        asyncio.run(
+            handle_tcp_client(
+                FakeReader([_hello(claim_code="NOTACODE9999"), b""]),
+                FakeWriter(),
+            )
+        )
 
         assert asyncio.run(get_node_owner(_NODE_ID)) is None
 
@@ -146,10 +157,12 @@ class TestTCPClaimAlreadyOwned:
         rec = asyncio.run(create_claim_code("interloper"))
 
         writer = FakeWriter()
-        asyncio.run(handle_tcp_client(
-            FakeReader([_hello(claim_code=rec["code"]), b""]),
-            writer,
-        ))
+        asyncio.run(
+            handle_tcp_client(
+                FakeReader([_hello(claim_code=rec["code"]), b""]),
+                writer,
+            )
+        )
 
         msgs = writer.messages()
         acks = [m for m in msgs if m.get("type") == "CLAIM_ACK"]
@@ -165,10 +178,12 @@ class TestTCPClaimAlreadyOwned:
         rec = asyncio.run(create_claim_code("interloper"))
 
         writer = FakeWriter()
-        asyncio.run(handle_tcp_client(
-            FakeReader([_hello(claim_code=rec["code"]), b""]),
-            writer,
-        ))
+        asyncio.run(
+            handle_tcp_client(
+                FakeReader([_hello(claim_code=rec["code"]), b""]),
+                writer,
+            )
+        )
 
         acks = [m for m in writer.messages() if m.get("type") == "CLAIM_ACK"]
         assert len(acks) == 1
@@ -181,10 +196,12 @@ class TestTCPClaimAlreadyOwned:
         asyncio.run(set_node_owner(_NODE_ID, "original-owner"))
         rec = asyncio.run(create_claim_code("interloper"))
 
-        asyncio.run(handle_tcp_client(
-            FakeReader([_hello(claim_code=rec["code"]), b""]),
-            FakeWriter(),
-        ))
+        asyncio.run(
+            handle_tcp_client(
+                FakeReader([_hello(claim_code=rec["code"]), b""]),
+                FakeWriter(),
+            )
+        )
 
         assert asyncio.run(get_node_owner(_NODE_ID)) == "original-owner"
 
@@ -195,10 +212,7 @@ class TestTCPNoClaimCode:
         writer = FakeWriter()
         asyncio.run(handle_tcp_client(FakeReader([_hello(), b""]), writer))
 
-        claim_msgs = [
-            m for m in writer.messages()
-            if m.get("type") in ("CLAIM_ACK", "CLAIM_NACK")
-        ]
+        claim_msgs = [m for m in writer.messages() if m.get("type") in ("CLAIM_ACK", "CLAIM_NACK")]
         assert claim_msgs == [], f"No claim messages expected; got: {claim_msgs}"
 
     def test_hello_without_claim_code_does_not_crash(self):

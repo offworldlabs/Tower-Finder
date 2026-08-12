@@ -88,8 +88,10 @@ def run_users_db_backup() -> dict:
     # bound params for that form). The temp file is created alongside users.db
     # so any later rename stays on the same filesystem.
     with tempfile.NamedTemporaryFile(
-        prefix="users-backup-", suffix=".db",
-        dir=db_path.parent, delete=False,
+        prefix="users-backup-",
+        suffix=".db",
+        dir=db_path.parent,
+        delete=False,
     ) as tmp:
         tmp_path = Path(tmp.name)
 
@@ -119,10 +121,7 @@ def run_users_db_backup() -> dict:
     # Retention: drop any backup older than RETENTION_DAYS based on the date
     # encoded in the key (not R2's LastModified, which would surprise anyone
     # who manually re-uploads an old snapshot).
-    cutoff_ts = (
-        datetime.now(timezone.utc).timestamp()
-        - USERS_DB_BACKUP_RETENTION_DAYS * 86400
-    )
+    cutoff_ts = datetime.now(timezone.utc).timestamp() - USERS_DB_BACKUP_RETENTION_DAYS * 86400
     expired: list[str] = []
     for k in list_keys(_BACKUP_PREFIX):
         m = _KEY_DATE_RE.match(k)

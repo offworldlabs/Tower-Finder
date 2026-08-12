@@ -21,6 +21,7 @@ router = APIRouter()
 
 # ── Request models ────────────────────────────────────────────────────────────
 
+
 class DetectionRequest(BaseModel):
     node_id: str = Field(default="http-node", max_length=128)
     frames: list[dict] | None = None
@@ -40,6 +41,7 @@ class BulkDetectionRequest(BaseModel):
 
 class LoadFileRequest(BaseModel):
     path: str = Field(..., min_length=1)
+
 
 RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
 _RETINA_ENV = os.getenv("RETINA_ENV", "").lower()
@@ -84,6 +86,7 @@ def _check_rate_limit(ip: str) -> None:
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+
 
 @router.get("/api/radar/data/receiver.json")
 async def tar1090_receiver():

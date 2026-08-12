@@ -102,7 +102,7 @@ class TestAircraftInBeam:
         ac_lat, ac_lon = 0, 1.0
         rx_lat, rx_lon = 0, 0
         beam_azimuth = 90  # East
-        beam_width = 20    # ±10° half-width
+        beam_width = 20  # ±10° half-width
         max_range_km = 200
 
         # Verify distance is within range
@@ -212,8 +212,8 @@ class TestAircraftInBeam:
         # RX at origin, beam pointing north (0°)
         # Aircraft at 30° west of north should be outside a 20° beam
         rx_lat, rx_lon = 0, 0
-        beam_azimuth = 0   # North
-        beam_width = 20    # ±10° half-width
+        beam_azimuth = 0  # North
+        beam_width = 20  # ±10° half-width
         max_range_km = 200
 
         # Place aircraft to create a ~30° offset
@@ -235,7 +235,7 @@ class TestAircraftInBeam:
         # Aircraft at 5° east of north (bearing 5°) should be in
         rx_lat, rx_lon = 0, 0
         beam_azimuth = 355
-        beam_width = 20    # ±10° half-width
+        beam_width = 20  # ±10° half-width
         max_range_km = 200
 
         # Aircraft positioned to have bearing close to 5°
@@ -258,7 +258,7 @@ class TestAircraftInBeam:
         """Test with a narrow 10° beam (±5° half-width)."""
         rx_lat, rx_lon = 0, 0
         beam_azimuth = 90  # East
-        beam_width = 10    # ±5° half-width
+        beam_width = 10  # ±5° half-width
         max_range_km = 200
 
         # Aircraft slightly off boresight but within 5°
@@ -313,6 +313,7 @@ class TestBistaticAngleDeg:
 
 # ── Miss-rate scoring must match the node's own range rule ──────────────────
 
+
 class TestInBeamRespectsBistaticRule:
     """The missed-detection statistic compares "aircraft the node should have
     seen" against "aircraft it did see".  If the two use different range rules
@@ -331,10 +332,12 @@ class TestInBeamRespectsBistaticRule:
     @property
     def tx_lon(self):
         import math
+
         return self.RX_LON + self.BASELINE_KM / (111.32 * math.cos(math.radians(self.RX_LAT)))
 
     def _ac_west_of_rx(self, km):
         import math
+
         return (
             self.RX_LAT,
             self.RX_LON - km / (111.32 * math.cos(math.radians(self.RX_LAT))),
@@ -346,37 +349,71 @@ class TestInBeamRespectsBistaticRule:
         ac_lat, ac_lon = self._ac_west_of_rx(35.0)
         common = (ac_lat, ac_lon, self.RX_LAT, self.RX_LON, 270.0, 200.0, 50.0)
         assert _aircraft_in_beam(*common) is True
-        assert _aircraft_in_beam(
-            *common,
-            tx_lat=self.RX_LAT, tx_lon=self.tx_lon,
-            max_bistatic_range_km=60.0,
-        ) is False
+        assert (
+            _aircraft_in_beam(
+                *common,
+                tx_lat=self.RX_LAT,
+                tx_lon=self.tx_lon,
+                max_bistatic_range_km=60.0,
+            )
+            is False
+        )
 
     def test_bistatic_rule_includes_targets_inside_the_budget(self):
         ac_lat, ac_lon = self._ac_west_of_rx(20.0)
-        assert _aircraft_in_beam(
-            ac_lat, ac_lon, self.RX_LAT, self.RX_LON, 270.0, 200.0, 50.0,
-            tx_lat=self.RX_LAT, tx_lon=self.tx_lon,
-            max_bistatic_range_km=60.0,
-        ) is True
+        assert (
+            _aircraft_in_beam(
+                ac_lat,
+                ac_lon,
+                self.RX_LAT,
+                self.RX_LON,
+                270.0,
+                200.0,
+                50.0,
+                tx_lat=self.RX_LAT,
+                tx_lon=self.tx_lon,
+                max_bistatic_range_km=60.0,
+            )
+            is True
+        )
 
     def test_absent_key_keeps_monostatic_scoring(self):
         """Hardware nodes carry only max_range_km and must score as before."""
         ac_lat, ac_lon = self._ac_west_of_rx(35.0)
-        assert _aircraft_in_beam(
-            ac_lat, ac_lon, self.RX_LAT, self.RX_LON, 270.0, 200.0, 50.0,
-            tx_lat=self.RX_LAT, tx_lon=self.tx_lon,
-            max_bistatic_range_km=None,
-        ) is True
+        assert (
+            _aircraft_in_beam(
+                ac_lat,
+                ac_lon,
+                self.RX_LAT,
+                self.RX_LON,
+                270.0,
+                200.0,
+                50.0,
+                tx_lat=self.RX_LAT,
+                tx_lon=self.tx_lon,
+                max_bistatic_range_km=None,
+            )
+            is True
+        )
 
     def test_beam_still_gates_under_the_bistatic_rule(self):
         """Range is not the only test — an out-of-beam target stays excluded."""
         ac_lat, ac_lon = self._ac_west_of_rx(10.0)
-        assert _aircraft_in_beam(
-            ac_lat, ac_lon, self.RX_LAT, self.RX_LON, 90.0, 40.0, 50.0,
-            tx_lat=self.RX_LAT, tx_lon=self.tx_lon,
-            max_bistatic_range_km=60.0,
-        ) is False
+        assert (
+            _aircraft_in_beam(
+                ac_lat,
+                ac_lon,
+                self.RX_LAT,
+                self.RX_LON,
+                90.0,
+                40.0,
+                50.0,
+                tx_lat=self.RX_LAT,
+                tx_lon=self.tx_lon,
+                max_bistatic_range_km=60.0,
+            )
+            is False
+        )
 
 
 class TestCoverageConstraintRefresh:
@@ -431,7 +468,7 @@ class TestCoverageConstraintRefresh:
         digests = {"n1": (1.0, None), "n2": None}
         self._stub(monkeypatch, digests, calls)
         analytics_refresh._refresh_coverage_constraints()
-        digests["n1"] = (0.5, None)          # polygon tightened further
+        digests["n1"] = (0.5, None)  # polygon tightened further
         calls.clear()
         assert analytics_refresh._refresh_coverage_constraints() == 1
         assert calls == ["n1"]

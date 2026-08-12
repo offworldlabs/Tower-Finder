@@ -1,6 +1,5 @@
 """Tests for _validate_node_config() in services/tcp_handler.py"""
 
-
 from services.tcp_handler import _validate_node_config
 
 

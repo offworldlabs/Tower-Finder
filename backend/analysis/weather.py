@@ -103,7 +103,11 @@ def fetch_historical(
     except Exception:
         logger.debug(
             "Open-Meteo archive fetch failed for (%.4f, %.4f) %s..%s",
-            lat, lon, params["start_date"], params["end_date"], exc_info=True,
+            lat,
+            lon,
+            params["start_date"],
+            params["end_date"],
+            exc_info=True,
         )
         return []
 

@@ -15,11 +15,10 @@ def _frame(timestamp_ms: int, n_dets: int = 3, with_adsb: bool = False) -> dict:
         "doppler": [-50.0 + i for i in range(n_dets)],
         "snr": [12.0 + i for i in range(n_dets)],
         "adsb": (
-            [
-                {"hex": "abcdef", "lat": 40.0, "lon": -74.0,
-                 "alt_baro": 35000, "gs": 480, "track": 270, "flight": "UAL1"}
-            ] + [None] * (n_dets - 1)
-            if with_adsb else [None] * n_dets
+            [{"hex": "abcdef", "lat": 40.0, "lon": -74.0, "alt_baro": 35000, "gs": 480, "track": 270, "flight": "UAL1"}]
+            + [None] * (n_dets - 1)
+            if with_adsb
+            else [None] * n_dets
         ),
         "_signing_mode": "unknown",
         "_signature_valid": False,
@@ -31,7 +30,10 @@ def test_writes_hive_partitioned_path(tmp_path: Path):
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
 
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
+        node_id="node-A",
+        frames=frames,
+        base_dir=tmp_path,
+        write_ts=ts,
     )
 
     expected = "year=2025/month=01/day=15/node_id=node-A/part-143022.parquet"
@@ -44,18 +46,31 @@ def test_schema_is_per_detection_with_required_columns(tmp_path: Path):
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
 
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
+        node_id="node-A",
+        frames=frames,
+        base_dir=tmp_path,
+        write_ts=ts,
     )
 
     table = pq.read_table(tmp_path / key, partitioning=None)
     assert table.num_rows == 4
     cols = set(table.column_names)
     expected = {
-        "frame_ts_ms", "node_id", "detection_index",
-        "delay_us", "doppler_hz", "snr_db",
-        "adsb_hex", "adsb_lat", "adsb_lon", "adsb_alt_baro",
-        "adsb_gs", "adsb_track", "adsb_flight",
-        "signing_mode", "signature_valid",
+        "frame_ts_ms",
+        "node_id",
+        "detection_index",
+        "delay_us",
+        "doppler_hz",
+        "snr_db",
+        "adsb_hex",
+        "adsb_lat",
+        "adsb_lon",
+        "adsb_alt_baro",
+        "adsb_gs",
+        "adsb_track",
+        "adsb_flight",
+        "signing_mode",
+        "signature_valid",
     }
     missing = expected - cols
     assert not missing, f"missing columns: {missing}"
@@ -66,7 +81,10 @@ def test_adsb_match_populated_when_present(tmp_path: Path):
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
 
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
+        node_id="node-A",
+        frames=frames,
+        base_dir=tmp_path,
+        write_ts=ts,
     )
 
     table = pq.read_table(tmp_path / key, partitioning=None)
@@ -85,7 +103,10 @@ def test_multiple_frames_concatenate(tmp_path: Path):
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
 
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
+        node_id="node-A",
+        frames=frames,
+        base_dir=tmp_path,
+        write_ts=ts,
     )
     table = pq.read_table(tmp_path / key, partitioning=None)
     assert table.num_rows == 5
@@ -98,7 +119,10 @@ def test_multiple_frames_concatenate(tmp_path: Path):
 def test_empty_frames_returns_none(tmp_path: Path):
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=[], base_dir=tmp_path, write_ts=ts,
+        node_id="node-A",
+        frames=[],
+        base_dir=tmp_path,
+        write_ts=ts,
     )
     assert key is None
     assert not list(tmp_path.rglob("*.parquet"))
@@ -109,7 +133,10 @@ def test_uses_zstd_compression(tmp_path: Path):
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
 
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
+        node_id="node-A",
+        frames=frames,
+        base_dir=tmp_path,
+        write_ts=ts,
     )
     meta = pq.read_metadata(tmp_path / key)
     rg = meta.row_group(0)
@@ -119,21 +146,26 @@ def test_uses_zstd_compression(tmp_path: Path):
 
 def test_schema_includes_custody_and_ingest_columns(tmp_path: Path):
     """Schema must include payload_hash, signature, ingest_ts_ms and round-trip values."""
-    frames = [{
-        "timestamp": 1700000000000,
-        "delay": [10.0, 11.0],
-        "doppler": [-50.0, -49.0],
-        "snr": [12.0, 13.0],
-        "adsb": [None, None],
-        "payload_hash": "deadbeef",
-        "signature": "abcd1234",
-        "_signing_mode": "ed25519",
-        "_signature_valid": True,
-    }]
+    frames = [
+        {
+            "timestamp": 1700000000000,
+            "delay": [10.0, 11.0],
+            "doppler": [-50.0, -49.0],
+            "snr": [12.0, 13.0],
+            "adsb": [None, None],
+            "payload_hash": "deadbeef",
+            "signature": "abcd1234",
+            "_signing_mode": "ed25519",
+            "_signature_valid": True,
+        }
+    ]
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
 
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
+        node_id="node-A",
+        frames=frames,
+        base_dir=tmp_path,
+        write_ts=ts,
     )
     table = pq.read_table(tmp_path / key, partitioning=None)
     cols = set(table.column_names)
@@ -152,7 +184,10 @@ def test_custody_columns_default_null_when_absent(tmp_path: Path):
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
 
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
+        node_id="node-A",
+        frames=frames,
+        base_dir=tmp_path,
+        write_ts=ts,
     )
     rows = pq.read_table(tmp_path / key, partitioning=None).to_pylist()
     assert all(r["payload_hash"] is None for r in rows)
@@ -186,18 +221,37 @@ def test_schema_includes_geometry_and_rf_columns(tmp_path: Path):
     frames = [_frame(timestamp_ms=1700000000000, n_dets=3)]
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
     cfg = {
-        "rx_lat": 33.939, "rx_lon": -84.652, "rx_alt_ft": 920,
-        "tx_lat": 33.939, "tx_lon": -84.331, "tx_alt_ft": 1200,
-        "fc_hz": 195_000_000, "fs_hz": 2_000_000,
+        "rx_lat": 33.939,
+        "rx_lon": -84.652,
+        "rx_alt_ft": 920,
+        "tx_lat": 33.939,
+        "tx_lon": -84.331,
+        "tx_alt_ft": 1200,
+        "fc_hz": 195_000_000,
+        "fs_hz": 2_000_000,
     }
 
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts, node_cfg=cfg,
+        node_id="node-A",
+        frames=frames,
+        base_dir=tmp_path,
+        write_ts=ts,
+        node_cfg=cfg,
     )
     table = pq.read_table(tmp_path / key, partitioning=None)
     cols = set(table.column_names)
-    assert {"rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft",
-            "fc_hz", "fs_hz", "adsb_squawk", "adsb_category"} <= cols
+    assert {
+        "rx_lat",
+        "rx_lon",
+        "rx_alt_ft",
+        "tx_lat",
+        "tx_lon",
+        "tx_alt_ft",
+        "fc_hz",
+        "fs_hz",
+        "adsb_squawk",
+        "adsb_category",
+    } <= cols
 
     rows = table.to_pylist()
     assert all(r["rx_lat"] == 33.939 for r in rows)
@@ -211,7 +265,10 @@ def test_geometry_columns_default_null_when_no_cfg(tmp_path: Path):
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
 
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
+        node_id="node-A",
+        frames=frames,
+        base_dir=tmp_path,
+        write_ts=ts,
     )
     rows = pq.read_table(tmp_path / key, partitioning=None).to_pylist()
     for col in ("rx_lat", "rx_lon", "tx_lat", "tx_lon", "fc_hz", "fs_hz"):
@@ -225,7 +282,11 @@ def test_legacy_FC_Fs_keys_in_node_cfg(tmp_path: Path):
     cfg = {"FC": 100_000_000, "Fs": 5_000_000}
 
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts, node_cfg=cfg,
+        node_id="node-A",
+        frames=frames,
+        base_dir=tmp_path,
+        write_ts=ts,
+        node_cfg=cfg,
     )
     rows = pq.read_table(tmp_path / key, partitioning=None).to_pylist()
     assert rows[0]["fc_hz"] == 100_000_000

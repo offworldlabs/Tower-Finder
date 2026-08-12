@@ -300,7 +300,6 @@ async def validate_ground_truth(body: dict = Body(...), _key=Depends(_verify_sim
     }
 
 
-
 @router.get("/api/test/ground-truth/{hex_code}")
 async def get_ground_truth_trail(hex_code: str):
     norm_hex = normalize_hex_key(hex_code)
@@ -321,8 +320,7 @@ async def get_ground_truth_trail(hex_code: str):
     if gt_trail and solved_trail:
         gt_last = gt_trail[-1]
         sol_last = solved_trail[-1]
-        position_error_km = round(
-            haversine_km(sol_last[0], sol_last[1], gt_last[0], gt_last[1]), 3)
+        position_error_km = round(haversine_km(sol_last[0], sol_last[1], gt_last[0], gt_last[1]), 3)
 
     return {
         "hex": hex_code,
@@ -484,8 +482,7 @@ async def get_simulation_ground_truth():
             if trail:
                 gt_last = list(trail)[-1]
                 sol = solved_by_hex[hx]
-                pos_errors.append(
-                    haversine_km(sol[0], sol[1], gt_last[0], gt_last[1]))
+                pos_errors.append(haversine_km(sol[0], sol[1], gt_last[0], gt_last[1]))
             if len(pos_errors) >= 200:
                 break
 

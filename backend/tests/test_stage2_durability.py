@@ -42,7 +42,7 @@ class TestArchiveFlushExclusivity:
 
         def slow_archive(node_id, frames):
             write_started.set()
-            time.sleep(0.05)          # hold the race window open
+            time.sleep(0.05)  # hold the race window open
             written.extend(f["seq"] for f in frames)
 
         monkeypatch.setattr(fp, "archive_detections", slow_archive)
@@ -59,11 +59,13 @@ class TestArchiveFlushExclusivity:
 
         t_feed = threading.Thread(target=feeder)
         t_feed.start()
+
         # Two competing flushers, hammering while the feeder runs.
         def flusher():
             while not stop_feeding.is_set():
                 fp._flush_archive_node("n1")
                 time.sleep(0.005)
+
         t1 = threading.Thread(target=flusher)
         t2 = threading.Thread(target=flusher)
         t1.start()
@@ -127,9 +129,7 @@ class TestSnapshotAtomicity:
         snap.save_snapshot()
         with open(p) as f:
             envelope = json.load(f)
-        envelope["payload"] = envelope["payload"].replace(
-            '"saved_at"', '"saved_At"', 1
-        )  # tamper one byte
+        envelope["payload"] = envelope["payload"].replace('"saved_at"', '"saved_At"', 1)  # tamper one byte
         with open(p, "w") as f:
             json.dump(envelope, f)
         assert snap.restore_snapshot() is False
@@ -139,11 +139,19 @@ class TestSnapshotAtomicity:
         must keep working across the upgrade."""
         p = self._fresh_paths(tmp_path, monkeypatch)
         import hashlib
-        payload = json.dumps({
-            "saved_at": time.time(), "trust_scores": {}, "reputations": {},
-            "accuracy_samples": [], "chain_entries": {}, "node_identities": {},
-            "iq_commitments": {}, "anomaly_log": [],
-        })
+
+        payload = json.dumps(
+            {
+                "saved_at": time.time(),
+                "trust_scores": {},
+                "reputations": {},
+                "accuracy_samples": [],
+                "chain_entries": {},
+                "node_identities": {},
+                "iq_commitments": {},
+                "anomaly_log": [],
+            }
+        )
         with open(p, "w") as f:
             f.write(payload)
         with open(p + ".sha256", "w") as f:

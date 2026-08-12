@@ -43,7 +43,9 @@ class _UsersBackupBase(unittest.TestCase):
         _seed_db(self._db_path)
 
         self._env_patcher = unittest.mock.patch.dict(
-            os.environ, _FAKE_R2_ENV, clear=False,
+            os.environ,
+            _FAKE_R2_ENV,
+            clear=False,
         )
         self._env_patcher.start()
 

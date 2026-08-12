@@ -131,8 +131,7 @@ def _build_single_node_arc(
     # below 1 pixel at low zooms; targeting an arc length in km solves it.
     if target_lat is not None and target_lon is not None:
         centre_bearing = _bearing_deg(rx_lat, rx_lon, target_lat, target_lon)
-        target_range_km = max(
-            haversine_km(rx_lat, rx_lon, target_lat, target_lon), 5.0)
+        target_range_km = max(haversine_km(rx_lat, rx_lon, target_lat, target_lon), 5.0)
         # ~25 km arc length keeps the blip visible at zoom ≥4 and short
         # enough to read as a chain at zoom ≥7 — verified on staging.
         BLIP_ARC_LENGTH_KM = 25.0
@@ -162,17 +161,18 @@ def _build_single_node_arc(
             else:
                 hi = mid
         bearing_rad = math.radians(bearing_deg)
-        points.append(_enu_to_lla(
-            rx_lat,
-            rx_lon,
-            hi * math.sin(bearing_rad),
-            hi * math.cos(bearing_rad),
-        ))
+        points.append(
+            _enu_to_lla(
+                rx_lat,
+                rx_lon,
+                hi * math.sin(bearing_rad),
+                hi * math.cos(bearing_rad),
+            )
+        )
 
     if len(points) < 2:
         return None
     return points
-
 
 
 # Per-track single-node arc memo.  _build_single_node_arc is a pure function
@@ -224,13 +224,14 @@ def _cached_single_node_arc(ac_hex, track, node_cfg, touched_keys):
 
 def _record_accuracy_sample(ac_hex: str, error_km: float, position_source: str, ts: float):
     """Append a solver-vs-ADS-B accuracy sample for the rolling accuracy API."""
-    state.accuracy_samples.append({
-        "hex": ac_hex,
-        "error_km": round(error_km, 4),
-        "position_source": position_source,
-        "ts": round(ts, 1),
-    })
-
+    state.accuracy_samples.append(
+        {
+            "hex": ac_hex,
+            "error_km": round(error_km, 4),
+            "position_source": position_source,
+            "ts": round(ts, 1),
+        }
+    )
 
 
 def fresh_adsb(ac_hex: str, now: float):
@@ -331,7 +332,10 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
     # output that jumps tens of km between frames.  track.lat/lon is
     # always the bistatic-constrained estimate — correct sector, stable arc.
     ambiguity_arc = _cached_single_node_arc(
-        ac_hex, track, node_cfg, touched_arc_keys,
+        ac_hex,
+        track,
+        node_cfg,
+        touched_arc_keys,
     )
     # raw_midpoint_lat/lon: the bistatic arc midpoint *before* any gates
     # or smoothing.  Captured for the arc-motion log so velocity
@@ -362,9 +366,7 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
         # position is more honest than a confidently wrong stationary one.
         _hold = state.track_gate_hold.get(ac_hex)
         _hold_since = _hold[0] if _hold else None
-        _hold_expired = (
-            _hold_since is not None and (now - _hold_since) > GATE_MAX_HOLD_S
-        )
+        _hold_expired = _hold_since is not None and (now - _hold_since) > GATE_MAX_HOLD_S
         _gate_fired = False
 
         # Speed gate: if the new arc midpoint moved faster than 800 m/s
@@ -435,8 +437,10 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
             lat, lon = _anchor_lat, _anchor_lon
             if _hold_dt > 0.5 and (_vel_e != 0.0 or _vel_n != 0.0):
                 _dr_lat, _dr_lon = offset_latlon_m(
-                    _anchor_lat, _anchor_lon,
-                    east_m=_vel_e * _hold_dt, north_m=_vel_n * _hold_dt,
+                    _anchor_lat,
+                    _anchor_lon,
+                    east_m=_vel_e * _hold_dt,
+                    north_m=_vel_n * _hold_dt,
                 )
                 lat, lon = round(_dr_lat, 6), round(_dr_lon, 6)
         else:
@@ -461,14 +465,16 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
     # icon dead-reckoning still slides the visible aircraft forward
     # between emits using the gs / track fields.
     if position_source != "single_node_ellipse_arc":
-        _vel_e = getattr(track, 'vel_east', 0.0) or 0.0
-        _vel_n = getattr(track, 'vel_north', 0.0) or 0.0
-        _pft = getattr(track, 'pos_fix_ts', 0.0) or getattr(track, 'wall_clock_ts', 0.0) or 0.0
+        _vel_e = getattr(track, "vel_east", 0.0) or 0.0
+        _vel_n = getattr(track, "vel_north", 0.0) or 0.0
+        _pft = getattr(track, "pos_fix_ts", 0.0) or getattr(track, "wall_clock_ts", 0.0) or 0.0
         _dr_elapsed = min(now - _pft, 60.0)
         if _dr_elapsed > 0.5 and (_vel_e != 0.0 or _vel_n != 0.0):
             _dr_lat, _dr_lon = offset_latlon_m(
-                lat, lon,
-                east_m=_vel_e * _dr_elapsed, north_m=_vel_n * _dr_elapsed,
+                lat,
+                lon,
+                east_m=_vel_e * _dr_elapsed,
+                north_m=_vel_n * _dr_elapsed,
             )
             lat, lon = round(_dr_lat, 6), round(_dr_lon, 6)
 
@@ -545,7 +551,9 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
         # travel.  services.calibration holds the one rule now.
         if nid:
             record_adsb_calibration(
-                [nid], adsb_lat, adsb_lon,
+                [nid],
+                adsb_lat,
+                adsb_lon,
                 age_s=now - (adsb.get("last_seen_ms", 0) or 0) / 1000.0,
             )
         if nid:
@@ -570,10 +578,7 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
         _anom_types.add("position_jump")
     # No velocity-plausibility flag here: supersonic targets are in scope,
     # so a high ground speed is reported as-is rather than marked anomalous.
-    _is_anom = (
-        bool(getattr(track, "is_anomalous", False))
-        or _position_jump
-    )
+    _is_anom = bool(getattr(track, "is_anomalous", False)) or _position_jump
     _max_vel = getattr(track, "max_velocity_ms", 0.0)
     _flag_hex = ac_hex
     with state.anomaly_lock:

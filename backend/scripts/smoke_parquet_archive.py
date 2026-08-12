@@ -21,8 +21,7 @@ def main():
         "doppler": [-100.5, 33.3],
         "snr": [15.0, 22.0],
         "adsb": [
-            {"hex": "abcdef", "lat": 40.71, "lon": -74.0,
-             "alt_baro": 35000, "gs": 480, "track": 270, "flight": "UAL1"},
+            {"hex": "abcdef", "lat": 40.71, "lon": -74.0, "alt_baro": 35000, "gs": 480, "track": 270, "flight": "UAL1"},
             None,
         ],
         "_signing_mode": "unknown",

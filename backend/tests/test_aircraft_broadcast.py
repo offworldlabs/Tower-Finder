@@ -21,10 +21,14 @@ from services.tasks.aircraft_flush import (  # noqa: E402
 class TestBuildRealOnlyPayload:
     def test_filters_to_real_nodes(self, monkeypatch):
         # Two nodes: one real, one synthetic.
-        monkeypatch.setattr(state, "connected_nodes", {
-            "real1": {"is_synthetic": False},
-            "synth1": {"is_synthetic": True},
-        })
+        monkeypatch.setattr(
+            state,
+            "connected_nodes",
+            {
+                "real1": {"is_synthetic": False},
+                "synth1": {"is_synthetic": True},
+            },
+        )
         data = {
             "now": 1.0,
             "aircraft": [
@@ -43,10 +47,14 @@ class TestBuildRealOnlyPayload:
         assert out["ground_truth"] == {}
 
     def test_multinode_aircraft_kept_when_any_contributor_real(self, monkeypatch):
-        monkeypatch.setattr(state, "connected_nodes", {
-            "real1": {"is_synthetic": False},
-            "synth1": {"is_synthetic": True},
-        })
+        monkeypatch.setattr(
+            state,
+            "connected_nodes",
+            {
+                "real1": {"is_synthetic": False},
+                "synth1": {"is_synthetic": True},
+            },
+        )
         data = {
             "now": 1.0,
             "aircraft": [
@@ -98,10 +106,14 @@ class TestFilterPayloadToNodes:
     def test_multinode_kept_when_contributor_owned(self):
         data = {
             "now": 1.0,
-            "aircraft": [{
-                "hex": "MN1", "node_id": "theirs", "multinode": True,
-                "contributing_node_ids": ["theirs", "mine"],
-            }],
+            "aircraft": [
+                {
+                    "hex": "MN1",
+                    "node_id": "theirs",
+                    "multinode": True,
+                    "contributing_node_ids": ["theirs", "mine"],
+                }
+            ],
             "detection_arcs": [],
         }
         out = orjson.loads(filter_payload_to_nodes(data, {"mine"}))
