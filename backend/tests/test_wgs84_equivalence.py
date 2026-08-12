@@ -52,6 +52,7 @@ class TestEcefLlaAgreement:
 class TestSpeedOfLightSingleSource:
     def test_geolocator_constants_are_consistent(self):
         from retina_geolocator.constants import C_KM_S, C_KM_US, C_M_S
+
         assert C_M_S == 299_792_458.0
         assert C_KM_S == C_M_S / 1000.0
         assert C_KM_US == C_M_S / 1e9
@@ -59,4 +60,5 @@ class TestSpeedOfLightSingleSource:
     def test_analytics_agrees(self):
         from retina_analytics.constants import C_KM_US as A_C_KM_US
         from retina_geolocator.constants import C_KM_US as G_C_KM_US
+
         assert A_C_KM_US == G_C_KM_US

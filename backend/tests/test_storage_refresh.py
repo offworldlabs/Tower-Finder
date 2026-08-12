@@ -164,12 +164,11 @@ class TestScanArchiveDirInodes:
 _DiskUsage = collections.namedtuple("DiskUsage", ["total", "used", "free"])
 
 
-def _make_disk_usage(total=100 * 1024 ** 3, used=40 * 1024 ** 3, free=60 * 1024 ** 3):
+def _make_disk_usage(total=100 * 1024**3, used=40 * 1024**3, free=60 * 1024**3):
     return _DiskUsage(total=total, used=used, free=free)
 
 
 class TestBuildStorageResult:
-
     def test_returns_json_bytes_with_required_keys(self, tmp_path):
         archive_dir = tmp_path / "archive"
         archive_dir.mkdir()
@@ -210,7 +209,9 @@ class TestBuildStorageResult:
         state.connected_nodes["node-X"] = {"first_seen_ts": first_seen}
 
         try:
-            with patch("services.tasks.storage_refresh._scan_archive_dir", return_value=(10, node_bytes, per_node_data)):
+            with patch(
+                "services.tasks.storage_refresh._scan_archive_dir", return_value=(10, node_bytes, per_node_data)
+            ):
                 with patch("services.tasks.storage_refresh.shutil.disk_usage", return_value=_make_disk_usage()):
                     result = _build_storage_result(archive_dir)
         finally:

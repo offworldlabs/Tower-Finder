@@ -175,9 +175,12 @@ def _refresh_analytics_and_nodes():
 
 
 def _bistatic_angle_deg(
-    ac_lat: float, ac_lon: float,
-    tx_lat: float, tx_lon: float,
-    rx_lat: float, rx_lon: float,
+    ac_lat: float,
+    ac_lon: float,
+    tx_lat: float,
+    tx_lon: float,
+    rx_lat: float,
+    rx_lon: float,
 ) -> float:
     """Bistatic angle (degrees) at the aircraft for a single TX-RX pair.
 
@@ -222,9 +225,12 @@ def _aircraft_in_beam(
     health threshold.  One implementation is how that stays matched.
     """
     return point_in_beam(
-        ac_lat, ac_lon,
-        rx_lat=rx_lat, rx_lon=rx_lon,
-        tx_lat=tx_lat, tx_lon=tx_lon,
+        ac_lat,
+        ac_lon,
+        rx_lat=rx_lat,
+        rx_lon=rx_lon,
+        tx_lat=tx_lat,
+        tx_lon=tx_lon,
         beam_azimuth_deg=beam_azimuth_deg,
         beam_width_deg=beam_width_deg,
         max_range_km=max_range_km,
@@ -297,8 +303,16 @@ def _refresh_missed_detections(nodes_snapshot: list):
         in_range: list[str] = []
         for hex_code, ac_lat, ac_lon in adsb_snapshot:
             if _aircraft_in_beam(
-                ac_lat, ac_lon, rx_lat, rx_lon, beam_azimuth, beam_width, max_range,
-                tx_lat=tx_lat, tx_lon=tx_lon, max_bistatic_range_km=max_bistatic,
+                ac_lat,
+                ac_lon,
+                rx_lat,
+                rx_lon,
+                beam_azimuth,
+                beam_width,
+                max_range,
+                tx_lat=tx_lat,
+                tx_lon=tx_lon,
+                max_bistatic_range_km=max_bistatic,
             ):
                 in_range.append(hex_code)
 
@@ -455,16 +469,18 @@ def _velocity_accuracy() -> dict:
     }
     if ratios:
         ratios.sort()
-        out.update({
-            # Solved speed / truth speed. 1.0 is perfect; p95 is the number
-            # that moves when velocity observability degrades.
-            "ratio_median": round(_percentile(ratios, 50), 3),
-            "ratio_p95": round(_percentile(ratios, 95), 3),
-            "ratio_max": round(ratios[-1], 3),
-            # Solves faster than any aircraft the simulator actually flies.
-            # Should be 0; currently is not.
-            "n_faster_than_any_truth": over,
-        })
+        out.update(
+            {
+                # Solved speed / truth speed. 1.0 is perfect; p95 is the number
+                # that moves when velocity observability degrades.
+                "ratio_median": round(_percentile(ratios, 50), 3),
+                "ratio_p95": round(_percentile(ratios, 95), 3),
+                "ratio_max": round(ratios[-1], 3),
+                # Solves faster than any aircraft the simulator actually flies.
+                # Should be 0; currently is not.
+                "n_faster_than_any_truth": over,
+            }
+        )
     return out
 
 
@@ -600,15 +616,9 @@ def _refresh_node_verification(node_id: str):
         _alt_m = best_adsb.get("alt_m")
         _gs_kt = best_adsb.get("gs")
         _vel_ms = best_adsb.get("velocity")
-        truth_alt_m = (
-            float(_alt_ft) * 0.3048
-            if _alt_ft is not None
-            else float(_alt_m) if _alt_m is not None else None
-        )
+        truth_alt_m = float(_alt_ft) * 0.3048 if _alt_ft is not None else float(_alt_m) if _alt_m is not None else None
         truth_gs_ms = (
-            float(_gs_kt) * 0.514444
-            if _gs_kt is not None
-            else float(_vel_ms) if _vel_ms is not None else None
+            float(_gs_kt) * 0.514444 if _gs_kt is not None else float(_vel_ms) if _vel_ms is not None else None
         )
 
         err_km = haversine_km(solver_lat, solver_lon, truth_lat, truth_lon)
@@ -742,9 +752,7 @@ def _per_aircraft_aggregate(samples: list[dict]) -> dict:
 
     out = _stats_block(per_aircraft_errors)
     out["n_aircraft"] = len({h for h, _ in by_hex})
-    out["by_node_count"] = {
-        str(nc): _stats_block(errs) for nc, errs in sorted(by_nodes.items())
-    }
+    out["by_node_count"] = {str(nc): _stats_block(errs) for nc, errs in sorted(by_nodes.items())}
     return out
 
 
@@ -758,9 +766,7 @@ def _refresh_mlat_accuracy_stats() -> None:
     """
     samples = list(state.mlat_samples)
     if not samples:
-        state.latest_mlat_accuracy_bytes = orjson.dumps(
-            {"n_samples": 0, "computed_at": round(time.time(), 1)}
-        )
+        state.latest_mlat_accuracy_bytes = orjson.dumps({"n_samples": 0, "computed_at": round(time.time(), 1)})
         return
 
     errors = [s["error_km"] for s in samples]
@@ -790,9 +796,7 @@ def _refresh_mlat_accuracy_stats() -> None:
     # recorded before this field was added) are included unfiltered.
     _GOOD_GEOM_THRESH_DEG = 150.0
     good_geom_errors = sorted(
-        s["error_km"]
-        for s in samples
-        if (s.get("max_bistatic_deg") or 0.0) < _GOOD_GEOM_THRESH_DEG
+        s["error_km"] for s in samples if (s.get("max_bistatic_deg") or 0.0) < _GOOD_GEOM_THRESH_DEG
     )
     ng = len(good_geom_errors)
     good_geom_stats: dict = (
@@ -813,9 +817,7 @@ def _refresh_mlat_accuracy_stats() -> None:
     # but ground-truth comparison uses the real position → large apparent error
     # that does NOT reflect solver accuracy.  The "normal_only" section shows
     # clean solver accuracy for non-anomalous aircraft (production-realistic).
-    normal_errors = sorted(
-        s["error_km"] for s in samples if not s.get("is_anomalous")
-    )
+    normal_errors = sorted(s["error_km"] for s in samples if not s.get("is_anomalous"))
     nn = len(normal_errors)
     by_nodes_normal: dict[int, list[float]] = {}
     for s in samples:
@@ -852,9 +854,7 @@ def _refresh_mlat_accuracy_stats() -> None:
     # reflect "how the solver performs across the fleet" rather than "how
     # many cycles a single difficult target hung around for".
     per_aircraft = _per_aircraft_aggregate(samples)
-    per_aircraft_normal = _per_aircraft_aggregate(
-        [s for s in samples if not s.get("is_anomalous")]
-    )
+    per_aircraft_normal = _per_aircraft_aggregate([s for s in samples if not s.get("is_anomalous")])
 
     state.latest_mlat_accuracy_bytes = orjson.dumps(
         {
@@ -958,16 +958,8 @@ def _refresh_mlat_verification():
             # external_adsb_cache schema is {lat, lon, alt_m, velocity,
             # heading} (periodic.py) — NOT the tar1090 gs/alt_baro schema.
             # Reading gs/alt_baro here zeroed every external truth entry.
-            gs_ms = float(
-                entry["velocity"]
-                if entry.get("velocity") is not None
-                else (entry.get("gs") or 0) * 0.514444
-            )
-            alt_m = float(
-                entry["alt_m"]
-                if entry.get("alt_m") is not None
-                else (entry.get("alt_baro") or 0) * 0.3048
-            )
+            gs_ms = float(entry["velocity"] if entry.get("velocity") is not None else (entry.get("gs") or 0) * 0.514444)
+            alt_m = float(entry["alt_m"] if entry.get("alt_m") is not None else (entry.get("alt_baro") or 0) * 0.3048)
             adsb_truth_pool.append(
                 (
                     adsb_hex,
@@ -990,11 +982,7 @@ def _refresh_mlat_verification():
     # state.connected_nodes inside the per-solve loop.
     with state.connected_nodes_lock:
         _cfg_items = list(state.connected_nodes.items())
-    node_cfg_snap: dict[str, dict] = {
-        nid: info.get("config", {})
-        for nid, info in _cfg_items
-        if isinstance(info, dict)
-    }
+    node_cfg_snap: dict[str, dict] = {nid: info.get("config", {}) for nid, info in _cfg_items if isinstance(info, dict)}
 
     mn_snapshot = list(state.multinode_tracks.items())
     fresh_solves = []
@@ -1031,7 +1019,11 @@ def _refresh_mlat_verification():
                 "altitude": {"mean_m": 0, "median_m": 0, "p95_m": 0},
                 "by_node_count": {},
                 "tracks": [],
-                "unmatched": {"n": n_solver_cycles, "nearest_truth": {"mean_km": None, "median_km": None, "p95_km": None}, "tracks": []},
+                "unmatched": {
+                    "n": n_solver_cycles,
+                    "nearest_truth": {"mean_km": None, "median_km": None, "p95_km": None},
+                    "tracks": [],
+                },
             },
             option=orjson.OPT_SERIALIZE_NUMPY,
         )
@@ -1107,10 +1099,12 @@ def _refresh_mlat_verification():
                 # Altitude gate still applies — a >5 km altitude mismatch
                 # against a hex's recent trail is a strong signal of stale
                 # data or aircraft confusion regardless of identity claim.
-                if not (solver_alt_m > 100 and t_alt_m > 100
-                        and abs(solver_alt_m - t_alt_m) > _MLAT_ALT_GATE_M):
+                if not (solver_alt_m > 100 and t_alt_m > 100 and abs(solver_alt_m - t_alt_m) > _MLAT_ALT_GATE_M):
                     dist_km = haversine_km(
-                        solver_lat, solver_lon, closest[0], closest[1],
+                        solver_lat,
+                        solver_lon,
+                        closest[0],
+                        closest[1],
                     )
                     if dist_km < best_dist_km:
                         speed_ms = float(meta.get("speed_ms", 0) or 0)
@@ -1140,8 +1134,7 @@ def _refresh_mlat_verification():
                 # Altitude gate: skip if truth altitude known and differs too much.
                 # Prevents matching solver result to a different nearby aircraft.
                 t_alt_m = float(closest[2])
-                if (solver_alt_m > 100 and t_alt_m > 100
-                        and abs(solver_alt_m - t_alt_m) > _MLAT_ALT_GATE_M):
+                if solver_alt_m > 100 and t_alt_m > 100 and abs(solver_alt_m - t_alt_m) > _MLAT_ALT_GATE_M:
                     continue
                 dist_km = haversine_km(solver_lat, solver_lon, closest[0], closest[1])
                 if dist_km < best_dist_km:
@@ -1164,8 +1157,7 @@ def _refresh_mlat_verification():
                 if truth_hex in matched_truth_hexes:
                     continue
                 # Altitude gate (same logic as ground-truth loop above).
-                if (solver_alt_m > 100 and t_alt > 100
-                        and abs(solver_alt_m - t_alt) > _MLAT_ALT_GATE_M):
+                if solver_alt_m > 100 and t_alt > 100 and abs(solver_alt_m - t_alt) > _MLAT_ALT_GATE_M:
                     continue
                 dist_km = haversine_km(solver_lat, solver_lon, t_lat, t_lon)
                 if dist_km < best_dist_km:
@@ -1230,9 +1222,12 @@ def _refresh_mlat_verification():
             if not all((t_tx_lat, t_tx_lon, t_rx_lat, t_rx_lon)):
                 continue
             ang = _bistatic_angle_deg(
-                solver_lat, solver_lon,
-                float(t_tx_lat), float(t_tx_lon),
-                float(t_rx_lat), float(t_rx_lon),
+                solver_lat,
+                solver_lon,
+                float(t_tx_lat),
+                float(t_tx_lon),
+                float(t_rx_lat),
+                float(t_rx_lon),
             )
             if max_bistatic_deg is None or ang > max_bistatic_deg:
                 max_bistatic_deg = ang
@@ -1351,12 +1346,8 @@ def _refresh_mlat_verification():
                 "mean_km": round(sum(unmatched_nearest_km) / len(unmatched_nearest_km), 1)
                 if unmatched_nearest_km
                 else None,
-                "median_km": round(_percentile(sorted(unmatched_nearest_km), 50), 1)
-                if unmatched_nearest_km
-                else None,
-                "p95_km": round(_percentile(sorted(unmatched_nearest_km), 95), 1)
-                if unmatched_nearest_km
-                else None,
+                "median_km": round(_percentile(sorted(unmatched_nearest_km), 50), 1) if unmatched_nearest_km else None,
+                "p95_km": round(_percentile(sorted(unmatched_nearest_km), 95), 1) if unmatched_nearest_km else None,
             },
             "tracks": sorted(unmatched, key=lambda x: x.get("nearest_truth_km") or 999)[:50],
         },

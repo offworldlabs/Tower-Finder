@@ -34,11 +34,7 @@ if not _jwt_from_env and _RETINA_ENV not in ("dev", "test"):
 JWT_SECRET = _jwt_from_env or "retina-dev-secret-change-me-in-prod-32b!"
 JWT_LIFETIME_SECONDS = 86400 * 7  # 7 days
 
-ADMIN_EMAILS: set[str] = {
-    e.strip().lower()
-    for e in os.getenv("AUTH_ADMIN_EMAILS", "").split(",")
-    if e.strip()
-}
+ADMIN_EMAILS: set[str] = {e.strip().lower() for e in os.getenv("AUTH_ADMIN_EMAILS", "").split(",") if e.strip()}
 
 AUTH_ENABLED = bool(os.getenv("GOOGLE_CLIENT_ID") or os.getenv("GITHUB_CLIENT_ID"))
 

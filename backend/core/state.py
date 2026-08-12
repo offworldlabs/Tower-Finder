@@ -35,6 +35,7 @@ connected_nodes: dict[str, dict] = {}
 
 node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR)
 
+
 def _coverage_limit_for(node_id: str):
     """Shrink-only empirical prior for one node, from accumulated ADS-B fixes.
 
@@ -223,6 +224,7 @@ def bump_counter(name: str, n: int = 1) -> None:
     with counters_lock:
         globals()[name] += n
 
+
 # ── Task health tracking ─────────────────────────────────────────────────────
 task_last_success: dict[str, float] = {}  # task_name → last success epoch
 task_error_counts: dict[str, int] = defaultdict(int)  # task_name → cumulative errors
@@ -262,6 +264,7 @@ latest_storage_bytes: bytes = b"{}"
 # ── Rate limiter buckets ──────────────────────────────────────────────────────
 rate_buckets: dict[str, list] = defaultdict(list)
 
+
 def _reset_for_tests() -> None:
     """Restore every module-level mutable store to boot state.  Tests only.
 
@@ -284,12 +287,28 @@ def _reset_for_tests() -> None:
     global peak_connected_nodes
 
     for store in (
-        connected_nodes, node_pipelines, active_geo_aircraft, multinode_tracks,
-        adsb_aircraft, track_histories, track_last_emit, track_gate_hold,
-        track_arc_motion, ground_truth_trails, ground_truth_meta,
-        node_identities, chain_entries, iq_commitments, anomaly_hexes,
-        external_adsb_cache, ws_clients, ws_live_clients, ws_owner_clients,
-        task_last_success, task_error_counts, rate_buckets,
+        connected_nodes,
+        node_pipelines,
+        active_geo_aircraft,
+        multinode_tracks,
+        adsb_aircraft,
+        track_histories,
+        track_last_emit,
+        track_gate_hold,
+        track_arc_motion,
+        ground_truth_trails,
+        ground_truth_meta,
+        node_identities,
+        chain_entries,
+        iq_commitments,
+        anomaly_hexes,
+        external_adsb_cache,
+        ws_clients,
+        ws_live_clients,
+        ws_owner_clients,
+        task_last_success,
+        task_error_counts,
+        rate_buckets,
         latest_missed_detections,
     ):
         store.clear()

@@ -76,14 +76,16 @@ def _flush_archive_node(node_id: str):
                 dropped = len(buf) - _ARCHIVE_BUFFER_HARD_CAP
                 _archive_buffer[node_id] = buf[-_ARCHIVE_BUFFER_HARD_CAP:]
                 logging.warning(
-                    "Archive flush failing for %s; dropped %d oldest frames "
-                    "(buffer capped at %d)",
-                    node_id, dropped, _ARCHIVE_BUFFER_HARD_CAP,
+                    "Archive flush failing for %s; dropped %d oldest frames (buffer capped at %d)",
+                    node_id,
+                    dropped,
+                    _ARCHIVE_BUFFER_HARD_CAP,
                 )
             else:
                 logging.warning(
                     "Archive flush failed for %s (%d frames retained)",
-                    node_id, len(buf),
+                    node_id,
+                    len(buf),
                 )
         return
     # Write succeeded — drop the prefix we just persisted, keeping any frames
@@ -133,8 +135,8 @@ def _reset_for_tests() -> None:
         _prof_n = 0
 
 
-
 # ── Node configs helper ──────────────────────────────────────────────────────
+
 
 def get_node_configs() -> dict[str, dict]:
     configs = {}
@@ -149,8 +151,10 @@ def get_node_configs() -> dict[str, dict]:
 
 # ── Per-node pipeline factory ─────────────────────────────────────────────────
 
+
 def get_or_create_node_pipeline(
-    node_id: str, default_pipeline: PassiveRadarPipeline,
+    node_id: str,
+    default_pipeline: PassiveRadarPipeline,
 ) -> PassiveRadarPipeline:
     pipeline = state.node_pipelines.get(node_id)
     if pipeline is not None:
@@ -217,13 +221,20 @@ def confirmed_track_views(tracker, history_n: int = N2_TRACK_HISTORY_MAX) -> lis
         hist = tr.get_recent_detections(history_n)
         if len(hist) < 2:
             continue
-        views.append({
-            "track_id": tr.id or f"tmp-{id(tr)}",
-            "history": [{"t_s": h["timestamp"] / 1000.0,
-                         "delay_us": h["delay"],
-                         "doppler_hz": h["doppler"],
-                         "snr": h["snr"]} for h in hist],
-        })
+        views.append(
+            {
+                "track_id": tr.id or f"tmp-{id(tr)}",
+                "history": [
+                    {
+                        "t_s": h["timestamp"] / 1000.0,
+                        "delay_us": h["delay"],
+                        "doppler_hz": h["doppler"],
+                        "snr": h["snr"],
+                    }
+                    for h in hist
+                ],
+            }
+        )
     return views
 
 
@@ -244,7 +255,9 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
         sig_valid = False
         if det_node_id in state.node_identities:
             sig_valid = state.sig_verifier.verify_packet(
-                det_node_id, frame.get("payload_hash", ""), frame.get("signature", ""),
+                det_node_id,
+                frame.get("payload_hash", ""),
+                frame.get("signature", ""),
             )
         frame["_signing_mode"] = frame.get("signing_mode", "unknown")
         frame["_signature_valid"] = sig_valid
@@ -282,10 +295,11 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
         list(pipeline.geolocated_tracks.keys()),
     )
     pairs = state.node_associator.submit_tracks(
-        node_id, _track_views, _ts_ms_assoc,
+        node_id,
+        _track_views,
+        _ts_ms_assoc,
     )
-    solver_inputs = (state.node_associator.format_track_pairs_for_solver(pairs)
-                     if pairs else [])
+    solver_inputs = state.node_associator.format_track_pairs_for_solver(pairs) if pairs else []
     if solver_inputs:
         node_cfgs = get_node_configs()
         for s_in in solver_inputs:
@@ -301,6 +315,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
                         state.solver_queue_drops,
                     )
                     from services.alerting import send_alert
+
                     send_alert(
                         "solver_queue_drops",
                         f"Solver queue full — {state.solver_queue_drops} candidates dropped",
@@ -374,9 +389,15 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             _n_snap = _prof_n
     if _log_now:
         logging.warning(
-            "PERF: %d frames  cpu=%.1f wall=%.1f idle%%=%.0f  "
-            "[analytics=%.1f assoc=%.1f pipeline=%.1f archive=%.1f]ms",
-            _n_snap, _ac, _aw, _idle, _a_an, _a_as, _a_pp, _a_sv,
+            "PERF: %d frames  cpu=%.1f wall=%.1f idle%%=%.0f  [analytics=%.1f assoc=%.1f pipeline=%.1f archive=%.1f]ms",
+            _n_snap,
+            _ac,
+            _aw,
+            _idle,
+            _a_an,
+            _a_as,
+            _a_pp,
+            _a_sv,
         )
 
 

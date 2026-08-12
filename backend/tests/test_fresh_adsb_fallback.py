@@ -72,6 +72,7 @@ def _base_ext(alt_m=3048.0, velocity=257.222, heading=45.0):
 # Fixture: clean state before and after every test
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
 def _clean_state():
     state.active_geo_aircraft.clear()
@@ -95,8 +96,8 @@ def _clean_state():
 # Tests
 # ---------------------------------------------------------------------------
 
-class TestFreshAdsbFallback:
 
+class TestFreshAdsbFallback:
     def test_live_feed_returned_when_fresh(self):
         """Fresh live ADS-B entry wins over external cache."""
         _seed_active_geo()
@@ -127,7 +128,7 @@ class TestFreshAdsbFallback:
             "alt_baro": 99999,
             "gs": 0.0,
             "track": 0.0,
-            "last_seen_ms": 0,   # age >> 60 s → stale
+            "last_seen_ms": 0,  # age >> 60 s → stale
         }
         state.external_adsb_cache[_HEX] = _base_ext(alt_m=3048.0)
 

@@ -12,19 +12,22 @@ from services.state_snapshot import restore_snapshot, save_snapshot
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _make_trust_state(node_id="node-1", n_samples=3):
     ts = TrustScoreState(node_id=node_id)
     for i in range(n_samples):
-        ts.add_sample(AdsReportEntry(
-            timestamp_ms=1000 * i,
-            predicted_delay=10.0 + i,
-            predicted_doppler=50.0,
-            measured_delay=10.5 + i,
-            measured_doppler=51.0,
-            adsb_hex=f"hex{i:03d}",
-            adsb_lat=33.9,
-            adsb_lon=-84.6,
-        ))
+        ts.add_sample(
+            AdsReportEntry(
+                timestamp_ms=1000 * i,
+                predicted_delay=10.0 + i,
+                predicted_doppler=50.0,
+                measured_delay=10.5 + i,
+                measured_doppler=51.0,
+                adsb_hex=f"hex{i:03d}",
+                adsb_lat=33.9,
+                adsb_lon=-84.6,
+            )
+        )
     return ts
 
 
@@ -36,6 +39,7 @@ def _make_reputation(node_id="node-1", reputation=0.8, blocked=False):
 
 
 # ── Round-trip: save → restore ────────────────────────────────────────────────
+
 
 class TestSnapshotRoundTrip:
     """Verify that save_snapshot → restore_snapshot preserves all data types."""
@@ -90,10 +94,13 @@ class TestSnapshotRoundTrip:
         from core import state
 
         orig_samples = deque(state.accuracy_samples)
-        state.accuracy_samples = deque([
-            {"error_km": 1.5, "position_source": "solver"},
-            {"error_km": 0.3, "position_source": "adsb"},
-        ], maxlen=state.ACCURACY_MAX_SAMPLES)
+        state.accuracy_samples = deque(
+            [
+                {"error_km": 1.5, "position_source": "solver"},
+                {"error_km": 0.3, "position_source": "adsb"},
+            ],
+            maxlen=state.ACCURACY_MAX_SAMPLES,
+        )
 
         snap_path = str(tmp_path / "snap.json")
         with patch("services.state_snapshot._SNAPSHOT_PATH", snap_path):
@@ -143,6 +150,7 @@ class TestSnapshotRoundTrip:
 
 
 # ── Edge cases ────────────────────────────────────────────────────────────────
+
 
 class TestSnapshotEdgeCases:
     def test_restore_returns_false_when_no_file(self, tmp_path):

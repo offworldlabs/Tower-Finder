@@ -25,22 +25,24 @@ import pyarrow.parquet as pq
 logger = logging.getLogger(__name__)
 
 
-SCHEMA = pa.schema([
-    ("solve_ts_ms", pa.int64()),
-    ("frame_ts_ms", pa.int64()),
-    ("lat", pa.float64()),
-    ("lon", pa.float64()),
-    ("alt_m", pa.float64()),
-    ("vel_east_ms", pa.float64()),
-    ("vel_north_ms", pa.float64()),
-    ("vel_up_ms", pa.float64()),
-    ("n_nodes", pa.int32()),
-    ("contributing_node_ids", pa.string()),
-    ("adsb_hex", pa.string()),
-    ("rms_delay_us", pa.float64()),
-    ("rms_doppler_hz", pa.float64()),
-    ("target_class", pa.string()),
-])
+SCHEMA = pa.schema(
+    [
+        ("solve_ts_ms", pa.int64()),
+        ("frame_ts_ms", pa.int64()),
+        ("lat", pa.float64()),
+        ("lon", pa.float64()),
+        ("alt_m", pa.float64()),
+        ("vel_east_ms", pa.float64()),
+        ("vel_north_ms", pa.float64()),
+        ("vel_up_ms", pa.float64()),
+        ("n_nodes", pa.int32()),
+        ("contributing_node_ids", pa.string()),
+        ("adsb_hex", pa.string()),
+        ("rms_delay_us", pa.float64()),
+        ("rms_doppler_hz", pa.float64()),
+        ("target_class", pa.string()),
+    ]
+)
 
 
 def _f(d: dict, key: str) -> float | None:
@@ -107,10 +109,7 @@ def write_tracks_parquet(
 
     table = pa.table(cols, schema=SCHEMA)
 
-    key = (
-        f"year={write_ts:%Y}/month={write_ts:%m}/day={write_ts:%d}/"
-        f"part-{write_ts:%H%M%S}.parquet"
-    )
+    key = f"year={write_ts:%Y}/month={write_ts:%m}/day={write_ts:%d}/part-{write_ts:%H%M%S}.parquet"
     out_path = Path(base_dir) / key
     out_path.parent.mkdir(parents=True, exist_ok=True)
 

@@ -37,13 +37,26 @@ from retina_analytics.constants import (
 )
 
 __all__ = [
-    "C_KM_US", "KM_PER_DEG_LAT", "M_PER_DEG_LAT", "R_EARTH_KM",
+    "C_KM_US",
+    "KM_PER_DEG_LAT",
+    "M_PER_DEG_LAT",
+    "R_EARTH_KM",
     "YAGI_BEAM_WIDTH_DEG",
-    "bearing_deg", "bistatic_delay_us", "bistatic_differential_km",
-    "bistatic_max_radius_km", "bistatic_range_limit_km", "enu_km",
-    "haversine_km", "km_per_deg_lon", "offset_latlon", "offset_latlon_m",
-    "point_in_beam", "resolve_beam_azimuth_deg",
-    "node_beam_params", "in_node_beam", "valid_latlon",
+    "bearing_deg",
+    "bistatic_delay_us",
+    "bistatic_differential_km",
+    "bistatic_max_radius_km",
+    "bistatic_range_limit_km",
+    "enu_km",
+    "haversine_km",
+    "km_per_deg_lon",
+    "offset_latlon",
+    "offset_latlon_m",
+    "point_in_beam",
+    "resolve_beam_azimuth_deg",
+    "node_beam_params",
+    "in_node_beam",
+    "valid_latlon",
 ]
 
 
@@ -80,8 +93,7 @@ def node_beam_params(node_cfg: dict) -> dict:
     if "beam_azimuth_deg" in node_cfg and node_cfg["beam_azimuth_deg"] is not None:
         beam_az = resolve_beam_azimuth_deg(node_cfg, rx_lat, rx_lon, 0.0, 0.0)
     elif tx_lat and tx_lon:
-        beam_az = (bearing_deg(rx_lat, rx_lon, float(tx_lat), float(tx_lon))
-                   + 90.0) % 360.0
+        beam_az = (bearing_deg(rx_lat, rx_lon, float(tx_lat), float(tx_lon)) + 90.0) % 360.0
     else:
         beam_az = None
 

@@ -16,11 +16,21 @@ _AREAS = [
 
 _MOCK_RESPONSE = {
     "ac": [
-        {"hex": "a1b2c3", "flight": "DAL123 ", "lat": 33.75, "lon": -84.39,
-         "alt_baro": 35000, "gs": 450, "track": 90, "squawk": "1234",
-         "category": "A3", "type": "adsb_icao", "r": "N12345", "t": "B738"},
-        {"hex": "d4e5f6", "lat": 33.80, "lon": -84.30, "alt_baro": 28000,
-         "gs": 380, "track": 180},
+        {
+            "hex": "a1b2c3",
+            "flight": "DAL123 ",
+            "lat": 33.75,
+            "lon": -84.39,
+            "alt_baro": 35000,
+            "gs": 450,
+            "track": 90,
+            "squawk": "1234",
+            "category": "A3",
+            "type": "adsb_icao",
+            "r": "N12345",
+            "t": "B738",
+        },
+        {"hex": "d4e5f6", "lat": 33.80, "lon": -84.30, "alt_baro": 28000, "gs": 380, "track": 180},
         # Aircraft with no lat/lon should be skipped
         {"hex": "no_pos", "alt_baro": 10000},
     ],
@@ -28,6 +38,7 @@ _MOCK_RESPONSE = {
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
+
 
 class TestAdsbLolClient:
     def _mock_urlopen(self, response_data):

@@ -31,6 +31,7 @@ def _clean_state():
 
 # ── Solver aircraft ──────────────────────────────────────────────────────────
 
+
 class TestSolverAircraft:
     def test_solver_aircraft_empty(self, client):
         r = client.get("/api/v1/solver/aircraft")
@@ -101,6 +102,7 @@ class TestSolverAircraft:
 
 # ── Format aircraft ─────────────────────────────────────────────────────────
 
+
 class TestFormatAircraft:
     def test_format_includes_expected_keys(self):
         from routes.output import _format_aircraft
@@ -136,6 +138,7 @@ class TestFormatAircraft:
 
 # ── Real node IDs ────────────────────────────────────────────────────────────
 
+
 class TestRealNodeIds:
     def test_real_node_ids(self):
         from routes.output import _real_node_ids
@@ -152,6 +155,7 @@ class TestRealNodeIds:
 
 
 # ── Ground truth ─────────────────────────────────────────────────────────────
+
 
 class TestGroundTruth:
     def test_ground_truth_empty(self, client):
@@ -206,6 +210,7 @@ class TestGroundTruth:
 
 
 # ── API docs ─────────────────────────────────────────────────────────────────
+
 
 class TestApiDocs:
     def test_docs_returns_html(self, client):

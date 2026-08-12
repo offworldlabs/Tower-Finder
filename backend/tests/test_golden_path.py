@@ -52,9 +52,9 @@ _NODE_ID = "golden-path-node"
 _NODE_CONFIG = {**DEFAULT_NODE_CONFIG, "node_id": _NODE_ID}
 
 # Stable detection values → Kalman filter associates them consistently across frames.
-_DELAY_US   = 55.0
+_DELAY_US = 55.0
 _DOPPLER_HZ = 20.0
-_SNR_DB     = 20.0
+_SNR_DB = 20.0
 
 # Feed enough frames to guarantee M-of-N promotion.
 _N_FRAMES = N_WINDOW()
@@ -62,38 +62,50 @@ _N_FRAMES = N_WINDOW()
 
 # ── Protocol helpers (identical pattern to test_e2e_pipeline.py) ──────────────
 
+
 def _msg(d: dict) -> bytes:
     return json.dumps(d).encode() + b"\n"
+
 
 def _hello() -> bytes:
     return _msg({"type": "HELLO", "node_id": _NODE_ID, "version": "1.0", "is_synthetic": True})
 
+
 def _config() -> bytes:
-    return _msg({
-        "type": "CONFIG",
-        "node_id": _NODE_ID,
-        "config_hash": "golden01",
-        "is_synthetic": True,
-        "config": _NODE_CONFIG,
-        "capabilities": {"adsb_report": True},
-    })
+    return _msg(
+        {
+            "type": "CONFIG",
+            "node_id": _NODE_ID,
+            "config_hash": "golden01",
+            "is_synthetic": True,
+            "config": _NODE_CONFIG,
+            "capabilities": {"adsb_report": True},
+        }
+    )
+
 
 def _detection(ts_ms: int | None = None) -> bytes:
     ts_ms = ts_ms or int(time.time() * 1000)
-    return _msg({"type": "DETECTION", "data": {
-        "timestamp": ts_ms,
-        "delay":   [_DELAY_US,   _DELAY_US + 0.5,  _DELAY_US + 1.0],
-        "doppler": [_DOPPLER_HZ, _DOPPLER_HZ + 0.5, _DOPPLER_HZ - 0.5],
-        "snr":     [_SNR_DB,     _SNR_DB - 1.0,     _SNR_DB - 2.0],
-    }})
+    return _msg(
+        {
+            "type": "DETECTION",
+            "data": {
+                "timestamp": ts_ms,
+                "delay": [_DELAY_US, _DELAY_US + 0.5, _DELAY_US + 1.0],
+                "doppler": [_DOPPLER_HZ, _DOPPLER_HZ + 0.5, _DOPPLER_HZ - 0.5],
+                "snr": [_SNR_DB, _SNR_DB - 1.0, _SNR_DB - 2.0],
+            },
+        }
+    )
+
 
 def _raw_frame(ts_ms: int | None = None) -> dict:
     ts_ms = ts_ms or int(time.time() * 1000)
     return {
         "timestamp": ts_ms,
-        "delay":   [_DELAY_US,   _DELAY_US + 0.5,  _DELAY_US + 1.0],
+        "delay": [_DELAY_US, _DELAY_US + 0.5, _DELAY_US + 1.0],
         "doppler": [_DOPPLER_HZ, _DOPPLER_HZ + 0.5, _DOPPLER_HZ - 0.5],
-        "snr":     [_SNR_DB,     _SNR_DB - 1.0,     _SNR_DB - 2.0],
+        "snr": [_SNR_DB, _SNR_DB - 1.0, _SNR_DB - 2.0],
     }
 
 
@@ -114,10 +126,19 @@ class _FakeWriter:
     def __init__(self):
         self._buf: list[bytes] = []
         self.closed = False
-    def get_extra_info(self, k, d=None): return ("127.0.0.1", 9999) if k == "peername" else d
-    def write(self, data: bytes): self._buf.append(data)
-    async def drain(self): pass
-    def close(self): self.closed = True
+
+    def get_extra_info(self, k, d=None):
+        return ("127.0.0.1", 9999) if k == "peername" else d
+
+    def write(self, data: bytes):
+        self._buf.append(data)
+
+    async def drain(self):
+        pass
+
+    def close(self):
+        self.closed = True
+
     def messages(self) -> list[dict]:
         out = []
         for chunk in self._buf:
@@ -129,6 +150,7 @@ class _FakeWriter:
 
 
 # ── Shared fixture ────────────────────────────────────────────────────────────
+
 
 @pytest.fixture(autouse=True)
 def _clean():
@@ -162,6 +184,7 @@ def client():
 
 # ── Shared helper: run TCP handshake + enqueue N frames ───────────────────────
 
+
 def _do_tcp_and_drain(n_frames: int = _N_FRAMES, interval_ms: int = 2000) -> list[tuple]:
     """Run TCP HELLO+CONFIG+N×DETECTION through handle_tcp_client, return drained frames."""
     base = int(time.time() * 1000)
@@ -184,6 +207,7 @@ def _do_tcp_and_drain(n_frames: int = _N_FRAMES, interval_ms: int = 2000) -> lis
 # ═══════════════════════════════════════════════════════════════════════════════
 # GOLDEN PATH — each class is one layer of the happy-day scenario
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class TestGoldenPath_Layer1_TCPHandshake:
     """Layer 1 — TCP handshake: node becomes visible to the server."""
@@ -222,9 +246,13 @@ class TestGoldenPath_Layer2_FrameProcessor:
     @pytest.fixture()
     def pipeline(self):
         state.connected_nodes[_NODE_ID] = {
-            "config_hash": "golden01", "config": _NODE_CONFIG,
-            "status": "active", "last_heartbeat": "2026-01-01T00:00:00Z",
-            "peer": "127.0.0.1:9999", "is_synthetic": True, "capabilities": {},
+            "config_hash": "golden01",
+            "config": _NODE_CONFIG,
+            "status": "active",
+            "last_heartbeat": "2026-01-01T00:00:00Z",
+            "peer": "127.0.0.1:9999",
+            "is_synthetic": True,
+            "capabilities": {},
         }
         state.node_analytics.register_node(_NODE_ID, _NODE_CONFIG)
         state.node_associator.register_node(_NODE_ID, _NODE_CONFIG)
@@ -245,8 +273,7 @@ class TestGoldenPath_Layer2_FrameProcessor:
             process_one_frame(_NODE_ID, _raw_frame(base + i * 1000), pipeline)
         active = [t for t in pipeline.tracker.tracks if t.state_status == TrackState.ACTIVE]
         assert len(active) >= 1, (
-            f"Expected ≥1 ACTIVE track after {_N_FRAMES} frames "
-            f"(M={M_THRESHOLD()}, N={N_WINDOW()})"
+            f"Expected ≥1 ACTIVE track after {_N_FRAMES} frames (M={M_THRESHOLD()}, N={N_WINDOW()})"
         )
 
     def test_active_track_has_stable_id(self, pipeline):
@@ -263,9 +290,7 @@ class TestGoldenPath_Layer2_FrameProcessor:
         base = int(time.time() * 1000)
         for i in range(_N_FRAMES + 2):
             process_one_frame(_NODE_ID, _raw_frame(base + i * 1000), pipeline)
-        assert len(pipeline._geo_last_solve) > 0, (
-            "Geolocation solver must be attempted after M-of-N promotion"
-        )
+        assert len(pipeline._geo_last_solve) > 0, "Geolocation solver must be attempted after M-of-N promotion"
 
 
 class TestGoldenPath_Layer3_HttpApi:
@@ -279,9 +304,13 @@ class TestGoldenPath_Layer3_HttpApi:
     def _seed_state(self):
         """Put a live node + pipeline into state so API endpoints have data."""
         state.connected_nodes[_NODE_ID] = {
-            "config_hash": "golden01", "config": _NODE_CONFIG,
-            "status": "active", "last_heartbeat": "2026-01-01T00:00:00Z",
-            "peer": "127.0.0.1:9999", "is_synthetic": True, "capabilities": {},
+            "config_hash": "golden01",
+            "config": _NODE_CONFIG,
+            "status": "active",
+            "last_heartbeat": "2026-01-01T00:00:00Z",
+            "peer": "127.0.0.1:9999",
+            "is_synthetic": True,
+            "capabilities": {},
         }
         p = PassiveRadarPipeline(_NODE_CONFIG)
         state.node_pipelines[_NODE_ID] = p
@@ -348,9 +377,7 @@ class TestGoldenPath_Layer3_HttpApi:
             with patch.object(_users, "AUTH_BYPASS", False):
                 r = client.put("/api/config", json={"golden_path_test": True})
             # Without a valid JWT the server must refuse the write.
-            assert r.status_code in (401, 403), (
-                f"Expected 401/403 with auth enforced; got {r.status_code}"
-            )
+            assert r.status_code in (401, 403), f"Expected 401/403 with auth enforced; got {r.status_code}"
         finally:
             _cfg_path.write_bytes(_original)
 
@@ -391,8 +418,7 @@ class TestGoldenPath_Layer4_FullStack:
         with patch("services.tcp_handler._NODE_MIN_INTERVAL_S", 0.0):
             asyncio.run(handle_tcp_client(reader, writer))
 
-        assert _NODE_ID in state.connected_nodes, \
-            "Step 1 failed: node not registered after TCP handshake"
+        assert _NODE_ID in state.connected_nodes, "Step 1 failed: node not registered after TCP handshake"
 
         # ── Step 2: Drain frame_queue and run frame processor ────────────────
         pipe = PassiveRadarPipeline(_NODE_CONFIG)
@@ -413,8 +439,7 @@ class TestGoldenPath_Layer4_FullStack:
         # ── Step 3: Verify tracker promoted a track ───────────────────────────
         active_tracks = [t for t in pipe.tracker.tracks if t.state_status == TrackState.ACTIVE]
         assert len(active_tracks) >= 1, (
-            f"Step 3 failed: no ACTIVE track after {_N_FRAMES} frames "
-            f"(M={M_THRESHOLD()}, N={N_WINDOW()})"
+            f"Step 3 failed: no ACTIVE track after {_N_FRAMES} frames (M={M_THRESHOLD()}, N={N_WINDOW()})"
         )
 
         # ── Step 4: HTTP API reflects the state ───────────────────────────────
@@ -423,18 +448,13 @@ class TestGoldenPath_Layer4_FullStack:
         with TestClient(app, raise_server_exceptions=False) as client:
             health = client.get("/api/health")
             assert health.status_code == 200
-            assert health.json()["status"] == "ok", (
-                f"Step 4 failed: /api/health not ok. Full response: {health.json()}"
-            )
+            assert health.json()["status"] == "ok", f"Step 4 failed: /api/health not ok. Full response: {health.json()}"
 
             dashboard = client.get("/api/test/dashboard").json()
-            assert dashboard["nodes"]["active"] >= 1, \
-                "Step 4 failed: active node count not reflected in dashboard"
-            assert dashboard["pipeline"]["node_pipelines"] >= 1, \
-                "Step 4 failed: pipeline not visible in dashboard"
+            assert dashboard["nodes"]["active"] >= 1, "Step 4 failed: active node count not reflected in dashboard"
+            assert dashboard["pipeline"]["node_pipelines"] >= 1, "Step 4 failed: pipeline not visible in dashboard"
 
             # All API endpoints return 200
-            for path in ("/api/radar/nodes", "/api/radar/analytics",
-                         "/api/radar/data/aircraft.json", "/api/config"):
+            for path in ("/api/radar/nodes", "/api/radar/analytics", "/api/radar/data/aircraft.json", "/api/config"):
                 r = client.get(path)
                 assert r.status_code == 200, f"Step 4 failed: {path} returned {r.status_code}"

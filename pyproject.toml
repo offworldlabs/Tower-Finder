@@ -1,55 +1,21 @@
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
-addopts = [
-    "--cov=.",
-    "--cov-report=term-missing:skip-covered",
-    "--cov-report=html:htmlcov",
-    "--cov-fail-under=55",
-    "-q",
-]
-asyncio_mode = "auto"
-markers = [
-    "external: requires external API (open-meteo.com)",
-    "asyncio: mark test as async (requires pytest-asyncio)",
-]
+# Root ruff configuration. This file exists solely so that Python outside
+# backend/ — currently deploy/*.py — is linted to the shared offworldlabs
+# standard rather than ruff's built-in defaults.
+#
+# ruff resolves config by walking UP from each file. Without this, deploy/
+# never reaches backend/pyproject.toml and falls through to defaults:
+# line-length 88 instead of 120, and rules the standard does not select
+# (EXE001, PLW1510) firing while ones it does select do not apply.
+#
+# These keys duplicate backend/pyproject.toml's [tool.ruff] block, which is
+# unavoidable — ruff's `extend` is not followed by the ruff-config hook, so
+# pointing one at the other would silently disable the drift check. Instead
+# BOTH copies are checked against offworldlabs/ops:ruff-shared.toml by two
+# invocations of that hook. Duplication that is enforced is not drift.
+#
+# target-version is deliberately absent: it is per-package.
 
-[tool.coverage.run]
-source = ["."]
-omit = [
-    "tests/*",
-    "scripts/*",
-    "simulation/*",
-    "*/conftest.py",
-    # OAuth routes — require browser / external OAuth provider; not unit-testable:
-    "routes/auth.py",
-    # Simulation/test-only endpoints — not production code paths:
-    "routes/test.py",
-    # External API clients — require live network; tested via integration only:
-    "clients/fcc.py",
-    # blah2 bridge — requires live blah2 hardware/daemon:
-    "services/blah2_bridge.py",
-    # Pure TypedDict definitions — no runtime code to cover:
-    "core/types.py",
-]
-
-[tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "if TYPE_CHECKING:",
-    "raise NotImplementedError",
-    "if __name__ == .__main__.:",
-]
-skip_covered = true
-show_missing = true
-
-# Shared ruff standard for offworldlabs Python repos. The keys below are checked
-# against offworldlabs/ops:ruff-shared.toml by the `ruff-config` pre-commit hook
-# — edit them there, not here. target-version is deliberately per-repo and
-# tracks this package's requires-python. The extra per-file-ignores entry for
-# simulation/* is a permitted local addition.
 [tool.ruff]
-target-version = "py312"
 line-length = 120
 
 [tool.ruff.lint]

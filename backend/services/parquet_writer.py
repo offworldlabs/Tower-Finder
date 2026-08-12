@@ -25,41 +25,43 @@ logger = logging.getLogger(__name__)
 
 # Stable schema — adding new columns is fine (Parquet is schema-on-read for
 # missing cols), but never rename or reorder.
-SCHEMA = pa.schema([
-    ("frame_ts_ms", pa.int64()),
-    ("ingest_ts_ms", pa.int64()),
-    ("node_id", pa.string()),
-    ("detection_index", pa.int32()),
-    ("delay_us", pa.float64()),
-    ("doppler_hz", pa.float64()),
-    ("snr_db", pa.float64()),
-    ("adsb_hex", pa.string()),
-    ("adsb_lat", pa.float64()),
-    ("adsb_lon", pa.float64()),
-    ("adsb_alt_baro", pa.int32()),
-    ("adsb_gs", pa.float64()),
-    ("adsb_track", pa.float64()),
-    ("adsb_flight", pa.string()),
-    ("adsb_squawk", pa.string()),
-    ("adsb_category", pa.string()),
-    ("signing_mode", pa.string()),
-    ("signature_valid", pa.bool_()),
-    ("payload_hash", pa.string()),
-    ("signature", pa.string()),
-    # Per-frame TX/RX geometry & RF config snapshot.  These never appear on
-    # the wire frame itself — they live in the node's CONFIG handshake — but
-    # they're cheap to fan out into every row (Parquet's per-column dictionary
-    # encoding makes constants effectively free) and impossible to reconstruct
-    # later if the node config drifts or the node is taken offline.
-    ("rx_lat", pa.float64()),
-    ("rx_lon", pa.float64()),
-    ("rx_alt_ft", pa.float64()),
-    ("tx_lat", pa.float64()),
-    ("tx_lon", pa.float64()),
-    ("tx_alt_ft", pa.float64()),
-    ("fc_hz", pa.float64()),
-    ("fs_hz", pa.float64()),
-])
+SCHEMA = pa.schema(
+    [
+        ("frame_ts_ms", pa.int64()),
+        ("ingest_ts_ms", pa.int64()),
+        ("node_id", pa.string()),
+        ("detection_index", pa.int32()),
+        ("delay_us", pa.float64()),
+        ("doppler_hz", pa.float64()),
+        ("snr_db", pa.float64()),
+        ("adsb_hex", pa.string()),
+        ("adsb_lat", pa.float64()),
+        ("adsb_lon", pa.float64()),
+        ("adsb_alt_baro", pa.int32()),
+        ("adsb_gs", pa.float64()),
+        ("adsb_track", pa.float64()),
+        ("adsb_flight", pa.string()),
+        ("adsb_squawk", pa.string()),
+        ("adsb_category", pa.string()),
+        ("signing_mode", pa.string()),
+        ("signature_valid", pa.bool_()),
+        ("payload_hash", pa.string()),
+        ("signature", pa.string()),
+        # Per-frame TX/RX geometry & RF config snapshot.  These never appear on
+        # the wire frame itself — they live in the node's CONFIG handshake — but
+        # they're cheap to fan out into every row (Parquet's per-column dictionary
+        # encoding makes constants effectively free) and impossible to reconstruct
+        # later if the node config drifts or the node is taken offline.
+        ("rx_lat", pa.float64()),
+        ("rx_lon", pa.float64()),
+        ("rx_alt_ft", pa.float64()),
+        ("tx_lat", pa.float64()),
+        ("tx_lon", pa.float64()),
+        ("tx_alt_ft", pa.float64()),
+        ("fc_hz", pa.float64()),
+        ("fs_hz", pa.float64()),
+    ]
+)
 
 
 def _safe_float(arr, i: int) -> float | None:
@@ -207,10 +209,7 @@ def write_detections_parquet(
 
     table = pa.table(cols, schema=SCHEMA)
 
-    key = (
-        f"year={write_ts:%Y}/month={write_ts:%m}/day={write_ts:%d}/"
-        f"node_id={node_id}/part-{write_ts:%H%M%S}.parquet"
-    )
+    key = f"year={write_ts:%Y}/month={write_ts:%m}/day={write_ts:%d}/node_id={node_id}/part-{write_ts:%H%M%S}.parquet"
     out_path = Path(base_dir) / key
     out_path.parent.mkdir(parents=True, exist_ok=True)
 

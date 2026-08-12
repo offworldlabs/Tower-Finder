@@ -123,9 +123,7 @@ def strip_conditionals(text: str, flags: dict[str, bool], path: Path) -> str:
     return "\n".join(out) + "\n" if out else ""
 
 
-def expand_includes(
-    path: Path, root: Path, flags: dict[str, bool], _depth: int = 0, _stack: tuple = ()
-) -> str:
+def expand_includes(path: Path, root: Path, flags: dict[str, bool], _depth: int = 0, _stack: tuple = ()) -> str:
     """Inline every ``# RETINA_INCLUDE`` marker, recursively.
 
     Conditionals are resolved per file *before* its includes are scanned, so a

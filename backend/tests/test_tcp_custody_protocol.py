@@ -55,6 +55,7 @@ _IQ_COMMITMENT_MSG = {
 
 # ── Shared state-cleanup fixture ──────────────────────────────────────────────
 
+
 @pytest.fixture(autouse=True)
 def _cleanup_custody_state():
     """Clear chain-of-custody state for the test node before and after every test."""
@@ -68,6 +69,7 @@ def _cleanup_custody_state():
 
 
 # ── TestRegisterKey ───────────────────────────────────────────────────────────
+
 
 class TestRegisterKey:
     def test_register_key_stores_identity(self):
@@ -104,6 +106,7 @@ class TestRegisterKey:
 
 
 # ── TestChainEntry ────────────────────────────────────────────────────────────
+
 
 class TestChainEntry:
     def test_chain_entry_appended_to_state(self):
@@ -151,9 +154,7 @@ class TestChainEntry:
         writer = MockWriter()
 
         # Pre-fill state to the cap
-        state.chain_entries[_NODE_ID] = [
-            {"_synthetic": True, "i": i} for i in range(CHAIN_ENTRIES_MAX_PER_NODE)
-        ]
+        state.chain_entries[_NODE_ID] = [{"_synthetic": True, "i": i} for i in range(CHAIN_ENTRIES_MAX_PER_NODE)]
 
         # Add one more — should trigger a trim
         asyncio.run(_handle_chain_entry(_CHAIN_ENTRY_MSG, _NODE_ID, writer))
@@ -168,6 +169,7 @@ class TestChainEntry:
 
 
 # ── TestIQCommitment ──────────────────────────────────────────────────────────
+
 
 class TestIQCommitment:
     def test_iq_commitment_appended_to_state(self):
@@ -199,9 +201,7 @@ class TestIQCommitment:
         writer = MockWriter()
 
         # Pre-fill state to the cap
-        state.iq_commitments[_NODE_ID] = [
-            {"_synthetic": True, "i": i} for i in range(IQ_COMMITMENTS_MAX_PER_NODE)
-        ]
+        state.iq_commitments[_NODE_ID] = [{"_synthetic": True, "i": i} for i in range(IQ_COMMITMENTS_MAX_PER_NODE)]
 
         # Add one more — should trigger a trim
         asyncio.run(_handle_iq_commitment(_IQ_COMMITMENT_MSG, _NODE_ID, writer))

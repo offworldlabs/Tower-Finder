@@ -142,8 +142,7 @@ def _build_node(entry: dict) -> Blah2Node:
         except (TypeError, ValueError) as exc:
             raise Blah2ConfigError(f"{node_id}: {key} is not a number: {raw!r}") from exc
 
-    for key, lo, hi in (("rx_lat", -90, 90), ("tx_lat", -90, 90),
-                        ("rx_lon", -180, 180), ("tx_lon", -180, 180)):
+    for key, lo, hi in (("rx_lat", -90, 90), ("tx_lat", -90, 90), ("rx_lon", -180, 180), ("tx_lon", -180, 180)):
         if not lo <= cfg[key] <= hi:
             raise Blah2ConfigError(f"{node_id}: {key}={cfg[key]} out of range [{lo}, {hi}]")
     if cfg["fc_hz"] <= 0 or cfg["fs_hz"] <= 0:
@@ -198,15 +197,17 @@ def load_nodes(path: Path | None = None) -> list[Blah2Node]:
         if node.detection_url in seen_urls:
             log.error(
                 "blah2_bridge: skipping %s — detection_url %s already used by another node",
-                node.node_id, node.detection_url,
+                node.node_id,
+                node.detection_url,
             )
             continue
         seen_ids.add(node.node_id)
         seen_urls.add(node.detection_url)
         nodes.append(node)
 
-    log.info("blah2_bridge: loaded %d node(s) from %s: %s",
-             len(nodes), path, ", ".join(n.node_id for n in nodes) or "(none)")
+    log.info(
+        "blah2_bridge: loaded %d node(s) from %s: %s", len(nodes), path, ", ".join(n.node_id for n in nodes) or "(none)"
+    )
     for node in nodes:
         register_task(task_key(node.node_id), BRIDGE_STALE_INTERVAL_S)
     return nodes
@@ -214,9 +215,7 @@ def load_nodes(path: Path | None = None) -> list[Blah2Node]:
 
 def _register_node(node: Blah2Node):
     """Register a node in state as a real (non-synthetic) connected node."""
-    cfg_hash = hashlib.sha256(
-        json.dumps(node.config, sort_keys=True).encode()
-    ).hexdigest()[:16]
+    cfg_hash = hashlib.sha256(json.dumps(node.config, sort_keys=True).encode()).hexdigest()[:16]
     with state.connected_nodes_lock:
         state.connected_nodes[node.node_id] = {
             "config_hash": cfg_hash,
@@ -259,15 +258,17 @@ def _convert_frame(raw: dict, node_id: str) -> dict | None:
         lat = entry.get("lat") or entry.get("latitude")
         lon = entry.get("lon") or entry.get("longitude")
         if lat and lon and math.isfinite(lat) and math.isfinite(lon):
-            adsb_out.append({
-                "hex": entry.get("hex") or entry.get("icao"),
-                "lat": lat,
-                "lon": lon,
-                "alt_baro": entry.get("alt_baro") or entry.get("altitude", 0),
-                "gs": entry.get("gs") or entry.get("speed", 0),
-                "track": entry.get("track") or entry.get("heading", 0),
-                "flight": entry.get("flight") or entry.get("callsign", ""),
-            })
+            adsb_out.append(
+                {
+                    "hex": entry.get("hex") or entry.get("icao"),
+                    "lat": lat,
+                    "lon": lon,
+                    "alt_baro": entry.get("alt_baro") or entry.get("altitude", 0),
+                    "gs": entry.get("gs") or entry.get("speed", 0),
+                    "track": entry.get("track") or entry.get("heading", 0),
+                    "flight": entry.get("flight") or entry.get("callsign", ""),
+                }
+            )
         else:
             adsb_out.append(None)
 
@@ -300,15 +301,16 @@ async def blah2_bridge_task(node: Blah2Node):
                 frame = _convert_frame(raw, node.node_id)
                 if frame is not None:
                     ts_ms = raw.get("timestamp", 0)
-                    if ts_ms != last_ts:   # skip duplicate frames
+                    if ts_ms != last_ts:  # skip duplicate frames
                         last_ts = ts_ms
                         # Update heartbeat timestamp
                         if node.node_id in state.connected_nodes:
                             from datetime import datetime, timezone
+
                             with state.connected_nodes_lock:
-                                state.connected_nodes[node.node_id]["last_heartbeat"] = (
-                                    datetime.now(timezone.utc).isoformat()
-                                )
+                                state.connected_nodes[node.node_id]["last_heartbeat"] = datetime.now(
+                                    timezone.utc
+                                ).isoformat()
                         try:
                             state.frame_queue.put_nowait((node.node_id, frame))
                         except Exception:
@@ -324,7 +326,10 @@ async def blah2_bridge_task(node: Blah2Node):
                 if failures >= MAX_FAILURES:
                     log.warning(
                         "blah2_bridge[%s]: %d consecutive failures (%s), backing off %ds",
-                        node.node_id, failures, exc, RECONNECT_DELAY_S,
+                        node.node_id,
+                        failures,
+                        exc,
+                        RECONNECT_DELAY_S,
                     )
                     # Mark node as degraded but don't remove it
                     if node.node_id in state.connected_nodes:

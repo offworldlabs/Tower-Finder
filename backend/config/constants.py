@@ -8,15 +8,15 @@ retina_tracker YAML config stays separate (loaded at runtime via config.yaml).
 """
 
 # ── Physics ──────────────────────────────────────────────────────────────────
-C_KM_US = 0.299792458                  # Speed of light (km/µs)
-R_EARTH_KM = 6371.0                    # Mean Earth radius (km)
-FT_TO_M = 0.3048                       # Feet → metres
+C_KM_US = 0.299792458  # Speed of light (km/µs)
+R_EARTH_KM = 6371.0  # Mean Earth radius (km)
+FT_TO_M = 0.3048  # Feet → metres
 
 # ── Association gates ────────────────────────────────────────────────────────
-DELAY_MATCH_THRESHOLD_US = 15.0        # Bistatic delay tolerance for matching
-ASSOC_GRID_STEP_KM = 3.0              # Overlap zone grid resolution (km)
-ASSOC_MIN_INTERVAL_S = 30.0           # Per-node association rate limit (s)
-ASSOC_MAX_NEIGHBORS = 50              # CPU budget cap for neighbor checks
+DELAY_MATCH_THRESHOLD_US = 15.0  # Bistatic delay tolerance for matching
+ASSOC_GRID_STEP_KM = 3.0  # Overlap zone grid resolution (km)
+ASSOC_MIN_INTERVAL_S = 30.0  # Per-node association rate limit (s)
+ASSOC_MAX_NEIGHBORS = 50  # CPU budget cap for neighbor checks
 # Track pairings emitted per association round when the constant-velocity fit
 # is deferred to the solver worker, which is the production configuration.
 # Distinct from the associator's inline-fit budget (8): that one bounds ~86 ms
@@ -49,10 +49,10 @@ N2_TRACK_ASSOCIATION = True
 # and neither can gate it.  A pairing of two *confirmed single-node tracks*
 # supplies 4K measurements against 6 unknowns instead, and the constant-velocity
 # fit over them produces a real chi2.  See retina_analytics.association.
-N2_CONFIRM_CHI2_MAX = 2.0             # chi2/dof ceiling for an n=2 track pairing
-N2_CONFIRM_MIN_SPAN_S = 12.0          # Observation span before a pairing is fitted
-N2_CONFIRM_MIN_EPOCHS = 4             # Floor on samples; span is the real gate
-N2_TRACK_HISTORY_MAX = 20             # Per-node track samples fed to the fit
+N2_CONFIRM_CHI2_MAX = 2.0  # chi2/dof ceiling for an n=2 track pairing
+N2_CONFIRM_MIN_SPAN_S = 12.0  # Observation span before a pairing is fitted
+N2_CONFIRM_MIN_EPOCHS = 4  # Floor on samples; span is the real gate
+N2_TRACK_HISTORY_MAX = 20  # Per-node track samples fed to the fit
 
 # Oldest ADS-B fix still usable as a coverage calibration point.  At 250 m/s a
 # 10 s fix is 2.5 km stale, which is already coarse against a 5°/72-bin polar
@@ -63,31 +63,31 @@ N2_TRACK_HISTORY_MAX = 20             # Per-node track samples fed to the fit
 CAL_MAX_ADSB_AGE_S = 10.0
 
 # ── Default antenna parameters ───────────────────────────────────────────────
-YAGI_BEAM_WIDTH_DEG = 41.0            # Default half-power beamwidth (°)
-YAGI_MAX_RANGE_KM = 50.0             # Default Yagi max range (km)
+YAGI_BEAM_WIDTH_DEG = 41.0  # Default half-power beamwidth (°)
+YAGI_MAX_RANGE_KM = 50.0  # Default Yagi max range (km)
 
 # ── Track & history limits ───────────────────────────────────────────────────
-TRACK_HISTORY_MAX = 60                # Rolling position buffer per aircraft
-GROUND_TRUTH_MAX = 120                # Ground truth trail length
-ANOMALY_LOG_MAX = 500                 # Max anomaly log entries
+TRACK_HISTORY_MAX = 60  # Rolling position buffer per aircraft
+GROUND_TRUTH_MAX = 120  # Ground truth trail length
+ANOMALY_LOG_MAX = 500  # Max anomaly log entries
 
 # ── Flush & refresh intervals (seconds) ──────────────────────────────────────
-AIRCRAFT_FLUSH_INTERVAL_S = 1.0       # aircraft.json write + WS broadcast cadence (1 Hz)
-ANALYTICS_REFRESH_INTERVAL_S = 30     # Background analytics recompute
+AIRCRAFT_FLUSH_INTERVAL_S = 1.0  # aircraft.json write + WS broadcast cadence (1 Hz)
+ANALYTICS_REFRESH_INTERVAL_S = 30  # Background analytics recompute
 # Detection archive batch write — one Parquet file per node per hour.
 # At ~1 fps that's ~3600 frames/hour ≈ 300 KB zstd Parquet, which is the
 # minimum size we want for analytics queries; smaller files (the previous
 # 30 s cadence) create the small-files problem at scale.
 ARCHIVE_FLUSH_INTERVAL_S = 3600
-ARCHIVE_BATCH_MAX = 10000             # Safety cap; should not normally trigger
-TRACK_ARCHIVE_FLUSH_INTERVAL_S = 60   # Multi-node solver track archive flush cadence
+ARCHIVE_BATCH_MAX = 10000  # Safety cap; should not normally trigger
+TRACK_ARCHIVE_FLUSH_INTERVAL_S = 60  # Multi-node solver track archive flush cadence
 
 # ── Archive lifecycle (R2 offload + local disk cleanup) ──────────────────────
-ARCHIVE_OFFLOAD_AGE_DAYS = 1          # Upload to R2 after this many days
+ARCHIVE_OFFLOAD_AGE_DAYS = 1  # Upload to R2 after this many days
 # Must be > ARCHIVE_OFFLOAD_AGE_DAYS. Files land in R2 after 1 day, then local
 # copies are deleted after 3 days (2-day retry window if R2 upload fails).
-ARCHIVE_RETENTION_DAYS = 3            # Delete local copy 3 days after creation
-ARCHIVE_LIFECYCLE_INTERVAL_S = 3600   # Run lifecycle check every hour
+ARCHIVE_RETENTION_DAYS = 3  # Delete local copy 3 days after creation
+ARCHIVE_LIFECYCLE_INTERVAL_S = 3600  # Run lifecycle check every hour
 
 # ── users.db backup to R2 ────────────────────────────────────────────────────
 # Daily snapshot via VACUUM INTO + upload to R2 under backups/users-db/.
@@ -95,13 +95,13 @@ ARCHIVE_LIFECYCLE_INTERVAL_S = 3600   # Run lifecycle check every hour
 # realised-too-late deletion (typical "I revoked the wrong invite" scenario
 # manifests within a week), short enough that the bucket doesn't grow
 # unbounded as the user table itself does.
-USERS_DB_BACKUP_INTERVAL_S = 86400    # Once per day
-USERS_DB_BACKUP_RETENTION_DAYS = 30   # Keep last N daily snapshots in R2
+USERS_DB_BACKUP_INTERVAL_S = 86400  # Once per day
+USERS_DB_BACKUP_RETENTION_DAYS = 30  # Keep last N daily snapshots in R2
 
 # ── Geolocation solver ───────────────────────────────────────────────────────
-GEO_INTERVAL_S = 10.0                 # Per-track solver rate limit (seconds)
-PRUNE_INTERVAL_S = 60.0               # Stale-entry pruning interval (seconds)
-STALE_TRACK_S = 120.0                 # Remove tracks not updated in this window
+GEO_INTERVAL_S = 10.0  # Per-track solver rate limit (seconds)
+PRUNE_INTERVAL_S = 60.0  # Stale-entry pruning interval (seconds)
+STALE_TRACK_S = 120.0  # Remove tracks not updated in this window
 
 # How long a track with no fresh detections keeps appearing in aircraft.json.
 # Distinct from STALE_TRACK_S, which controls when the tracker *forgets* the
@@ -137,41 +137,41 @@ GT_DISPLAY_STALE_S = 10.0
 TRAIL_STALE_S = 300.0
 
 # ── Target classification (drone detection) ──────────────────────────────────
-DRONE_ALTITUDE_BOUNDS = [0, 500]       # metres ASL
-DRONE_VELOCITY_BOUNDS = [-60, 60]      # m/s per component
-DRONE_INITIAL_ALT_M = 80              # Solver initial guess altitude (m)
-DRONE_MAX_SPEED_MS = 60.0             # Drone classification speed threshold (m/s)
-DRONE_MAX_ALT_M = 600.0               # Drone classification altitude threshold (m)
+DRONE_ALTITUDE_BOUNDS = [0, 500]  # metres ASL
+DRONE_VELOCITY_BOUNDS = [-60, 60]  # m/s per component
+DRONE_INITIAL_ALT_M = 80  # Solver initial guess altitude (m)
+DRONE_MAX_SPEED_MS = 60.0  # Drone classification speed threshold (m/s)
+DRONE_MAX_ALT_M = 600.0  # Drone classification altitude threshold (m)
 
 # ── Frame processor cadences ─────────────────────────────────────────────────
-ARC_REFRESH_S = 1.0                   # Detection arc recompute cadence (s) — keep
-                                      # short so a deleted track's arc stops
-                                      # being broadcast quickly; otherwise the
-                                      # cached entry lingers up to this many
-                                      # seconds after the underlying detection
-                                      # ends, producing visible ghost arcs.
-GT_REFRESH_S = 5.0                    # Ground-truth snapshot refresh cadence (s)
+ARC_REFRESH_S = 1.0  # Detection arc recompute cadence (s) — keep
+# short so a deleted track's arc stops
+# being broadcast quickly; otherwise the
+# cached entry lingers up to this many
+# seconds after the underlying detection
+# ends, producing visible ghost arcs.
+GT_REFRESH_S = 5.0  # Ground-truth snapshot refresh cadence (s)
 
 # ── Periodic task intervals ──────────────────────────────────────────────────
-REPUTATION_INTERVAL_S = 60            # Reputation evaluator sleep (s)
-ADSB_TRUTH_INTERVAL_S = 120           # ADS-B truth fetcher sleep (s)
-ADSB_BACKOFF_S = 300                  # Rate-limit backoff (s)
-OPENSKY_BUFFER_DEG = 1.0              # lat/lon margin for OpenSky bbox (degrees)
+REPUTATION_INTERVAL_S = 60  # Reputation evaluator sleep (s)
+ADSB_TRUTH_INTERVAL_S = 120  # ADS-B truth fetcher sleep (s)
+ADSB_BACKOFF_S = 300  # Rate-limit backoff (s)
+OPENSKY_BUFFER_DEG = 1.0  # lat/lon margin for OpenSky bbox (degrees)
 
 # ── Admin / ops ──────────────────────────────────────────────────────────────
-EVENT_LOG_MAX = 2000                  # Event log buffer capacity
-NODE_OFFLINE_THRESHOLD_S = 120        # Heartbeat timeout → offline (s)
-NODE_HEALTH_CHECK_INTERVAL_S = 30     # How often to check node liveness (s)
-STORAGE_CACHE_TTL_S = 300.0           # Archive storage stats cache TTL (s)
-CONFIG_LIVE_CACHE_TTL_S = 60.0        # Live node/tower config cache TTL (s)
+EVENT_LOG_MAX = 2000  # Event log buffer capacity
+NODE_OFFLINE_THRESHOLD_S = 120  # Heartbeat timeout → offline (s)
+NODE_HEALTH_CHECK_INTERVAL_S = 30  # How often to check node liveness (s)
+STORAGE_CACHE_TTL_S = 300.0  # Archive storage stats cache TTL (s)
+CONFIG_LIVE_CACHE_TTL_S = 60.0  # Live node/tower config cache TTL (s)
 
 # ── Chain of custody limits ──────────────────────────────────────────────────
-CHAIN_ENTRIES_MAX_PER_NODE = 500      # Max chain entries per node (rolling)
-IQ_COMMITMENTS_MAX_PER_NODE = 200     # Max IQ commitments per node (rolling)
-RATE_BUCKETS_MAX_IPS = 10_000         # Max unique IPs in rate limiter
+CHAIN_ENTRIES_MAX_PER_NODE = 500  # Max chain entries per node (rolling)
+IQ_COMMITMENTS_MAX_PER_NODE = 200  # Max IQ commitments per node (rolling)
+RATE_BUCKETS_MAX_IPS = 10_000  # Max unique IPs in rate limiter
 
 # ── blah2 bridge ─────────────────────────────────────────────────────────────
-BLAH2_POLL_INTERVAL_S = 1.0           # blah2 API poll cadence (s)
-BLAH2_STALE_THRESHOLD_S = 10.0        # Ignore frames older than this (s)
-BLAH2_RECONNECT_DELAY_S = 5.0         # Backoff after failures (s)
-BLAH2_MAX_FAILURES = 5                # Failures before backing off
+BLAH2_POLL_INTERVAL_S = 1.0  # blah2 API poll cadence (s)
+BLAH2_STALE_THRESHOLD_S = 10.0  # Ignore frames older than this (s)
+BLAH2_RECONNECT_DELAY_S = 5.0  # Backoff after failures (s)
+BLAH2_MAX_FAILURES = 5  # Failures before backing off

@@ -26,6 +26,7 @@ def client():
 
 # ── /api/auth/me + /api/auth/logout ──────────────────────────────────────────
 
+
 class TestMeEndpoint:
     def test_me_returns_anonymous_admin_in_test_mode(self, client):
         """AUTH_BYPASS=True (test env) → /me returns anonymous admin."""
@@ -46,6 +47,7 @@ class TestMeEndpoint:
 
 
 # ── /api/auth/me/claim-codes ─────────────────────────────────────────────────
+
 
 class TestClaimCodeRoutes:
     def test_create_claim_code_returns_code(self, client):
@@ -108,6 +110,7 @@ class TestClaimCodeRoutes:
 
 # ── /api/auth/me/nodes ────────────────────────────────────────────────────────
 
+
 class TestMyNodes:
     def test_my_nodes_empty_when_no_ownership(self, client):
         r = client.get("/api/auth/me/nodes")
@@ -142,6 +145,7 @@ class TestMyNodes:
 
 
 # ── OAuth state token (CSRF + open-redirect) ──────────────────────────────────
+
 
 class TestOAuthStateToken:
     def test_valid_state_roundtrip(self):
@@ -183,6 +187,7 @@ class TestOAuthStateToken:
 
 # ── /api/admin/invites ────────────────────────────────────────────────────────
 
+
 class TestAdminInviteRoutes:
     def test_list_invites_empty(self, client):
         r = client.get("/api/admin/invites")
@@ -211,17 +216,13 @@ class TestAdminInviteRoutes:
         assert r.status_code == 400
 
     def test_revoke_invite(self, client):
-        token = client.post(
-            "/api/admin/invites", json={"email": "d@example.com", "role": "user"}
-        ).json()["token"]
+        token = client.post("/api/admin/invites", json={"email": "d@example.com", "role": "user"}).json()["token"]
         r = client.delete(f"/api/admin/invites/{token}")
         assert r.status_code == 200
         assert r.json() == {"ok": True}
 
     def test_revoke_invite_removes_from_list(self, client):
-        token = client.post(
-            "/api/admin/invites", json={"email": "e@example.com", "role": "user"}
-        ).json()["token"]
+        token = client.post("/api/admin/invites", json={"email": "e@example.com", "role": "user"}).json()["token"]
         client.delete(f"/api/admin/invites/{token}")
         invites = client.get("/api/admin/invites").json()
         assert not any(i["token"] == token for i in invites)
@@ -232,6 +233,7 @@ class TestAdminInviteRoutes:
 
 
 # ── /api/admin/node-owners + /api/admin/nodes/{id}/owner ─────────────────────
+
 
 class TestAdminNodeOwnerRoutes:
     def test_list_node_owners_empty(self, client):
@@ -265,6 +267,7 @@ class TestAdminNodeOwnerRoutes:
 
     def test_set_node_owner_nonexistent_user_returns_404(self, client):
         import uuid
+
         r = client.put(
             "/api/admin/nodes/some-node/owner",
             json={"user_id": str(uuid.uuid4())},

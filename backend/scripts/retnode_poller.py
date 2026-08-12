@@ -41,9 +41,11 @@ from datetime import datetime, timezone
 
 try:
     import requests as _requests
+
     _HAS_REQUESTS = True
 except ImportError:
     import urllib.request as _urllib_request
+
     _HAS_REQUESTS = False
 
 _UA = "retnode-poller/1.0"
@@ -143,13 +145,8 @@ def _build_retina_config(
 
 def _config_hash(cfg: dict) -> str:
     """Short deterministic hash of config (excludes display-only fields)."""
-    stable = {
-        k: v for k, v in cfg.items()
-        if k not in ("source_url", "source_config")
-    }
-    return hashlib.sha256(
-        json.dumps(stable, sort_keys=True).encode()
-    ).hexdigest()[:16]
+    stable = {k: v for k, v in cfg.items() if k not in ("source_url", "source_config")}
+    return hashlib.sha256(json.dumps(stable, sort_keys=True).encode()).hexdigest()[:16]
 
 
 # ── TCP helpers ───────────────────────────────────────────────────────────────
@@ -168,7 +165,7 @@ def _tcp_connect(host: str, port: int) -> socket.socket:
             return sock
         except (TimeoutError, ConnectionRefusedError, OSError) as exc:
             attempt += 1
-            wait = min(2 ** attempt, 30)
+            wait = min(2**attempt, 30)
             print(
                 f"[poller] TCP connect failed ({exc}), retrying in {wait}s...",
                 file=sys.stderr,
@@ -207,29 +204,35 @@ def _perform_handshake(sock: socket.socket, cfg: dict, cfg_hash: str) -> bool:
     """Perform RETINA HELLO → CONFIG → wait CONFIG_ACK handshake."""
     node_id = cfg["node_id"]
 
-    _send_msg(sock, {
-        "type": "HELLO",
-        "node_id": node_id,
-        "version": RETINA_VERSION,
-        "is_synthetic": False,
-        "capabilities": {
-            "detection": True,
-            "adsb_correlation": True,
-            "doppler": True,
-            "config_hash": True,
-            "heartbeat": True,
-            "chain_of_custody": False,
+    _send_msg(
+        sock,
+        {
+            "type": "HELLO",
+            "node_id": node_id,
+            "version": RETINA_VERSION,
+            "is_synthetic": False,
+            "capabilities": {
+                "detection": True,
+                "adsb_correlation": True,
+                "doppler": True,
+                "config_hash": True,
+                "heartbeat": True,
+                "chain_of_custody": False,
+            },
         },
-    })
+    )
     print(f"[poller]   → HELLO (node_id={node_id})", file=sys.stderr)
 
-    _send_msg(sock, {
-        "type": "CONFIG",
-        "node_id": node_id,
-        "config_hash": cfg_hash,
-        "config": cfg,
-        "is_synthetic": False,
-    })
+    _send_msg(
+        sock,
+        {
+            "type": "CONFIG",
+            "node_id": node_id,
+            "config_hash": cfg_hash,
+            "config": cfg,
+            "is_synthetic": False,
+        },
+    )
     print(f"[poller]   → CONFIG (hash={cfg_hash})", file=sys.stderr)
 
     for attempt in range(3):
@@ -246,12 +249,15 @@ def _perform_handshake(sock: socket.socket, cfg: dict, cfg_hash: str) -> bool:
                 f"[poller]   ! CONFIG_ACK timeout (attempt {attempt + 1}/3), resending...",
                 file=sys.stderr,
             )
-            _send_msg(sock, {
-                "type": "CONFIG",
-                "node_id": node_id,
-                "config_hash": cfg_hash,
-                "config": cfg,
-            })
+            _send_msg(
+                sock,
+                {
+                    "type": "CONFIG",
+                    "node_id": node_id,
+                    "config_hash": cfg_hash,
+                    "config": cfg,
+                },
+            )
 
     print("[poller]   ! Handshake failed after 3 attempts", file=sys.stderr)
     return False
@@ -270,13 +276,16 @@ def _heartbeat_loop(
     print(f"[poller] heartbeat thread started (interval={HEARTBEAT_INTERVAL_S}s)", file=sys.stderr)
     while not stop_event.wait(HEARTBEAT_INTERVAL_S):
         try:
-            _send_msg(sock, {
-                "type": "HEARTBEAT",
-                "node_id": node_id,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "config_hash": cfg_hash,
-                "status": "active",
-            })
+            _send_msg(
+                sock,
+                {
+                    "type": "HEARTBEAT",
+                    "node_id": node_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "config_hash": cfg_hash,
+                    "status": "active",
+                },
+            )
             print("[poller]   → HEARTBEAT sent", file=sys.stderr)
         except (BrokenPipeError, ConnectionResetError, OSError) as exc:
             print(f"[poller] heartbeat error: {exc}", file=sys.stderr)
@@ -316,12 +325,15 @@ def _listener_loop(
                 if msg.get("type") == "CONFIG_REQUEST":
                     print("[poller]   ← CONFIG_REQUEST — resending config", file=sys.stderr)
                     try:
-                        _send_msg(sock, {
-                            "type": "CONFIG",
-                            "node_id": node_id,
-                            "config_hash": cfg_hash,
-                            "config": cfg,
-                        })
+                        _send_msg(
+                            sock,
+                            {
+                                "type": "CONFIG",
+                                "node_id": node_id,
+                                "config_hash": cfg_hash,
+                                "config": cfg,
+                            },
+                        )
                     except (BrokenPipeError, ConnectionResetError, OSError):
                         break
         except (ConnectionResetError, OSError):

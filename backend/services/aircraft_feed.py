@@ -72,9 +72,7 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
         "lon": round(r["lon"], 5),
         # Real age of the solve, not 0 — see the matching note on the tracker
         # path.  Guarded because timestamp_ms is absent in some fixtures.
-        "seen": round(max(0.0, time.time() - r["timestamp_ms"] / 1000.0), 1)
-        if r.get("timestamp_ms")
-        else 0,
+        "seen": round(max(0.0, time.time() - r["timestamp_ms"] / 1000.0), 1) if r.get("timestamp_ms") else 0,
         "messages": r["n_measurements"],
         "rssi": -round(1.0 / max(r.get("rms_delay", 1), 0.01), 1),
         "multinode": True,
@@ -120,7 +118,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     stale_geo = []
     with state.geo_aircraft_lock:
         for ac_hex, (track, cfg) in list(state.active_geo_aircraft.items()):
-            if (now - getattr(track, 'wall_clock_ts', 0)) > _STALE_TRACK_S_LOCAL:
+            if (now - getattr(track, "wall_clock_ts", 0)) > _STALE_TRACK_S_LOCAL:
                 stale_geo.append(ac_hex)
                 continue
             if ac_hex in seen_hex:
@@ -140,7 +138,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
 
     # 2. Default pipeline — catch any tracks not in the pre-aggregated dict
     for track in list(default_pipeline.geolocated_tracks.values()):
-        if (now - getattr(track, 'wall_clock_ts', 0)) > _STALE_TRACK_S_LOCAL:
+        if (now - getattr(track, "wall_clock_ts", 0)) > _STALE_TRACK_S_LOCAL:
             continue
         ac_hex = track.adsb_hex or track.hex_id
         if ac_hex in seen_hex:
@@ -165,8 +163,10 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         vel_north_m_s = r.get("vel_north", 0.0)
         if elapsed > 0.0 and (vel_east_m_s != 0.0 or vel_north_m_s != 0.0):
             _dr_lat, _dr_lon = offset_latlon_m(
-                ac["lat"], ac["lon"],
-                east_m=vel_east_m_s * elapsed, north_m=vel_north_m_s * elapsed,
+                ac["lat"],
+                ac["lon"],
+                east_m=vel_east_m_s * elapsed,
+                north_m=vel_north_m_s * elapsed,
             )
             ac["lat"], ac["lon"] = round(_dr_lat, 5), round(_dr_lon, 5)
         if ac["hex"] not in seen_hex:
@@ -228,12 +228,14 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
                 arc = _build_single_node_arc(delay_us, node_cfg)
                 if not arc or len(arc) < 2:
                     continue
-                pending_arcs.append({
-                    "ambiguity_arc": arc,
-                    "node_id": node_cfg.get("node_id"),
-                    "doppler_hz": round(latest.get("doppler", 0), 2),
-                    "target_class": getattr(track, "target_class", None),
-                })
+                pending_arcs.append(
+                    {
+                        "ambiguity_arc": arc,
+                        "node_id": node_cfg.get("node_id"),
+                        "doppler_hz": round(latest.get("doppler", 0), 2),
+                        "target_class": getattr(track, "target_class", None),
+                    }
+                )
         _cached_pending_arcs = pending_arcs
     else:
         pending_arcs = _cached_pending_arcs
@@ -242,11 +244,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     global _cached_gt_snapshot, _cached_gt_meta, _gt_last_ts
     if now - _gt_last_ts >= _GT_REFRESH_S:
         _gt_last_ts = now
-        _cached_gt_snapshot = {
-            h: list(trail)[-30:]
-            for h, trail in list(state.ground_truth_trails.items())
-            if trail
-        }
+        _cached_gt_snapshot = {h: list(trail)[-30:] for h, trail in list(state.ground_truth_trails.items()) if trail}
         _cached_gt_meta = dict(state.ground_truth_meta)
 
     # Evict arc-cache entries for tracks not present this build, bounding the

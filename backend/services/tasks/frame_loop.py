@@ -15,7 +15,11 @@ async def frame_processor_loop(default_pipeline):
         node_id, frame = await state.frame_queue.get()
         try:
             await loop.run_in_executor(
-                None, process_one_frame, node_id, frame, default_pipeline,
+                None,
+                process_one_frame,
+                node_id,
+                frame,
+                default_pipeline,
             )
             state.aircraft_dirty = True
             state.bump_counter("frames_processed")

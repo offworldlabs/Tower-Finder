@@ -41,10 +41,20 @@ def test_schema_columns_present(tmp_path: Path):
     key = tw.write_tracks_parquet(records=[_record()], base_dir=tmp_path, write_ts=ts)
     cols = set(pq.read_table(tmp_path / key).column_names)
     expected = {
-        "solve_ts_ms", "frame_ts_ms", "lat", "lon", "alt_m",
-        "vel_east_ms", "vel_north_ms", "vel_up_ms",
-        "n_nodes", "contributing_node_ids", "adsb_hex",
-        "rms_delay_us", "rms_doppler_hz", "target_class",
+        "solve_ts_ms",
+        "frame_ts_ms",
+        "lat",
+        "lon",
+        "alt_m",
+        "vel_east_ms",
+        "vel_north_ms",
+        "vel_up_ms",
+        "n_nodes",
+        "contributing_node_ids",
+        "adsb_hex",
+        "rms_delay_us",
+        "rms_doppler_hz",
+        "target_class",
     }
     assert expected <= cols
 
@@ -132,6 +142,7 @@ def test_solver_hook_appends_to_track_archive_buffer():
         return fake_result
 
     import time as _t
+
     item = ({"n_nodes": 3, "candidates": []}, {}, _t.time())
     sv._process_solver_item(item, fake_solve)
 

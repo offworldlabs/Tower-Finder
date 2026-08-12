@@ -206,13 +206,15 @@ class TestSignatureVerifier:
         sv = SignatureVerifier()
         sv.register_key("test-node-01", crypto.get_public_key_pem())
 
-        payload = canonicalize({
-            "node_id": "test-node-01",
-            "timestamp": 1700000000000,
-            "delay": [1.5, 2.3, 3.1],
-            "doppler": [100.0, -50.0, 200.0],
-            "snr": [12.5, 8.3, 15.7],
-        })
+        payload = canonicalize(
+            {
+                "node_id": "test-node-01",
+                "timestamp": 1700000000000,
+                "delay": [1.5, 2.3, 3.1],
+                "doppler": [100.0, -50.0, 200.0],
+                "snr": [12.5, 8.3, 15.7],
+            }
+        )
         p_hash = crypto.hash_sha256(payload)
         p_sig = crypto.sign_hex(p_hash.encode("utf-8"))
         assert sv.verify_packet("test-node-01", p_hash, p_sig)
@@ -221,13 +223,15 @@ class TestSignatureVerifier:
         sv = SignatureVerifier()
         sv.register_key("test-node-01", crypto.get_public_key_pem())
 
-        payload = canonicalize({
-            "node_id": "test-node-01",
-            "timestamp": 1700000000000,
-            "delay": [1.5, 2.3, 3.1],
-            "doppler": [100.0, -50.0, 200.0],
-            "snr": [12.5, 8.3, 15.7],
-        })
+        payload = canonicalize(
+            {
+                "node_id": "test-node-01",
+                "timestamp": 1700000000000,
+                "delay": [1.5, 2.3, 3.1],
+                "doppler": [100.0, -50.0, 200.0],
+                "snr": [12.5, 8.3, 15.7],
+            }
+        )
         p_hash = crypto.hash_sha256(payload)
         p_sig = crypto.sign_hex(p_hash.encode("utf-8"))
         assert not sv.verify_packet("test-node-01", "0" * 64, p_sig)
@@ -289,8 +293,10 @@ class TestHashChainBuilder:
         chain_dir = str(tmp_path / "chains" / "test-node-01")
         node_config = {"node_id": "test-node-01", "rx_lat": 33.939, "rx_lon": -84.651}
         builder = HashChainBuilder(
-            node_id="test-node-01", crypto=crypto,
-            node_config=node_config, chain_dir=chain_dir,
+            node_id="test-node-01",
+            crypto=crypto,
+            node_config=node_config,
+            chain_dir=chain_dir,
         )
         for i in range(10):
             builder.add_detection(f"hash_{i:04d}")
@@ -318,8 +324,10 @@ class TestHashChainVerifier:
         chain_dir = str(tmp_path / "chains" / "test-node-01")
         node_config = {"node_id": "test-node-01", "rx_lat": 33.939, "rx_lon": -84.651}
         builder = HashChainBuilder(
-            node_id="test-node-01", crypto=crypto,
-            node_config=node_config, chain_dir=chain_dir,
+            node_id="test-node-01",
+            crypto=crypto,
+            node_config=node_config,
+            chain_dir=chain_dir,
         )
         for i in range(10):
             builder.add_detection(f"hash_{i:04d}")
@@ -331,9 +339,7 @@ class TestHashChainVerifier:
 
     @pytest.fixture()
     def verifier(self, crypto):
-        return HashChainVerifier(
-            get_public_key=lambda nid: crypto.get_public_key_pem()
-        )
+        return HashChainVerifier(get_public_key=lambda nid: crypto.get_public_key_pem())
 
     def test_first_entry_valid(self, verifier, chain_entries):
         entry1, _ = chain_entries
@@ -365,8 +371,10 @@ class TestChainRecovery:
         node_config = {"node_id": "test-node-01", "rx_lat": 33.939, "rx_lon": -84.651}
 
         builder = HashChainBuilder(
-            node_id="test-node-01", crypto=crypto,
-            node_config=node_config, chain_dir=chain_dir,
+            node_id="test-node-01",
+            crypto=crypto,
+            node_config=node_config,
+            chain_dir=chain_dir,
         )
         for i in range(10):
             builder.add_detection(f"hash_{i:04d}")
@@ -376,8 +384,10 @@ class TestChainRecovery:
         entry2 = builder.close_hour()
 
         recovered = HashChainBuilder(
-            node_id="test-node-01", crypto=crypto,
-            node_config=node_config, chain_dir=chain_dir,
+            node_id="test-node-01",
+            crypto=crypto,
+            node_config=node_config,
+            chain_dir=chain_dir,
         )
         assert recovered.prev_hash == entry2.entry_hash
 
@@ -390,8 +400,10 @@ class TestEdgeCases:
         chain_dir = str(tmp_path / "chains" / "empty")
         node_config = {"node_id": "test-node-01", "rx_lat": 33.939, "rx_lon": -84.651}
         builder = HashChainBuilder(
-            node_id="test-node-01", crypto=crypto,
-            node_config=node_config, chain_dir=chain_dir,
+            node_id="test-node-01",
+            crypto=crypto,
+            node_config=node_config,
+            chain_dir=chain_dir,
         )
         assert builder.close_hour() is None
 
@@ -435,8 +447,10 @@ class TestModelsSerialization:
         chain_dir = str(tmp_path / "chains" / "test-node-01")
         node_config = {"node_id": "test-node-01", "rx_lat": 33.939, "rx_lon": -84.651}
         builder = HashChainBuilder(
-            node_id="test-node-01", crypto=crypto,
-            node_config=node_config, chain_dir=chain_dir,
+            node_id="test-node-01",
+            crypto=crypto,
+            node_config=node_config,
+            chain_dir=chain_dir,
         )
         for i in range(3):
             builder.add_detection(f"hash_{i:04d}")

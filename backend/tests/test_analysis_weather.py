@@ -51,7 +51,8 @@ def test_fetch_historical_returns_one_row_per_hour(monkeypatch):
     monkeypatch.setattr(weather.httpx, "get", fake_get)
 
     rows = weather.fetch_historical(
-        lat=40.7, lon=-74.0,
+        lat=40.7,
+        lon=-74.0,
         start_dt=datetime(2025, 6, 1, tzinfo=timezone.utc),
         end_dt=datetime(2025, 6, 1, 23, 59, tzinfo=timezone.utc),
     )
@@ -64,9 +65,7 @@ def test_fetch_historical_returns_one_row_per_hour(monkeypatch):
     assert rows[0]["temperature_c"] == 18.4
     assert rows[0]["lat"] == 40.7
     assert rows[0]["lon"] == -74.0
-    expected_ms = int(
-        datetime(2025, 6, 1, 0, 0, tzinfo=timezone.utc).timestamp() * 1000
-    )
+    expected_ms = int(datetime(2025, 6, 1, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
     assert rows[0]["sample_ts_ms"] == expected_ms
     assert rows[2]["weather_code"] == 3
 
@@ -74,12 +73,14 @@ def test_fetch_historical_returns_one_row_per_hour(monkeypatch):
 def test_fetch_historical_filters_to_requested_window(monkeypatch):
     """Hours outside the requested [start, end] interval are dropped."""
     monkeypatch.setattr(
-        weather.httpx, "get",
+        weather.httpx,
+        "get",
         lambda url, params=None, timeout=30.0: _FakeResponse(_archive_payload()),
     )
 
     rows = weather.fetch_historical(
-        lat=40.7, lon=-74.0,
+        lat=40.7,
+        lon=-74.0,
         start_dt=datetime(2025, 6, 1, 1, 0, tzinfo=timezone.utc),
         end_dt=datetime(2025, 6, 1, 1, 30, tzinfo=timezone.utc),
     )
@@ -91,11 +92,13 @@ def test_fetch_historical_filters_to_requested_window(monkeypatch):
 
 def test_fetch_historical_returns_empty_on_http_error(monkeypatch):
     monkeypatch.setattr(
-        weather.httpx, "get",
+        weather.httpx,
+        "get",
         lambda url, params=None, timeout=30.0: _FakeResponse({}, status=503),
     )
     rows = weather.fetch_historical(
-        lat=0.0, lon=0.0,
+        lat=0.0,
+        lon=0.0,
         start_dt=datetime(2025, 6, 1, tzinfo=timezone.utc),
         end_dt=datetime(2025, 6, 2, tzinfo=timezone.utc),
     )
@@ -104,11 +107,13 @@ def test_fetch_historical_returns_empty_on_http_error(monkeypatch):
 
 def test_fetch_historical_returns_empty_on_payload_missing_hourly(monkeypatch):
     monkeypatch.setattr(
-        weather.httpx, "get",
+        weather.httpx,
+        "get",
         lambda url, params=None, timeout=30.0: _FakeResponse({"latitude": 0.0}),
     )
     rows = weather.fetch_historical(
-        lat=0.0, lon=0.0,
+        lat=0.0,
+        lon=0.0,
         start_dt=datetime(2025, 6, 1, tzinfo=timezone.utc),
         end_dt=datetime(2025, 6, 2, tzinfo=timezone.utc),
     )
@@ -118,11 +123,13 @@ def test_fetch_historical_returns_empty_on_payload_missing_hourly(monkeypatch):
 def test_fetch_historical_handles_naive_datetimes(monkeypatch):
     """Naive datetimes are treated as UTC."""
     monkeypatch.setattr(
-        weather.httpx, "get",
+        weather.httpx,
+        "get",
         lambda url, params=None, timeout=30.0: _FakeResponse(_archive_payload()),
     )
     rows = weather.fetch_historical(
-        lat=40.7, lon=-74.0,
+        lat=40.7,
+        lon=-74.0,
         start_dt=datetime(2025, 6, 1),  # naive
         end_dt=datetime(2025, 6, 1, 23, 59),
     )
@@ -131,7 +138,8 @@ def test_fetch_historical_handles_naive_datetimes(monkeypatch):
 
 def test_fetch_historical_returns_empty_when_end_before_start(monkeypatch):
     rows = weather.fetch_historical(
-        lat=0.0, lon=0.0,
+        lat=0.0,
+        lon=0.0,
         start_dt=datetime(2025, 6, 2, tzinfo=timezone.utc),
         end_dt=datetime(2025, 6, 1, tzinfo=timezone.utc),
     )

@@ -23,12 +23,10 @@ jobs:
           cache-dependency-path: backend/requirements-dev.txt
       - run: pip install -r requirements-dev.txt
       - run: pip install ../libs/retina-geolocator ../libs/retina-tracker ../libs/retina-custody ../libs/retina-simulation ../libs/retina-analytics
-      - name: Lint (ruff)
-        run: ruff check .
       # working-directory overrides the job default of `backend`: pre-commit
       # reads .pre-commit-config.yaml from the repo root. args: [backend] in
-      # that config is what scopes the scan.
-      - name: Dead code (vulture)
+      # that config is what scopes both ops hooks.
+      - name: Lint (pre-commit)
         working-directory: .
         run: pre-commit run --all-files --show-diff-on-failure
       - run: pytest tests/ -v --tb=short -m "not external"

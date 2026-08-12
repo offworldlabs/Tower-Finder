@@ -18,8 +18,7 @@ from core import state  # noqa: E402
 from main import app  # noqa: E402
 from services import node_retirement  # noqa: E402
 
-_CFG = dict(rx_lat=34.85, rx_lon=-82.40, tx_lat=34.90, tx_lon=-82.30,
-            max_range_km=50, max_bistatic_range_km=50)
+_CFG = dict(rx_lat=34.85, rx_lon=-82.40, tx_lat=34.90, tx_lon=-82.30, max_range_km=50, max_bistatic_range_km=50)
 
 
 @pytest.fixture()
@@ -32,8 +31,10 @@ def client():
 def fleet():
     """One connected node and one that has left, across every store."""
     saved = (
-        dict(state.connected_nodes), dict(state.node_identities),
-        dict(state.chain_entries), dict(state.iq_commitments),
+        dict(state.connected_nodes),
+        dict(state.node_identities),
+        dict(state.chain_entries),
+        dict(state.iq_commitments),
     )
     state.connected_nodes.clear()
     state.node_identities.clear()

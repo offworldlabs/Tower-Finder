@@ -2,7 +2,6 @@
 Unit tests for metro filtering and orchestrator helpers.
 """
 
-
 from retina_simulation.orchestrator import _KNOWN_METROS, _parse_metro_areas
 
 
@@ -91,9 +90,12 @@ class TestArcBuilderWithDelay:
         from services.frame_processor import _build_single_node_arc
 
         node_cfg = {
-            "rx_lat": 33.0, "rx_lon": -84.0,
-            "tx_lat": 33.5, "tx_lon": -84.5,
-            "beam_width_deg": 90, "max_range_km": 100,
+            "rx_lat": 33.0,
+            "rx_lon": -84.0,
+            "tx_lat": 33.5,
+            "tx_lon": -84.5,
+            "beam_width_deg": 90,
+            "max_range_km": 100,
         }
         assert _build_single_node_arc(0.0, node_cfg) is None
         assert _build_single_node_arc(-5.0, node_cfg) is None

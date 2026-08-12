@@ -41,13 +41,16 @@ _tcp_connections_lock = asyncio.Lock()
 # starving the default executor used by frame processor workers.
 _registration_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="node-reg")
 
+
 # Lazy import to avoid circular dependency — routes.admin must be importable first
 def _log_event(category: str, message: str, severity: str = "info", meta: dict | None = None):
     try:
         from routes.admin import log_event
+
         log_event(category, message, severity, meta)
     except Exception:
         logging.debug("event log write failed", exc_info=True)
+
 
 RETINA_PROTOCOL_VERSION = "1.0"
 SERVER_CAPABILITIES = {
@@ -178,6 +181,7 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                     if claim_code:
                         try:
                             from core.auth import consume_claim_code, get_node_owner
+
                             existing_owner = await get_node_owner(node_id)
                             if existing_owner is None:
                                 owner_uid = await consume_claim_code(claim_code, node_id)
@@ -189,33 +193,47 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                                         "info",
                                         {"node_id": node_id, "user_id": owner_uid},
                                     )
-                                    await _send_msg(writer, {
-                                        "type": "CLAIM_ACK",
-                                        "node_id": node_id,
-                                        "user_id": owner_uid,
-                                    })
+                                    await _send_msg(
+                                        writer,
+                                        {
+                                            "type": "CLAIM_ACK",
+                                            "node_id": node_id,
+                                            "user_id": owner_uid,
+                                        },
+                                    )
                                 else:
                                     logging.info("Radar TCP: invalid claim_code from %s", node_id)
-                                    await _send_msg(writer, {
-                                        "type": "CLAIM_NACK",
-                                        "node_id": node_id,
-                                        "error": "invalid or expired claim code",
-                                    })
+                                    await _send_msg(
+                                        writer,
+                                        {
+                                            "type": "CLAIM_NACK",
+                                            "node_id": node_id,
+                                            "error": "invalid or expired claim code",
+                                        },
+                                    )
                             else:
                                 # Already owned — silently acknowledge so re-running with the
                                 # same code on a re-flashed node is harmless.
                                 # Do NOT echo back user_id to avoid leaking ownership
                                 # to any client that knows the node_id.
-                                await _send_msg(writer, {
-                                    "type": "CLAIM_ACK",
-                                    "node_id": node_id,
-                                    "note": "already_owned",
-                                })
+                                await _send_msg(
+                                    writer,
+                                    {
+                                        "type": "CLAIM_ACK",
+                                        "node_id": node_id,
+                                        "note": "already_owned",
+                                    },
+                                )
                         except Exception:
                             logging.exception("Radar TCP: claim handler error for %s", node_id)
 
-                    logging.info("Radar TCP: HELLO from %s (v%s, synthetic=%s, caps=%s)",
-                                 node_id, version, is_synth, list(caps.keys()))
+                    logging.info(
+                        "Radar TCP: HELLO from %s (v%s, synthetic=%s, caps=%s)",
+                        node_id,
+                        version,
+                        is_synth,
+                        list(caps.keys()),
+                    )
                     continue
 
                 # ── CONFIG ─────────────────────────────────────────
@@ -231,9 +249,7 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                         await _send_msg(writer, {"type": "CONFIG_NACK", "error": cfg_err})
                         continue
                     is_synth = msg.get("is_synthetic", is_synthetic_node(node_id))
-                    _was_disconnected = (
-                        state.connected_nodes.get(node_id, {}).get("status") == "disconnected"
-                    )
+                    _was_disconnected = state.connected_nodes.get(node_id, {}).get("status") == "disconnected"
                     with state.connected_nodes_lock:
                         state.connected_nodes[node_id] = {
                             "config_hash": config_hash,
@@ -246,18 +262,21 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                             "first_seen_ts": state.connected_nodes.get(node_id, {}).get("first_seen_ts", time.time()),
                         }
                         active_count = sum(
-                            1 for n in state.connected_nodes.values()
-                            if n.get("status") != "disconnected"
+                            1 for n in state.connected_nodes.values() if n.get("status") != "disconnected"
                         )
                         state.peak_connected_nodes = max(state.peak_connected_nodes, active_count)
-                    logging.info("Radar TCP: CONFIG from %s (hash=%s, synthetic=%s)",
-                                 node_id, config_hash, is_synth)
+                    logging.info("Radar TCP: CONFIG from %s (hash=%s, synthetic=%s)", node_id, config_hash, is_synth)
                     if _was_disconnected:
                         _log_event(
                             "node",
                             f"Node {node_id} reconnected (hash={config_hash[:8]}, synthetic={is_synth})",
                             "info",
-                            {"node_id": node_id, "config_hash": config_hash, "is_synthetic": is_synth, "reconnect": True},
+                            {
+                                "node_id": node_id,
+                                "config_hash": config_hash,
+                                "is_synthetic": is_synth,
+                                "reconnect": True,
+                            },
                         )
                     else:
                         _log_event(
@@ -266,12 +285,15 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                             "info",
                             {"node_id": node_id, "config_hash": config_hash, "is_synthetic": is_synth},
                         )
-                    await _send_msg(writer, {
-                        "type": "CONFIG_ACK",
-                        "config_hash": config_hash,
-                        "server_version": RETINA_PROTOCOL_VERSION,
-                        "server_capabilities": SERVER_CAPABILITIES,
-                    })
+                    await _send_msg(
+                        writer,
+                        {
+                            "type": "CONFIG_ACK",
+                            "config_hash": config_hash,
+                            "server_version": RETINA_PROTOCOL_VERSION,
+                            "server_capabilities": SERVER_CAPABILITIES,
+                        },
+                    )
                     # Run registration in the dedicated single-thread executor so
                     # it never starves the default executor used by frame workers.
                     loop = asyncio.get_event_loop()
@@ -346,6 +368,7 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
 
 # ── Sub-handlers (keep handle_tcp_client readable) ────────────────────────────
 
+
 async def _handle_register_key(msg: dict, node_id: str | None, writer):
     from retina_custody.models import NodeIdentity
 
@@ -365,14 +388,18 @@ async def _handle_register_key(msg: dict, node_id: str | None, writer):
         )
         state.node_identities[key_node_id] = identity
         state.sig_verifier.register_key(key_node_id, pub_key_pem)
-        logging.info("Chain of custody: registered key for %s (mode=%s, fp=%s)",
-                     key_node_id, signing_mode, fingerprint[:12])
-        await _send_msg(writer, {
-            "type": "KEY_ACK",
-            "node_id": key_node_id,
-            "fingerprint": fingerprint,
-            "status": "registered",
-        })
+        logging.info(
+            "Chain of custody: registered key for %s (mode=%s, fp=%s)", key_node_id, signing_mode, fingerprint[:12]
+        )
+        await _send_msg(
+            writer,
+            {
+                "type": "KEY_ACK",
+                "node_id": key_node_id,
+                "fingerprint": fingerprint,
+                "status": "registered",
+            },
+        )
 
 
 async def _handle_chain_entry(msg: dict, node_id: str | None, writer):
@@ -398,14 +425,16 @@ async def _handle_chain_entry(msg: dict, node_id: str | None, writer):
     state.chain_entries[ce_node_id].append(entry_data)
     if len(state.chain_entries[ce_node_id]) > CHAIN_ENTRIES_MAX_PER_NODE:
         state.chain_entries[ce_node_id] = state.chain_entries[ce_node_id][-CHAIN_ENTRIES_MAX_PER_NODE:]
-    logging.info("Chain entry from %s (hour=%s, verified=%s)",
-                 ce_node_id, entry_data.get("hour_utc"), verified)
-    await _send_msg(writer, {
-        "type": "CHAIN_ENTRY_ACK",
-        "node_id": ce_node_id,
-        "entry_hash": entry_data.get("entry_hash", ""),
-        "verified": verified,
-    })
+    logging.info("Chain entry from %s (hour=%s, verified=%s)", ce_node_id, entry_data.get("hour_utc"), verified)
+    await _send_msg(
+        writer,
+        {
+            "type": "CHAIN_ENTRY_ACK",
+            "node_id": ce_node_id,
+            "entry_hash": entry_data.get("entry_hash", ""),
+            "verified": verified,
+        },
+    )
 
 
 async def _handle_iq_commitment(msg: dict, node_id: str | None, writer):
@@ -419,14 +448,21 @@ async def _handle_iq_commitment(msg: dict, node_id: str | None, writer):
     state.iq_commitments[iq_node_id].append(iq_data)
     if len(state.iq_commitments[iq_node_id]) > IQ_COMMITMENTS_MAX_PER_NODE:
         state.iq_commitments[iq_node_id] = state.iq_commitments[iq_node_id][-IQ_COMMITMENTS_MAX_PER_NODE:]
-    logging.info("IQ commitment from %s (capture=%s, hash=%s...)",
-                 iq_node_id, iq_data.get("capture_id"), iq_data.get("iq_hash", "")[:12])
-    await _send_msg(writer, {
-        "type": "IQ_COMMITMENT_ACK",
-        "node_id": iq_node_id,
-        "capture_id": iq_data.get("capture_id", ""),
-        "status": "committed",
-    })
+    logging.info(
+        "IQ commitment from %s (capture=%s, hash=%s...)",
+        iq_node_id,
+        iq_data.get("capture_id"),
+        iq_data.get("iq_hash", "")[:12],
+    )
+    await _send_msg(
+        writer,
+        {
+            "type": "IQ_COMMITMENT_ACK",
+            "node_id": iq_node_id,
+            "capture_id": iq_data.get("capture_id", ""),
+            "status": "committed",
+        },
+    )
 
 
 async def _handle_heartbeat(msg: dict, node_id: str | None, writer):
@@ -442,8 +478,7 @@ async def _handle_heartbeat(msg: dict, node_id: str | None, writer):
         state.node_analytics.record_heartbeat(hb_node_id)
         stored_hash = state.connected_nodes[hb_node_id].get("config_hash", "")
         if stored_hash and hb_hash != stored_hash:
-            logging.warning("Radar TCP: config drift for %s (expected=%s got=%s)",
-                            hb_node_id, stored_hash, hb_hash)
+            logging.warning("Radar TCP: config drift for %s (expected=%s got=%s)", hb_node_id, stored_hash, hb_hash)
             _log_event(
                 "config",
                 f"Config drift detected for {hb_node_id} (expected={stored_hash[:8]}, got={hb_hash[:8]})",
@@ -455,7 +490,7 @@ async def _handle_heartbeat(msg: dict, node_id: str | None, writer):
 
 import time as _time_mod
 
-_last_drop_log: float = 0.0     # monotonic timestamp of last drop warning
+_last_drop_log: float = 0.0  # monotonic timestamp of last drop warning
 
 # Per-node rate limiting: skip heavy queue processing if a frame was already
 # enqueued from this node within the last NODE_FRAME_MIN_INTERVAL_S seconds.
@@ -514,9 +549,11 @@ def _enqueue_detection(msg: dict, node_id: str | None):
                 "system",
                 f"Frame queue saturated — {state.frames_dropped} total drops",
                 "error",
-                {"frames_dropped": state.frames_dropped,
-                 "queue_depth": state.frame_queue.qsize(),
-                 "queue_max": state.frame_queue.maxsize},
+                {
+                    "frames_dropped": state.frames_dropped,
+                    "queue_depth": state.frame_queue.qsize(),
+                    "queue_max": state.frame_queue.maxsize,
+                },
             )
 
 
@@ -524,6 +561,7 @@ def _apply_synthetic_adsb(msg: dict, node_id: str):
     """Fast-path for synthetic nodes: store ADS-B positions directly in state."""
     import math as _math
     import time as _time
+
     frame = msg.get("data", msg)
     adsb_list = frame.get("adsb")
     if not adsb_list:

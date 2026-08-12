@@ -49,8 +49,8 @@ from config.constants import (
 # ─── Node Configuration ─────────────────────────────────────────────
 DEFAULT_NODE_CONFIG = {
     "node_id": "net13",
-    "Fs": 2_000_000,        # Sample rate Hz
-    "FC": 195_000_000,      # Center frequency Hz
+    "Fs": 2_000_000,  # Sample rate Hz
+    "FC": 195_000_000,  # Center frequency Hz
     "rx_lat": 33.939182,
     "rx_lon": -84.651910,
     "rx_alt_ft": 950,
@@ -67,13 +67,21 @@ class InMemoryEventWriter:
     """Captures track events in memory instead of writing to file."""
 
     def __init__(self):
-        self.events = {}   # track_id → latest event dict
+        self.events = {}  # track_id → latest event dict
         self._dirty: set = set()  # track_ids written since last get_new_events()
 
-    def write_event(self, track_id, timestamp, length, detections,
-                    adsb_hex=None, adsb_initialized=False,
-                    is_anomalous=False, max_velocity_ms=0.0,
-                    anomaly_types=None):
+    def write_event(
+        self,
+        track_id,
+        timestamp,
+        length,
+        detections,
+        adsb_hex=None,
+        adsb_initialized=False,
+        is_anomalous=False,
+        max_velocity_ms=0.0,
+        anomaly_types=None,
+    ):
         self.events[track_id] = {
             "track_id": track_id,
             "timestamp": timestamp,
@@ -87,10 +95,18 @@ class InMemoryEventWriter:
         }
         self._dirty.add(track_id)
 
-    def write_event_lazy(self, track_id, timestamp, length, track_ref,
-                         adsb_hex=None, adsb_initialized=False,
-                         is_anomalous=False, max_velocity_ms=0.0,
-                         anomaly_types=None):
+    def write_event_lazy(
+        self,
+        track_id,
+        timestamp,
+        length,
+        track_ref,
+        adsb_hex=None,
+        adsb_initialized=False,
+        is_anomalous=False,
+        max_velocity_ms=0.0,
+        anomaly_types=None,
+    ):
         """Lightweight write_event — stores a track reference instead of
         materializing the detection list.  The full detection list is resolved
         lazily via get_new_events_resolved() only for tracks that actually
@@ -101,8 +117,8 @@ class InMemoryEventWriter:
             "track_id": track_id,
             "timestamp": timestamp,
             "length": length,
-            "detections": None,       # deferred
-            "_track_ref": track_ref,   # for lazy resolution
+            "detections": None,  # deferred
+            "_track_ref": track_ref,  # for lazy resolution
             "adsb_hex": adsb_hex,
             "adsb_initialized": adsb_initialized,
             "is_anomalous": is_anomalous,
@@ -151,27 +167,43 @@ def _enu_to_lla(enu_km, rx_lat, rx_lon, rx_alt):
 # Target profile constants
 _DRONE_ALTITUDE_BOUNDS = DRONE_ALTITUDE_BOUNDS
 _DRONE_VELOCITY_BOUNDS = DRONE_VELOCITY_BOUNDS
-_DRONE_INITIAL_ALT_M   = DRONE_INITIAL_ALT_M
-_DRONE_MAX_SPEED_MS    = DRONE_MAX_SPEED_MS
-_DRONE_MAX_ALT_M       = DRONE_MAX_ALT_M
+_DRONE_INITIAL_ALT_M = DRONE_INITIAL_ALT_M
+_DRONE_MAX_SPEED_MS = DRONE_MAX_SPEED_MS
+_DRONE_MAX_ALT_M = DRONE_MAX_ALT_M
 
 
 class GeolocatedTrack:
     """A track that has been geolocated by the LM solver."""
 
-    def __init__(self, track_id, lat, lon, alt_m, vel_east, vel_north, vel_up,
-                 rms_delay, rms_doppler, n_detections, timestamp_ms,
-                 adsb_hex=None, latest_delay_us=None, target_class=None,
-                 latest_doppler_hz=None,
-                 is_anomalous=False, anomaly_types=None, max_velocity_ms=0.0):
+    def __init__(
+        self,
+        track_id,
+        lat,
+        lon,
+        alt_m,
+        vel_east,
+        vel_north,
+        vel_up,
+        rms_delay,
+        rms_doppler,
+        n_detections,
+        timestamp_ms,
+        adsb_hex=None,
+        latest_delay_us=None,
+        target_class=None,
+        latest_doppler_hz=None,
+        is_anomalous=False,
+        anomaly_types=None,
+        max_velocity_ms=0.0,
+    ):
         self.track_id = track_id
         self.hex_id = f"pr{abs(hash(track_id)) % 0xFFFF:04x}"
         self.lat = lat
         self.lon = lon
         self.alt_m = alt_m
-        self.vel_east = vel_east    # m/s
+        self.vel_east = vel_east  # m/s
         self.vel_north = vel_north  # m/s
-        self.vel_up = vel_up        # m/s
+        self.vel_up = vel_up  # m/s
         self.rms_delay = rms_delay
         self.rms_doppler = rms_doppler
         self.n_detections = n_detections
@@ -188,7 +220,7 @@ class GeolocatedTrack:
 
     @property
     def speed_knots(self):
-        speed_ms = math.sqrt(self.vel_east ** 2 + self.vel_north ** 2)
+        speed_ms = math.sqrt(self.vel_east**2 + self.vel_north**2)
         return speed_ms * 1.94384
 
     @property
@@ -203,11 +235,11 @@ class GeolocatedTrack:
 
 # ─── Pipeline: Detection → retina-tracker → retina-geolocator → tar1090 ────
 
+
 class PassiveRadarPipeline:
     """Full pipeline using retina-tracker and retina-geolocator."""
 
     _BACKEND_DIR = os.path.dirname(os.path.dirname(__file__))
-
 
     def __init__(self, node_config: dict = None):
         config = node_config or DEFAULT_NODE_CONFIG
@@ -219,9 +251,8 @@ class PassiveRadarPipeline:
 
         # Load tracker config (from installed package location)
         import retina_tracker as _rt_pkg
-        tracker_config_path = os.path.join(
-            os.path.dirname(_rt_pkg.__file__), "config.yaml"
-        )
+
+        tracker_config_path = os.path.join(os.path.dirname(_rt_pkg.__file__), "config.yaml")
         tracker_config = {}
         if os.path.exists(tracker_config_path):
             with open(tracker_config_path) as f:
@@ -270,31 +301,28 @@ class PassiveRadarPipeline:
         # Pass the configured aim when the node declares one; otherwise the
         # library defaults to broadside, matching resolve_beam_azimuth_deg.
         try:
-            _beam_az = (
-                float(config["beam_azimuth_deg"])
-                if config.get("beam_azimuth_deg") is not None
-                else None
-            )
+            _beam_az = float(config["beam_azimuth_deg"]) if config.get("beam_azimuth_deg") is not None else None
         except (TypeError, ValueError):
             _beam_az = None
-        self.geometry = calculate_baseline_geometry(
-            self.rx_lla, self.tx_lla, beam_azimuth_deg=_beam_az
-        )
+        self.geometry = calculate_baseline_geometry(self.rx_lla, self.tx_lla, beam_azimuth_deg=_beam_az)
 
         # Compute TX position in ENU (km) relative to RX
         tx_ecef = Geometry.lla2ecef(self.tx_lla[0], self.tx_lla[1], self.tx_lla[2])
         tx_enu_m = Geometry.ecef2enu(
-            tx_ecef[0], tx_ecef[1], tx_ecef[2],
-            self.rx_lla[0], self.rx_lla[1], self.rx_lla[2],
+            tx_ecef[0],
+            tx_ecef[1],
+            tx_ecef[2],
+            self.rx_lla[0],
+            self.rx_lla[1],
+            self.rx_lla[2],
         )
         self.tx_enu = (tx_enu_m[0] / 1000, tx_enu_m[1] / 1000, tx_enu_m[2] / 1000)
         self.rx_enu = (0, 0, 0)
 
         # Load geolocator config (from installed package location)
         import retina_geolocator as _rg_pkg
-        geo_config_path = os.path.join(
-            os.path.dirname(_rg_pkg.__file__), "geolocator_config.yml"
-        )
+
+        geo_config_path = os.path.join(os.path.dirname(_rg_pkg.__file__), "geolocator_config.yml")
         if os.path.exists(geo_config_path):
             self.geo_config = load_geolocator_config(geo_config_path)
         else:
@@ -324,13 +352,15 @@ class PassiveRadarPipeline:
         # Build geolocator Detection objects
         geo_detections = []
         for d in detections_data:
-            geo_detections.append(GeoDetection(
-                timestamp=d["timestamp"],
-                delay=d["delay"],
-                doppler=d["doppler"],
-                snr=d.get("snr", 0),
-                adsb=d.get("adsb"),
-            ))
+            geo_detections.append(
+                GeoDetection(
+                    timestamp=d["timestamp"],
+                    delay=d["delay"],
+                    doppler=d["doppler"],
+                    snr=d.get("snr", 0),
+                    adsb=d.get("adsb"),
+                )
+            )
 
         # Build geolocator Track object
         geo_track = GeoTrack(track_id, geo_detections, event)
@@ -340,9 +370,11 @@ class PassiveRadarPipeline:
         # initial guess on every invocation (not stale inline detection data).
         if event.get("adsb_hex"):
             from core import state as _state  # deferred to avoid circular import at module level
+
             _adsb = _state.adsb_aircraft.get(event["adsb_hex"])
             if _adsb and _adsb.get("lat") and _adsb.get("lon"):
                 import time as _t
+
                 age = _t.time() - _adsb.get("last_seen_ms", 0) / 1000
                 if age < 60:
                     # Overwrite first detection ADS-B field unconditionally so
@@ -358,8 +390,7 @@ class PassiveRadarPipeline:
                         }
 
         # Generate initial guess
-        if (self.geo_config and self.geo_config.temporal_continuity
-                and track_id in self._previous_solutions):
+        if self.geo_config and self.geo_config.temporal_continuity and track_id in self._previous_solutions:
             initial_guess = self._previous_solutions[track_id]
         else:
             if self.geo_config:
@@ -373,14 +404,14 @@ class PassiveRadarPipeline:
                 )
             else:
                 initial_guess = generate_initial_guess(
-                    geo_track, self.tx_enu,
+                    geo_track,
+                    self.tx_enu,
                     self.geometry["antenna_boresight_vector"],
                     self.frequency,
                 )
 
         # Solve — use fewer evaluations for refinement (temporal continuity)
-        is_refinement = (self.geo_config and self.geo_config.temporal_continuity
-                         and track_id in self._previous_solutions)
+        is_refinement = self.geo_config and self.geo_config.temporal_continuity and track_id in self._previous_solutions
         try:
             result = solve_track(
                 geo_track,
@@ -456,9 +487,7 @@ class PassiveRadarPipeline:
         is not in the active tracker.tracks list.  Called every
         _PRUNE_EVERY_N frames so the O(N) linear scan does not dominate.
         """
-        live_ids = set(self.event_writer.events.keys()) | {
-            t.id for t in self.tracker.tracks if t.id
-        }
+        live_ids = set(self.event_writer.events.keys()) | {t.id for t in self.tracker.tracks if t.id}
         for d in (self._previous_solutions, self._geo_last_solve, self.geolocated_tracks):
             stale = [k for k in d if k not in live_ids]
             for k in stale:
@@ -469,7 +498,6 @@ class PassiveRadarPipeline:
         stale_events = [k for k in self.event_writer.events if k not in active_ids]
         for k in stale_events:
             del self.event_writer.events[k]
-
 
     def _run_geolocation(self):
         """Run geolocation on tracks that received new data this frame.
@@ -487,6 +515,7 @@ class PassiveRadarPipeline:
         import time as _time_geo
 
         from core import state as _state
+
         now = _time_geo.monotonic()
         for track_id, event in self.event_writer.get_new_events().items():
             adsb_hex = event.get("adsb_hex")
@@ -518,10 +547,7 @@ class PassiveRadarPipeline:
                 # Preserve pos_fix_ts when position hasn't actually changed so
                 # dead-reckoning elapsed time is not reset spuriously.
                 if existing is not None:
-                    _pos_changed = (
-                        abs(existing.lat - result.lat) > 1e-6
-                        or abs(existing.lon - result.lon) > 1e-6
-                    )
+                    _pos_changed = abs(existing.lat - result.lat) > 1e-6 or abs(existing.lon - result.lon) > 1e-6
                     if not _pos_changed:
                         result.pos_fix_ts = existing.pos_fix_ts
                 self.geolocated_tracks[track_id] = result
@@ -539,10 +565,7 @@ class PassiveRadarPipeline:
                     _trk = math.radians(adsb.get("track", 0) or 0)
                     if existing is not None:
                         # Only advance pos_fix_ts when position actually changes.
-                        _pos_changed = (
-                            abs(existing.lat - adsb["lat"]) > 1e-6
-                            or abs(existing.lon - adsb["lon"]) > 1e-6
-                        )
+                        _pos_changed = abs(existing.lat - adsb["lat"]) > 1e-6 or abs(existing.lon - adsb["lon"]) > 1e-6
                         if _pos_changed:
                             existing.lat = adsb["lat"]
                             existing.lon = adsb["lon"]
@@ -630,10 +653,7 @@ class PassiveRadarPipeline:
             delays = frame.get("delay", [])
             dopplers = frame.get("doppler", [])
             snrs = frame.get("snr", [])
-            detections = [
-                {"delay": d, "doppler": f, "snr": s}
-                for d, f, s in zip(delays, dopplers, snrs)
-            ]
+            detections = [{"delay": d, "doppler": f, "snr": s} for d, f, s in zip(delays, dopplers, snrs)]
             self.tracker.process_frame(detections, ts)
 
         # Run geolocation once after all frames are processed
@@ -707,12 +727,13 @@ def process_detection_folder(folder: str, output_dir: str, node_config: dict = N
     with open(os.path.join(output_dir, "aircraft.json"), "w") as f:
         json.dump(aircraft_data, f)
 
-    logger.info("Output: %d geolocated targets", len(aircraft_data['aircraft']))
+    logger.info("Output: %d geolocated targets", len(aircraft_data["aircraft"]))
     return aircraft_data
 
 
 if __name__ == "__main__":
     import sys
+
     folder = sys.argv[1] if len(sys.argv) > 1 else "."
     output = sys.argv[2] if len(sys.argv) > 2 else "./tar1090_data"
     process_detection_folder(folder, output)

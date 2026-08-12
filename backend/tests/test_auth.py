@@ -10,6 +10,7 @@ import pytest
 
 # ── SQLite durability pragmas ─────────────────────────────────────────────────
 
+
 class TestSqlitePragmas:
     """The users.db engine MUST run in WAL mode with safety pragmas.
 
@@ -38,6 +39,7 @@ class TestSqlitePragmas:
 
 
 # ── JWT via fastapi-users JWTStrategy ─────────────────────────────────────────
+
 
 class TestJWT:
     """Verify that fastapi-users' JWTStrategy correctly issues and validates tokens."""
@@ -81,7 +83,9 @@ class TestJWT:
 
         # fastapi-users sets aud=["fastapi-users:auth"] — pass it when decoding
         payload = pyjwt.decode(
-            token, JWT_SECRET, algorithms=["HS256"],
+            token,
+            JWT_SECRET,
+            algorithms=["HS256"],
             audience=["fastapi-users:auth"],
         )
         assert payload["sub"] == str(user.id)
@@ -97,7 +101,9 @@ class TestJWT:
         token = asyncio.run(strategy.write_token(user))
 
         payload = pyjwt.decode(
-            token, JWT_SECRET, algorithms=["HS256"],
+            token,
+            JWT_SECRET,
+            algorithms=["HS256"],
             audience=["fastapi-users:auth"],
         )
         assert "exp" in payload
@@ -116,7 +122,7 @@ class TestJWT:
         sig = parts[2]
         mid = len(sig) // 2
         tampered_c = "A" if sig[mid] != "A" else "B"
-        tampered = f"{parts[0]}.{parts[1]}.{sig[:mid]}{tampered_c}{sig[mid + 1:]}"
+        tampered = f"{parts[0]}.{parts[1]}.{sig[:mid]}{tampered_c}{sig[mid + 1 :]}"
 
         # read_token with None user_manager returns None for bad tokens
         result = asyncio.run(strategy.read_token(tampered, None))
@@ -149,6 +155,7 @@ class TestJWT:
 
 
 # ── get_current_user / require_admin dependencies ─────────────────────────────
+
 
 class TestAuthDependencies:
     def test_get_current_user_auth_disabled_returns_anonymous(self):
@@ -223,14 +230,14 @@ class TestAuthDependencies:
         async def _fake_read(req):
             return non_admin_user
 
-        with patch("core.users.AUTH_BYPASS", False), \
-             patch("core.users._read_user_from_request", _fake_read):
+        with patch("core.users.AUTH_BYPASS", False), patch("core.users._read_user_from_request", _fake_read):
             with pytest.raises(HTTPException) as exc_info:
                 asyncio.run(require_admin(request))
         assert exc_info.value.status_code == 403
 
 
 # ── Shared DB fixture ─────────────────────────────────────────────────────────
+
 
 @pytest.fixture()
 def clean_auth_tables():
@@ -252,6 +259,7 @@ def clean_auth_tables():
 
 
 # ── Invites ───────────────────────────────────────────────────────────────────
+
 
 class TestInvites:
     @pytest.fixture(autouse=True)
@@ -320,6 +328,7 @@ class TestInvites:
 
 
 # ── Claim codes & node ownership ──────────────────────────────────────────────
+
 
 class TestClaimCodesAndOwnership:
     @pytest.fixture(autouse=True)
@@ -426,6 +435,7 @@ class TestClaimCodesAndOwnership:
 
 # ── Migration tests ───────────────────────────────────────────────────────────
 
+
 class TestMigration:
     @pytest.fixture(autouse=True)
     def _clean_tables(self, clean_auth_tables):
@@ -435,20 +445,26 @@ class TestMigration:
         from core.auth import list_invites, migrate_json_to_db
 
         invite_file = tmp_path / "invites.json"
-        invite_file.write_text(json.dumps({
-            "test-token-abc": {
-                "email": "User@Example.COM",
-                "role": "admin",
-                "created_by": "migrator",
-                "created_at": 1000.0,
-                "expires_at": 9999999999.0,
-                "used_at": None,
-            }
-        }))
+        invite_file.write_text(
+            json.dumps(
+                {
+                    "test-token-abc": {
+                        "email": "User@Example.COM",
+                        "role": "admin",
+                        "created_by": "migrator",
+                        "created_at": 1000.0,
+                        "expires_at": 9999999999.0,
+                        "used_at": None,
+                    }
+                }
+            )
+        )
 
-        with patch("core.auth.INVITES_FILE", invite_file), \
-             patch("core.auth.NODE_OWNERS_FILE", tmp_path / "node_owners.json"), \
-             patch("core.auth.CLAIM_CODES_FILE", tmp_path / "claim_codes.json"):
+        with (
+            patch("core.auth.INVITES_FILE", invite_file),
+            patch("core.auth.NODE_OWNERS_FILE", tmp_path / "node_owners.json"),
+            patch("core.auth.CLAIM_CODES_FILE", tmp_path / "claim_codes.json"),
+        ):
             await migrate_json_to_db()
 
         invites = await list_invites()
@@ -466,9 +482,11 @@ class TestMigration:
         invite_file = tmp_path / "invites.json"
         invite_file.write_text("not valid json")
 
-        with patch("core.auth.INVITES_FILE", invite_file), \
-             patch("core.auth.NODE_OWNERS_FILE", tmp_path / "node_owners.json"), \
-             patch("core.auth.CLAIM_CODES_FILE", tmp_path / "claim_codes.json"):
+        with (
+            patch("core.auth.INVITES_FILE", invite_file),
+            patch("core.auth.NODE_OWNERS_FILE", tmp_path / "node_owners.json"),
+            patch("core.auth.CLAIM_CODES_FILE", tmp_path / "claim_codes.json"),
+        ):
             await migrate_json_to_db()
 
         assert invite_file.exists()
@@ -481,9 +499,11 @@ class TestMigration:
         node_owners_file = tmp_path / "node_owners.json"
         node_owners_file.write_text(json.dumps({"node-A": "user-X"}))
 
-        with patch("core.auth.INVITES_FILE", tmp_path / "invites.json"), \
-             patch("core.auth.NODE_OWNERS_FILE", node_owners_file), \
-             patch("core.auth.CLAIM_CODES_FILE", tmp_path / "claim_codes.json"):
+        with (
+            patch("core.auth.INVITES_FILE", tmp_path / "invites.json"),
+            patch("core.auth.NODE_OWNERS_FILE", node_owners_file),
+            patch("core.auth.CLAIM_CODES_FILE", tmp_path / "claim_codes.json"),
+        ):
             await migrate_json_to_db()
 
         assert await get_node_owner("node-A") == "user-X"
@@ -495,19 +515,25 @@ class TestMigration:
         from core.auth import list_claim_codes, migrate_json_to_db
 
         claim_codes_file = tmp_path / "claim_codes.json"
-        claim_codes_file.write_text(json.dumps({
-            "ABCDEF123456": {
-                "user_id": "user-migrate",
-                "created_at": 1000.0,
-                "expires_at": 9999999999.0,
-                "used_at": None,
-                "used_by_node_id": None,
-            }
-        }))
+        claim_codes_file.write_text(
+            json.dumps(
+                {
+                    "ABCDEF123456": {
+                        "user_id": "user-migrate",
+                        "created_at": 1000.0,
+                        "expires_at": 9999999999.0,
+                        "used_at": None,
+                        "used_by_node_id": None,
+                    }
+                }
+            )
+        )
 
-        with patch("core.auth.INVITES_FILE", tmp_path / "invites.json"), \
-             patch("core.auth.NODE_OWNERS_FILE", tmp_path / "node_owners.json"), \
-             patch("core.auth.CLAIM_CODES_FILE", claim_codes_file):
+        with (
+            patch("core.auth.INVITES_FILE", tmp_path / "invites.json"),
+            patch("core.auth.NODE_OWNERS_FILE", tmp_path / "node_owners.json"),
+            patch("core.auth.CLAIM_CODES_FILE", claim_codes_file),
+        ):
             await migrate_json_to_db()
 
         codes = await list_claim_codes("user-migrate")
@@ -519,6 +545,7 @@ class TestMigration:
 
 
 # ── set_node_owner UPDATE branch ──────────────────────────────────────────────
+
 
 class TestSetNodeOwnerUpdate:
     @pytest.fixture(autouse=True)
@@ -535,6 +562,7 @@ class TestSetNodeOwnerUpdate:
 
 # ── revoke_claim_code edge cases ──────────────────────────────────────────────
 
+
 class TestRevokeClaimCodeEdgeCases:
     @pytest.fixture(autouse=True)
     def _clean_tables(self, clean_auth_tables):
@@ -548,6 +576,7 @@ class TestRevokeClaimCodeEdgeCases:
 
 
 # ── consume_claim_code edge cases ─────────────────────────────────────────────
+
 
 class TestConsumeClaimCodeEdgeCases:
     @pytest.fixture(autouse=True)

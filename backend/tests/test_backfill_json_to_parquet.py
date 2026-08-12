@@ -19,17 +19,28 @@ def _legacy_payload(node_id: str = "node-A") -> dict:
         "node_id": node_id,
         "timestamp": "2025-06-21T14:30:22.123456+00:00",
         "count": 1,
-        "detections": [{
-            "timestamp": 1700000000000,
-            "delay": [12.34, 56.78],
-            "doppler": [-100.5, 33.3],
-            "snr": [15.0, 22.0],
-            "adsb": [None, {"hex": "abcd12", "lat": 40.0, "lon": -74.0,
-                            "alt_baro": 35000, "gs": 480, "track": 270,
-                            "flight": "DLH123"}],
-            "_signing_mode": "unknown",
-            "_signature_valid": False,
-        }],
+        "detections": [
+            {
+                "timestamp": 1700000000000,
+                "delay": [12.34, 56.78],
+                "doppler": [-100.5, 33.3],
+                "snr": [15.0, 22.0],
+                "adsb": [
+                    None,
+                    {
+                        "hex": "abcd12",
+                        "lat": 40.0,
+                        "lon": -74.0,
+                        "alt_baro": 35000,
+                        "gs": 480,
+                        "track": 270,
+                        "flight": "DLH123",
+                    },
+                ],
+                "_signing_mode": "unknown",
+                "_signature_valid": False,
+            }
+        ],
     }
 
 
@@ -83,6 +94,7 @@ def test_convert_legacy_bytes(tmp_path: Path):
 def test_run_uploads_parquet_for_each_legacy_key(monkeypatch):
     """Driver run() should download each JSON and upload exactly one Parquet."""
     import importlib
+
     ba = importlib.import_module("scripts.backfill_archive")
 
     payload_bytes = json.dumps(_legacy_payload()).encode()

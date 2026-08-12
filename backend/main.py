@@ -98,6 +98,7 @@ _test_mod.init(radar_pipeline)
 
 # ── Lifespan: TCP server + background tasks ───────────────────────────────────
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Start runtime coverage if COVERAGE_ENABLED=1
@@ -106,6 +107,7 @@ async def lifespan(app: FastAPI):
     # Seed runtime-config overlay from source defaults / legacy volume copy.
     # Idempotent: only fills in files that don't already exist in data/runtime/.
     from core.runtime_config import migrate_defaults_into_runtime
+
     migrate_defaults_into_runtime()
 
     # Live blah2 nodes are config-driven — read after the overlay is seeded so
@@ -116,16 +118,19 @@ async def lifespan(app: FastAPI):
     # otherwise). The schema comes from Alembic migrations instead: deploy/start.sh
     # runs them before uvicorn starts, and `just setup` runs them for local dev.
     from core.users import create_db_and_tables
+
     await create_db_and_tables()
 
     # Migrate any legacy JSON stores (invites/node_owners/claim_codes) to SQLite
     from core.auth import migrate_json_to_db
+
     await migrate_json_to_db()
 
     # Restore persisted state before accepting connections
     restored = restore_snapshot()
 
     from services.alerting import send_alert
+
     send_alert("server_start", "RETINA server started", {"restored": restored})
 
     server = await asyncio.start_server(handle_tcp_client, "0.0.0.0", TCP_PORT)
@@ -164,8 +169,7 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(health_monitor_task()),
             asyncio.create_task(heartbeat_task()),
             asyncio.create_task(_snapshot_loop()),
-            *[asyncio.create_task(frame_processor_loop(radar_pipeline))
-              for _ in range(_n_frame_workers)],
+            *[asyncio.create_task(frame_processor_loop(radar_pipeline)) for _ in range(_n_frame_workers)],
         ]
         yield
         for t in tasks:
@@ -177,9 +181,11 @@ async def lifespan(app: FastAPI):
             logging.exception("Final state snapshot failed")
         # Flush remaining buffered archives before exit
         from services.frame_processor import flush_all_archive_buffers
+
         flush_all_archive_buffers()
         # Close pooled HTTP clients (they had no shutdown path at all)
         from services.tasks.periodic import close_http_clients
+
         try:
             await close_http_clients()
         except Exception:
@@ -229,9 +235,17 @@ app.add_middleware(
 
 # ── Mount all routers ─────────────────────────────────────────────────────────
 for router in (
-    towers_router, stats_router, radar_router, analytics_router,
-    streaming_router, archive_router, test_router, custody_router,
-    auth_router, admin_router, output_router,
+    towers_router,
+    stats_router,
+    radar_router,
+    analytics_router,
+    streaming_router,
+    archive_router,
+    test_router,
+    custody_router,
+    auth_router,
+    admin_router,
+    output_router,
 ):
     app.include_router(router)
 
@@ -239,12 +253,8 @@ for router in (
 # ground_truth_trails) that only the fleet orchestrator uses.  Production has
 # no orchestrator, so mounting it there was pure attack surface; staging/test
 # keep it, and SIM_INGEST_ENABLED=1 can force it on anywhere.
-_SIM_INGEST_ENABLED = (
-    os.getenv("RETINA_ENV", "").lower() != "production"
-    or os.getenv("SIM_INGEST_ENABLED", "") == "1"
-)
+_SIM_INGEST_ENABLED = os.getenv("RETINA_ENV", "").lower() != "production" or os.getenv("SIM_INGEST_ENABLED", "") == "1"
 if _SIM_INGEST_ENABLED:
     app.include_router(sim_ingest_router)
 else:
     logging.info("Simulation ingest endpoints not mounted (RETINA_ENV=production)")
-

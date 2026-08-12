@@ -83,9 +83,7 @@ class TestBroadcastAircraft:
         data = {"now": 123, "aircraft": [], "detection_arcs": [], "ground_truth": {}}
         data_bytes = orjson.dumps(data)
 
-        asyncio.get_event_loop().run_until_complete(
-            broadcast_aircraft(data, data_bytes)
-        )
+        asyncio.get_event_loop().run_until_complete(broadcast_aircraft(data, data_bytes))
 
         assert state.latest_aircraft_json is data
         assert state.latest_aircraft_json_bytes is data_bytes

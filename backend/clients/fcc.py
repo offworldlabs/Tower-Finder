@@ -38,7 +38,7 @@ def _parse_erp_kw(erp_str: str) -> float | None:
     """Parse ERP string like '180.   kW' or '0.01   kW' to float kW."""
     if not erp_str:
         return None
-    m = re.search(r'([\d.]+)\s*kW', erp_str)
+    m = re.search(r"([\d.]+)\s*kW", erp_str)
     if m:
         try:
             return float(m.group(1))
@@ -159,7 +159,7 @@ def _parse_fm_line(line: str) -> dict | None:
             return None
 
         # Parse frequency
-        freq_match = re.search(r'([\d.]+)\s*MHz', freq_str)
+        freq_match = re.search(r"([\d.]+)\s*MHz", freq_str)
         if not freq_match:
             return None
         freq_mhz = float(freq_match.group(1))
@@ -228,25 +228,62 @@ def _nearby_states(lat: float, lon: float) -> list[str]:
     """
     # State centroids (approximate) for distance-based selection
     _STATES = {
-        "AL": (32.8, -86.8), "AK": (64.2, -152.5), "AZ": (34.0, -111.1),
-        "AR": (35.2, -91.8), "CA": (36.8, -119.4), "CO": (39.5, -105.8),
-        "CT": (41.6, -72.7), "DE": (38.9, -75.5), "FL": (27.8, -81.8),
-        "GA": (32.2, -83.6), "HI": (19.9, -155.6), "ID": (44.1, -114.7),
-        "IL": (40.3, -89.0), "IN": (40.3, -86.1), "IA": (42.0, -93.2),
-        "KS": (38.5, -98.8), "KY": (37.8, -84.3), "LA": (30.5, -92.0),
-        "ME": (45.3, -69.4), "MD": (39.0, -76.6), "MA": (42.4, -71.4),
-        "MI": (44.3, -85.6), "MN": (46.4, -94.6), "MS": (32.7, -89.7),
-        "MO": (38.5, -92.3), "MT": (46.8, -110.4), "NE": (41.1, -98.3),
-        "NV": (38.8, -116.4), "NH": (43.2, -71.6), "NJ": (40.1, -74.4),
-        "NM": (34.8, -106.2), "NY": (43.0, -75.0), "NC": (35.6, -79.0),
-        "ND": (47.5, -100.5), "OH": (40.4, -82.9), "OK": (35.0, -97.1),
-        "OR": (43.8, -120.6), "PA": (41.2, -77.2), "RI": (41.6, -71.5),
-        "SC": (34.0, -81.0), "SD": (43.9, -99.4), "TN": (35.5, -86.6),
-        "TX": (31.1, -99.7), "UT": (39.3, -111.1), "VT": (44.0, -72.7),
-        "VA": (37.4, -78.2), "WA": (47.4, -120.7), "WV": (38.6, -80.6),
-        "WI": (43.8, -89.5), "WY": (43.1, -107.6), "DC": (38.9, -77.0),
-        "PR": (18.2, -66.6), "VI": (18.3, -64.9), "GU": (13.4, 144.8),
-        "AS": (-14.3, -170.7), "MP": (15.2, 145.7),
+        "AL": (32.8, -86.8),
+        "AK": (64.2, -152.5),
+        "AZ": (34.0, -111.1),
+        "AR": (35.2, -91.8),
+        "CA": (36.8, -119.4),
+        "CO": (39.5, -105.8),
+        "CT": (41.6, -72.7),
+        "DE": (38.9, -75.5),
+        "FL": (27.8, -81.8),
+        "GA": (32.2, -83.6),
+        "HI": (19.9, -155.6),
+        "ID": (44.1, -114.7),
+        "IL": (40.3, -89.0),
+        "IN": (40.3, -86.1),
+        "IA": (42.0, -93.2),
+        "KS": (38.5, -98.8),
+        "KY": (37.8, -84.3),
+        "LA": (30.5, -92.0),
+        "ME": (45.3, -69.4),
+        "MD": (39.0, -76.6),
+        "MA": (42.4, -71.4),
+        "MI": (44.3, -85.6),
+        "MN": (46.4, -94.6),
+        "MS": (32.7, -89.7),
+        "MO": (38.5, -92.3),
+        "MT": (46.8, -110.4),
+        "NE": (41.1, -98.3),
+        "NV": (38.8, -116.4),
+        "NH": (43.2, -71.6),
+        "NJ": (40.1, -74.4),
+        "NM": (34.8, -106.2),
+        "NY": (43.0, -75.0),
+        "NC": (35.6, -79.0),
+        "ND": (47.5, -100.5),
+        "OH": (40.4, -82.9),
+        "OK": (35.0, -97.1),
+        "OR": (43.8, -120.6),
+        "PA": (41.2, -77.2),
+        "RI": (41.6, -71.5),
+        "SC": (34.0, -81.0),
+        "SD": (43.9, -99.4),
+        "TN": (35.5, -86.6),
+        "TX": (31.1, -99.7),
+        "UT": (39.3, -111.1),
+        "VT": (44.0, -72.7),
+        "VA": (37.4, -78.2),
+        "WA": (47.4, -120.7),
+        "WV": (38.6, -80.6),
+        "WI": (43.8, -89.5),
+        "WY": (43.1, -107.6),
+        "DC": (38.9, -77.0),
+        "PR": (18.2, -66.6),
+        "VI": (18.3, -64.9),
+        "GU": (13.4, 144.8),
+        "AS": (-14.3, -170.7),
+        "MP": (15.2, 145.7),
     }
 
     # Sort states by distance from the search point, take closest N
@@ -320,11 +357,13 @@ async def fetch_fcc_tv_stations(
     # Wrap devices as Maprad-compatible system dicts
     systems = []
     for dev in all_devices:
-        systems.append({
-            "id": f"fcc-tv-{dev['callsign']}-{dev.get('_fcc_channel', '')}",
-            "devices": [dev],
-            "licence": {"type": "Broadcasting", "subtype": "Television"},
-        })
+        systems.append(
+            {
+                "id": f"fcc-tv-{dev['callsign']}-{dev.get('_fcc_channel', '')}",
+                "devices": [dev],
+                "licence": {"type": "Broadcasting", "subtype": "Television"},
+            }
+        )
 
     log.info("FCC TV: fetched %d stations from states %s", len(systems), states)
     return systems
@@ -381,11 +420,13 @@ async def fetch_fcc_fm_stations(
 
     systems = []
     for dev in all_devices:
-        systems.append({
-            "id": f"fcc-fm-{dev['callsign']}-{dev.get('frequency', '')}",
-            "devices": [dev],
-            "licence": {"type": "Broadcasting", "subtype": "FM Radio"},
-        })
+        systems.append(
+            {
+                "id": f"fcc-fm-{dev['callsign']}-{dev.get('frequency', '')}",
+                "devices": [dev],
+                "licence": {"type": "Broadcasting", "subtype": "FM Radio"},
+            }
+        )
 
     log.info("FCC FM: fetched %d stations from states %s", len(systems), states)
     return systems

@@ -27,33 +27,38 @@ import random
 # (name, tx_lat, tx_lon, tx_alt_ft, center_lat, center_lon, fc_hz)
 # TX sites are real FM broadcast tower clusters in each metro.
 REGIONS = [
-    ("atl",  33.75667, -84.33184, 1600, 33.85, -84.40,   195_000_000),
-    ("nyc",  40.74818, -74.03082, 1000, 40.72, -74.05,    98_700_000),
-    ("chi",  41.95850, -87.79501, 1500, 41.90, -87.80,   101_900_000),
-    ("dal",  32.89959, -97.04022,  800, 32.90, -97.05,   103_700_000),
-    ("lax",  34.11620, -118.36900, 2000, 34.05, -118.30,   97_100_000),
-    ("sfo",  37.61690, -122.41750, 1200, 37.65, -122.40,  107_700_000),
-    ("mia",  25.79550, -80.21292,  500, 25.81, -80.22,    99_900_000),
-    ("sea",  47.54070, -122.28510, 1800, 47.50, -122.30,  104_900_000),
-    ("bos",  42.36570, -71.02078,  950, 42.35, -71.03,    96_900_000),
-    ("den",  39.86100, -104.67370, 2500, 39.85, -104.67,  105_100_000),
-    ("phx",  33.42530, -112.00780, 1400, 33.43, -112.01,   98_300_000),
-    ("stl",  38.74870, -90.37000,  1100, 38.75, -90.37,   102_300_000),
-    ("hou",  29.98820, -95.34175,   600, 30.00, -95.35,   100_300_000),
-    ("msp",  44.88480, -93.22230,  1200, 44.90, -93.20,   106_100_000),
-    ("pdx",  45.58980, -122.59510, 1300, 45.60, -122.60,  103_300_000),
-    ("clt",  35.21440, -80.94730,   900, 35.20, -80.95,    97_500_000),
-    ("gvl",  35.17019, -82.29050,  2212, 34.85, -82.39,   201_000_000),
-    ("dtw",  42.21250, -83.35340,  1050, 42.25, -83.35,   102_700_000),
-    ("slc",  40.78840, -111.97790, 2200, 40.80, -111.98,   99_300_000),
-    ("mco",  28.43120, -81.30810,   450, 28.45, -81.30,   101_300_000),
-    ("iah",  29.99340, -95.33640,   700, 30.00, -95.35,   104_300_000),
+    ("atl", 33.75667, -84.33184, 1600, 33.85, -84.40, 195_000_000),
+    ("nyc", 40.74818, -74.03082, 1000, 40.72, -74.05, 98_700_000),
+    ("chi", 41.95850, -87.79501, 1500, 41.90, -87.80, 101_900_000),
+    ("dal", 32.89959, -97.04022, 800, 32.90, -97.05, 103_700_000),
+    ("lax", 34.11620, -118.36900, 2000, 34.05, -118.30, 97_100_000),
+    ("sfo", 37.61690, -122.41750, 1200, 37.65, -122.40, 107_700_000),
+    ("mia", 25.79550, -80.21292, 500, 25.81, -80.22, 99_900_000),
+    ("sea", 47.54070, -122.28510, 1800, 47.50, -122.30, 104_900_000),
+    ("bos", 42.36570, -71.02078, 950, 42.35, -71.03, 96_900_000),
+    ("den", 39.86100, -104.67370, 2500, 39.85, -104.67, 105_100_000),
+    ("phx", 33.42530, -112.00780, 1400, 33.43, -112.01, 98_300_000),
+    ("stl", 38.74870, -90.37000, 1100, 38.75, -90.37, 102_300_000),
+    ("hou", 29.98820, -95.34175, 600, 30.00, -95.35, 100_300_000),
+    ("msp", 44.88480, -93.22230, 1200, 44.90, -93.20, 106_100_000),
+    ("pdx", 45.58980, -122.59510, 1300, 45.60, -122.60, 103_300_000),
+    ("clt", 35.21440, -80.94730, 900, 35.20, -80.95, 97_500_000),
+    ("gvl", 35.17019, -82.29050, 2212, 34.85, -82.39, 201_000_000),
+    ("dtw", 42.21250, -83.35340, 1050, 42.25, -83.35, 102_700_000),
+    ("slc", 40.78840, -111.97790, 2200, 40.80, -111.98, 99_300_000),
+    ("mco", 28.43120, -81.30810, 450, 28.45, -81.30, 101_300_000),
+    ("iah", 29.99340, -95.33640, 700, 30.00, -95.35, 104_300_000),
 ]
 
 
-def _gen_rx(center_lat: float, center_lon: float,
-            min_km: float = 5, max_km: float = 65,
-            alt_ft_lo: int = 500, alt_ft_hi: int = 1400) -> tuple[float, float, int]:
+def _gen_rx(
+    center_lat: float,
+    center_lon: float,
+    min_km: float = 5,
+    max_km: float = 65,
+    alt_ft_lo: int = 500,
+    alt_ft_hi: int = 1400,
+) -> tuple[float, float, int]:
     """Random RX position within [min_km, max_km] of centre."""
     angle = random.uniform(0, 2 * math.pi)
     dist = random.uniform(min_km, max_km)
@@ -83,8 +88,7 @@ def select_regions(regions: str = DEFAULT_REGIONS) -> list[tuple]:
     unknown = wanted - {r[0] for r in REGIONS}
     if unknown:
         raise ValueError(
-            f"Unknown region(s): {', '.join(sorted(unknown))} "
-            f"(available: {', '.join(r[0] for r in REGIONS)}, or 'all')"
+            f"Unknown region(s): {', '.join(sorted(unknown))} (available: {', '.join(r[0] for r in REGIONS)}, or 'all')"
         )
     return [r for r in REGIONS if r[0] in wanted]
 
@@ -102,19 +106,21 @@ def generate(n_nodes: int, seed: int = 42, regions: str = DEFAULT_REGIONS) -> di
         count = base + (1 if i < extra else 0)
         for j in range(count):
             rx_lat, rx_lon, rx_alt_ft = _gen_rx(cx, cy)
-            nodes.append({
-                "node_id": f"synth-{rname}-{j+1:03d}",
-                "rx_lat": rx_lat,
-                "rx_lon": rx_lon,
-                "rx_alt_ft": rx_alt_ft,
-                "tx_lat": tx_lat,
-                "tx_lon": tx_lon,
-                "tx_alt_ft": tx_alt_ft,
-                "fc_hz": fc_hz,
-                "fs_hz": 2_000_000,
-                "beam_width_deg": 48,
-                "max_range_km": 50,
-            })
+            nodes.append(
+                {
+                    "node_id": f"synth-{rname}-{j + 1:03d}",
+                    "rx_lat": rx_lat,
+                    "rx_lon": rx_lon,
+                    "rx_alt_ft": rx_alt_ft,
+                    "tx_lat": tx_lat,
+                    "tx_lon": tx_lon,
+                    "tx_alt_ft": tx_alt_ft,
+                    "fc_hz": fc_hz,
+                    "fs_hz": 2_000_000,
+                    "beam_width_deg": 48,
+                    "max_range_km": 50,
+                }
+            )
 
     return {"nodes": nodes}
 
@@ -124,8 +130,9 @@ def main():
     ap.add_argument("--nodes", type=int, default=100, help="Number of nodes (default: 100)")
     ap.add_argument("--out", default="nodes_config_test.json", help="Output JSON file")
     ap.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
-    ap.add_argument("--regions", default=DEFAULT_REGIONS,
-                    help=f"Comma-separated regions, or 'all' (default: {DEFAULT_REGIONS})")
+    ap.add_argument(
+        "--regions", default=DEFAULT_REGIONS, help=f"Comma-separated regions, or 'all' (default: {DEFAULT_REGIONS})"
+    )
     ap.add_argument("--list-regions", action="store_true", help="Print available regions and exit")
     args = ap.parse_args()
 
@@ -133,7 +140,7 @@ def main():
         print(f"{'Region':<8} {'TX lat':>10} {'TX lon':>11} {'FC MHz':>10}")
         print("-" * 46)
         for name, tx_lat, tx_lon, _, _, _, fc_hz in REGIONS:
-            print(f"{name:<8} {tx_lat:>10.5f} {tx_lon:>11.5f} {fc_hz/1e6:>10.1f}")
+            print(f"{name:<8} {tx_lat:>10.5f} {tx_lon:>11.5f} {fc_hz / 1e6:>10.1f}")
         return
 
     config = generate(args.nodes, args.seed, args.regions)

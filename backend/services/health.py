@@ -83,21 +83,12 @@ def compute_health_issues() -> list[dict]:
 
     # Node dropout (active < 80% of peak)
     with state.connected_nodes_lock:
-        active_nodes = sum(
-            1 for n in state.connected_nodes.values() if n.get("status") != "disconnected"
-        )
-    if (
-        state.peak_connected_nodes > 10
-        and active_nodes < state.peak_connected_nodes * _NODE_DROPOUT_THRESHOLD
-    ):
+        active_nodes = sum(1 for n in state.connected_nodes.values() if n.get("status") != "disconnected")
+    if state.peak_connected_nodes > 10 and active_nodes < state.peak_connected_nodes * _NODE_DROPOUT_THRESHOLD:
         add("node_dropout", CRITICAL, f"Node dropout: {active_nodes}/{state.peak_connected_nodes} active")
 
     # Zero tracks after warmup (pipeline failure)
-    if (
-        state.frames_processed > 500
-        and len(state.adsb_aircraft) == 0
-        and len(state.multinode_tracks) == 0
-    ):
+    if state.frames_processed > 500 and len(state.adsb_aircraft) == 0 and len(state.multinode_tracks) == 0:
         add("no_active_tracks", CRITICAL, "No active tracks after warmup")
 
     # Anomaly flood (>50% anomalous = tracker misfiring)
@@ -117,25 +108,27 @@ def compute_health_issues() -> list[dict]:
             acc = orjson.loads(state.latest_accuracy_bytes)
             by_source = acc.get("by_source") or {}
             untrusted = {"single_node_ellipse_arc", "solver_single_node"}
-            trusted = [(st.get("n_samples", 0), st.get("mean_km", 0.0))
-                       for src, st in by_source.items() if src not in untrusted]
+            trusted = [
+                (st.get("n_samples", 0), st.get("mean_km", 0.0))
+                for src, st in by_source.items()
+                if src not in untrusted
+            ]
             n_trusted = sum(n for n, _ in trusted)
             if n_trusted > 20:
                 mean_trusted = sum(n * m for n, m in trusted) / n_trusted
                 if mean_trusted > 10:
-                    add("solver_accuracy_degraded", WARNING,
-                        f"Solver mean error {mean_trusted:.1f}km over {n_trusted} trusted-position samples")
+                    add(
+                        "solver_accuracy_degraded",
+                        WARNING,
+                        f"Solver mean error {mean_trusted:.1f}km over {n_trusted} trusted-position samples",
+                    )
     except Exception:
         logging.debug("health probe failed", exc_info=True)
 
     # Fleet-wide miss rate (avg >70% = network effectively blind)
     try:
         if state.latest_missed_detections:
-            rates = [
-                v["miss_rate"]
-                for v in state.latest_missed_detections.values()
-                if v.get("in_range", 0) > 0
-            ]
+            rates = [v["miss_rate"] for v in state.latest_missed_detections.values() if v.get("in_range", 0) > 0]
             if rates:
                 avg = sum(rates) / len(rates)
                 if avg > 0.7:

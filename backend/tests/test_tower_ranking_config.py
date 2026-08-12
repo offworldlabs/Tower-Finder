@@ -53,6 +53,7 @@ class TestReloadConfig:
         finally:
             # Restore real config so downstream tests aren't broken
             from core.runtime_config import runtime_path
+
             monkeypatch.setattr(tower_ranking, "_CONFIG_PATH", runtime_path("tower_config.json"))
             tower_ranking.reload_config()
             assert original_gain == tower_ranking.RX_ANTENNA_GAIN_DBI

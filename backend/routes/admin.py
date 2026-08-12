@@ -57,8 +57,10 @@ _get_stale_tasks = get_stale_tasks
 def _mn_pos_history_size() -> int:
     """Size of the solver's per-hex smoothing buffer (soak observability)."""
     from services.tasks import solver as _solver
+
     with _solver._MN_POS_HISTORY_LOCK:
         return len(_solver._MN_POS_HISTORY)
+
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -89,13 +91,15 @@ _load_events()
 
 
 def log_event(category: str, message: str, severity: str = "info", meta: dict | None = None):
-    _events.appendleft({
-        "ts": time.time(),
-        "category": category,
-        "message": message,
-        "severity": severity,
-        "meta": meta or {},
-    })
+    _events.appendleft(
+        {
+            "ts": time.time(),
+            "category": category,
+            "message": message,
+            "severity": severity,
+            "meta": meta or {},
+        }
+    )
     # Persist every 10 events to avoid excessive I/O
     if len(_events) % 10 == 0:
         _save_events()
@@ -139,6 +143,7 @@ def check_node_health():
 
 # ── Users ─────────────────────────────────────────────────────────────────────
 
+
 @router.get("/users")
 async def list_users(
     request: Request,
@@ -179,6 +184,7 @@ async def set_user_role(
 
 # ── Invites (admin pre-approves users by email) ──────────────────────────────
 
+
 class InviteCreate(BaseModel):
     email: str
     role: str = "user"
@@ -197,8 +203,12 @@ async def admin_create_invite(body: InviteCreate, admin=Depends(require_admin)):
         invite = await create_invite(body.email, body.role, admin["id"])
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
-    log_event("user", f"Invited {body.email} as {body.role}", "info",
-              {"email": body.email, "role": body.role, "by": admin["email"]})
+    log_event(
+        "user",
+        f"Invited {body.email} as {body.role}",
+        "info",
+        {"email": body.email, "role": body.role, "by": admin["email"]},
+    )
     return invite
 
 
@@ -211,6 +221,7 @@ async def admin_revoke_invite(token: str, admin=Depends(require_admin)):
 
 
 # ── Node ownership (admin override) ──────────────────────────────────────────
+
 
 class NodeOwnerUpdate(BaseModel):
     user_id: str | None = None
@@ -267,6 +278,7 @@ async def admin_set_node_owner(
 
 # ── Node retirement ───────────────────────────────────────────────────────────
 
+
 @router.get("/nodes/stale")
 async def admin_list_stale_nodes(_admin=Depends(require_admin)):
     """Per-node state held for nodes that are no longer in the fleet.
@@ -276,9 +288,9 @@ async def admin_list_stale_nodes(_admin=Depends(require_admin)):
     pass and snapshot write.  See services.node_retirement.
     """
     from services import node_retirement
+
     stale = node_retirement.stale_node_ids()
-    return {"stale_nodes": stale, "count": len(stale),
-            "live_nodes": len(node_retirement.live_node_ids())}
+    return {"stale_nodes": stale, "count": len(stale), "live_nodes": len(node_retirement.live_node_ids())}
 
 
 @router.delete("/nodes/{node_id}/state")
@@ -290,14 +302,17 @@ async def admin_retire_node(node_id: str, force: bool = False, admin=Depends(req
     the next registration would undo it anyway.
     """
     from services import node_retirement
+
     try:
         report = node_retirement.retire_node(node_id, force=force)
     except node_retirement.NodeStillConnected as exc:
-        raise HTTPException(
-            409, f"Node {node_id} is connected; pass force=true to retire it anyway"
-        ) from exc
-    log_event("node", f"Retired node state for {node_id}", "warning",
-              {"node_id": node_id, "by": admin["email"], "report": report})
+        raise HTTPException(409, f"Node {node_id} is connected; pass force=true to retire it anyway") from exc
+    log_event(
+        "node",
+        f"Retired node state for {node_id}",
+        "warning",
+        {"node_id": node_id, "by": admin["email"], "report": report},
+    )
     return report
 
 
@@ -305,13 +320,19 @@ async def admin_retire_node(node_id: str, force: bool = False, admin=Depends(req
 async def admin_retire_stale_nodes(admin=Depends(require_admin)):
     """Retire every node held in state but absent from the fleet."""
     from services import node_retirement
+
     result = node_retirement.retire_stale_nodes()
-    log_event("node", f"Retired {result['count']} stale node(s)", "warning",
-              {"by": admin["email"], "nodes": [r["node_id"] for r in result["retired"]]})
+    log_event(
+        "node",
+        f"Retired {result['count']} stale node(s)",
+        "warning",
+        {"by": admin["email"], "nodes": [r["node_id"] for r in result["retired"]]},
+    )
     return result
 
 
 # ── Events ────────────────────────────────────────────────────────────────────
+
 
 @router.get("/events")
 async def list_events(limit: int = 200, _admin=Depends(require_admin)):
@@ -447,25 +468,26 @@ _CONFIG_LIVE_CACHE_TTL = CONFIG_LIVE_CACHE_TTL_S
 
 @router.get("/storage")
 async def storage_stats(_admin=Depends(require_admin)):
-    if state.latest_storage_bytes == b'{}':
+    if state.latest_storage_bytes == b"{}":
         # Background task hasn't completed its first scan yet (startup in progress).
         # Return 202 so the frontend knows to retry rather than treating it as an error.
-        return Response(content=b'{"status":"initializing"}', status_code=202,
-                        media_type="application/json")
+        return Response(content=b'{"status":"initializing"}', status_code=202, media_type="application/json")
     return Response(content=state.latest_storage_bytes, media_type="application/json")
 
 
 # ── Leaderboard ──────────────────────────────────────────────────────────────
 
+
 @router.get("/leaderboard")
 async def leaderboard(_user=Depends(get_current_user)):
     """Public leaderboard — rankings by detections, uptime, trust."""
     import orjson
+
     # Use the pre-computed analytics snapshot (refreshed every 30 s by the
     # background task) to avoid holding the analytics lock in this handler.
     raw = state.latest_analytics_bytes
     summaries: dict = {}
-    if raw and raw != b'{}':
+    if raw and raw != b"{}":
         try:
             summaries = orjson.loads(raw).get("nodes", {})
         except Exception:
@@ -481,22 +503,24 @@ async def leaderboard(_user=Depends(get_current_user)):
         t = s.get("trust", {})
         r = s.get("reputation", {})
         miss = state.latest_missed_detections.get(node_id, {})
-        entries.append({
-            "node_id": node_id,
-            "name": state.connected_nodes.get(node_id, {}).get("config", {}).get("name", node_id),
-            "detections": m.get("total_detections", 0),
-            "frames": m.get("total_frames", 0),
-            "tracks": m.get("total_tracks", 0),
-            "uptime_s": m.get("uptime_s", 0),
-            "avg_snr": m.get("avg_snr", 0),
-            "trust_score": t.get("trust_score", 0),
-            "reputation": r.get("reputation", 0),
-            "online": state.connected_nodes.get(node_id, {}).get("status") not in ("disconnected", None),
-            "in_range": miss.get("in_range", 0),
-            "detected_in_range": miss.get("detected", 0),
-            "missed": miss.get("missed", 0),
-            "miss_rate": miss.get("miss_rate", 0.0),
-        })
+        entries.append(
+            {
+                "node_id": node_id,
+                "name": state.connected_nodes.get(node_id, {}).get("config", {}).get("name", node_id),
+                "detections": m.get("total_detections", 0),
+                "frames": m.get("total_frames", 0),
+                "tracks": m.get("total_tracks", 0),
+                "uptime_s": m.get("uptime_s", 0),
+                "avg_snr": m.get("avg_snr", 0),
+                "trust_score": t.get("trust_score", 0),
+                "reputation": r.get("reputation", 0),
+                "online": state.connected_nodes.get(node_id, {}).get("status") not in ("disconnected", None),
+                "in_range": miss.get("in_range", 0),
+                "detected_in_range": miss.get("detected", 0),
+                "missed": miss.get("missed", 0),
+                "miss_rate": miss.get("miss_rate", 0.0),
+            }
+        )
     # Sort by detections descending
     entries.sort(key=lambda e: e["detections"], reverse=True)
     # Add rank
@@ -507,13 +531,14 @@ async def leaderboard(_user=Depends(get_current_user)):
 
 # ── User alerts (public, non-admin) ─────────────────────────────────────────
 
+
 @router.get("/alerts")
 async def user_alerts(_user=Depends(get_current_user)):
     """Return recent events visible to logged-in users."""
     visible = [
-        e for e in _events
-        if e.get("severity") in ("warning", "error", "critical")
-        or e.get("category") in ("node", "config", "system")
+        e
+        for e in _events
+        if e.get("severity") in ("warning", "error", "critical") or e.get("category") in ("node", "config", "system")
     ]
     return visible[:100]
 
@@ -527,6 +552,7 @@ async def system_metrics(_user=Depends(require_admin)):
     rusage = resource.getrusage(resource.RUSAGE_SELF)
     # ru_maxrss is in KB on Linux, bytes on macOS — normalise to MB
     import sys
+
     rss_mb = rusage.ru_maxrss / 1024 if sys.platform == "linux" else rusage.ru_maxrss / (1024 * 1024)
 
     disk = shutil.disk_usage(state.COVERAGE_STORAGE_DIR)
@@ -543,12 +569,8 @@ async def system_metrics(_user=Depends(require_admin)):
         "solver_queue_depth": state.solver_queue.qsize(),
         "solver_queue_drops": state.solver_queue_drops,
         "solver_last_latency_s": round(state.solver_last_latency_s, 3),
-        "solver_avg_latency_s": round(
-            state.solver_total_latency_s / max(state.solver_total_solved, 1), 2
-        ),
-        "solver_queue_pct": round(
-            state.solver_queue.qsize() / max(state.solver_queue.maxsize, 1) * 100, 1
-        ),
+        "solver_avg_latency_s": round(state.solver_total_latency_s / max(state.solver_total_solved, 1), 2),
+        "solver_queue_pct": round(state.solver_queue.qsize() / max(state.solver_queue.maxsize, 1) * 100, 1),
         "connected_nodes": len([n for n in list(state.connected_nodes.values()) if n.get("status") == "active"]),
         "peak_connected_nodes": state.peak_connected_nodes,
         "active_geo_aircraft": len(state.active_geo_aircraft),
@@ -579,9 +601,8 @@ async def coverage_dump(_user=Depends(require_admin)):
     Collection continues after the dump — no restart required.
     """
     import services.runtime_coverage as _rc
-    html_dir = await asyncio.get_running_loop().run_in_executor(
-        _admin_executor, _rc.save
-    )
+
+    html_dir = await asyncio.get_running_loop().run_in_executor(_admin_executor, _rc.save)
     if html_dir is None:
         return {"status": "disabled", "detail": "COVERAGE_ENABLED is not set"}
     return {"status": "ok", "html_report": html_dir}
