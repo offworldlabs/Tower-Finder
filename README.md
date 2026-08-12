@@ -50,9 +50,11 @@ just setup
 
 That is the supported path: it initialises the submodules, builds the backend venv
 with `uv`, installs all five `libs/` packages editable, seeds `backend/.env` from
-the example, and installs the frontend dependencies. Install all five even if you
-only care about tower search: `retina-simulation` imports the other four, so a
-partial install fails at import time rather than at use.
+the example, applies the database migrations (`backend/data/users.db` does not
+exist yet on a fresh clone, and `create_all` no longer builds it outside the test
+suite), and installs the frontend dependencies. Install all five even if you only
+care about tower search: `retina-simulation` imports the other four, so a partial
+install fails at import time rather than at use.
 
 Then either run the whole local stack:
 
@@ -71,6 +73,26 @@ cd backend && .venv/bin/uvicorn main:app --reload
 The API runs at `http://localhost:8000`. Interactive docs at `/docs`. Add your
 Maprad.io API key to `backend/.env` for tower search; the live map does not need
 it.
+
+#### Database migrations
+
+The schema is owned by Alembic (`backend/migrations/`). `create_all` runs only
+in the test suite, which sets `RETINA_SCHEMA_SOURCE=create_all`; everywhere else
+migrations are applied on every start, by `just up` locally (`just migrate` runs
+it on its own) and by `deploy/start.sh` on every container boot. Pulling a branch
+that adds a revision therefore needs nothing extra.
+
+To change the schema, edit the models, then from `backend/`:
+
+```bash
+uv run alembic revision --autogenerate -m "what changed"
+uv run alembic upgrade head
+```
+
+Review the generated file before committing. Anything other than `create_table`
+must go through `op.batch_alter_table`, because SQLite cannot `ALTER`.
+`RETINA_DB_PATH` points Alembic at a scratch file if you want to try a
+migration without touching `backend/data/users.db`.
 
 ### Frontend
 

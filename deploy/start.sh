@@ -76,6 +76,78 @@ python3 /app/deploy/render-nginx-config.py \
 nginx -t
 echo "[start.sh] Rendered nginx config for RETINA_ENV=${RETINA_ENV} (${HOST_MAIN})"
 
+# ── Database migrations ─────────────────────────────────────────────────────
+# create_all is guarded off outside tests (core/users.py), so this is the only
+# thing that builds or updates the schema. `set -e` makes a failure here abort
+# the boot, which is deliberate: a server started against a half-applied schema
+# fails later, at the first request touching the missing column, and the deploy
+# health gate reports this instead.
+#
+# The first run on an existing droplet finds tables but no alembic_version.
+# Revision 0001 detects that and records itself without recreating them, so no
+# `alembic stamp` is needed by hand.
+#
+# A rollback moves the source tree (and migrations/versions/ with it) back to an
+# older image while leaving the database exactly where the newer image left it.
+# Alembic does not stop at the newest revision it recognises: `upgrade head`
+# exits non-zero with "Can't locate revision identified by '<rev>'" the moment
+# the database is ahead of what this image ships. Treating that as a boot
+# failure would turn every rollback into a crash-loop, which defeats the point
+# of rolling back. An additive revision the older code doesn't know about is
+# harmless to leave in place, since the old code never touches the new column,
+# so that specific failure is logged and swallowed; anything else (a broken
+# revision, a locked or corrupt database, an unreadable file) still aborts the
+# boot exactly as before. A destructive revision needs `alembic downgrade` run
+# by hand before deploying the older image; see docs/runbook.md.
+#
+# The grep below matches free text Alembic itself controls, not us, so a
+# future Alembic release rewording that message would make this stop matching
+# and every legitimate rollback would fall through to the `exit 1` below,
+# silently, at the worst possible moment. backend/tests/test_migrations.py's
+# test_rollback_ahead_sentinel_matches_alembics_wording reproduces this exact
+# scenario against a real Alembic run and asserts the substring is still
+# present, so a wording change fails loudly in CI instead. The substring
+# itself lives once, in backend/tests/migration_helpers.py's
+# ROLLBACK_AHEAD_SENTINEL; this grep is the other half.
+#
+# The `if !`-equivalent form below (testing the assignment itself) is required
+# to keep `set -e` from aborting on the very failure this block exists to
+# inspect: a failing command substitution used bare, `x=$(cmd)` outside a
+# conditional, still triggers errexit. Once inside the if/elif, the failure
+# branch must exit explicitly, since being the tested command is what silences
+# the automatic abort.
+echo "[start.sh] Applying database migrations..."
+if MIGRATION_OUTPUT=$(cd /app/backend && python3 -m alembic upgrade head 2>&1); then
+    echo "[start.sh] Migrations applied"
+    if [ -n "${MIGRATION_OUTPUT}" ]; then
+        printf '%s\n' "${MIGRATION_OUTPUT}"
+    fi
+    # Logged separately from the upgrade above because the root logger is
+    # pinned to WARN (alembic.ini), so a successful upgrade prints nothing and
+    # an applied revision would otherwise be indistinguishable in the logs from
+    # a boot where nothing needed doing. `alembic current` prints the revision
+    # itself regardless of that logger level.
+    #
+    # Purely diagnostic: the migration has already succeeded by this point, so
+    # a failure here (a transient lock, say) must not fail the boot. The `if`
+    # form is required for the same set -e reason as the upgrade call above:
+    # a bare `x=$(cmd)` would still trigger errexit on failure.
+    if CURRENT_OUTPUT=$(cd /app/backend && python3 -m alembic current 2>&1); then
+        echo "[start.sh] Database is now at:"
+        printf '%s\n' "${CURRENT_OUTPUT}"
+    else
+        echo "[start.sh] Could not determine current revision (non-fatal):"
+        printf '%s\n' "${CURRENT_OUTPUT}"
+    fi
+elif printf '%s\n' "${MIGRATION_OUTPUT}" | grep -q "Can't locate revision"; then
+    echo "[start.sh] Database is ahead of this image's migrations (rollback); continuing without downgrading"
+    printf '%s\n' "${MIGRATION_OUTPUT}"
+else
+    echo "[start.sh] Migration failed, refusing to boot:"
+    printf '%s\n' "${MIGRATION_OUTPUT}"
+    exit 1
+fi
+
 # ── uvicorn supervision: exit on a persistent fast crash-loop ────────────────
 # The fast in-process restart below absorbs *transient* uvicorn crashes without
 # recreating the whole container. But if uvicorn crash-loops persistently the

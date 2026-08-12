@@ -114,7 +114,9 @@ async def lifespan(app: FastAPI):
     # the runtime copy wins, and before the task list is built below.
     blah2_nodes = load_blah2_nodes()
 
-    # Initialise SQLite user database (creates tables on first run)
+    # No-op everywhere except tests (RETINA_SCHEMA_SOURCE guards create_all off
+    # otherwise). The schema comes from Alembic migrations instead: deploy/start.sh
+    # runs them before uvicorn starts, and `just setup` runs them for local dev.
     from core.users import create_db_and_tables
 
     await create_db_and_tables()

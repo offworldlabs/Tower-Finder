@@ -44,7 +44,15 @@ AUTH_BYPASS = not AUTH_ENABLED and _RETINA_ENV in ("dev", "test", "staging")
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
-DATABASE_URL = f"sqlite+aiosqlite:///{_DATA_DIR}/users.db"
+# RETINA_DB_PATH exists so tests and one-off migrations can point at a scratch
+# file. It is unset in every deployed environment, where the path derives from
+# this module's own location and lands inside the backend-data volume.
+# A relative override is resolved against the current working directory, which
+# is not the same for every caller: alembic runs with cwd backend/, while the
+# application may not. Resolving here makes the same override mean the same
+# file regardless of caller.
+_DB_PATH = Path(os.getenv("RETINA_DB_PATH") or _DATA_DIR / "users.db").resolve()
+DATABASE_URL = f"sqlite+aiosqlite:///{_DB_PATH}"
 
 # ── SQLAlchemy setup ─────────────────────────────────────────────────────────
 
@@ -129,6 +137,15 @@ async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
 
 
 async def create_db_and_tables() -> None:
+    """Create tables directly. Migrations own the schema everywhere except tests.
+
+    `create_all` never alters an existing table, so leaving it as the deploy path
+    would silently skip every column added after a table first appeared. The test
+    suite still uses it: it is faster than a migration run per session, and the
+    equivalence between the two is asserted in tests/test_migrations.py.
+    """
+    if os.getenv("RETINA_SCHEMA_SOURCE", "alembic") != "create_all":
+        return
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
