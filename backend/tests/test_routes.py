@@ -23,6 +23,7 @@ def client():
 
 # ── Health ────────────────────────────────────────────────────────────────────
 
+
 class TestHealth:
     def test_health_returns_ok(self, client):
         r = client.get("/api/health")
@@ -31,6 +32,7 @@ class TestHealth:
 
 
 # ── Detections ────────────────────────────────────────────────────────────────
+
 
 class TestDetections:
     def test_missing_api_key_returns_401(self, client):
@@ -82,6 +84,7 @@ class TestDetections:
 
 # ── Request size limit ────────────────────────────────────────────────────────
 
+
 class TestRequestSizeLimit:
     def test_oversized_body_rejected(self, client):
         """Requests declaring Content-Length > MAX_REQUEST_BODY_BYTES get 413."""
@@ -98,6 +101,7 @@ class TestRequestSizeLimit:
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
+
 
 class TestCORS:
     def test_cors_allows_configured_origin(self, client):
@@ -135,6 +139,7 @@ class TestCORS:
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
+
 class TestConfig:
     def test_get_config(self, client):
         r = client.get("/api/config")
@@ -143,6 +148,7 @@ class TestConfig:
 
 
 # ── Receiver / aircraft JSON ─────────────────────────────────────────────────
+
 
 class TestRadarData:
     def test_receiver_json(self, client):
@@ -158,6 +164,7 @@ class TestRadarData:
 
 # ── WebSocket auth ────────────────────────────────────────────────────────────
 
+
 class TestWebSocketAuth:
     def test_ws_open_when_no_token_configured(self, client):
         """When WS_AUTH_TOKEN is empty, any client can connect."""
@@ -169,6 +176,7 @@ class TestWebSocketAuth:
     def test_ws_rejected_with_bad_token(self, client, monkeypatch):
         """When WS_AUTH_TOKEN is set, invalid tokens get rejected."""
         import routes.streaming as streaming_mod
+
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "secret-token-123")
         with pytest.raises(Exception):
             with client.websocket_connect("/ws/aircraft?token=wrong") as ws:
@@ -177,12 +185,14 @@ class TestWebSocketAuth:
     def test_ws_accepted_with_valid_token(self, client, monkeypatch):
         """When WS_AUTH_TOKEN is set, valid tokens get accepted."""
         import routes.streaming as streaming_mod
+
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "secret-token-123")
         with client.websocket_connect("/ws/aircraft?token=secret-token-123"):
             pass
 
 
 # ── Config (detailed) ────────────────────────────────────────────────────────
+
 
 class TestConfigDetailed:
     def test_config_has_ranking(self, client):
@@ -203,6 +213,7 @@ class TestConfigDetailed:
 
 
 # ── Config PUT + reload ──────────────────────────────────────────────────────
+
 
 class TestConfigReload:
     def test_put_and_reload(self, client):
@@ -230,6 +241,7 @@ class TestConfigReload:
 
 # ── Elevation ─────────────────────────────────────────────────────────────────
 
+
 class TestElevation:
     @pytest.mark.external
     def test_sydney_elevation(self, client):
@@ -253,6 +265,7 @@ class TestElevation:
 
 # ── Towers parameter validation ──────────────────────────────────────────────
 
+
 class TestTowersValidation:
     def test_missing_lat_lon_returns_422(self, client):
         r = client.get("/api/towers")
@@ -269,6 +282,7 @@ class TestTowersValidation:
 
 # ── Tower usage statistics ───────────────────────────────────────────────────
 
+
 class TestTowerStats:
     @pytest.fixture(autouse=True)
     def cleanup_stats(self):
@@ -280,16 +294,20 @@ class TestTowerStats:
     _HEADERS = {"X-API-Key": "test-key-abc123"}
 
     def test_post_selection(self, client):
-        r = client.post("/api/stats/tower-selection", json={
-            "node_id": "test-node-1",
-            "tower_callsign": "ABC7",
-            "tower_frequency_mhz": 177.5,
-            "tower_lat": -33.8,
-            "tower_lon": 151.2,
-            "node_lat": -33.9,
-            "node_lon": 151.1,
-            "source": "au",
-        }, headers=self._HEADERS)
+        r = client.post(
+            "/api/stats/tower-selection",
+            json={
+                "node_id": "test-node-1",
+                "tower_callsign": "ABC7",
+                "tower_frequency_mhz": 177.5,
+                "tower_lat": -33.8,
+                "tower_lon": 151.2,
+                "node_lat": -33.9,
+                "node_lon": 151.1,
+                "source": "au",
+            },
+            headers=self._HEADERS,
+        )
         assert r.status_code == 200
         assert r.json()["status"] == "recorded"
 
@@ -300,16 +318,20 @@ class TestTowerStats:
     def test_get_summary(self, client):
         # Record two selections first
         for nid in ("test-s-1", "test-s-2"):
-            client.post("/api/stats/tower-selection", json={
-                "node_id": nid,
-                "tower_callsign": "ABC7",
-                "tower_frequency_mhz": 177.5,
-                "tower_lat": -33.8,
-                "tower_lon": 151.2,
-                "node_lat": -34.0,
-                "node_lon": 151.0,
-                "source": "au",
-            }, headers=self._HEADERS)
+            client.post(
+                "/api/stats/tower-selection",
+                json={
+                    "node_id": nid,
+                    "tower_callsign": "ABC7",
+                    "tower_frequency_mhz": 177.5,
+                    "tower_lat": -33.8,
+                    "tower_lon": 151.2,
+                    "node_lat": -34.0,
+                    "node_lon": 151.0,
+                    "source": "au",
+                },
+                headers=self._HEADERS,
+            )
         r = client.get("/api/stats/summary")
         assert r.status_code == 200
         s = r.json()
@@ -320,6 +342,7 @@ class TestTowerStats:
 
 
 # ── Archive API ──────────────────────────────────────────────────────────────
+
 
 class TestArchiveAPI:
     def test_archive_list(self, client):

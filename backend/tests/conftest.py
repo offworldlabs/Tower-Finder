@@ -57,9 +57,16 @@ def _reset_module_state():
     )
     from services.tasks import analytics_refresh, solver
 
-    for mod in (state, frame_processor, aircraft_feed, track_gates,
-                feed_helpers, solver, analytics_refresh, alerting,
-                tcp_handler):
+    for mod in (
+        state,
+        frame_processor,
+        aircraft_feed,
+        track_gates,
+        feed_helpers,
+        solver,
+        analytics_refresh,
+        alerting,
+        tcp_handler,
+    ):
         mod._reset_for_tests()
     yield
-

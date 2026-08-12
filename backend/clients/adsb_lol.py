@@ -53,20 +53,22 @@ class AdsbLolClient:
                 lon_v = ac.get("lon")
                 if lat_v is None or lon_v is None:
                     continue
-                result.append({
-                    "hex": ac.get("hex", ""),
-                    "flight": (ac.get("flight") or "").strip(),
-                    "lat": lat_v,
-                    "lon": lon_v,
-                    "alt_baro": ac.get("alt_baro") or 0,
-                    "gs": ac.get("gs") or 0,
-                    "track": ac.get("track") or 0,
-                    "squawk": ac.get("squawk", ""),
-                    "category": ac.get("category", ""),
-                    "type": ac.get("type", "adsb_icao"),
-                    "registration": ac.get("r", ""),
-                    "aircraft_type": ac.get("t", ""),
-                })
+                result.append(
+                    {
+                        "hex": ac.get("hex", ""),
+                        "flight": (ac.get("flight") or "").strip(),
+                        "lat": lat_v,
+                        "lon": lon_v,
+                        "alt_baro": ac.get("alt_baro") or 0,
+                        "gs": ac.get("gs") or 0,
+                        "track": ac.get("track") or 0,
+                        "squawk": ac.get("squawk", ""),
+                        "category": ac.get("category", ""),
+                        "type": ac.get("type", "adsb_icao"),
+                        "registration": ac.get("r", ""),
+                        "aircraft_type": ac.get("t", ""),
+                    }
+                )
             self._cache[name] = result
             self._last_poll[name] = now
             return result

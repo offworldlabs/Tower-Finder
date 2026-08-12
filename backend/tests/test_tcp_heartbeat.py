@@ -39,6 +39,7 @@ _NODE_CONFIG = {
 
 # ── Message helpers ───────────────────────────────────────────────────────────
 
+
 def _msg(d: dict) -> bytes:
     return json.dumps(d).encode("utf-8") + b"\n"
 
@@ -48,14 +49,16 @@ def _hello(node_id: str = NODE_ID) -> bytes:
 
 
 def _config(node_id: str = NODE_ID, config_hash: str = CONFIG_HASH) -> bytes:
-    return _msg({
-        "type": "CONFIG",
-        "node_id": node_id,
-        "config_hash": config_hash,
-        "is_synthetic": False,
-        "config": _NODE_CONFIG,
-        "capabilities": {"adsb_report": True},
-    })
+    return _msg(
+        {
+            "type": "CONFIG",
+            "node_id": node_id,
+            "config_hash": config_hash,
+            "is_synthetic": False,
+            "config": _NODE_CONFIG,
+            "capabilities": {"adsb_report": True},
+        }
+    )
 
 
 def _heartbeat(
@@ -64,19 +67,21 @@ def _heartbeat(
     status: str = "active",
     timestamp: str = HEARTBEAT_TS,
 ) -> bytes:
-    return _msg({
-        "type": "HEARTBEAT",
-        "node_id": node_id,
-        "config_hash": config_hash,
-        "status": status,
-        "timestamp": timestamp,
-    })
+    return _msg(
+        {
+            "type": "HEARTBEAT",
+            "node_id": node_id,
+            "config_hash": config_hash,
+            "status": status,
+            "timestamp": timestamp,
+        }
+    )
 
 
 # ── Test class ────────────────────────────────────────────────────────────────
 
-class TestTCPHeartbeat:
 
+class TestTCPHeartbeat:
     @pytest.fixture(autouse=True)
     def _cleanup(self):
         """Remove test node from shared state before and after each test."""
@@ -97,12 +102,14 @@ class TestTCPHeartbeat:
         hb_timestamp: str = HEARTBEAT_TS,
         node_config_hash: str = CONFIG_HASH,
     ):
-        reader = FakeReader([
-            _hello(),
-            _config(config_hash=node_config_hash),
-            _heartbeat(config_hash=hb_config_hash, status=hb_status, timestamp=hb_timestamp),
-            b"",
-        ])
+        reader = FakeReader(
+            [
+                _hello(),
+                _config(config_hash=node_config_hash),
+                _heartbeat(config_hash=hb_config_hash, status=hb_status, timestamp=hb_timestamp),
+                b"",
+            ]
+        )
         writer = FakeWriter()
         asyncio.run(handle_tcp_client(reader, writer))
         return writer
@@ -176,10 +183,12 @@ class TestTCPHeartbeat:
         unknown_id = "never-registered-node"
         state.connected_nodes.pop(unknown_id, None)
 
-        reader = FakeReader([
-            _heartbeat(node_id=unknown_id),
-            b"",
-        ])
+        reader = FakeReader(
+            [
+                _heartbeat(node_id=unknown_id),
+                b"",
+            ]
+        )
         writer = FakeWriter()
         # Must not raise
         asyncio.run(handle_tcp_client(reader, writer))

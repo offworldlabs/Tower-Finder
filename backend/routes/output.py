@@ -32,10 +32,7 @@ def _real_node_ids() -> set:
     /api/v1/solver/aircraft.
     """
     with state.connected_nodes_lock:
-        return {
-            nid for nid, info in state.connected_nodes.items()
-            if not info.get("is_synthetic", True)
-        }
+        return {nid for nid, info in state.connected_nodes.items() if not info.get("is_synthetic", True)}
 
 
 def _format_aircraft(ac: dict) -> dict:
@@ -62,7 +59,9 @@ def _format_aircraft(ac: dict) -> dict:
 
 
 @router.get("/api/v1/solver/aircraft")
-async def solver_aircraft(real_only: bool = Query(False, description="Return only aircraft detected by real (non-synthetic) nodes")):
+async def solver_aircraft(
+    real_only: bool = Query(False, description="Return only aircraft detected by real (non-synthetic) nodes"),
+):
     """Return all aircraft the solver is currently tracking.
 
     Each entry includes the solver's position estimate, position source,
@@ -83,23 +82,25 @@ async def solver_aircraft(real_only: bool = Query(False, description="Return onl
     if real_only:
         real_ids = _real_node_ids()
         aircraft_list = [
-            ac for ac in data.get("aircraft", [])
+            ac
+            for ac in data.get("aircraft", [])
             if ac.get("node_id") in real_ids
-            or (ac.get("multinode") and any(
-                nid in real_ids for nid in ac.get("contributing_node_ids", [])
-            ))
+            or (ac.get("multinode") and any(nid in real_ids for nid in ac.get("contributing_node_ids", [])))
         ]
     else:
         aircraft_list = data.get("aircraft", [])
 
     aircraft_out = [_format_aircraft(ac) for ac in aircraft_list]
 
-    body = orjson.dumps({
-        "timestamp": now,
-        "count": len(aircraft_out),
-        "real_only": real_only,
-        "aircraft": aircraft_out,
-    }, option=orjson.OPT_SERIALIZE_NUMPY)
+    body = orjson.dumps(
+        {
+            "timestamp": now,
+            "count": len(aircraft_out),
+            "real_only": real_only,
+            "aircraft": aircraft_out,
+        },
+        option=orjson.OPT_SERIALIZE_NUMPY,
+    )
     return Response(content=body, media_type="application/json")
 
 
@@ -120,21 +121,26 @@ async def ground_truth_aircraft():
         if not trail:
             continue
         meta = state.ground_truth_meta.get(hex_code, {})
-        aircraft_out.append({
-            "hex": hex_code,
-            "object_type": meta.get("object_type"),
-            "is_anomalous": meta.get("is_anomalous", False),
-            "speed_ms": meta.get("speed_ms"),
-            "heading": meta.get("heading"),
-            "trail": list(trail)[-30:],
-        })
+        aircraft_out.append(
+            {
+                "hex": hex_code,
+                "object_type": meta.get("object_type"),
+                "is_anomalous": meta.get("is_anomalous", False),
+                "speed_ms": meta.get("speed_ms"),
+                "heading": meta.get("heading"),
+                "trail": list(trail)[-30:],
+            }
+        )
 
-    body = orjson.dumps({
-        "timestamp": now,
-        "count": len(aircraft_out),
-        "source": "simulation",
-        "aircraft": aircraft_out,
-    }, option=orjson.OPT_SERIALIZE_NUMPY)
+    body = orjson.dumps(
+        {
+            "timestamp": now,
+            "count": len(aircraft_out),
+            "source": "simulation",
+            "aircraft": aircraft_out,
+        },
+        option=orjson.OPT_SERIALIZE_NUMPY,
+    )
     return Response(content=body, media_type="application/json")
 
 
@@ -160,21 +166,26 @@ async def ground_truth_real():
     now = time.time()
     aircraft_out = []
     for icao, entry in list(state.external_adsb_cache.items()):
-        aircraft_out.append({
-            "hex": icao,
-            "lat": entry.get("lat"),
-            "lon": entry.get("lon"),
-            "alt_m": entry.get("alt_m"),
-            "velocity": entry.get("velocity"),
-            "heading": entry.get("heading"),
-        })
+        aircraft_out.append(
+            {
+                "hex": icao,
+                "lat": entry.get("lat"),
+                "lon": entry.get("lon"),
+                "alt_m": entry.get("alt_m"),
+                "velocity": entry.get("velocity"),
+                "heading": entry.get("heading"),
+            }
+        )
 
-    body = orjson.dumps({
-        "timestamp": now,
-        "count": len(aircraft_out),
-        "source": "opensky_network",
-        "aircraft": aircraft_out,
-    }, option=orjson.OPT_SERIALIZE_NUMPY)
+    body = orjson.dumps(
+        {
+            "timestamp": now,
+            "count": len(aircraft_out),
+            "source": "opensky_network",
+            "aircraft": aircraft_out,
+        },
+        option=orjson.OPT_SERIALIZE_NUMPY,
+    )
     return Response(content=body, media_type="application/json")
 
 

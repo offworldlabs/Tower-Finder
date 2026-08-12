@@ -12,6 +12,7 @@ from core import state  # noqa: E402
 
 # ── _build_real_only_payload ─────────────────────────────────────────────────
 
+
 class TestBuildRealOnlyPayload:
     def test_filters_synthetic_nodes(self):
         from services.tasks.aircraft_flush import _build_real_only_payload
@@ -81,6 +82,7 @@ class TestBuildRealOnlyPayload:
 
 # ── broadcast_aircraft ───────────────────────────────────────────────────────
 
+
 class TestBroadcastAircraft:
     @pytest.mark.asyncio
     async def test_updates_state(self):
@@ -102,6 +104,7 @@ class TestBroadcastAircraft:
 
 
 # ── Stale task detection helpers ─────────────────────────────────────────────
+
 
 class TestTaskTimestamps:
     def test_task_last_success_updated(self):

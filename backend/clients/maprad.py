@@ -150,19 +150,25 @@ async def fetch_broadcast_systems(
                 kwargs = {**base_kwargs, "subtype": subtype}
                 try:
                     return await _paginate_query(
-                        client, headers, _SUBTYPE_QUERY, kwargs,
-                        max_pages=max_pages, page_size=5,
+                        client,
+                        headers,
+                        _SUBTYPE_QUERY,
+                        kwargs,
+                        max_pages=max_pages,
+                        page_size=5,
                     )
                 except Exception as exc:
                     log.warning("Subtype %s query failed: %s", subtype, exc)
                     return []
 
-            batches = await asyncio.gather(
-                *(_fetch_subtype(s) for s in _BROADCAST_SUBTYPES)
-            )
+            batches = await asyncio.gather(*(_fetch_subtype(s) for s in _BROADCAST_SUBTYPES))
             return [sys for batch in batches for sys in batch]
         else:
             return await _paginate_query(
-                client, headers, _FREQ_RANGE_QUERY, base_kwargs,
-                max_pages=max_pages, page_size=20,
+                client,
+                headers,
+                _FREQ_RANGE_QUERY,
+                base_kwargs,
+                max_pages=max_pages,
+                page_size=20,
             )

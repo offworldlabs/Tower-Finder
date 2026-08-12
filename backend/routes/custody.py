@@ -21,6 +21,7 @@ RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
 
 # ── Request models ────────────────────────────────────────────────────────────
 
+
 class RegisterNodeRequest(BaseModel):
     node_id: str = Field(..., min_length=1, max_length=128)
     public_key_pem: str = Field(..., min_length=1, max_length=8192)
@@ -136,27 +137,29 @@ async def custody_iq_commitment(
 
 @router.get("/api/custody/status")
 async def custody_status():
-    body = orjson.dumps({
-        "registered_nodes": len(state.node_identities),
-        "node_keys": {
-            nid: {
-                "fingerprint": ident.public_key_fingerprint,
-                "signing_mode": ident.signing_mode,
-                "serial_number": ident.serial_number,
-                "registered_at": ident.registered_at,
-            }
-            for nid, ident in state.node_identities.items()
-        },
-        "chain_entries": {
-            nid: {
-                "count": len(entries),
-                "latest_hour": entries[-1].get("hour_utc") if entries else None,
-                "latest_verified": entries[-1].get("_verified") if entries else None,
-            }
-            for nid, entries in state.chain_entries.items()
-        },
-        "iq_commitments": {nid: len(captures) for nid, captures in state.iq_commitments.items()},
-    })
+    body = orjson.dumps(
+        {
+            "registered_nodes": len(state.node_identities),
+            "node_keys": {
+                nid: {
+                    "fingerprint": ident.public_key_fingerprint,
+                    "signing_mode": ident.signing_mode,
+                    "serial_number": ident.serial_number,
+                    "registered_at": ident.registered_at,
+                }
+                for nid, ident in state.node_identities.items()
+            },
+            "chain_entries": {
+                nid: {
+                    "count": len(entries),
+                    "latest_hour": entries[-1].get("hour_utc") if entries else None,
+                    "latest_verified": entries[-1].get("_verified") if entries else None,
+                }
+                for nid, entries in state.chain_entries.items()
+            },
+            "iq_commitments": {nid: len(captures) for nid, captures in state.iq_commitments.items()},
+        }
+    )
     return Response(content=body, media_type="application/json")
 
 

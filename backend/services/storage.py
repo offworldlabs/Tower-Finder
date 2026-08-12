@@ -19,6 +19,7 @@ _LOCAL_ARCHIVE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "c
 
 # ---------- Helpers ---------------------------------------------------------
 
+
 def _ensure_local_dir():
     os.makedirs(_LOCAL_ARCHIVE_DIR, exist_ok=True)
 
@@ -33,6 +34,7 @@ def _partition_value(dirname: str) -> str:
 
 
 # ---------- Public API ------------------------------------------------------
+
 
 def archive_detections(node_id: str, detections: list[dict], *, tag: str = "detections") -> str | None:
     """Archive a batch of detection FRAMES to local filesystem as Parquet.
@@ -53,6 +55,7 @@ def archive_detections(node_id: str, detections: list[dict], *, tag: str = "dete
     node_cfg: dict | None = None
     try:
         from core import state  # local import to avoid cycle in tests
+
         info = state.connected_nodes.get(node_id) if hasattr(state, "connected_nodes") else None
         if info:
             node_cfg = info.get("config")
@@ -120,15 +123,17 @@ def list_archived_files(
                 if node_id and file_node_id != node_id:
                     continue
                 st = p.stat()
-                results.append({
-                    "key": str(rel),
-                    "size_bytes": st.st_size,
-                    "modified": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
-                })
+                results.append(
+                    {
+                        "key": str(rel),
+                        "size_bytes": st.st_size,
+                        "modified": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+                    }
+                )
 
         results.sort(key=lambda x: x["modified"], reverse=sort_desc)
         total = len(results)
-        page = results[offset: offset + limit]
+        page = results[offset : offset + limit]
         return {"files": page, "count": len(page), "total": total}
 
     # No date_prefix — traverse in reverse-chronological order and exit early.
@@ -180,15 +185,17 @@ def list_archived_files(
             except OSError:
                 continue
             rel = p.relative_to(base)
-            collected.append({
-                "key": str(rel),
-                "size_bytes": st.st_size,
-                "modified": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
-            })
+            collected.append(
+                {
+                    "key": str(rel),
+                    "size_bytes": st.st_size,
+                    "modified": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+                }
+            )
         if total_scanned >= MAX_SCAN:
             break
 
-    page = collected[offset: offset + limit]
+    page = collected[offset : offset + limit]
     return {
         "files": page,
         "count": len(page),
@@ -239,36 +246,44 @@ def _read_parquet_as_legacy_json(path: str) -> dict:
     by_frame: dict[int, dict] = {}
     for r in rows:
         ts = r["frame_ts_ms"]
-        fr = by_frame.setdefault(ts, {
-            "timestamp": ts,
-            "delay": [], "doppler": [], "snr": [], "adsb": [],
-            "_signing_mode": r.get("signing_mode"),
-            "_signature_valid": r.get("signature_valid"),
-            # Geometry/RF snapshot is per-frame (constant within a frame).
-            "rx_lat": r.get("rx_lat"),
-            "rx_lon": r.get("rx_lon"),
-            "rx_alt_ft": r.get("rx_alt_ft"),
-            "tx_lat": r.get("tx_lat"),
-            "tx_lon": r.get("tx_lon"),
-            "tx_alt_ft": r.get("tx_alt_ft"),
-            "fc_hz": r.get("fc_hz"),
-            "fs_hz": r.get("fs_hz"),
-        })
+        fr = by_frame.setdefault(
+            ts,
+            {
+                "timestamp": ts,
+                "delay": [],
+                "doppler": [],
+                "snr": [],
+                "adsb": [],
+                "_signing_mode": r.get("signing_mode"),
+                "_signature_valid": r.get("signature_valid"),
+                # Geometry/RF snapshot is per-frame (constant within a frame).
+                "rx_lat": r.get("rx_lat"),
+                "rx_lon": r.get("rx_lon"),
+                "rx_alt_ft": r.get("rx_alt_ft"),
+                "tx_lat": r.get("tx_lat"),
+                "tx_lon": r.get("tx_lon"),
+                "tx_alt_ft": r.get("tx_alt_ft"),
+                "fc_hz": r.get("fc_hz"),
+                "fs_hz": r.get("fs_hz"),
+            },
+        )
         fr["delay"].append(r["delay_us"])
         fr["doppler"].append(r["doppler_hz"])
         fr["snr"].append(r["snr_db"])
         if r.get("adsb_hex"):
-            fr["adsb"].append({
-                "hex": r["adsb_hex"],
-                "lat": r["adsb_lat"],
-                "lon": r["adsb_lon"],
-                "alt_baro": r["adsb_alt_baro"],
-                "gs": r["adsb_gs"],
-                "track": r["adsb_track"],
-                "flight": r["adsb_flight"],
-                "squawk": r.get("adsb_squawk"),
-                "category": r.get("adsb_category"),
-            })
+            fr["adsb"].append(
+                {
+                    "hex": r["adsb_hex"],
+                    "lat": r["adsb_lat"],
+                    "lon": r["adsb_lon"],
+                    "alt_baro": r["adsb_alt_baro"],
+                    "gs": r["adsb_gs"],
+                    "track": r["adsb_track"],
+                    "flight": r["adsb_flight"],
+                    "squawk": r.get("adsb_squawk"),
+                    "category": r.get("adsb_category"),
+                }
+            )
         else:
             fr["adsb"].append(None)
 

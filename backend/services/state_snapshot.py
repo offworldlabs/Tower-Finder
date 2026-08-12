@@ -81,6 +81,7 @@ def save_snapshot() -> None:
     # Replicate to R2 for durability across container recreates
     from services.r2_client import is_enabled as r2_enabled
     from services.r2_client import upload_file
+
     if r2_enabled():
         if upload_file("snapshots/state_snapshot.json", _SNAPSHOT_PATH):
             logging.info("State snapshot replicated to R2")
@@ -114,7 +115,8 @@ def restore_snapshot() -> bool:
                 if actual != parsed["sha256"]:
                     logging.error(
                         "State snapshot checksum mismatch (expected=%s, got=%s) — skipping corrupt file",
-                        str(parsed["sha256"])[:12], actual[:12],
+                        str(parsed["sha256"])[:12],
+                        actual[:12],
                     )
                     send_alert("snapshot_corrupt", "State snapshot checksum mismatch — starting with empty state")
                 else:
@@ -133,7 +135,8 @@ def restore_snapshot() -> bool:
                     if actual != expected:
                         logging.error(
                             "State snapshot checksum mismatch (expected=%s, got=%s) — skipping corrupt file",
-                            expected[:12], actual[:12],
+                            expected[:12],
+                            actual[:12],
                         )
                         send_alert("snapshot_corrupt", "State snapshot checksum mismatch — starting with empty state")
                         parsed = None
@@ -145,6 +148,7 @@ def restore_snapshot() -> bool:
     if snap is None:
         from services.r2_client import download_bytes
         from services.r2_client import is_enabled as r2_enabled
+
         if r2_enabled():
             logging.info("Trying R2 for state snapshot...")
             data = download_bytes("snapshots/state_snapshot.json")
@@ -205,8 +209,10 @@ def restore_snapshot() -> bool:
     # Anomaly log
     state.anomaly_log = snap.get("anomaly_log", [])
 
-    logging.info("State snapshot restored: %d trust scores, %d reputations, %d accuracy samples",
-                 len(snap.get("trust_scores", {})),
-                 len(snap.get("reputations", {})),
-                 len(samples_list))
+    logging.info(
+        "State snapshot restored: %d trust scores, %d reputations, %d accuracy samples",
+        len(snap.get("trust_scores", {})),
+        len(snap.get("reputations", {})),
+        len(samples_list),
+    )
     return True

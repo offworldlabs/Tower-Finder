@@ -30,8 +30,10 @@ TARGET = (34.88, -82.35)
 def _radar3_cfg() -> dict:
     return {
         "node_id": _RADAR3_NODE_ID,
-        "rx_lat": RX[0], "rx_lon": RX[1],
-        "tx_lat": TX[0], "tx_lon": TX[1],
+        "rx_lat": RX[0],
+        "rx_lon": RX[1],
+        "tx_lat": TX[0],
+        "tx_lon": TX[1],
     }
 
 
@@ -39,8 +41,10 @@ def _track(delay_us: float) -> SimpleNamespace:
     return SimpleNamespace(
         latest_delay_us=delay_us,
         wall_clock_ts=time.time(),
-        lat=TARGET[0], lon=TARGET[1],
-        vel_east=180.0, vel_north=60.0,
+        lat=TARGET[0],
+        lon=TARGET[1],
+        vel_east=180.0,
+        vel_north=60.0,
         alt_m=10050.0,
     )
 
@@ -61,9 +65,7 @@ class TestGroundTruthAltitudeUnits:
             meta["speed_ms"] = None
         state.ground_truth_meta["gt1"] = meta
         # Trail index 2 is METRES.
-        state.ground_truth_trails["gt1"] = deque(
-            [[TARGET[0], TARGET[1], 10000.0, time.time()]]
-        )
+        state.ground_truth_trails["gt1"] = deque([[TARGET[0], TARGET[1], 10000.0, time.time()]])
         delay = bistatic_delay_us(TX[0], TX[1], RX[0], RX[1], TARGET[0], TARGET[1])
         state.active_geo_aircraft["r3trk"] = (_track(delay), _radar3_cfg())
         _refresh_node_verification(_RADAR3_NODE_ID)

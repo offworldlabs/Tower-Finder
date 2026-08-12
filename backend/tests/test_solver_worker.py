@@ -114,6 +114,7 @@ class TestProcessSolverItem:
 
         # services.alerting is imported lazily inside _process_solver_item
         import services.alerting as alerting_mod
+
         monkeypatch.setattr(alerting_mod, "send_alert", _record_alert)
 
         def solve_fn(s_in, cfgs):
@@ -222,7 +223,7 @@ class TestRmsDelayFilter:
                 "lat": 32.97,
                 "lon": -96.83,
                 "alt_m": 3000.0,
-                "rms_delay": 1.2,       # passes delay threshold
+                "rms_delay": 1.2,  # passes delay threshold
                 "rms_doppler": 248.87,  # physically impossible (> 196 Hz FM max)
                 "timestamp_ms": 7000,
                 "contributing_node_ids": ["n1", "n2", "n3"],
@@ -249,7 +250,7 @@ class TestRmsDelayFilter:
                 "lon": -96.83,
                 "alt_m": 9000.0,
                 "rms_delay": 0.8,
-                "rms_doppler": 12.5,    # well within FM physics
+                "rms_doppler": 12.5,  # well within FM physics
                 "timestamp_ms": 8000,
                 "contributing_node_ids": ["n1", "n2", "n3"],
                 "n_nodes": 3,
@@ -471,8 +472,7 @@ class TestBeamCoverageFilter:
                 "n_nodes": 2,
             }
 
-        s_in = {**_CONFIRMED_N2,
-                "initial_guess": {"lat": 40.3, "lon": -74.0, "alt_km": 9.0}}
+        s_in = {**_CONFIRMED_N2, "initial_guess": {"lat": 40.3, "lon": -74.0, "alt_km": 9.0}}
         item = (s_in, node_cfgs, time.time())
         result = solver_mod._process_solver_item(item, solve_fn)
 
@@ -551,6 +551,7 @@ class TestSweepAltitudes:
 
     def test_no_successful_result_and_no_exception_returns_none(self):
         """solve_fn returns None every time → returns None without raising."""
+
         def null_solve(s, cfgs):
             return None
 
@@ -593,7 +594,6 @@ class TestSolveBestAltitudeDirect:
         solver_mod._solve_best_altitude(s_in, {}, track_solve)
         assert tried.count(existing_alt) == 1  # not duplicated
         assert len(tried) == len(solver_mod._SOLVER_ALT_LAYERS_KM)
-
 
 
 class TestN2ConfirmationGate:
@@ -696,8 +696,10 @@ class TestCoverageCalibration:
     def _solve_fn(s_in, cfgs):
         return {
             "success": True,
-            "lat": 37.5, "lon": -122.1,          # deliberately far from the ADS-B fix
-            "rms_delay": 0.4, "rms_doppler": 3.0,
+            "lat": 37.5,
+            "lon": -122.1,  # deliberately far from the ADS-B fix
+            "rms_delay": 0.4,
+            "rms_doppler": 3.0,
             "timestamp_ms": 8000,
             "contributing_node_ids": ["n1", "n2"],
             "n_nodes": 2,
@@ -715,30 +717,43 @@ class TestCoverageCalibration:
         return stub
 
     def test_records_the_adsb_position_not_the_solve(self, monkeypatch):
-        stub = self._run(monkeypatch, {
-            "lat": 34.88, "lon": -82.35,
-            "last_seen_ms": time.time() * 1000,
-        })
-        assert len(stub.calibration_calls) == 2          # one per contributing node
+        stub = self._run(
+            monkeypatch,
+            {
+                "lat": 34.88,
+                "lon": -82.35,
+                "last_seen_ms": time.time() * 1000,
+            },
+        )
+        assert len(stub.calibration_calls) == 2  # one per contributing node
         assert {c[0] for c in stub.calibration_calls} == {"n1", "n2"}
         for _nid, lat, lon in stub.calibration_calls:
-            assert (lat, lon) == (34.88, -82.35)          # not (37.5, -122.1)
+            assert (lat, lon) == (34.88, -82.35)  # not (37.5, -122.1)
 
     def test_dark_solve_records_nothing(self, monkeypatch):
         assert self._run(monkeypatch, None).calibration_calls == []
 
     def test_stale_adsb_fix_is_refused(self, monkeypatch):
         """At 250 m/s a stale fix no longer says where the target was."""
-        stub = self._run(monkeypatch, {
-            "lat": 34.88, "lon": -82.35,
-            "last_seen_ms": (time.time() - 60.0) * 1000,
-        })
+        stub = self._run(
+            monkeypatch,
+            {
+                "lat": 34.88,
+                "lon": -82.35,
+                "last_seen_ms": (time.time() - 60.0) * 1000,
+            },
+        )
         assert stub.calibration_calls == []
 
     def test_missing_position_is_refused(self, monkeypatch):
-        stub = self._run(monkeypatch, {
-            "lat": 0, "lon": 0, "last_seen_ms": time.time() * 1000,
-        })
+        stub = self._run(
+            monkeypatch,
+            {
+                "lat": 0,
+                "lon": 0,
+                "last_seen_ms": time.time() * 1000,
+            },
+        )
         assert stub.calibration_calls == []
 
 
@@ -753,6 +768,7 @@ class TestN2GateShipsDisabled:
 
     def test_flag_is_off_by_default(self):
         from config.constants import N2_TRACK_ASSOCIATION
+
         assert solver_mod._N2_REQUIRE_CONFIRMED is N2_TRACK_ASSOCIATION
 
     def test_unfitted_n2_publishes_when_the_gate_is_off(self, monkeypatch):
@@ -762,9 +778,15 @@ class TestN2GateShipsDisabled:
 
         def solve_fn(s_in, cfgs):
             return {
-                "success": True, "lat": 37.5, "lon": -122.1, "alt_m": 8000.0,
-                "rms_delay": 0.4, "rms_doppler": 3.0, "timestamp_ms": 7300,
-                "contributing_node_ids": ["n1", "n2"], "n_nodes": 2,
+                "success": True,
+                "lat": 37.5,
+                "lon": -122.1,
+                "alt_m": 8000.0,
+                "rms_delay": 0.4,
+                "rms_doppler": 3.0,
+                "timestamp_ms": 7300,
+                "contributing_node_ids": ["n1", "n2"],
+                "n_nodes": 2,
             }
 
         # No chi2 at all — the shape the detection path emits.
@@ -785,9 +807,15 @@ class TestFitRunsOnThisSideOfTheQueue:
     @staticmethod
     def _solve_fn(s_in, cfgs):
         return {
-            "success": True, "lat": 34.88, "lon": -82.35, "alt_m": 7000.0,
-            "rms_delay": 0.4, "rms_doppler": 3.0, "timestamp_ms": 9100,
-            "contributing_node_ids": ["n1", "n2"], "n_nodes": 2,
+            "success": True,
+            "lat": 34.88,
+            "lon": -82.35,
+            "alt_m": 7000.0,
+            "rms_delay": 0.4,
+            "rms_doppler": 3.0,
+            "timestamp_ms": 9100,
+            "contributing_node_ids": ["n1", "n2"],
+            "n_nodes": 2,
         }
 
     def test_deferred_fit_is_run_here(self, monkeypatch):
@@ -795,16 +823,28 @@ class TestFitRunsOnThisSideOfTheQueue:
 
         def fake_fit(fit_input, cfgs):
             called["epochs"] = len(fit_input["epochs"])
-            return {"success": True, "chi2_per_dof": 0.4, "n_epochs": 6,
-                    "dof": 18, "lat": 34.88, "lon": -82.35, "alt_m": 7000.0,
-                    "vel_east": 180.0, "vel_north": -90.0}
+            return {
+                "success": True,
+                "chi2_per_dof": 0.4,
+                "n_epochs": 6,
+                "dof": 18,
+                "lat": 34.88,
+                "lon": -82.35,
+                "alt_m": 7000.0,
+                "vel_east": 180.0,
+                "vel_north": -90.0,
+            }
 
         import retina_geolocator.multinode_solver as mns
+
         monkeypatch.setattr(mns, "fit_constant_velocity", fake_fit)
 
-        s_in = {"n_nodes": 2, "chi2_per_dof": None,
-                "cv_epochs": [{"t_s": float(i), "measurements": []} for i in range(6)],
-                "initial_guess": {"lat": 34.88, "lon": -82.35, "alt_km": 7.0}}
+        s_in = {
+            "n_nodes": 2,
+            "chi2_per_dof": None,
+            "cv_epochs": [{"t_s": float(i), "measurements": []} for i in range(6)],
+            "initial_guess": {"lat": 34.88, "lon": -82.35, "alt_km": 7.0},
+        }
         assert solver_mod._resolve_n2_chi2(s_in, {"n1": {}, "n2": {}}) == 0.4
         assert called["epochs"] == 6
         # Cached, so a retry of the same item does not refit.
@@ -837,7 +877,7 @@ class TestTrackPairExclusivity:
 
     def test_better_fit_wins_a_shared_track(self):
         good = {"track_pair_ids": [("a1", "b1")]}
-        worse = {"track_pair_ids": [("a1", "b2")]}   # shares a1
+        worse = {"track_pair_ids": [("a1", "b2")]}  # shares a1
         assert solver_mod._claim_track_pair(good, 0.4) is True
         assert solver_mod._claim_track_pair(worse, 3.0) is False
 
@@ -860,7 +900,8 @@ class TestTrackPairExclusivity:
         assert solver_mod._claim_track_pair({"track_pair_ids": [("a1", "b1")]}, 0.4) is True
         real_time = time.time
         monkeypatch.setattr(
-            solver_mod.time, "time",
+            solver_mod.time,
+            "time",
             lambda: real_time() + solver_mod._TRACK_CLAIM_TTL_S + 1,
         )
         assert solver_mod._claim_track_pair({"track_pair_ids": [("a1", "b9")]}, 5.0) is True

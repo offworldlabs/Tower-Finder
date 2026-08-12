@@ -23,10 +23,12 @@ logger = logging.getLogger(__name__)
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 
+
 # Reuse the admin executor (2 threads) — same class of blocking I/O.
 # Import lazily to avoid circular imports with routes.admin.
 def _get_admin_executor() -> concurrent.futures.ThreadPoolExecutor:
     from routes.admin import _admin_executor
+
     return _admin_executor
 
 
@@ -50,7 +52,9 @@ def _scan_archive_dir(archive_dir: Path) -> tuple[int, int, dict]:
     try:
         r = subprocess.run(
             ["du", "-b", "--max-depth=4", str(archive_dir)],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
         if r.returncode == 0:
             for line in r.stdout.splitlines():
@@ -75,7 +79,9 @@ def _scan_archive_dir(archive_dir: Path) -> tuple[int, int, dict]:
         try:
             r = subprocess.run(
                 ["du", "-sb", str(archive_dir)],
-                capture_output=True, text=True, timeout=120,
+                capture_output=True,
+                text=True,
+                timeout=120,
             )
             if r.returncode == 0 and r.stdout:
                 total_bytes = int(r.stdout.split()[0])
@@ -92,7 +98,9 @@ def _scan_archive_dir(archive_dir: Path) -> tuple[int, int, dict]:
     try:
         r_inodes = subprocess.run(
             ["du", "--inodes", "--max-depth=4", str(archive_dir)],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         if r_inodes.returncode == 0:
             for line in r_inodes.stdout.splitlines():
@@ -155,9 +163,9 @@ def _build_storage_result(archive_dir: Path) -> bytes:
             "total_bytes": disk_total,
             "used_bytes": disk_used,
             "free_bytes": disk_free,
-            "total_gb": round(disk_total / (1024 ** 3), 2),
-            "used_gb": round(disk_used / (1024 ** 3), 2),
-            "free_gb": round(disk_free / (1024 ** 3), 2),
+            "total_gb": round(disk_total / (1024**3), 2),
+            "used_gb": round(disk_used / (1024**3), 2),
+            "free_gb": round(disk_free / (1024**3), 2),
             "used_pct": round(disk_used / max(disk_total, 1) * 100, 1),
         },
         "write_rate": {
@@ -178,9 +186,7 @@ async def storage_refresh_task():
     while True:
         try:
             executor = _get_admin_executor()
-            result_bytes = await loop.run_in_executor(
-                executor, _build_storage_result, archive_dir
-            )
+            result_bytes = await loop.run_in_executor(executor, _build_storage_result, archive_dir)
             state.latest_storage_bytes = result_bytes
             state.task_last_success["storage_refresh"] = time.time()
         except Exception:

@@ -61,6 +61,7 @@ def _has_real_detections(frame: dict) -> bool:
 
 # ── Per-node posting ──────────────────────────────────────────────────────────
 
+
 async def _post_node(
     client: httpx.AsyncClient,
     url: str,
@@ -71,7 +72,7 @@ async def _post_node(
 ) -> tuple[str, bool, int]:
     """POST one frame for one node.  Returns (node_id, success, n_tracks)."""
     if not frame.get("delay"):
-        return node_id, True, 0   # nothing to detect this step
+        return node_id, True, 0  # nothing to detect this step
 
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -106,6 +107,7 @@ async def _post_node(
 
 # ── Main orchestration loop ───────────────────────────────────────────────────
 
+
 async def run(
     server: str,
     api_key: str,
@@ -125,6 +127,7 @@ async def run(
         print(f"[cfg] Loaded {len(node_dicts)} nodes from {config_file}")
     else:
         from scripts.generate_test_network import generate
+
         raw = generate(n_nodes)
         node_dicts = raw["nodes"]
         print(f"[cfg] Generated {len(node_dicts)} nodes across regions")
@@ -184,10 +187,7 @@ async def run(
     print(f"  Nodes:  {len(node_dicts)}   Steps: {n_steps}   Mode: {mode}")
     print(f"  Server: {server}")
     print("=" * 66)
-    print(
-        f"  {'step':>4}  {'sim-aircraft':>12}  "
-        f"{'posting':>9}  {'step-tracks':>11}  {'errors':>7}"
-    )
+    print(f"  {'step':>4}  {'sim-aircraft':>12}  {'posting':>9}  {'step-tracks':>11}  {'errors':>7}")
     print("  " + "-" * 60)
 
     limits = httpx.Limits(
@@ -208,7 +208,10 @@ async def run(
         for _nid, pub in node_pubkeys.items():
             try:
                 resp = await client.post(
-                    custody_url, json=pub, headers=cust_headers, timeout=10.0,
+                    custody_url,
+                    json=pub,
+                    headers=cust_headers,
+                    timeout=10.0,
                 )
                 if resp.status_code == 200:
                     key_reg_ok += 1
@@ -229,16 +232,17 @@ async def run(
             if step == 0:
                 to_send = all_frames
             else:
-                to_send = {
-                    nid: f for nid, f in all_frames.items()
-                    if _has_real_detections(f)
-                }
+                to_send = {nid: f for nid, f in all_frames.items() if _has_real_detections(f)}
             step_sending = len(to_send)
 
             async def _post_one(nid, frame):
                 async with sem:
                     return await _post_node(
-                        client, detections_url, api_key, nid, frame,
+                        client,
+                        detections_url,
+                        api_key,
+                        nid,
+                        frame,
                         signer=node_signers.get(nid),
                     )
 
@@ -251,7 +255,7 @@ async def run(
                 BULK_CHUNK = 1000  # all nodes in one request (~30 KB for IDs only)
                 step_ok = step_err = step_tracks = 0
                 for chunk_start in range(0, len(items), BULK_CHUNK):
-                    chunk = items[chunk_start:chunk_start + BULK_CHUNK]
+                    chunk = items[chunk_start : chunk_start + BULK_CHUNK]
                     payload = {
                         "nodes": [
                             {
@@ -267,21 +271,27 @@ async def run(
                         headers["X-API-Key"] = api_key
                     try:
                         resp = await client.post(
-                            bulk_url, json=payload, headers=headers, timeout=60.0,
+                            bulk_url,
+                            json=payload,
+                            headers=headers,
+                            timeout=60.0,
                         )
                         if resp.status_code == 200:
                             data = resp.json()
                             step_ok += len(chunk)
-                            print(f"  [reg] bulk {chunk_start//BULK_CHUNK+1}: "
-                                  f"{data.get('nodes_registered', '?')} registered")
+                            print(
+                                f"  [reg] bulk {chunk_start // BULK_CHUNK + 1}: "
+                                f"{data.get('nodes_registered', '?')} registered"
+                            )
                         else:
                             step_err += len(chunk)
-                            print(f"  [reg] bulk {chunk_start//BULK_CHUNK+1}: "
-                                  f"HTTP {resp.status_code} {resp.text[:200]}")
+                            print(
+                                f"  [reg] bulk {chunk_start // BULK_CHUNK + 1}: "
+                                f"HTTP {resp.status_code} {resp.text[:200]}"
+                            )
                     except Exception as exc:
                         step_err += len(chunk)
-                        print(f"  [reg] bulk {chunk_start//BULK_CHUNK+1}: "
-                              f"{type(exc).__name__}: {exc!r}")
+                        print(f"  [reg] bulk {chunk_start // BULK_CHUNK + 1}: {type(exc).__name__}: {exc!r}")
                 results = None  # skip normal result processing
             else:
                 results = await asyncio.gather(
@@ -313,9 +323,8 @@ async def run(
             stats["total_tracks"] += step_tracks
 
             print(
-                f"  {step+1:>4}  {len(world.aircraft):>12}  "
-                f"{step_sending:>9}  {step_tracks:>11}  {step_err:>7}"
-                + (f"  {dict(err_codes)}" if err_codes else "")
+                f"  {step + 1:>4}  {len(world.aircraft):>12}  "
+                f"{step_sending:>9}  {step_tracks:>11}  {step_err:>7}" + (f"  {dict(err_codes)}" if err_codes else "")
             )
 
             if step < n_steps - 1:
@@ -340,12 +349,12 @@ async def run(
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             checks = {
-                "health":    client.get(f"{server}/api/health"),
-                "aircraft":  client.get(f"{server}/api/radar/data/aircraft.json"),
-                "nodes":     client.get(f"{server}/api/radar/nodes"),
+                "health": client.get(f"{server}/api/health"),
+                "aircraft": client.get(f"{server}/api/radar/data/aircraft.json"),
+                "nodes": client.get(f"{server}/api/radar/nodes"),
                 "analytics": client.get(f"{server}/api/radar/analytics"),
-                "archive":   client.get(f"{server}/api/data/archive", headers=headers),
-                "custody":   client.get(f"{server}/api/custody/status"),
+                "archive": client.get(f"{server}/api/data/archive", headers=headers),
+                "custody": client.get(f"{server}/api/custody/status"),
             }
             responses = {}
             for name, coro in checks.items():
@@ -420,45 +429,56 @@ async def run(
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+
 def main():
     ap = argparse.ArgumentParser(description="Retina test network orchestrator")
     ap.add_argument(
-        "--server", default="https://towers.retina.fm",
+        "--server",
+        default="https://towers.retina.fm",
         help="Base URL of the server (default: https://towers.retina.fm)",
     )
     ap.add_argument(
-        "--api-key", default=os.getenv("RADAR_API_KEY", ""),
+        "--api-key",
+        default=os.getenv("RADAR_API_KEY", ""),
         help="Value for X-API-Key header (can also use RADAR_API_KEY env var)",
     )
     ap.add_argument(
-        "--nodes", type=int, default=10,
+        "--nodes",
+        type=int,
+        default=10,
         help="Number of synthetic nodes (default: 10)",
     )
     ap.add_argument(
-        "--steps", type=int, default=20,
+        "--steps",
+        type=int,
+        default=20,
         help="Simulation steps, each = 3 s sim time (default: 20)",
     )
     ap.add_argument(
-        "--config", default=None,
+        "--config",
+        default=None,
         help="Path to a nodes_config JSON to use instead of auto-generating",
     )
     ap.add_argument(
-        "--mode", default="adsb",
+        "--mode",
+        default="adsb",
         choices=["detection", "adsb", "anomalous"],
         help="Simulation mode (default: adsb)",
     )
     ap.add_argument("--verbose", action="store_true", help="Print per-node errors")
     args = ap.parse_args()
 
-    asyncio.run(run(
-        server=args.server,
-        api_key=args.api_key,
-        n_nodes=args.nodes,
-        n_steps=args.steps,
-        config_file=args.config,
-        mode=args.mode,
-        verbose=args.verbose,
-    ))
+    asyncio.run(
+        run(
+            server=args.server,
+            api_key=args.api_key,
+            n_nodes=args.nodes,
+            n_steps=args.steps,
+            config_file=args.config,
+            mode=args.mode,
+            verbose=args.verbose,
+        )
+    )
 
 
 if __name__ == "__main__":

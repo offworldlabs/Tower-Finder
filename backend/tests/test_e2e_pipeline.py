@@ -41,9 +41,9 @@ _NODE_CONFIG = {
 
 # Stable delay/doppler → Kalman filter keeps them associated every frame.
 # Values are deliberately close to what a real ~8 km-range aircraft produces.
-_DELAY_US   = 55.0   # µs bistatic delay
-_DOPPLER_HZ = 20.0   # Hz (positive = closing)
-_SNR_DB     = 20.0   # well above MIN_SNR threshold (7.0 dB)
+_DELAY_US = 55.0  # µs bistatic delay
+_DOPPLER_HZ = 20.0  # Hz (positive = closing)
+_SNR_DB = 20.0  # well above MIN_SNR threshold (7.0 dB)
 
 # How many frames we need to guarantee M-of-N promotion.
 # Feed N_WINDOW frames; with stable delay/doppler all N associate and M ≥ 4.
@@ -52,24 +52,26 @@ _N_FRAMES = N_WINDOW()
 
 # ── Protocol helpers ──────────────────────────────────────────────────────────
 
+
 def _msg(d: dict) -> bytes:
     return json.dumps(d).encode("utf-8") + b"\n"
 
 
 def _hello(node_id: str = _NODE_ID) -> bytes:
-    return _msg({"type": "HELLO", "node_id": node_id, "version": "1.0",
-                 "is_synthetic": True})
+    return _msg({"type": "HELLO", "node_id": node_id, "version": "1.0", "is_synthetic": True})
 
 
 def _config(node_id: str = _NODE_ID) -> bytes:
-    return _msg({
-        "type": "CONFIG",
-        "node_id": node_id,
-        "config_hash": "e2etest01",
-        "is_synthetic": True,
-        "config": _NODE_CONFIG,
-        "capabilities": {"adsb_report": True},
-    })
+    return _msg(
+        {
+            "type": "CONFIG",
+            "node_id": node_id,
+            "config_hash": "e2etest01",
+            "is_synthetic": True,
+            "config": _NODE_CONFIG,
+            "capabilities": {"adsb_report": True},
+        }
+    )
 
 
 def _detection(ts_ms: int | None = None) -> bytes:
@@ -78,9 +80,9 @@ def _detection(ts_ms: int | None = None) -> bytes:
     frame = {
         "timestamp": ts_ms,
         # Three stable detections per frame so the tracker consistently associates.
-        "delay":   [_DELAY_US,   _DELAY_US + 0.5,  _DELAY_US + 1.0],
+        "delay": [_DELAY_US, _DELAY_US + 0.5, _DELAY_US + 1.0],
         "doppler": [_DOPPLER_HZ, _DOPPLER_HZ + 0.5, _DOPPLER_HZ - 0.5],
-        "snr":     [_SNR_DB,     _SNR_DB - 1.0,     _SNR_DB - 2.0],
+        "snr": [_SNR_DB, _SNR_DB - 1.0, _SNR_DB - 2.0],
     }
     return _msg({"type": "DETECTION", "data": frame})
 
@@ -91,13 +93,14 @@ def _make_raw_frame(ts_ms: int | None = None) -> dict:
         ts_ms = int(time.time() * 1000)
     return {
         "timestamp": ts_ms,
-        "delay":   [_DELAY_US,   _DELAY_US + 0.5,  _DELAY_US + 1.0],
+        "delay": [_DELAY_US, _DELAY_US + 0.5, _DELAY_US + 1.0],
         "doppler": [_DOPPLER_HZ, _DOPPLER_HZ + 0.5, _DOPPLER_HZ - 0.5],
-        "snr":     [_SNR_DB,     _SNR_DB - 1.0,     _SNR_DB - 2.0],
+        "snr": [_SNR_DB, _SNR_DB - 1.0, _SNR_DB - 2.0],
     }
 
 
 # ── Mock TCP primitives ───────────────────────────────────────────────────────
+
 
 class _FakeReader:
     def __init__(self, chunks: list[bytes]):
@@ -106,7 +109,7 @@ class _FakeReader:
 
     async def read(self, n: int) -> bytes:
         if self._idx >= len(self._chunks):
-            return b""          # EOF
+            return b""  # EOF
         data = self._chunks[self._idx]
         self._idx += 1
         return data
@@ -140,6 +143,7 @@ class _FakeWriter:
 
 
 # ── Shared state cleanup fixture ───────────────────────────────────────────────
+
 
 @pytest.fixture(autouse=True)
 def _clean_state():
@@ -193,6 +197,7 @@ def pipeline(_registered_node):
 
 # ── 1. TCP DETECTION → frame_queue ────────────────────────────────────────────
 
+
 class TestTCPDetectionEnqueue:
     """Verify that the TCP handler correctly enqueues DETECTION frames."""
 
@@ -223,20 +228,22 @@ class TestTCPDetectionEnqueue:
         assert len(acks) == 1
         assert acks[0]["config_hash"] == "e2etest01"
         # ACK must appear in the message list before any detection-related message
-        first_ack_idx = next(i for i, m in enumerate(writer.messages())
-                             if m.get("type") == "CONFIG_ACK")
+        first_ack_idx = next(i for i, m in enumerate(writer.messages()) if m.get("type") == "CONFIG_ACK")
         assert first_ack_idx == 0
 
     def test_rate_limiter_drops_rapid_duplicates(self):
         """Back-to-back DETECTION frames within the rate window → only 1 enqueued."""
         base = int(time.time() * 1000)
-        reader = _FakeReader([
-            _hello(), _config(),
-            _detection(base),
-            _detection(base + 100),
-            _detection(base + 200),
-            b"",
-        ])
+        reader = _FakeReader(
+            [
+                _hello(),
+                _config(),
+                _detection(base),
+                _detection(base + 100),
+                _detection(base + 200),
+                b"",
+            ]
+        )
         writer = _FakeWriter()
 
         # Default rate limit is 1.0 s; all three arrive within ~0 s → 1 enqueued.
@@ -247,9 +254,7 @@ class TestTCPDetectionEnqueue:
             state.frame_queue.get_nowait()
             count += 1
 
-        assert count == 1, (
-            f"Rate limiter should keep only 1 of 3 rapid frames; got {count}"
-        )
+        assert count == 1, f"Rate limiter should keep only 1 of 3 rapid frames; got {count}"
 
     def test_rate_limiter_disabled_enqueues_all(self):
         """With _NODE_MIN_INTERVAL_S=0, every DETECTION is enqueued."""
@@ -283,26 +288,24 @@ class TestTCPDetectionEnqueue:
 
         with patch("services.tcp_handler._NODE_MIN_INTERVAL_S", 0.0):
             # Make put_nowait always raise QueueFull.
-            with patch.object(state.frame_queue, "put_nowait",
-                              side_effect=_asyncio.QueueFull):
+            with patch.object(state.frame_queue, "put_nowait", side_effect=_asyncio.QueueFull):
                 _enqueue_detection(
                     {"type": "DETECTION", "data": _make_raw_frame()},
                     "e2e-overflow-node",
                 )
 
-        assert state.frames_dropped > before, (
-            "frames_dropped must increase when queue is full"
-        )
+        assert state.frames_dropped > before, "frames_dropped must increase when queue is full"
 
     def test_invalid_config_sends_nack_and_rejects_node(self):
         """CONFIG with lat=999 → CONFIG_NACK; node NOT added to connected_nodes."""
-        bad = _msg({
-            "type": "CONFIG",
-            "node_id": _NODE_ID,
-            "config_hash": "badhash",
-            "config": {"rx_lat": 999.0, "rx_lon": -84.65,
-                       "tx_lat": 33.76, "tx_lon": -84.33},
-        })
+        bad = _msg(
+            {
+                "type": "CONFIG",
+                "node_id": _NODE_ID,
+                "config_hash": "badhash",
+                "config": {"rx_lat": 999.0, "rx_lon": -84.65, "tx_lat": 33.76, "tx_lon": -84.33},
+            }
+        )
         reader = _FakeReader([_hello(), bad, b""])
         writer = _FakeWriter()
 
@@ -310,12 +313,11 @@ class TestTCPDetectionEnqueue:
 
         nacks = [m for m in writer.messages() if m.get("type") == "CONFIG_NACK"]
         assert len(nacks) == 1, "Expected exactly one CONFIG_NACK"
-        assert _NODE_ID not in state.connected_nodes, (
-            "Node with invalid config must not be registered"
-        )
+        assert _NODE_ID not in state.connected_nodes, "Node with invalid config must not be registered"
 
 
 # ── 2. process_one_frame → Kalman tracker accumulates state ───────────────────
+
 
 class TestFrameProcessorTracker:
     """Verify the frame processor drives the tracker through its state machine."""
@@ -325,11 +327,8 @@ class TestFrameProcessorTracker:
         frame = _make_raw_frame()
         process_one_frame(_NODE_ID, frame, pipeline)
 
-        assert len(pipeline.tracker.tracks) > 0, (
-            "First frame should spawn at least one tentative track hypothesis"
-        )
-        assert all(t.state_status == TrackState.TENTATIVE
-                   for t in pipeline.tracker.tracks)
+        assert len(pipeline.tracker.tracks) > 0, "First frame should spawn at least one tentative track hypothesis"
+        assert all(t.state_status == TrackState.TENTATIVE for t in pipeline.tracker.tracks)
 
     def test_m_of_n_frames_promote_track_to_active(self, pipeline):
         """After N_WINDOW consistent frames, at least one track is ACTIVE."""
@@ -337,8 +336,7 @@ class TestFrameProcessorTracker:
         for i in range(_N_FRAMES):
             process_one_frame(_NODE_ID, _make_raw_frame(base + i * 1000), pipeline)
 
-        active = [t for t in pipeline.tracker.tracks
-                  if t.state_status == TrackState.ACTIVE]
+        active = [t for t in pipeline.tracker.tracks if t.state_status == TrackState.ACTIVE]
         assert len(active) >= 1, (
             f"Expected ≥1 ACTIVE track after {_N_FRAMES} consistent frames "
             f"(M={M_THRESHOLD()}, N={N_WINDOW()}); "
@@ -351,13 +349,10 @@ class TestFrameProcessorTracker:
         for i in range(_N_FRAMES):
             process_one_frame(_NODE_ID, _make_raw_frame(base + i * 1000), pipeline)
 
-        active = [t for t in pipeline.tracker.tracks
-                  if t.state_status == TrackState.ACTIVE]
+        active = [t for t in pipeline.tracker.tracks if t.state_status == TrackState.ACTIVE]
         assert len(active) >= 1
         for t in active:
-            assert t.id is not None, (
-                "ACTIVE tracks must have a stable ID assigned at promotion"
-            )
+            assert t.id is not None, "ACTIVE tracks must have a stable ID assigned at promotion"
 
     def test_promoted_track_appears_in_event_writer(self, pipeline):
         """After M-of-N promotion, the event_writer holds an event for the track."""
@@ -366,9 +361,7 @@ class TestFrameProcessorTracker:
             process_one_frame(_NODE_ID, _make_raw_frame(base + i * 1000), pipeline)
 
         events = pipeline.event_writer.get_events()
-        assert len(events) >= 1, (
-            "event_writer should have at least one entry after track promotion"
-        )
+        assert len(events) >= 1, "event_writer should have at least one entry after track promotion"
 
     def test_extra_frames_beyond_n_window_do_not_reset_track(self, pipeline):
         """Feeding more frames than N_WINDOW keeps the track ACTIVE, not demoted."""
@@ -376,11 +369,8 @@ class TestFrameProcessorTracker:
         for i in range(_N_FRAMES + 4):
             process_one_frame(_NODE_ID, _make_raw_frame(base + i * 1000), pipeline)
 
-        active = [t for t in pipeline.tracker.tracks
-                  if t.state_status in (TrackState.ACTIVE, TrackState.COASTING)]
-        assert len(active) >= 1, (
-            "ACTIVE track should remain active/coasting after additional frames"
-        )
+        active = [t for t in pipeline.tracker.tracks if t.state_status in (TrackState.ACTIVE, TrackState.COASTING)]
+        assert len(active) >= 1, "ACTIVE track should remain active/coasting after additional frames"
 
     def test_node_registered_in_analytics_after_frames(self, pipeline):
         """Frame processor records detections in node_analytics without crashing."""
@@ -391,6 +381,7 @@ class TestFrameProcessorTracker:
 
 
 # ── 3. Full E2E: TCP handshake → frame processing → promoted track ─────────────
+
 
 class TestFullE2E:
     """Compose TCP handler + frame processor into a full end-to-end scenario."""
@@ -423,18 +414,13 @@ class TestFullE2E:
         state.node_pipelines[_NODE_ID] = pipe
 
         frames, _ = self._run_handshake_and_collect(_N_FRAMES)
-        assert len(frames) == _N_FRAMES, (
-            f"Expected {_N_FRAMES} frames from queue; got {len(frames)}"
-        )
+        assert len(frames) == _N_FRAMES, f"Expected {_N_FRAMES} frames from queue; got {len(frames)}"
 
         for node_id, frame in frames:
             process_one_frame(node_id, frame, pipe)
 
-        active = [t for t in pipe.tracker.tracks
-                  if t.state_status == TrackState.ACTIVE]
-        assert len(active) >= 1, (
-            "Full TCP → process pipeline must produce at least one ACTIVE track"
-        )
+        active = [t for t in pipe.tracker.tracks if t.state_status == TrackState.ACTIVE]
+        assert len(active) >= 1, "Full TCP → process pipeline must produce at least one ACTIVE track"
 
     def test_node_registered_in_state_after_handshake(self):
         """After TCP handshake, node appears in state.connected_nodes."""
@@ -475,6 +461,7 @@ class TestFullE2E:
 
 # ── 4. Geolocation after promotion ────────────────────────────────────────────
 
+
 class TestGeolocationAfterPromotion:
     """Verify _run_geolocation fires after M-of-N and populates geolocated_tracks."""
 
@@ -482,7 +469,7 @@ class TestGeolocationAfterPromotion:
     def geo_pipeline(self, _registered_node):
         """Pipeline with geolocation rate-limit disabled so solver fires every frame."""
         p = PassiveRadarPipeline(_NODE_CONFIG)
-        p._GEO_INTERVAL_S = 0.0   # force solver to run on every new event
+        p._GEO_INTERVAL_S = 0.0  # force solver to run on every new event
         state.node_pipelines[_NODE_ID] = p
         return p
 
@@ -490,12 +477,10 @@ class TestGeolocationAfterPromotion:
         """After M-of-N promotion, _geo_last_solve is populated (solver was called)."""
         base = int(time.time() * 1000)
         for i in range(_N_FRAMES + 2):
-            process_one_frame(_NODE_ID, _make_raw_frame(base + i * 1000),
-                              geo_pipeline)
+            process_one_frame(_NODE_ID, _make_raw_frame(base + i * 1000), geo_pipeline)
 
         assert len(geo_pipeline._geo_last_solve) > 0, (
-            "_geo_last_solve must be non-empty: geolocation was never attempted "
-            "after track promotion"
+            "_geo_last_solve must be non-empty: geolocation was never attempted after track promotion"
         )
 
     def test_adsb_track_populates_active_geo_aircraft(self, geo_pipeline):
@@ -519,9 +504,9 @@ class TestGeolocationAfterPromotion:
             # Align the first detection in each frame to the ADS-B aircraft.
             frame = {
                 "timestamp": base + i * 1000,
-                "delay":   [_DELAY_US,   _DELAY_US + 0.5],
+                "delay": [_DELAY_US, _DELAY_US + 0.5],
                 "doppler": [_DOPPLER_HZ, _DOPPLER_HZ + 0.5],
-                "snr":     [_SNR_DB,     _SNR_DB - 1.0],
+                "snr": [_SNR_DB, _SNR_DB - 1.0],
                 "adsb": [
                     {
                         "hex": ac_hex,
@@ -543,7 +528,7 @@ class TestGeolocationAfterPromotion:
             geo_entries = dict(state.active_geo_aircraft)
 
         has_geolocated = len(geo_pipeline.geolocated_tracks) > 0
-        has_geo_state  = len(geo_entries) > 0
+        has_geo_state = len(geo_entries) > 0
 
         assert has_geolocated or has_geo_state, (
             "After promotion with ADS-B data, at least one geolocated entry "
@@ -554,18 +539,17 @@ class TestGeolocationAfterPromotion:
         """A pure radar (no ADS-B) track still gets a geolocation attempt."""
         base = int(time.time() * 1000)
         for i in range(_N_FRAMES + 2):
-            process_one_frame(_NODE_ID, _make_raw_frame(base + i * 1000),
-                              geo_pipeline)
+            process_one_frame(_NODE_ID, _make_raw_frame(base + i * 1000), geo_pipeline)
 
         # The solver may return None for a geometry outside the valid region,
         # but it *must* have been invoked (geo_last_solve populated).
         assert len(geo_pipeline._geo_last_solve) >= 1, (
-            "Geolocation should be attempted for every promoted track, "
-            "even without ADS-B data"
+            "Geolocation should be attempted for every promoted track, even without ADS-B data"
         )
 
 
 # ── 5. Regression guards ───────────────────────────────────────────────────────
+
 
 class TestRegressions:
     """Guard against specific bugs that have bitten us before."""
@@ -573,13 +557,15 @@ class TestRegressions:
     def test_malformed_json_does_not_crash_handler(self):
         """Malformed JSON in the TCP stream is skipped; handler continues normally."""
         ts = int(time.time() * 1000)
-        reader = _FakeReader([
-            _hello(),
-            b"this is not json\n",
-            _config(),
-            _detection(ts),
-            b"",
-        ])
+        reader = _FakeReader(
+            [
+                _hello(),
+                b"this is not json\n",
+                _config(),
+                _detection(ts),
+                b"",
+            ]
+        )
         writer = _FakeWriter()
 
         with patch("services.tcp_handler._NODE_MIN_INTERVAL_S", 0.0):
@@ -591,6 +577,7 @@ class TestRegressions:
     def test_non_finite_adsb_coords_skipped_in_enqueue(self):
         """Frames with NaN/Inf ADS-B lat/lon do not crash _apply_synthetic_adsb."""
         import math
+
         msg = {
             "type": "DETECTION",
             "data": {
@@ -643,9 +630,7 @@ class TestRegressions:
             process_one_frame(node_a, _make_raw_frame(base + i * 1000), pipe_a)
 
         # node_b's pipeline must be untouched.
-        assert len(pipe_b.tracker.tracks) == 0, (
-            "node_b pipeline should have zero tracks — frames only went to node_a"
-        )
+        assert len(pipe_b.tracker.tracks) == 0, "node_b pipeline should have zero tracks — frames only went to node_a"
 
         # Cleanup node_b
         state.connected_nodes.pop(node_b, None)
@@ -653,6 +638,7 @@ class TestRegressions:
 
 
 # ── 6. frame_processor_loop (background worker) drains the queue ──────────────
+
 
 class TestBackgroundFrameLoop:
     """Verify the actual production background loop that drains state.frame_queue.
@@ -669,8 +655,7 @@ class TestBackgroundFrameLoop:
     long-lived task).
     """
 
-    async def _run_loop_drain(self, default_pipeline, queue: asyncio.Queue,
-                               timeout: float = 5.0):
+    async def _run_loop_drain(self, default_pipeline, queue: asyncio.Queue, timeout: float = 5.0):
         """Run frame_processor_loop against a given queue until it empties."""
         from services.tasks.frame_loop import frame_processor_loop
 
@@ -681,7 +666,7 @@ class TestBackgroundFrameLoop:
                 if asyncio.get_event_loop().time() > deadline:
                     break
                 await asyncio.sleep(0.01)
-            await asyncio.sleep(0.05)   # one extra tick for the last item
+            await asyncio.sleep(0.05)  # one extra tick for the last item
             task.cancel()
             try:
                 await task
@@ -705,8 +690,7 @@ class TestBackgroundFrameLoop:
 
         assert queue.empty(), "Loop must drain all frames from the queue"
         assert state.frames_processed - before == n, (
-            f"frames_processed should increase by {n}; "
-            f"delta={state.frames_processed - before}"
+            f"frames_processed should increase by {n}; delta={state.frames_processed - before}"
         )
 
     @pytest.mark.anyio
@@ -722,14 +706,12 @@ class TestBackgroundFrameLoop:
 
         await self._run_loop_drain(pipe, queue)
 
-        active = [t for t in pipe.tracker.tracks
-                  if t.state_status == TrackState.ACTIVE]
-        assert len(active) >= 1, (
-            "frame_processor_loop must drive tracker to ACTIVE via M-of-N promotion"
-        )
+        active = [t for t in pipe.tracker.tracks if t.state_status == TrackState.ACTIVE]
+        assert len(active) >= 1, "frame_processor_loop must drive tracker to ACTIVE via M-of-N promotion"
 
 
 # ── 7. Full integration: TCP → processor → analytics → API output ────────────
+
 
 class TestFullIntegrationPath:
     """End-to-end test that exercises the *complete* production data path.
@@ -790,6 +772,7 @@ class TestFullIntegrationPath:
 
         # The pre-serialised analytics bytes must contain our test node
         import orjson
+
         analytics = orjson.loads(state.latest_analytics_bytes)
         assert _NODE_ID in analytics.get("nodes", {}), (
             f"Analytics refresh must include {_NODE_ID} after frame processing; "
@@ -798,9 +781,7 @@ class TestFullIntegrationPath:
 
         # Nodes bytes must also contain the test node
         nodes_data = orjson.loads(state.latest_nodes_bytes)
-        assert _NODE_ID in nodes_data.get("nodes", {}), (
-            f"Nodes snapshot must include {_NODE_ID}"
-        )
+        assert _NODE_ID in nodes_data.get("nodes", {}), f"Nodes snapshot must include {_NODE_ID}"
 
     def test_leaderboard_includes_node_with_detections(self):
         """Leaderboard data includes the test node with non-zero detections."""
@@ -822,12 +803,8 @@ class TestFullIntegrationPath:
 
         s = summaries[_NODE_ID]
         m = s.get("metrics", {})
-        assert m.get("total_frames", 0) > 0, (
-            "Node must have recorded frames after processing"
-        )
-        assert m.get("total_detections", 0) > 0, (
-            "Node must have recorded detections after processing"
-        )
+        assert m.get("total_frames", 0) > 0, "Node must have recorded frames after processing"
+        assert m.get("total_detections", 0) > 0, "Node must have recorded detections after processing"
 
     def test_missed_detections_computed_for_node(self):
         """After processing, _refresh_missed_detections runs without crash
@@ -849,7 +826,7 @@ class TestFullIntegrationPath:
         ac_hex = "e2etest1"
         state.adsb_aircraft[ac_hex] = {
             "hex": ac_hex,
-            "lat": 33.85,    # near the default node location
+            "lat": 33.85,  # near the default node location
             "lon": -84.50,
             "alt_baro": 35000,
             "gs": 250,
@@ -862,9 +839,7 @@ class TestFullIntegrationPath:
 
         _refresh_missed_detections(snapshot)
 
-        assert _NODE_ID in state.latest_missed_detections, (
-            "Missed detections must contain the test node"
-        )
+        assert _NODE_ID in state.latest_missed_detections, "Missed detections must contain the test node"
         miss_data = state.latest_missed_detections[_NODE_ID]
         assert "in_range" in miss_data
         assert "missed" in miss_data

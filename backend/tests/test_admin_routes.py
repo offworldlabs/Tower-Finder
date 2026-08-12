@@ -21,6 +21,7 @@ def client():
 
 # ── Events ────────────────────────────────────────────────────────────────────
 
+
 class TestEvents:
     def test_list_events_returns_list(self, client):
         r = client.get("/api/admin/events")
@@ -48,6 +49,7 @@ class TestEvents:
 
 # ── Users ─────────────────────────────────────────────────────────────────────
 
+
 class TestUsers:
     def test_list_users(self, client):
         r = client.get("/api/admin/users")
@@ -63,6 +65,7 @@ class TestUsers:
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
+
 
 class TestConfig:
     def test_get_node_config_live_fallback(self, client):
@@ -89,6 +92,7 @@ class TestConfig:
 
 # ── Storage ───────────────────────────────────────────────────────────────────
 
+
 class TestStorage:
     def test_storage_returns_json(self, client):
         """Storage endpoint returns valid JSON with expected shape."""
@@ -103,6 +107,7 @@ class TestStorage:
 
 
 # ── Leaderboard ──────────────────────────────────────────────────────────────
+
 
 class TestLeaderboard:
     def test_leaderboard_empty(self, client):
@@ -124,7 +129,13 @@ class TestLeaderboard:
         analytics_data = {
             "nodes": {
                 "test-lb-1": {
-                    "metrics": {"total_detections": 42, "total_frames": 10, "total_tracks": 5, "uptime_s": 300, "avg_snr": 12.0},
+                    "metrics": {
+                        "total_detections": 42,
+                        "total_frames": 10,
+                        "total_tracks": 5,
+                        "uptime_s": 300,
+                        "avg_snr": 12.0,
+                    },
                     "trust": {},
                     "reputation": {},
                 }
@@ -147,6 +158,7 @@ class TestLeaderboard:
 
 # ── Alerts ───────────────────────────────────────────────────────────────────
 
+
 class TestAlerts:
     def test_alerts_returns_list(self, client):
         r = client.get("/api/admin/alerts")
@@ -162,13 +174,15 @@ class TestAlerts:
         events = r.json()
         # warning/error/critical + node/config/system categories pass through
         for e in events:
-            assert (
-                e.get("severity") in ("warning", "error", "critical")
-                or e.get("category") in ("node", "config", "system")
+            assert e.get("severity") in ("warning", "error", "critical") or e.get("category") in (
+                "node",
+                "config",
+                "system",
             )
 
 
 # ── Metrics ──────────────────────────────────────────────────────────────────
+
 
 class TestMetrics:
     def test_metrics_returns_expected_fields(self, client):
@@ -182,6 +196,7 @@ class TestMetrics:
 
 
 # ── Node health ──────────────────────────────────────────────────────────────
+
 
 class TestNodeHealth:
     def test_check_detects_offline(self):
@@ -202,6 +217,7 @@ class TestNodeHealth:
 
 # ── Stale tasks ──────────────────────────────────────────────────────────────
 
+
 class TestStaleTasks:
     def test_no_stale_when_recent(self):
         from routes.admin import _get_stale_tasks
@@ -219,6 +235,7 @@ class TestStaleTasks:
 
 
 # ── Queue saturation alerting ─────────────────────────────────────────────────
+
 
 class TestQueueSaturationAlert:
     def test_drop_event_logged_when_throttle_expires(self):
@@ -256,14 +273,14 @@ class TestQueueSaturationAlert:
                 break
 
         # There should be a new system/error event
-        new_events = list(_events)[:len(_events) - before_len + 5]
-        assert any(
-            e.get("category") == "system" and e.get("severity") == "error"
-            for e in new_events
-        ), "Expected a system/error event for queue saturation"
+        new_events = list(_events)[: len(_events) - before_len + 5]
+        assert any(e.get("category") == "system" and e.get("severity") == "error" for e in new_events), (
+            "Expected a system/error event for queue saturation"
+        )
 
 
 # ── Node reconnect event logging ─────────────────────────────────────────────
+
 
 class TestNodeReconnectEvent:
     def test_reconnect_flag_in_meta(self):
@@ -293,9 +310,9 @@ class TestNodeReconnectEvent:
             )
 
         reconnect_events = [
-            e for e in _events
-            if e.get("meta", {}).get("reconnect") is True
-            and e.get("meta", {}).get("node_id") == "reconnect-test"
+            e
+            for e in _events
+            if e.get("meta", {}).get("reconnect") is True and e.get("meta", {}).get("node_id") == "reconnect-test"
         ]
         assert len(reconnect_events) >= 1, "Expected a reconnect event in the event log"
 
@@ -313,6 +330,7 @@ class TestNodeReconnectEvent:
         assert not was_disconnected
 
         import services.tcp_handler as th
+
         th._log_event(
             "node",
             "Node fresh-node-test connected (hash=abc12345, synthetic=False)",
@@ -321,9 +339,8 @@ class TestNodeReconnectEvent:
         )
 
         reconnect_events = [
-            e for e in _events
-            if e.get("meta", {}).get("reconnect") is True
-            and e.get("meta", {}).get("node_id") == "fresh-node-test"
+            e
+            for e in _events
+            if e.get("meta", {}).get("reconnect") is True and e.get("meta", {}).get("node_id") == "fresh-node-test"
         ]
         assert len(reconnect_events) == 0, "Fresh connect should not have reconnect flag"
-

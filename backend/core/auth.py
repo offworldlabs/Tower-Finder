@@ -26,13 +26,14 @@ INVITES_FILE = _DATA_DIR / "invites.json"
 NODE_OWNERS_FILE = _DATA_DIR / "node_owners.json"
 CLAIM_CODES_FILE = _DATA_DIR / "claim_codes.json"
 
-INVITE_EXPIRY_S = 86400 * 14    # 14 days
+INVITE_EXPIRY_S = 86400 * 14  # 14 days
 CLAIM_CODE_EXPIRY_S = 86400 * 30  # 30 days
 
 _MAX_ACTIVE_CLAIM_CODES_PER_USER = 10
 
 
 # ── One-time JSON → SQLite migration ─────────────────────────────────────────
+
 
 async def migrate_json_to_db() -> None:
     """Import existing JSON stores into SQLite on first startup (idempotent)."""
@@ -54,15 +55,17 @@ async def _migrate_invites(session) -> None:
     for token, inv in data.items():
         if await session.get(Invite, token):
             continue
-        session.add(Invite(
-            token=token,
-            email=inv.get("email", "").lower(),
-            role=inv.get("role", "user"),
-            created_by=inv.get("created_by", ""),
-            created_at=float(inv.get("created_at", 0)),
-            expires_at=float(inv.get("expires_at", 0)),
-            used_at=inv.get("used_at"),
-        ))
+        session.add(
+            Invite(
+                token=token,
+                email=inv.get("email", "").lower(),
+                role=inv.get("role", "user"),
+                created_by=inv.get("created_by", ""),
+                created_at=float(inv.get("created_at", 0)),
+                expires_at=float(inv.get("expires_at", 0)),
+                used_at=inv.get("used_at"),
+            )
+        )
     logger.info("Migrated invites from %s", INVITES_FILE)
     INVITES_FILE.rename(INVITES_FILE.with_suffix(".json.migrated"))
 
@@ -94,19 +97,22 @@ async def _migrate_claim_codes(session) -> None:
     for code, rec in data.items():
         if await session.get(ClaimCode, code):
             continue
-        session.add(ClaimCode(
-            code=code,
-            user_id=rec.get("user_id", ""),
-            created_at=float(rec.get("created_at", 0)),
-            expires_at=float(rec.get("expires_at", 0)),
-            used_at=rec.get("used_at"),
-            used_by_node_id=rec.get("used_by_node_id"),
-        ))
+        session.add(
+            ClaimCode(
+                code=code,
+                user_id=rec.get("user_id", ""),
+                created_at=float(rec.get("created_at", 0)),
+                expires_at=float(rec.get("expires_at", 0)),
+                used_at=rec.get("used_at"),
+                used_by_node_id=rec.get("used_by_node_id"),
+            )
+        )
     logger.info("Migrated claim codes from %s", CLAIM_CODES_FILE)
     CLAIM_CODES_FILE.rename(CLAIM_CODES_FILE.with_suffix(".json.migrated"))
 
 
 # ── Invites ───────────────────────────────────────────────────────────────────
+
 
 async def create_invite(email: str, role: str, created_by: str) -> dict:
     if role not in ("user", "admin"):
@@ -185,6 +191,7 @@ def _invite_to_dict(invite: Invite) -> dict:
 
 # ── Node ownership ────────────────────────────────────────────────────────────
 
+
 async def get_node_owner(node_id: str) -> str | None:
     async with async_session_maker() as session:
         owner = await session.get(NodeOwner, node_id)
@@ -212,13 +219,12 @@ async def set_node_owner(node_id: str, user_id: str | None) -> None:
 
 async def get_user_nodes(user_id: str) -> list[str]:
     async with async_session_maker() as session:
-        result = await session.execute(
-            select(NodeOwner.node_id).where(NodeOwner.user_id == user_id)
-        )
+        result = await session.execute(select(NodeOwner.node_id).where(NodeOwner.user_id == user_id))
         return list(result.scalars().all())
 
 
 # ── Claim codes ───────────────────────────────────────────────────────────────
+
 
 async def create_claim_code(user_id: str) -> dict:
     """Create a one-time claim code for the user.

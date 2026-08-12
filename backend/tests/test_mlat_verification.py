@@ -249,8 +249,8 @@ class TestStaleFiltering:
         state.multinode_tracks[_key(r)] = r
 
         trail = deque(maxlen=120)
-        trail.append(_trail_point(33.9, -84.6, age_s=80))   # matches solver time
-        trail.append(_trail_point(34.1, -83.0, age_s=5))    # current — far away
+        trail.append(_trail_point(33.9, -84.6, age_s=80))  # matches solver time
+        trail.append(_trail_point(34.1, -83.0, age_s=5))  # current — far away
         state.ground_truth_trails["abc123"] = trail
         state.ground_truth_meta["abc123"] = {"object_type": "aircraft", "is_anomalous": False, "speed_ms": 200.0}
 
@@ -344,7 +344,7 @@ class TestExternalAdsbFallback:
             "lat": 33.9,
             "lon": -84.6,
             "alt_baro": 32808,  # 10 000 m
-            "gs": 388.0,        # ~200 m/s
+            "gs": 388.0,  # ~200 m/s
         }
 
         r = _make_solve_result(33.9001, -84.6001)
@@ -447,28 +447,48 @@ class TestRealSolverIntegration:
     # node_c/d/e add diversity for the 3–5-node parametrized cases.
     _NODE_CONFIGS = {
         "node_a": {
-            "rx_lat": 40.7128, "rx_lon": -74.0060, "rx_alt_ft": 100,
-            "tx_lat": 40.78, "tx_lon": -73.95, "tx_alt_ft": 500,
+            "rx_lat": 40.7128,
+            "rx_lon": -74.0060,
+            "rx_alt_ft": 100,
+            "tx_lat": 40.78,
+            "tx_lon": -73.95,
+            "tx_alt_ft": 500,
             "fc_hz": 100e6,
         },
         "node_b": {
-            "rx_lat": 40.75, "rx_lon": -73.90, "rx_alt_ft": 150,
-            "tx_lat": 40.70, "tx_lon": -73.85, "tx_alt_ft": 400,
+            "rx_lat": 40.75,
+            "rx_lon": -73.90,
+            "rx_alt_ft": 150,
+            "tx_lat": 40.70,
+            "tx_lon": -73.85,
+            "tx_alt_ft": 400,
             "fc_hz": 100e6,
         },
         "node_c": {
-            "rx_lat": 40.64, "rx_lon": -74.08, "rx_alt_ft": 80,
-            "tx_lat": 40.60, "tx_lon": -74.15, "tx_alt_ft": 350,
+            "rx_lat": 40.64,
+            "rx_lon": -74.08,
+            "rx_alt_ft": 80,
+            "tx_lat": 40.60,
+            "tx_lon": -74.15,
+            "tx_alt_ft": 350,
             "fc_hz": 100e6,
         },
         "node_d": {
-            "rx_lat": 40.83, "rx_lon": -73.87, "rx_alt_ft": 200,
-            "tx_lat": 40.89, "tx_lon": -73.82, "tx_alt_ft": 450,
+            "rx_lat": 40.83,
+            "rx_lon": -73.87,
+            "rx_alt_ft": 200,
+            "tx_lat": 40.89,
+            "tx_lon": -73.82,
+            "tx_alt_ft": 450,
             "fc_hz": 100e6,
         },
         "node_e": {
-            "rx_lat": 40.73, "rx_lon": -74.18, "rx_alt_ft": 120,
-            "tx_lat": 40.68, "tx_lon": -74.25, "tx_alt_ft": 400,
+            "rx_lat": 40.73,
+            "rx_lon": -74.18,
+            "rx_alt_ft": 120,
+            "tx_lat": 40.68,
+            "tx_lon": -74.25,
+            "tx_alt_ft": 400,
             "fc_hz": 100e6,
         },
     }
@@ -477,9 +497,17 @@ class TestRealSolverIntegration:
         _clear()
 
     @staticmethod
-    def _make_solver_input(node_configs, target_lat, target_lon, target_alt_km,
-                           vel_east=0.0, vel_north=0.0,
-                           delay_noise_us=0.0, doppler_noise_hz=0.0, rng=None):
+    def _make_solver_input(
+        node_configs,
+        target_lat,
+        target_lon,
+        target_alt_km,
+        vel_east=0.0,
+        vel_north=0.0,
+        delay_noise_us=0.0,
+        doppler_noise_hz=0.0,
+        rng=None,
+    ):
         """Build a solver_input dict from a known target position.
 
         Computes exact delay_us and doppler_hz for each node using the bistatic
@@ -495,31 +523,33 @@ class TestRealSolverIntegration:
         from retina_geolocator.multinode_solver import _lla_to_enu_km
 
         ref_lat, ref_lon = target_lat, target_lon
-        target_enu = _lla_to_enu_km(
-            target_lat, target_lon, target_alt_km * 1000.0, ref_lat, ref_lon, 0.0
-        )
+        target_enu = _lla_to_enu_km(target_lat, target_lon, target_alt_km * 1000.0, ref_lat, ref_lon, 0.0)
         measurements = []
         for nid, cfg in node_configs.items():
             rx_enu = _lla_to_enu_km(
-                cfg["rx_lat"], cfg["rx_lon"], cfg.get("rx_alt_ft", 0) * 0.3048,
-                ref_lat, ref_lon, 0.0,
+                cfg["rx_lat"],
+                cfg["rx_lon"],
+                cfg.get("rx_alt_ft", 0) * 0.3048,
+                ref_lat,
+                ref_lon,
+                0.0,
             )
             tx_enu = _lla_to_enu_km(
-                cfg["tx_lat"], cfg["tx_lon"], cfg.get("tx_alt_ft", 0) * 0.3048,
-                ref_lat, ref_lon, 0.0,
+                cfg["tx_lat"],
+                cfg["tx_lon"],
+                cfg.get("tx_alt_ft", 0) * 0.3048,
+                ref_lat,
+                ref_lon,
+                0.0,
             )
             fc = cfg.get("fc_hz", 100e6)
             delay = bistatic_delay(target_enu, tx_enu, rx_enu)
-            doppler = bistatic_doppler(
-                target_enu, (vel_east, vel_north, 0.0), tx_enu, rx_enu, fc
-            )
+            doppler = bistatic_doppler(target_enu, (vel_east, vel_north, 0.0), tx_enu, rx_enu, fc)
             if delay_noise_us:
                 delay += rng.gauss(0, delay_noise_us)
             if doppler_noise_hz:
                 doppler += rng.gauss(0, doppler_noise_hz)
-            measurements.append(
-                {"node_id": nid, "delay_us": delay, "doppler_hz": doppler, "snr": 15.0}
-            )
+            measurements.append({"node_id": nid, "delay_us": delay, "doppler_hz": doppler, "snr": 15.0})
         return {
             "initial_guess": {
                 "lat": target_lat + 0.01,
@@ -536,12 +566,15 @@ class TestRealSolverIntegration:
     #        6 unknowns — marginally underdetermined for velocity, so position
     #        convergence is ~0.9 km with a noise-free initial guess 1.4 km away.
     # - n≥3: system becomes well-overdetermined; solver converges sub-metre.
-    @pytest.mark.parametrize("n_nodes,pos_threshold_km", [
-        (2, 1.0),
-        (3, 0.5),
-        (4, 0.5),
-        (5, 0.5),
-    ])
+    @pytest.mark.parametrize(
+        "n_nodes,pos_threshold_km",
+        [
+            (2, 1.0),
+            (3, 0.5),
+            (4, 0.5),
+            (5, 0.5),
+        ],
+    )
     def test_real_solver_converges_n_nodes(self, n_nodes, pos_threshold_km):
         """Solver converges from synthetic measurements for 2–5 nodes.
 
@@ -559,9 +592,7 @@ class TestRealSolverIntegration:
         assert result["success"] is True
 
         state.multinode_tracks[_key(result)] = result
-        state.ground_truth_trails["abc123"] = deque(
-            [_trail_point(target_lat, target_lon, target_alt_km * 1000.0)]
-        )
+        state.ground_truth_trails["abc123"] = deque([_trail_point(target_lat, target_lon, target_alt_km * 1000.0)])
         state.ground_truth_meta["abc123"] = {
             "object_type": "aircraft",
             "is_anomalous": False,
@@ -591,8 +622,12 @@ class TestRealSolverIntegration:
         target_lat, target_lon, target_alt_km = 40.73, -73.95, 8.0
 
         solver_input = self._make_solver_input(
-            self._NODE_CONFIGS, target_lat, target_lon, target_alt_km,
-            vel_east=vel_east, vel_north=vel_north,
+            self._NODE_CONFIGS,
+            target_lat,
+            target_lon,
+            target_alt_km,
+            vel_east=vel_east,
+            vel_north=vel_north,
         )
         result = solve_multinode(solver_input, self._NODE_CONFIGS)
 
@@ -600,9 +635,7 @@ class TestRealSolverIntegration:
         assert result["success"] is True
 
         state.multinode_tracks[_key(result)] = result
-        state.ground_truth_trails["abc123"] = deque(
-            [_trail_point(target_lat, target_lon, target_alt_km * 1000.0)]
-        )
+        state.ground_truth_trails["abc123"] = deque([_trail_point(target_lat, target_lon, target_alt_km * 1000.0)])
         state.ground_truth_meta["abc123"] = {
             "object_type": "aircraft",
             "is_anomalous": False,
@@ -617,10 +650,13 @@ class TestRealSolverIntegration:
         assert data["tracks"][0]["altitude_error_m"] < 200
         assert data["velocity"]["mean_ms"] < 20.0
 
-    @pytest.mark.parametrize("delay_noise_us,doppler_noise_hz", [
-        (0.5, 5.0),   # realistic: ~150 m path uncertainty, ~5 Hz Doppler jitter
-        (1.0, 10.0),  # aggressive: double realistic noise
-    ])
+    @pytest.mark.parametrize(
+        "delay_noise_us,doppler_noise_hz",
+        [
+            (0.5, 5.0),  # realistic: ~150 m path uncertainty, ~5 Hz Doppler jitter
+            (1.0, 10.0),  # aggressive: double realistic noise
+        ],
+    )
     def test_noisy_measurements_still_converge(self, delay_noise_us, doppler_noise_hz):
         """Solver stays within 0.5 km / 200 m altitude under measurement noise.
 
@@ -634,8 +670,13 @@ class TestRealSolverIntegration:
         target_lat, target_lon, target_alt_km = 40.73, -73.95, 8.0
 
         solver_input = self._make_solver_input(
-            self._NODE_CONFIGS, target_lat, target_lon, target_alt_km,
-            delay_noise_us=delay_noise_us, doppler_noise_hz=doppler_noise_hz, rng=rng,
+            self._NODE_CONFIGS,
+            target_lat,
+            target_lon,
+            target_alt_km,
+            delay_noise_us=delay_noise_us,
+            doppler_noise_hz=doppler_noise_hz,
+            rng=rng,
         )
         result = solve_multinode(solver_input, self._NODE_CONFIGS)
 
@@ -643,9 +684,7 @@ class TestRealSolverIntegration:
         assert result["success"] is True
 
         state.multinode_tracks[_key(result)] = result
-        state.ground_truth_trails["abc123"] = deque(
-            [_trail_point(target_lat, target_lon, target_alt_km * 1000.0)]
-        )
+        state.ground_truth_trails["abc123"] = deque([_trail_point(target_lat, target_lon, target_alt_km * 1000.0)])
         state.ground_truth_meta["abc123"] = {
             "object_type": "aircraft",
             "is_anomalous": False,
@@ -676,17 +715,13 @@ class TestRealSolverIntegration:
         ]
 
         for t_lat, t_lon, t_hex in targets:
-            solver_input = self._make_solver_input(
-                self._NODE_CONFIGS, t_lat, t_lon, target_alt_km
-            )
+            solver_input = self._make_solver_input(self._NODE_CONFIGS, t_lat, t_lon, target_alt_km)
             result = solve_multinode(solver_input, self._NODE_CONFIGS)
             assert result is not None, f"Solver failed to converge for {t_hex}"
             assert result["success"] is True, f"Solver returned success=False for {t_hex}"
 
             state.multinode_tracks[_key(result)] = result
-            state.ground_truth_trails[t_hex] = deque(
-                [_trail_point(t_lat, t_lon, target_alt_km * 1000.0)]
-            )
+            state.ground_truth_trails[t_hex] = deque([_trail_point(t_lat, t_lon, target_alt_km * 1000.0)])
             state.ground_truth_meta[t_hex] = {
                 "object_type": "aircraft",
                 "is_anomalous": False,
@@ -746,7 +781,9 @@ class TestHttpEndpoint:
 
         state.ground_truth_trails["abc123"] = deque([_trail_point(33.9, -84.6)])
         state.ground_truth_meta["abc123"] = {
-            "object_type": "aircraft", "is_anomalous": False, "speed_ms": 0.0,
+            "object_type": "aircraft",
+            "is_anomalous": False,
+            "speed_ms": 0.0,
         }
         r = _make_solve_result(33.9001, -84.6001, n_nodes=3)
         state.multinode_tracks[_key(r)] = r
@@ -816,9 +853,7 @@ class TestMlatAccuracyStats:
         # Raw view: 7 samples, mean dominated by the 5 'bad' repeats.
         assert data["n_samples"] == 7
         assert data["by_node_count"]["5"]["n_samples"] == 7
-        assert data["by_node_count"]["5"]["mean_km"] == pytest.approx(
-            (5 * 5.0 + 2 * 0.3) / 7, abs=0.0001
-        )
+        assert data["by_node_count"]["5"]["mean_km"] == pytest.approx((5 * 5.0 + 2 * 0.3) / 7, abs=0.0001)
 
         # Per-aircraft view: 3 unique aircraft, each contributes one number.
         pa = data["per_aircraft"]
@@ -862,7 +897,9 @@ class TestMlatSummaryHelper:
 
         state.ground_truth_trails["abc123"] = deque([_trail_point(33.9, -84.6, 10000.0)])
         state.ground_truth_meta["abc123"] = {
-            "object_type": "aircraft", "is_anomalous": False, "speed_ms": 200.0,
+            "object_type": "aircraft",
+            "is_anomalous": False,
+            "speed_ms": 200.0,
         }
         r = _make_solve_result(33.9001, -84.6001)
         state.multinode_tracks[_key(r)] = r
@@ -871,8 +908,12 @@ class TestMlatSummaryHelper:
         summary = test_routes._mlat_verification_summary()
 
         assert set(summary.keys()) == {
-            "n_solves", "n_matched", "match_rate_pct",
-            "position_mean_km", "position_p95_km", "altitude_mean_m",
+            "n_solves",
+            "n_matched",
+            "match_rate_pct",
+            "position_mean_km",
+            "position_p95_km",
+            "altitude_mean_m",
         }
         assert summary["n_solves"] == 1
         assert summary["n_matched"] == 1
@@ -948,7 +989,9 @@ class TestAdsbFallbackEdgeCases:
         # only appear once in the truth pool (no double-match opportunity).
         state.ground_truth_trails["aabbcc"] = deque([_trail_point(33.9, -84.6)])
         state.ground_truth_meta["aabbcc"] = {
-            "object_type": "aircraft", "is_anomalous": False, "speed_ms": 200.0,
+            "object_type": "aircraft",
+            "is_anomalous": False,
+            "speed_ms": 200.0,
         }
         state.adsb_aircraft["aabbcc"] = {
             "hex": "aabbcc",
@@ -977,10 +1020,11 @@ class TestTrackFields:
     def test_all_expected_track_keys_present(self):
         state.ground_truth_trails["abc123"] = deque([_trail_point(33.9, -84.6, 10000.0)])
         state.ground_truth_meta["abc123"] = {
-            "object_type": "aircraft", "is_anomalous": True, "speed_ms": 200.0,
+            "object_type": "aircraft",
+            "is_anomalous": True,
+            "speed_ms": 200.0,
         }
-        r = _make_solve_result(33.9001, -84.6001, alt_m=10200.0, n_nodes=3,
-                               rms_delay=0.4, rms_doppler=4.5)
+        r = _make_solve_result(33.9001, -84.6001, alt_m=10200.0, n_nodes=3, rms_delay=0.4, rms_doppler=4.5)
         state.multinode_tracks[_key(r)] = r
 
         _refresh_mlat_verification()
@@ -989,20 +1033,35 @@ class TestTrackFields:
         assert data["n_matched"] == 1
         track = data["tracks"][0]
         expected_keys = {
-            "solve_key", "solver_hex", "solver_lat", "solver_lon",
-            "truth_lat", "truth_lon", "truth_hex",
+            "solve_key",
+            "solver_hex",
+            "solver_lat",
+            "solver_lon",
+            "truth_lat",
+            "truth_lon",
+            "truth_hex",
             "position_error_km",
-            "solver_alt_m", "truth_alt_m", "altitude_error_m",
-            "solver_speed_ms", "truth_speed_ms", "velocity_error_ms",
-            "n_nodes", "rms_delay", "rms_doppler",
-            "object_type", "is_anomalous", "timestamp_ms",
+            "solver_alt_m",
+            "truth_alt_m",
+            "altitude_error_m",
+            "solver_speed_ms",
+            "truth_speed_ms",
+            "velocity_error_ms",
+            "n_nodes",
+            "rms_delay",
+            "rms_doppler",
+            "object_type",
+            "is_anomalous",
+            "timestamp_ms",
         }
         assert expected_keys.issubset(set(track.keys()))
 
     def test_rms_values_carried_through_to_track(self):
         state.ground_truth_trails["abc123"] = deque([_trail_point(33.9, -84.6)])
         state.ground_truth_meta["abc123"] = {
-            "object_type": "aircraft", "is_anomalous": False, "speed_ms": 0.0,
+            "object_type": "aircraft",
+            "is_anomalous": False,
+            "speed_ms": 0.0,
         }
         r = _make_solve_result(33.9001, -84.6001, rms_delay=0.75, rms_doppler=8.25)
         state.multinode_tracks[_key(r)] = r
@@ -1030,7 +1089,9 @@ class TestTracksLimit:
             hex_id = f"hex{i:03d}"
             state.ground_truth_trails[hex_id] = deque([_trail_point(lat, -84.6)])
             state.ground_truth_meta[hex_id] = {
-                "object_type": "aircraft", "is_anomalous": False, "speed_ms": 0.0,
+                "object_type": "aircraft",
+                "is_anomalous": False,
+                "speed_ms": 0.0,
             }
             r = _make_solve_result(lat + 0.001, -84.6, ts_ms=base_ts - i * 10)
             state.multinode_tracks[_key(r)] = r
@@ -1053,7 +1114,9 @@ class TestSolveResultFiltering:
         # age_s < 0: timestamp is 60 s in the future
         state.ground_truth_trails["abc123"] = deque([_trail_point(33.9, -84.6)])
         state.ground_truth_meta["abc123"] = {
-            "object_type": "aircraft", "is_anomalous": False, "speed_ms": 0.0,
+            "object_type": "aircraft",
+            "is_anomalous": False,
+            "speed_ms": 0.0,
         }
         future_ts_ms = int((time.time() + 60) * 1000)
         r = _make_solve_result(33.9001, -84.6001, ts_ms=future_ts_ms)
@@ -1069,7 +1132,9 @@ class TestSolveResultFiltering:
         # (0, 0) broken-config sentinel is filtered now.
         state.ground_truth_trails["abc123"] = deque([_trail_point(0.0001, -84.6)])
         state.ground_truth_meta["abc123"] = {
-            "object_type": "aircraft", "is_anomalous": False, "speed_ms": 0.0,
+            "object_type": "aircraft",
+            "is_anomalous": False,
+            "speed_ms": 0.0,
         }
         r = _make_solve_result(0.0, -84.6)
         state.multinode_tracks[_key(r)] = r
@@ -1082,7 +1147,9 @@ class TestSolveResultFiltering:
         # (0, 0) is the broken-config sentinel, not a position.
         state.ground_truth_trails["abc123"] = deque([_trail_point(0.0001, -84.6)])
         state.ground_truth_meta["abc123"] = {
-            "object_type": "aircraft", "is_anomalous": False, "speed_ms": 0.0,
+            "object_type": "aircraft",
+            "is_anomalous": False,
+            "speed_ms": 0.0,
         }
         r = _make_solve_result(0.0, 0.0)
         state.multinode_tracks[_key(r)] = r
@@ -1103,11 +1170,13 @@ class TestExternalAdsbTruthSchema:
 
     def test_external_truth_keeps_metric_altitude_and_speed(self):
         state.external_adsb_cache["ext123"] = {
-            "lat": 33.9, "lon": -84.6,
-            "alt_m": 10000.0, "velocity": 210.0, "heading": 90.0,
+            "lat": 33.9,
+            "lon": -84.6,
+            "alt_m": 10000.0,
+            "velocity": 210.0,
+            "heading": 90.0,
         }
-        r = _make_solve_result(33.9001, -84.6001, alt_m=10050.0,
-                               vel_east=200.0, vel_north=50.0)
+        r = _make_solve_result(33.9001, -84.6001, alt_m=10050.0, vel_east=200.0, vel_north=50.0)
         state.multinode_tracks[_key(r)] = r
 
         _refresh_mlat_verification()

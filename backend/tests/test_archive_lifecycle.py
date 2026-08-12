@@ -26,9 +26,8 @@ _TEST_RETENTION_DAYS = 14
 
 def _patch_retention(value: int = _TEST_RETENTION_DAYS):
     """Patch ARCHIVE_RETENTION_DAYS inside the lifecycle module for one test."""
-    return unittest.mock.patch(
-        "services.tasks.archive_lifecycle.ARCHIVE_RETENTION_DAYS", value
-    )
+    return unittest.mock.patch("services.tasks.archive_lifecycle.ARCHIVE_RETENTION_DAYS", value)
+
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -47,9 +46,7 @@ def _make_bucket(bucket: str = "retina-data"):
     boto3.client("s3", region_name="us-east-1").create_bucket(Bucket=bucket)
 
 
-def _create_archive_file(
-    archive_dir: Path, age_days: float, content: bytes = b"{}"
-) -> Path:
+def _create_archive_file(archive_dir: Path, age_days: float, content: bytes = b"{}") -> Path:
     """Create a year/month/day/node/frame_*.json file with the given mtime age."""
     mtime = time.time() - age_days * 86400
     node_dir = archive_dir / "2025" / "01" / "01" / "node_test"
@@ -60,9 +57,7 @@ def _create_archive_file(
     return fname
 
 
-def _make_archive_file(
-    archive_dir: Path, age_days: float = 0.0, name: str = "data.json"
-) -> Path:
+def _make_archive_file(archive_dir: Path, age_days: float = 0.0, name: str = "data.json") -> Path:
     """Create a properly structured archive file used by the unit-test suite."""
     node_dir = archive_dir / "2024" / "01" / "15" / "node-A"
     node_dir.mkdir(parents=True, exist_ok=True)
@@ -97,9 +92,7 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         # coverage_data/tracks on the test host.
         alc._TRACKS_DIR = self._tracks_dir
 
-        self._env_patcher = unittest.mock.patch.dict(
-            os.environ, _FAKE_R2_ENV, clear=False
-        )
+        self._env_patcher = unittest.mock.patch.dict(os.environ, _FAKE_R2_ENV, clear=False)
         self._env_patcher.start()
 
         import services.r2_client as r2
@@ -167,9 +160,7 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
     @mock_aws
     def test_very_old_file_deleted_locally(self):
         _make_bucket()
-        f = _create_archive_file(
-            self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1
-        )
+        f = _create_archive_file(self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1)
         from services.tasks.archive_lifecycle import run_archive_lifecycle
 
         with _patch_retention():
@@ -180,9 +171,7 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
     @mock_aws
     def test_file_within_retention_not_deleted(self):
         _make_bucket()
-        f = _create_archive_file(
-            self._archive_dir, age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1
-        )
+        f = _create_archive_file(self._archive_dir, age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1)
         from services.tasks.archive_lifecycle import run_archive_lifecycle
 
         with _patch_retention():
@@ -192,9 +181,7 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
     @mock_aws
     def test_old_file_uploaded_then_deleted(self):
         _make_bucket()
-        f = _create_archive_file(
-            self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1
-        )
+        f = _create_archive_file(self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1)
         from services.r2_client import list_keys
         from services.tasks.archive_lifecycle import run_archive_lifecycle
 
@@ -208,9 +195,7 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
     @mock_aws
     def test_empty_dirs_pruned_after_delete(self):
         _make_bucket()
-        f = _create_archive_file(
-            self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1
-        )
+        f = _create_archive_file(self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1)
         from services.tasks.archive_lifecycle import run_archive_lifecycle
 
         with _patch_retention():
@@ -227,9 +212,7 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         """
         self._r2._ENABLED = False
         self._r2._clear_cache()
-        f_old = _create_archive_file(
-            self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1
-        )
+        f_old = _create_archive_file(self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1)
         from services.tasks.archive_lifecycle import run_archive_lifecycle
 
         with _patch_retention():
@@ -247,9 +230,7 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         from services.tasks.archive_lifecycle import run_archive_lifecycle
 
         stats = run_archive_lifecycle()
-        self.assertEqual(
-            stats, {"uploaded": 0, "deleted": 0, "errors": 0, "skipped": 0}
-        )
+        self.assertEqual(stats, {"uploaded": 0, "deleted": 0, "errors": 0, "skipped": 0})
 
     @mock_aws
     def test_upload_cap_respected(self):
@@ -272,9 +253,7 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
     def _make_tracks_parquet(self, age_days: float) -> Path:
         """Create a Hive-partitioned tracks/ Parquet file with the given age."""
         mtime = time.time() - age_days * 86400
-        part_dir = (
-            self._tracks_dir / "year=2026" / "month=05" / "day=01"
-        )
+        part_dir = self._tracks_dir / "year=2026" / "month=05" / "day=01"
         part_dir.mkdir(parents=True, exist_ok=True)
         f = part_dir / "part-120000.parquet"
         f.write_bytes(b"PAR1")
@@ -339,17 +318,12 @@ class _ArchiveUnitTestBase(unittest.TestCase):
         test exercising the deletion phase doesn't have to repeat that setup.
         Tests of the R2-disabled or upload-failure paths pass explicit args.
         """
-        with unittest.mock.patch(
-            "services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir
-        ), unittest.mock.patch(
-            "services.tasks.archive_lifecycle._TRACKS_DIR", new=self._tracks_dir
+        with (
+            unittest.mock.patch("services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir),
+            unittest.mock.patch("services.tasks.archive_lifecycle._TRACKS_DIR", new=self._tracks_dir),
         ):
-            with unittest.mock.patch(
-                "services.r2_client.is_enabled", return_value=r2_enabled
-            ):
-                with unittest.mock.patch(
-                    "services.r2_client.upload_file", return_value=upload_return
-                ):
+            with unittest.mock.patch("services.r2_client.is_enabled", return_value=r2_enabled):
+                with unittest.mock.patch("services.r2_client.upload_file", return_value=upload_return):
                     from services.tasks.archive_lifecycle import run_archive_lifecycle
 
                     return run_archive_lifecycle()
@@ -367,24 +341,17 @@ class TestRunArchiveLifecycleEmptyDir(unittest.TestCase):
             missing_tracks = Path(td) / "no_such_tracks"
             # neither is created
 
-            with unittest.mock.patch(
-                "services.tasks.archive_lifecycle._ARCHIVE_DIR", new=missing
-            ), unittest.mock.patch(
-                "services.tasks.archive_lifecycle._TRACKS_DIR", new=missing_tracks
+            with (
+                unittest.mock.patch("services.tasks.archive_lifecycle._ARCHIVE_DIR", new=missing),
+                unittest.mock.patch("services.tasks.archive_lifecycle._TRACKS_DIR", new=missing_tracks),
             ):
                 from services.tasks.archive_lifecycle import run_archive_lifecycle
 
-                with unittest.mock.patch(
-                    "services.r2_client.is_enabled", return_value=False
-                ):
-                    with unittest.mock.patch(
-                        "services.r2_client.upload_file", return_value=False
-                    ):
+                with unittest.mock.patch("services.r2_client.is_enabled", return_value=False):
+                    with unittest.mock.patch("services.r2_client.upload_file", return_value=False):
                         stats = run_archive_lifecycle()
 
-        self.assertEqual(
-            stats, {"uploaded": 0, "deleted": 0, "errors": 0, "skipped": 0}
-        )
+        self.assertEqual(stats, {"uploaded": 0, "deleted": 0, "errors": 0, "skipped": 0})
 
 
 # ── TestRunArchiveLifecycleOSError ────────────────────────────────────────────
@@ -529,10 +496,9 @@ class TestIterArchiveFiles(_ArchiveUnitTestBase):
         """
         from services.tasks.archive_lifecycle import _iter_archive_files
 
-        with unittest.mock.patch(
-            "services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir
-        ), unittest.mock.patch(
-            "services.tasks.archive_lifecycle._TRACKS_DIR", new=self._tracks_dir
+        with (
+            unittest.mock.patch("services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir),
+            unittest.mock.patch("services.tasks.archive_lifecycle._TRACKS_DIR", new=self._tracks_dir),
         ):
             return [f for f, _root, _prefix in _iter_archive_files()]
 
@@ -581,9 +547,7 @@ class TestRetentionDisabled(_ArchiveUnitTestBase):
     def test_old_file_kept_when_retention_zero(self):
         f = _make_archive_file(self._archive_dir, age_days=400.0)
 
-        with unittest.mock.patch(
-            "services.tasks.archive_lifecycle.ARCHIVE_RETENTION_DAYS", 0
-        ):
+        with unittest.mock.patch("services.tasks.archive_lifecycle.ARCHIVE_RETENTION_DAYS", 0):
             stats = self._run()
 
         self.assertTrue(f.exists(), "file must NOT be deleted when retention is 0")
@@ -592,9 +556,7 @@ class TestRetentionDisabled(_ArchiveUnitTestBase):
     def test_old_file_kept_when_retention_negative(self):
         f = _make_archive_file(self._archive_dir, age_days=400.0)
 
-        with unittest.mock.patch(
-            "services.tasks.archive_lifecycle.ARCHIVE_RETENTION_DAYS", -1
-        ):
+        with unittest.mock.patch("services.tasks.archive_lifecycle.ARCHIVE_RETENTION_DAYS", -1):
             stats = self._run()
 
         self.assertTrue(f.exists(), "negative retention must also disable deletion")
@@ -640,14 +602,13 @@ class TestUploadSentinel(_ArchiveUnitTestBase):
         f = _make_archive_file(self._archive_dir, age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1)
         f.with_name(f.name + ".uploaded").touch()
 
-        with unittest.mock.patch(
-            "services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir
-        ), unittest.mock.patch(
-            "services.r2_client.is_enabled", return_value=True
-        ), unittest.mock.patch(
-            "services.r2_client.upload_file", return_value=True
-        ) as mock_upload:
+        with (
+            unittest.mock.patch("services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir),
+            unittest.mock.patch("services.r2_client.is_enabled", return_value=True),
+            unittest.mock.patch("services.r2_client.upload_file", return_value=True) as mock_upload,
+        ):
             from services.tasks.archive_lifecycle import run_archive_lifecycle
+
             stats = run_archive_lifecycle()
 
         mock_upload.assert_not_called()

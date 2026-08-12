@@ -19,8 +19,10 @@ from services.tcp_handler import is_synthetic_node
 MINIMAL = {
     "node_id": "n1",
     "detection_url": "https://example.test/api/detection",
-    "rx_lat": 33.9, "rx_lon": -84.6,
-    "tx_lat": 33.8, "tx_lon": -84.1,
+    "rx_lat": 33.9,
+    "rx_lon": -84.6,
+    "tx_lat": 33.8,
+    "tx_lon": -84.1,
     "fc_hz": 177_000_000,
 }
 
@@ -32,6 +34,7 @@ def _write(tmp_path, payload):
 
 
 # ── Shipped default ───────────────────────────────────────────────────────────
+
 
 class TestShippedConfig:
     def test_default_config_loads(self):
@@ -58,8 +61,7 @@ class TestShippedConfig:
         """Regression: tx_lat was once byte-identical to rx_lat, putting the
         illuminator ~20 km north of WXIA-TV and biasing every radar3 solve.
         A wrong coordinate is silent — only the delay residual shows it."""
-        r3 = next(n.config for n in load_nodes(config_file_path())
-                  if n.node_id == "radar3-retnode")
+        r3 = next(n.config for n in load_nodes(config_file_path()) if n.node_id == "radar3-retnode")
         assert r3["tx_lat"] != r3["rx_lat"]
         assert (r3["tx_lat"], r3["tx_lon"]) == (33.756667, -84.331944)
         assert r3["fc_hz"] == 195_000_000
@@ -76,6 +78,7 @@ class TestShippedConfig:
 
 
 # ── Loading arbitrary configs ─────────────────────────────────────────────────
+
 
 class TestLoadNodes:
     def test_loads_arbitrary_node_count(self, tmp_path):
@@ -126,6 +129,7 @@ class TestLoadNodes:
 
 # ── Entry validation ──────────────────────────────────────────────────────────
 
+
 class TestBuildNode:
     def test_optional_fields_get_defaults(self):
         cfg = _build_node(MINIMAL).config
@@ -142,12 +146,15 @@ class TestBuildNode:
     def test_peer_is_the_hostname(self):
         assert _build_node(MINIMAL).peer == "example.test"
 
-    @pytest.mark.parametrize("mutation,field", [
-        ({"node_id": None}, "node_id"),
-        ({"detection_url": None}, "detection_url"),
-        ({"fc_hz": None}, "fc_hz"),
-        ({"rx_lat": None}, "rx_lat"),
-    ])
+    @pytest.mark.parametrize(
+        "mutation,field",
+        [
+            ({"node_id": None}, "node_id"),
+            ({"detection_url": None}, "detection_url"),
+            ({"fc_hz": None}, "fc_hz"),
+            ({"rx_lat": None}, "rx_lat"),
+        ],
+    )
     def test_missing_required_field_rejected(self, mutation, field):
         with pytest.raises(Blah2ConfigError, match=field):
             _build_node({**MINIMAL, **mutation})
@@ -157,9 +164,15 @@ class TestBuildNode:
         with pytest.raises(Blah2ConfigError, match="http"):
             _build_node({**MINIMAL, "detection_url": url})
 
-    @pytest.mark.parametrize("field,value", [
-        ("rx_lat", 91), ("tx_lat", -91), ("rx_lon", 181), ("tx_lon", -181),
-    ])
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("rx_lat", 91),
+            ("tx_lat", -91),
+            ("rx_lon", 181),
+            ("tx_lon", -181),
+        ],
+    )
     def test_out_of_range_coordinates_rejected(self, field, value):
         with pytest.raises(Blah2ConfigError, match="out of range"):
             _build_node({**MINIMAL, field: value})
@@ -180,6 +193,7 @@ class TestBuildNode:
 
 # ── Frame conversion ──────────────────────────────────────────────────────────
 
+
 class TestConvertFrame:
     def _raw(self, ts_ms):
         return {
@@ -197,6 +211,7 @@ class TestConvertFrame:
 
     def test_delay_converted_km_to_us(self):
         from config.constants import C_KM_US
+
         raw = self._raw(int(time.time() * 1000))
         frame = _convert_frame(raw, "n1")
         assert frame["delay"] == [d / C_KM_US for d in raw["delay"]]

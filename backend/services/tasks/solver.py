@@ -113,8 +113,7 @@ _N2_CONFIRM_CHI2_MAX = N2_CONFIRM_CHI2_MAX
 # It lived here while the frame path had its own, looser, unstated one.
 
 
-def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn,
-                     layers_km: list[float], metric: str) -> dict | None:
+def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn, layers_km: list[float], metric: str) -> dict | None:
     """Try each altitude layer; return the result with lowest value of `metric`.
 
     Args:
@@ -140,7 +139,10 @@ def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn,
             rms = float("inf") if rms_raw is None else float(rms_raw)
             logging.debug(
                 "altitude sweep: z=%.1fkm %s=%.3f (best so far=%.3f)",
-                alt_km, metric, rms, best_rms,
+                alt_km,
+                metric,
+                rms,
+                best_rms,
             )
             if rms < best_rms:
                 best_rms = rms
@@ -210,7 +212,7 @@ def _solve_best_altitude_n2(s_in: dict, node_cfgs: dict, solve_fn) -> dict | Non
 # Per-hex rolling buffer: hex → deque of (lat, lon, timestamp_s)
 _MN_POS_HISTORY: dict[str, deque] = {}
 _MN_POS_HISTORY_LOCK = threading.Lock()
-_MN_HISTORY_K = 3   # number of past frames to average (including current)
+_MN_HISTORY_K = 3  # number of past frames to average (including current)
 _MN_DR_MAX_AGE_S = 160.0  # discard history entries older than 4 frame intervals
 # Dict-level TTL sweep (the deques cap per-hex growth, but the dict itself
 # grew one entry per distinct hex for the process lifetime — same shape as
@@ -235,10 +237,7 @@ def _sweep_mn_history(now_s: float) -> None:
     if now_s - _mn_history_last_sweep < _MN_HISTORY_TTL_S / 10:
         return
     _mn_history_last_sweep = now_s
-    for h in [
-        h for h, dq in _MN_POS_HISTORY.items()
-        if not dq or now_s - dq[-1][2] > _MN_HISTORY_TTL_S
-    ]:
+    for h in [h for h, dq in _MN_POS_HISTORY.items() if not dq or now_s - dq[-1][2] > _MN_HISTORY_TTL_S]:
         del _MN_POS_HISTORY[h]
 
 
@@ -265,17 +264,15 @@ def _ewma_smooth_track(result: dict, adsb_hex: str | None) -> dict:
     if not adsb:
         with _MN_POS_HISTORY_LOCK:
             _sweep_mn_history(r_ts)
-            _MN_POS_HISTORY.setdefault(adsb_hex, deque(maxlen=_MN_HISTORY_K)).append(
-                (r_lat, r_lon, r_ts)
-            )
+            _MN_POS_HISTORY.setdefault(adsb_hex, deque(maxlen=_MN_HISTORY_K)).append((r_lat, r_lon, r_ts))
         return result
 
     gs_knots = float(adsb.get("gs", 0) or 0)
     track_deg = float(adsb.get("track", 0) or 0)
-    gs_kms = gs_knots * 0.514444 / 1000.0   # knots → km/s
+    gs_kms = gs_knots * 0.514444 / 1000.0  # knots → km/s
     # Geographic track: 0° = North, 90° = East.
     vel_north_kms = gs_kms * math.cos(math.radians(track_deg))
-    vel_east_kms  = gs_kms * math.sin(math.radians(track_deg))
+    vel_east_kms = gs_kms * math.sin(math.radians(track_deg))
 
     with _MN_POS_HISTORY_LOCK:
         _sweep_mn_history(r_ts)
@@ -290,7 +287,8 @@ def _ewma_smooth_track(result: dict, adsb_hex: str | None) -> dict:
             if dt <= 0 or dt > _MN_DR_MAX_AGE_S:
                 continue  # skip future or stale entries
             dr_lat, dr_lon = offset_latlon_m(
-                prev_lat, prev_lon,
+                prev_lat,
+                prev_lon,
                 east_m=vel_east_kms * 1000.0 * dt,
                 north_m=vel_north_kms * 1000.0 * dt,
             )
@@ -310,7 +308,12 @@ def _ewma_smooth_track(result: dict, adsb_hex: str | None) -> dict:
     smoothed["lon"] = round(avg_lon, 6)
     logging.debug(
         "EWMA: hex=%s K=%d raw=(%.4f,%.4f) → smooth=(%.4f,%.4f)",
-        adsb_hex, len(positions), r_lat, r_lon, avg_lat, avg_lon,
+        adsb_hex,
+        len(positions),
+        r_lat,
+        r_lon,
+        avg_lat,
+        avg_lon,
     )
     return smoothed
 
@@ -374,7 +377,8 @@ def _multinode_track_key(result: dict, adsb_hex: str | None) -> str:
         # Dead-reckon the existing track forward before measuring, so a fast
         # target is not rejected purely for having moved since its last solve.
         p_lat, p_lon = offset_latlon_m(
-            p_lat, p_lon,
+            p_lat,
+            p_lon,
             east_m=prev.get("vel_east", 0.0) * dt,
             north_m=prev.get("vel_north", 0.0) * dt,
         )
@@ -406,7 +410,7 @@ _SOLVER_MAX_QUEUE_AGE_S = 45.0
 # threads, so ownership is a claim against shared state instead — same rule,
 # different shape.  Entries expire on the same window the map does, so a claim
 # cannot outlive the track it was made for.
-_TRACK_CLAIMS: dict[str, tuple[float, float]] = {}   # track_id → (chi2, claimed_at)
+_TRACK_CLAIMS: dict[str, tuple[float, float]] = {}  # track_id → (chi2, claimed_at)
 _TRACK_CLAIMS_LOCK = threading.Lock()
 _TRACK_CLAIM_TTL_S = 60.0
 
@@ -453,16 +457,14 @@ def _claim_track_pair(s_in: dict, chi2: float) -> bool:
     """
     pairs = s_in.get("track_pair_ids") or []
     if not pairs:
-        return True          # detection-level input: nothing to arbitrate
+        return True  # detection-level input: nothing to arbitrate
     # Note this claims only the first pair of a cluster: format_track_pairs_for_solver
     # truncates track_pair_ids to [:1], so a cluster spanning three tracks leaves
     # the third unclaimed.  s_in["track_ids"] carries the full set if that is
     # ever worth closing — see --claim-policy all-tracks.
     track_ids = [tid for pair in pairs for tid in pair]
     with _TRACK_CLAIMS_LOCK:
-        return claim_decision(
-            _TRACK_CLAIMS, track_ids, chi2, time.time(), _TRACK_CLAIM_TTL_S
-        )
+        return claim_decision(_TRACK_CLAIMS, track_ids, chi2, time.time(), _TRACK_CLAIM_TTL_S)
 
 
 def claim_decision(
@@ -513,6 +515,7 @@ def _resolve_n2_chi2(s_in: dict, node_cfgs) -> float | None:
         return None
     try:
         from retina_geolocator.multinode_solver import fit_constant_velocity
+
         fit = fit_constant_velocity(
             {
                 "initial_guess": s_in.get("initial_guess"),
@@ -575,10 +578,12 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
         rms_delay = result.get("rms_delay", 0) or 0
         if rms_delay > _SOLVER_RMS_DELAY_MAX_US:
             logging.debug(
-                "Solver result rejected: rms_delay=%.1f µs > %.1f µs threshold "
-                "(n_nodes=%d, lat=%.3f, lon=%.3f)",
-                rms_delay, _SOLVER_RMS_DELAY_MAX_US,
-                result.get("n_nodes", 0), result.get("lat", 0), result.get("lon", 0),
+                "Solver result rejected: rms_delay=%.1f µs > %.1f µs threshold (n_nodes=%d, lat=%.3f, lon=%.3f)",
+                rms_delay,
+                _SOLVER_RMS_DELAY_MAX_US,
+                result.get("n_nodes", 0),
+                result.get("lat", 0),
+                result.get("lon", 0),
             )
             state.bump_counter("solver_failures")
             return result
@@ -587,8 +592,11 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             logging.debug(
                 "Solver result rejected: rms_doppler=%.1f Hz > %.1f Hz threshold "
                 "(n_nodes=%d, lat=%.3f, lon=%.3f) — physically unrealisable Doppler",
-                rms_doppler, _SOLVER_RMS_DOPPLER_MAX_HZ,
-                result.get("n_nodes", 0), result.get("lat", 0), result.get("lon", 0),
+                rms_doppler,
+                _SOLVER_RMS_DOPPLER_MAX_HZ,
+                result.get("n_nodes", 0),
+                result.get("lat", 0),
+                result.get("lon", 0),
             )
             state.bump_counter("solver_failures")
             return result
@@ -605,7 +613,9 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                     logging.debug(
                         "Solver result rejected: outside beam of node %s "
                         "(lat=%.3f lon=%.3f beam_az=%.0f beam_w=%.0f range_km=%.0f)",
-                        nid, result["lat"], result["lon"],
+                        nid,
+                        result["lat"],
+                        result["lon"],
                         float(cfg.get("beam_azimuth_deg") or 0),
                         float(cfg.get("beam_width_deg") or 41),
                         float(cfg.get("max_range_km") or 50),
@@ -625,15 +635,20 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             _ig_lon = _ig.get("lon")
             if _ig_lat and _ig_lon:
                 _disp_km = _haversine_km(
-                    float(_ig_lat), float(_ig_lon),
-                    result["lat"], result["lon"],
+                    float(_ig_lat),
+                    float(_ig_lon),
+                    result["lat"],
+                    result["lon"],
                 )
                 if _disp_km > _MAX_DISPLACEMENT_KM:
                     logging.debug(
                         "n=%d result rejected: %.1f km from initial_guess "
                         "(lat=%.3f lon=%.3f) — likely mirror or wrong-frame "
                         "convergence",
-                        n_nodes, _disp_km, result["lat"], result["lon"],
+                        n_nodes,
+                        _disp_km,
+                        result["lat"],
+                        result["lon"],
                     )
                     state.bump_counter("solver_failures")
                     return None
@@ -646,11 +661,12 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
             _chi2 = _resolve_n2_chi2(s_in, node_cfgs)
             if _chi2 is None or _chi2 > _N2_CONFIRM_CHI2_MAX:
                 logging.debug(
-                    "n=2 solve withheld: chi2/dof=%s (limit %.1f, span %s epochs) "
-                    "— lat=%.3f lon=%.3f",
+                    "n=2 solve withheld: chi2/dof=%s (limit %.1f, span %s epochs) — lat=%.3f lon=%.3f",
                     "unfitted" if _chi2 is None else f"{_chi2:.2f}",
-                    _N2_CONFIRM_CHI2_MAX, s_in.get("n_epochs"),
-                    result.get("lat", 0), result.get("lon", 0),
+                    _N2_CONFIRM_CHI2_MAX,
+                    s_in.get("n_epochs"),
+                    result.get("lat", 0),
+                    result.get("lon", 0),
                 )
                 state.bump_counter("n2_unconfirmed")
                 return result
@@ -672,9 +688,9 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
                 state.solver_last_latency_s = latency
                 state.solver_total_latency_s += latency
             if latency > 30.0:
-                logging.warning("Solver latency high: %.1fs for %d-node candidate",
-                                latency, s_in.get("n_nodes", 0))
+                logging.warning("Solver latency high: %.1fs for %d-node candidate", latency, s_in.get("n_nodes", 0))
                 from services.alerting import send_alert
+
                 send_alert(
                     "solver_latency_high",
                     f"Solver latency {latency:.1f}s — pipeline may be falling behind",
@@ -713,7 +729,8 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
         if _cal:
             record_adsb_calibration(
                 result.get("contributing_node_ids", []),
-                _cal.get("lat"), _cal.get("lon"),
+                _cal.get("lat"),
+                _cal.get("lon"),
                 age_s=time.time() - _cal.get("last_seen_ms", 0) / 1000.0,
             )
         with _MN_TRACKS_LOCK:
@@ -731,6 +748,7 @@ def _process_solver_item(item: tuple, solve_fn) -> dict | None:
 def _run_solver_worker():
     """Drain state.solver_queue and run solve_multinode. Runs as a daemon thread."""
     from retina_geolocator.multinode_solver import solve_multinode
+
     while True:
         try:
             item = state.solver_queue.get(timeout=1.0)
@@ -743,7 +761,9 @@ def start_solver_workers():
     """Start N daemon threads that continuously drain the solver queue."""
     for i in range(_N_SOLVER_WORKERS):
         t = threading.Thread(
-            target=_run_solver_worker, daemon=True, name=f"solver-{i}",
+            target=_run_solver_worker,
+            daemon=True,
+            name=f"solver-{i}",
         )
         t.start()
     logging.info("Started %d multinode solver worker(s)", _N_SOLVER_WORKERS)

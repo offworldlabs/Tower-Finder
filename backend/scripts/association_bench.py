@@ -90,9 +90,7 @@ def _frame_to_detections(frame: dict) -> list[dict]:
     """
     adsb_list = frame.get("adsb")
     dets = []
-    for i, (d, f, s) in enumerate(zip(frame.get("delay", []),
-                                      frame.get("doppler", []),
-                                      frame.get("snr", []))):
+    for i, (d, f, s) in enumerate(zip(frame.get("delay", []), frame.get("doppler", []), frame.get("snr", []))):
         det = {"delay": d, "doppler": f, "snr": s}
         if adsb_list and i < len(adsb_list) and adsb_list[i] is not None:
             det["adsb"] = adsb_list[i]
@@ -141,8 +139,7 @@ class DeferredN2Gate:
     time rather than wall-clock since a replay compresses both.
     """
 
-    def __init__(self, chi2_max: float, claim_ttl_s: float = 60.0,
-                 claim_policy: str = "strict"):
+    def __init__(self, chi2_max: float, claim_ttl_s: float = 60.0, claim_policy: str = "strict"):
         self.chi2_max = chi2_max
         self.claim_ttl_s = claim_ttl_s
         # off          — no arbitration; shows what the claim is worth at all
@@ -172,8 +169,7 @@ class DeferredN2Gate:
 
     @staticmethod
     def _pairing_key(s_in: dict) -> tuple:
-        return tuple(sorted(tid for pair in (s_in.get("track_pair_ids") or [])
-                            for tid in pair))
+        return tuple(sorted(tid for pair in (s_in.get("track_pair_ids") or []) for tid in pair))
 
     def _claimed_track_ids(self, s_in: dict) -> list[str]:
         if self.claim_policy == "all-tracks":
@@ -219,8 +215,7 @@ class DeferredN2Gate:
             # the strict policy measures shipped code by construction.  (The
             # bench used to carry a copy; its docstring even cited solver line
             # numbers that had gone stale.)
-            ok = claim_decision(self._claims, list(track_ids), chi2, now_s,
-                                self.claim_ttl_s)
+            ok = claim_decision(self._claims, list(track_ids), chi2, now_s, self.claim_ttl_s)
             if ok:
                 for tid in track_ids:
                     self._pairing_of[tid] = (chi2, now_s, key)
@@ -328,14 +323,25 @@ class Result:
         return self.matched + self.ghosts
 
     _SUM_FIELDS = (
-        "matched", "ghosts", "solver_rejects",
-        "gate_gated", "gate_rejected", "gate_accepted", "gate_unfitted",
+        "matched",
+        "ghosts",
+        "solver_rejects",
+        "gate_gated",
+        "gate_rejected",
+        "gate_accepted",
+        "gate_unfitted",
         "gate_superseded",
-        "n2_withheld_unfitted", "n2_withheld_chi2", "n2_withheld_claimed",
-        "claim_refused_self", "claim_refused_other",
+        "n2_withheld_unfitted",
+        "n2_withheld_chi2",
+        "n2_withheld_claimed",
+        "claim_refused_self",
+        "claim_refused_other",
     )
     _EXTEND_FIELDS = (
-        "errors_km", "ghost_dist_km", "speeds_kt", "speed_err_ms",
+        "errors_km",
+        "ghost_dist_km",
+        "speeds_kt",
+        "speed_err_ms",
         "claim_chi2_drift",
     )
     _COUNTER_FIELDS = ("n_nodes_matched", "n_nodes_ghost", "cluster_sizes")
@@ -372,10 +378,18 @@ class Result:
         return 100.0 * self.ghosts / self.total if self.total else 0.0
 
 
-def build_scene(seed: int, n_nodes: int, n_cluster: int, metro: str,
-                min_aircraft: int, max_aircraft: int, metro_traffic_frac: float,
-                layout: str = "ring", illuminator_band: str = "any",
-                dual_aim: str = "core"):
+def build_scene(
+    seed: int,
+    n_nodes: int,
+    n_cluster: int,
+    metro: str,
+    min_aircraft: int,
+    max_aircraft: int,
+    metro_traffic_frac: float,
+    layout: str = "ring",
+    illuminator_band: str = "any",
+    dual_aim: str = "core",
+):
     """Fleet + world, wired exactly as FleetOrchestrator._build_world does.
 
     The hub-radial routing is not a detail.  With metro_cells set,
@@ -387,33 +401,48 @@ def build_scene(seed: int, n_nodes: int, n_cluster: int, metro: str,
     that single omission removes the mechanism under study.
     """
     fleet = generate_fleet(
-        n_nodes=n_nodes, metro=metro, n_cluster=n_cluster, n_clusters=1,
-        use_tower_api=False, seed=seed,
-        layout=layout, illuminator_band=illuminator_band,
+        n_nodes=n_nodes,
+        metro=metro,
+        n_cluster=n_cluster,
+        n_clusters=1,
+        use_tower_api=False,
+        seed=seed,
+        layout=layout,
+        illuminator_band=illuminator_band,
         dual_aim=dual_aim,
     )
     cells = coverage_cells(
-        n_cluster=n_cluster, n_clusters=1, metro=metro,
+        n_cluster=n_cluster,
+        n_clusters=1,
+        metro=metro,
     )
     center_lat = sum(c["rx_lat"] for c in fleet) / len(fleet)
     center_lon = sum(c["rx_lon"] for c in fleet) / len(fleet)
     world = SimulationWorld(
-        center_lat=center_lat, center_lon=center_lon,
+        center_lat=center_lat,
+        center_lon=center_lon,
         waypoints=waypoints_for_metro(metro),
     )
     world.metro_cells = _cells_to_metrocells(cells)
     world.frac_metro_traffic = metro_traffic_frac
     for nd in fleet:
-        world.add_node(NodeConfig(
-            node_id=nd["node_id"],
-            rx_lat=nd["rx_lat"], rx_lon=nd["rx_lon"], rx_alt_ft=nd["rx_alt_ft"],
-            tx_lat=nd["tx_lat"], tx_lon=nd["tx_lon"], tx_alt_ft=nd["tx_alt_ft"],
-            fc_hz=nd["fc_hz"], fs_hz=nd["fs_hz"],
-            beam_azimuth_deg=nd.get("beam_azimuth_deg"),
-            beam_width_deg=nd["beam_width_deg"],
-            max_range_km=nd["max_range_km"],
-            max_bistatic_range_km=nd.get("max_bistatic_range_km"),
-        ))
+        world.add_node(
+            NodeConfig(
+                node_id=nd["node_id"],
+                rx_lat=nd["rx_lat"],
+                rx_lon=nd["rx_lon"],
+                rx_alt_ft=nd["rx_alt_ft"],
+                tx_lat=nd["tx_lat"],
+                tx_lon=nd["tx_lon"],
+                tx_alt_ft=nd["tx_alt_ft"],
+                fc_hz=nd["fc_hz"],
+                fs_hz=nd["fs_hz"],
+                beam_azimuth_deg=nd.get("beam_azimuth_deg"),
+                beam_width_deg=nd["beam_width_deg"],
+                max_range_km=nd["max_range_km"],
+                max_bistatic_range_km=nd.get("max_bistatic_range_km"),
+            )
+        )
     # Traffic density is the independent variable the ghost rate scales with:
     # a false pairing needs two aircraft inside one overlap zone.
     world.min_aircraft = min_aircraft
@@ -421,19 +450,46 @@ def build_scene(seed: int, n_nodes: int, n_cluster: int, metro: str,
     return fleet, world
 
 
-def run(seed, seconds, dt, frame_interval, assoc_interval,
-        n_nodes, n_cluster, metro, min_aircraft, max_aircraft,
-        metro_traffic_frac, layout="ring", illuminator_band="any",
-        dual_aim="core", blind=True, mode="detection",
-        chi2_max=2.0, min_span_s=12.0, history_n=20, exclusive=True,
-        cv_fit_mode="inline", claim_policy="strict",
-        claim_ttl_s=60.0) -> Result:
+def run(
+    seed,
+    seconds,
+    dt,
+    frame_interval,
+    assoc_interval,
+    n_nodes,
+    n_cluster,
+    metro,
+    min_aircraft,
+    max_aircraft,
+    metro_traffic_frac,
+    layout="ring",
+    illuminator_band="any",
+    dual_aim="core",
+    blind=True,
+    mode="detection",
+    chi2_max=2.0,
+    min_span_s=12.0,
+    history_n=20,
+    exclusive=True,
+    cv_fit_mode="inline",
+    claim_policy="strict",
+    claim_ttl_s=60.0,
+) -> Result:
     import random
 
     random.seed(seed)
-    fleet, world = build_scene(seed, n_nodes, n_cluster, metro,
-                               min_aircraft, max_aircraft, metro_traffic_frac,
-                               layout, illuminator_band, dual_aim)
+    fleet, world = build_scene(
+        seed,
+        n_nodes,
+        n_cluster,
+        metro,
+        min_aircraft,
+        max_aircraft,
+        metro_traffic_frac,
+        layout,
+        illuminator_band,
+        dual_aim,
+    )
     node_cfgs = {nd["node_id"]: nd for nd in fleet}
 
     # "inline" fits inside the associator, which is what the bench has always
@@ -441,18 +497,15 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
     # production runs (core/state.py:56 passes cv_fit=None): the associator
     # emits unscored pairings and the solver worker fits and arbitrates.  The
     # two are different code paths, so they need separate baselines.
-    deferred = (mode == "track" and cv_fit_mode == "deferred")
+    deferred = mode == "track" and cv_fit_mode == "deferred"
     assoc = DetectionAssociator(
         grid_step_km=3.0,
-        cv_fit=(fit_constant_velocity
-                if (mode == "track" and not deferred) else None),
+        cv_fit=(fit_constant_velocity if (mode == "track" and not deferred) else None),
         cv_chi2_max=chi2_max,
         cv_min_span_s=min_span_s,
         cv_exclusive=exclusive,
     )
-    n2_gate = (DeferredN2Gate(chi2_max, claim_ttl_s=claim_ttl_s,
-                              claim_policy=claim_policy)
-               if deferred else None)
+    n2_gate = DeferredN2Gate(chi2_max, claim_ttl_s=claim_ttl_s, claim_policy=claim_policy) if deferred else None
     # One tracker per node, driven by every frame — mirrors
     # frame_processor.py:476-477.  The bench previously fed raw detections
     # straight to the associator, skipping the stage production runs first, so
@@ -498,8 +551,7 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
             continue
         # Carry the object id so a real target keeps one identity across
         # solves — keying on a position would mint a new track per epoch.
-        truth = [(ac.lat, ac.lon, ac.object_id, ac.speed_km_s * 1000.0)
-                 for ac in world.aircraft]
+        truth = [(ac.lat, ac.lon, ac.object_id, ac.speed_km_s * 1000.0) for ac in world.aircraft]
         for nid in due_nodes:
             next_send[nid] += frame_interval
             frame = world.generate_detections_for_node(nid, ts_ms)
@@ -520,13 +572,11 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                 continue
             last_assoc[nid] = t
             if mode == "track":
-                pairs = assoc.submit_tracks(
-                    nid, assoc._pending_tracks.get(nid, []), ts_ms)
+                pairs = assoc.submit_tracks(nid, assoc._pending_tracks.get(nid, []), ts_ms)
                 solver_inputs = assoc.format_track_pairs_for_solver(pairs)
             else:
                 cands = assoc.submit_frame(nid, frame, ts_ms)
-                solver_inputs = (assoc.format_candidates_for_solver(cands)
-                                 if cands else [])
+                solver_inputs = assoc.format_candidates_for_solver(cands) if cands else []
             for s_in in solver_inputs:
                 # Split by n_nodes: the claim only arbitrates n=2 solves
                 # (solver.py gates on n_nodes == 2), so cluster width only
@@ -558,9 +608,9 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                         res.n2_withheld_claimed += 1
                         continue
                 d, best_id, best_speed = min(
-                    ((_haversine_km(out["lat"], out["lon"], a, b), oid, sp)
-                     for a, b, oid, sp in truth),
-                    default=(float("inf"), None, 0.0))
+                    ((_haversine_km(out["lat"], out["lon"], a, b), oid, sp) for a, b, oid, sp in truth),
+                    default=(float("inf"), None, 0.0),
+                )
                 nn = out.get("n_nodes", s_in.get("n_nodes", 0))
                 speed = math.hypot(out.get("vel_east", 0.0), out.get("vel_north", 0.0))
                 res.speeds_kt.append(speed * 1.94384)
@@ -593,9 +643,9 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
                     # track, otherwise a new id is minted.
                     hit = None
                     for gk, (glat, glon, gts) in res._ghost_tracks.items():
-                        if (t - gts) <= GHOST_ASSOC_MAX_AGE_S and \
-                                _haversine_km(out["lat"], out["lon"], glat, glon) \
-                                <= GHOST_ASSOC_MAX_DIST_KM:
+                        if (t - gts) <= GHOST_ASSOC_MAX_AGE_S and _haversine_km(
+                            out["lat"], out["lon"], glat, glon
+                        ) <= GHOST_ASSOC_MAX_DIST_KM:
                             hit = gk
                             break
                     if hit is None:
@@ -618,54 +668,73 @@ def run(seed, seconds, dt, frame_interval, assoc_interval,
 
 def report(label: str, r: Result, truth_max_kt: float | None = None):
     print(f"\n=== {label} ===")
-    print(f"  solves {r.total:>5}   matched {r.matched:>5}   ghosts {r.ghosts:>5}"
-          f"   -> {r.ghost_pct:>5.1f}% ghosts (by solve)")
-    print(f"  tracks: real {len(r.matched_tracks):>3}   false {len(r.ghost_tracks):>3}"
-          f"   -> {r.track_ghost_pct:>5.1f}% ghosts (by track — comparable to staging)")
+    print(
+        f"  solves {r.total:>5}   matched {r.matched:>5}   ghosts {r.ghosts:>5}"
+        f"   -> {r.ghost_pct:>5.1f}% ghosts (by solve)"
+    )
+    print(
+        f"  tracks: real {len(r.matched_tracks):>3}   false {len(r.ghost_tracks):>3}"
+        f"   -> {r.track_ghost_pct:>5.1f}% ghosts (by track — comparable to staging)"
+    )
     _g2, _m2 = r.n2_only(r.ghost_tracks), r.n2_only(r.matched_tracks)
-    print(f"  n=2-only tracks: real {_m2:>3}   false {_g2:>3}"
-          f"   -> {r.track_ghost_pct_n2:>5.1f}% ghosts (the population under study)")
+    print(
+        f"  n=2-only tracks: real {_m2:>3}   false {_g2:>3}"
+        f"   -> {r.track_ghost_pct_n2:>5.1f}% ghosts (the population under study)"
+    )
     if r.errors_km:
         e = sorted(r.errors_km)
-        print(f"  matched position error: median {statistics.median(e):.2f} km"
-              f"  p90 {e[int(0.9 * (len(e) - 1))]:.2f}  max {max(e):.2f}")
+        print(
+            f"  matched position error: median {statistics.median(e):.2f} km"
+            f"  p90 {e[int(0.9 * (len(e) - 1))]:.2f}  max {max(e):.2f}"
+        )
     if r.ghost_dist_km:
         g = sorted(r.ghost_dist_km)
-        print(f"  ghost distance to nearest aircraft: median {statistics.median(g):.1f} km"
-              f"  max {max(g):.1f}")
+        print(f"  ghost distance to nearest aircraft: median {statistics.median(g):.1f} km  max {max(g):.1f}")
     print(f"  matched n_nodes {dict(sorted(r.n_nodes_matched.items()))}")
     print(f"  ghost   n_nodes {dict(sorted(r.n_nodes_ghost.items()))}")
     if r.err_by_n:
         print("  position error by contributing-node count:")
         for nn in sorted(r.err_by_n):
             v = sorted(r.err_by_n[nn])
-            print(f"      n={nn}: {len(v):>4} solves   median {statistics.median(v):5.2f} km"
-                  f"   p90 {v[int(0.9 * (len(v) - 1))]:5.2f}")
+            print(
+                f"      n={nn}: {len(v):>4} solves   median {statistics.median(v):5.2f} km"
+                f"   p90 {v[int(0.9 * (len(v) - 1))]:5.2f}"
+            )
     if r.speed_err_ms:
         e = sorted(r.speed_err_ms)
-        print(f"  matched SPEED error: median {statistics.median(e):6.1f} m/s"
-              f"  p90 {e[int(0.9 * (len(e) - 1))]:6.1f}  max {max(e):6.1f}")
+        print(
+            f"  matched SPEED error: median {statistics.median(e):6.1f} m/s"
+            f"  p90 {e[int(0.9 * (len(e) - 1))]:6.1f}  max {max(e):6.1f}"
+        )
     if r.speeds_kt and truth_max_kt:
         over = sum(1 for s in r.speeds_kt if s > truth_max_kt)
-        print(f"  solves faster than any real aircraft ({truth_max_kt:.0f} kt): "
-              f"{over} ({100 * over / len(r.speeds_kt):.0f}%)")
+        print(
+            f"  solves faster than any real aircraft ({truth_max_kt:.0f} kt): "
+            f"{over} ({100 * over / len(r.speeds_kt):.0f}%)"
+        )
     if r.gate_gated:
-        print(f"  CV gate: {r.gate_gated} pairings past the delay grid  "
-              f"-> {r.gate_accepted} fitted+kept, {r.gate_rejected} rejected on χ², "
-              f"{r.gate_superseded} superseded by a better fit, "
-              f"{r.gate_unfitted} not yet fittable")
+        print(
+            f"  CV gate: {r.gate_gated} pairings past the delay grid  "
+            f"-> {r.gate_accepted} fitted+kept, {r.gate_rejected} rejected on χ², "
+            f"{r.gate_superseded} superseded by a better fit, "
+            f"{r.gate_unfitted} not yet fittable"
+        )
     _n2w = r.n2_withheld_unfitted + r.n2_withheld_chi2 + r.n2_withheld_claimed
     if _n2w:
-        print(f"  solver n=2 gate: {_n2w} solves withheld  "
-              f"-> {r.n2_withheld_unfitted} unfitted, "
-              f"{r.n2_withheld_chi2} over χ², "
-              f"{r.n2_withheld_claimed} outbid on a track claim")
+        print(
+            f"  solver n=2 gate: {_n2w} solves withheld  "
+            f"-> {r.n2_withheld_unfitted} unfitted, "
+            f"{r.n2_withheld_chi2} over χ², "
+            f"{r.n2_withheld_claimed} outbid on a track claim"
+        )
         if r.n2_withheld_claimed:
             _drift = sorted(r.claim_chi2_drift)
-            _med = _drift[len(_drift)//2] if _drift else 0.0
-            print(f"    claim refusals: {r.claim_refused_self} by the pairing's "
-                  f"OWN earlier claim, {r.claim_refused_other} by a competitor"
-                  + (f"  (median chi2 drift +{_med:.3f})" if _drift else ""))
+            _med = _drift[len(_drift) // 2] if _drift else 0.0
+            print(
+                f"    claim refusals: {r.claim_refused_self} by the pairing's "
+                f"OWN earlier claim, {r.claim_refused_other} by a competitor"
+                + (f"  (median chi2 drift +{_med:.3f})" if _drift else "")
+            )
     if r.cluster_sizes:
         _tot = sum(r.cluster_sizes.values())
         for grp in ("n2", "n3+"):
@@ -674,127 +743,166 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
                 continue
             tot = sum(sizes.values())
             wide = sum(n for k, n in sizes.items() if k > 2)
-            note = ("arbitrated by the claim" if grp == "n2"
-                    else "never reaches the claim — solver gates it on n_nodes==2")
-            print(f"  cluster sizes {grp:4s} {dict(sorted(sizes.items()))}  "
-                  f"-> {100 * wide / max(tot, 1):.1f}% span >2 tracks  ({note})")
+            note = (
+                "arbitrated by the claim" if grp == "n2" else "never reaches the claim — solver gates it on n_nodes==2"
+            )
+            print(
+                f"  cluster sizes {grp:4s} {dict(sorted(sizes.items()))}  "
+                f"-> {100 * wide / max(tot, 1):.1f}% span >2 tracks  ({note})"
+            )
     print(f"  solver rejects/failures: {r.solver_rejects}")
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--seconds", type=float, default=180.0,
-                   help="simulated seconds per run")
+    p.add_argument("--seconds", type=float, default=180.0, help="simulated seconds per run")
     p.add_argument("--dt", type=float, default=1.0, help="world step (s)")
-    p.add_argument("--frame-interval", type=float, default=2.0,
-                   help="node frame cadence (s) — matches FLEET_INTERVAL")
-    p.add_argument("--assoc-interval", type=float, nargs="+", default=[2.0],
-                   help="per-node association rate limit(s) to compare")
+    p.add_argument("--frame-interval", type=float, default=2.0, help="node frame cadence (s) — matches FLEET_INTERVAL")
+    p.add_argument(
+        "--assoc-interval", type=float, nargs="+", default=[2.0], help="per-node association rate limit(s) to compare"
+    )
     p.add_argument("--nodes", type=int, default=15)
     p.add_argument("--n-cluster", type=int, default=10)
     p.add_argument("--metro", default="gvl")
     p.add_argument("--layout", choices=("ring", "dual", "scatter"), default="ring")
     p.add_argument("--illuminator-band", choices=("any", "vhf"), default="any")
     p.add_argument("--dual-aim", choices=("core", "random"), default="core")
-    p.add_argument("--tagged", dest="blind", action="store_false", default=True,
-                   help="feed the per-detection ADS-B tags to association "
-                        "(reproduces pre-blind numbers; see _strip_adsb)")
-    p.add_argument("--mode", choices=("detection", "track"), default="detection",
-                   help="pair raw detections (as shipped) or confirmed "
-                        "single-node tracks with a constant-velocity fit")
-    p.add_argument("--chi2-max", type=float, nargs="+", default=[2.0],
-                   help="track mode: chi2/dof ceiling(s) to sweep")
-    p.add_argument("--min-span-s", type=float, default=12.0,
-                   help="track mode: observation span before a pairing is fitted")
-    p.add_argument("--history-n", type=int, default=20,
-                   help="track mode: samples of per-node track history to fit")
-    p.add_argument("--cv-fit", dest="cv_fit_mode", choices=("inline", "deferred"),
-                   default="inline",
-                   help="track mode: where the constant-velocity fit runs. "
-                        "'inline' fits inside the associator — what every "
-                        "published bench figure was measured on. 'deferred' is "
-                        "what production runs: the associator emits unscored "
-                        "pairings and the solver fits and arbitrates them.")
-    p.add_argument("--claim-policy", choices=("off", "strict", "self-refresh", "all-tracks"),
-                   default="strict",
-                   help="deferred mode: how the solver-side track claim "
-                        "arbitrates. off disables it (what is it worth?); "
-                        "strict is production; self-refresh lets a pairing "
-                        "renew its own claim as its chi2 drifts.")
-    p.add_argument("--claim-ttl-s", type=float, default=60.0,
-                   help="deferred mode: how long a track claim is held")
-    p.add_argument("--no-select", dest="exclusive", action="store_false",
-                   default=True,
-                   help="track mode: disable one-to-one hypothesis selection "
-                        "(each pairing then answers only to the chi2 threshold)")
-    p.add_argument("--min-aircraft", type=int, default=10,
-                   help="matches FLEET_AIRCRAFT lower bound")
+    p.add_argument(
+        "--tagged",
+        dest="blind",
+        action="store_false",
+        default=True,
+        help="feed the per-detection ADS-B tags to association (reproduces pre-blind numbers; see _strip_adsb)",
+    )
+    p.add_argument(
+        "--mode",
+        choices=("detection", "track"),
+        default="detection",
+        help="pair raw detections (as shipped) or confirmed single-node tracks with a constant-velocity fit",
+    )
+    p.add_argument("--chi2-max", type=float, nargs="+", default=[2.0], help="track mode: chi2/dof ceiling(s) to sweep")
+    p.add_argument(
+        "--min-span-s", type=float, default=12.0, help="track mode: observation span before a pairing is fitted"
+    )
+    p.add_argument("--history-n", type=int, default=20, help="track mode: samples of per-node track history to fit")
+    p.add_argument(
+        "--cv-fit",
+        dest="cv_fit_mode",
+        choices=("inline", "deferred"),
+        default="inline",
+        help="track mode: where the constant-velocity fit runs. "
+        "'inline' fits inside the associator — what every "
+        "published bench figure was measured on. 'deferred' is "
+        "what production runs: the associator emits unscored "
+        "pairings and the solver fits and arbitrates them.",
+    )
+    p.add_argument(
+        "--claim-policy",
+        choices=("off", "strict", "self-refresh", "all-tracks"),
+        default="strict",
+        help="deferred mode: how the solver-side track claim "
+        "arbitrates. off disables it (what is it worth?); "
+        "strict is production; self-refresh lets a pairing "
+        "renew its own claim as its chi2 drifts.",
+    )
+    p.add_argument("--claim-ttl-s", type=float, default=60.0, help="deferred mode: how long a track claim is held")
+    p.add_argument(
+        "--no-select",
+        dest="exclusive",
+        action="store_false",
+        default=True,
+        help="track mode: disable one-to-one hypothesis selection "
+        "(each pairing then answers only to the chi2 threshold)",
+    )
+    p.add_argument("--min-aircraft", type=int, default=10, help="matches FLEET_AIRCRAFT lower bound")
     p.add_argument("--max-aircraft", type=int, default=20)
-    p.add_argument("--metro-traffic-frac", type=float, default=0.85,
-                   help="matches FLEET_METRO_TRAFFIC_FRAC")
-    p.add_argument("--repeat", type=int, default=1,
-                   help="repeat each config with different seeds and report the spread")
+    p.add_argument("--metro-traffic-frac", type=float, default=0.85, help="matches FLEET_METRO_TRAFFIC_FRAC")
+    p.add_argument(
+        "--repeat", type=int, default=1, help="repeat each config with different seeds and report the spread"
+    )
     args = p.parse_args()
 
-    print(f"scene: metro={args.metro} layout={args.layout}/{args.illuminator_band} "
-          f"nodes={args.nodes} budget={args.n_cluster} "
-          f"{args.seconds:.0f}s @ {args.frame_interval:.0f}s frames, seed {args.seed}, "
-          f"{'BLIND' if args.blind else 'ADS-B-tagged'}, mode={args.mode}"
-          + (f", span>={args.min_span_s:.0f}s, cv-fit={args.cv_fit_mode}"
-             if args.mode == "track" else ""))
+    print(
+        f"scene: metro={args.metro} layout={args.layout}/{args.illuminator_band} "
+        f"nodes={args.nodes} budget={args.n_cluster} "
+        f"{args.seconds:.0f}s @ {args.frame_interval:.0f}s frames, seed {args.seed}, "
+        f"{'BLIND' if args.blind else 'ADS-B-tagged'}, mode={args.mode}"
+        + (f", span>={args.min_span_s:.0f}s, cv-fit={args.cv_fit_mode}" if args.mode == "track" else "")
+    )
 
     # chi2 only means anything in track mode; keep one pass otherwise.
     chi2_values = args.chi2_max if args.mode == "track" else [None]
     for interval in args.assoc_interval:
-      for chi2_max in chi2_values:
-        rates, solve_rates, reals, fakes, speed_errs = [], [], [], [], []
-        n2_rates = []
-        agg = Result()
-        last = None
-        for k in range(args.repeat):
-            last = run(args.seed + k, args.seconds, args.dt, args.frame_interval,
-                       interval, args.nodes, args.n_cluster, args.metro,
-                       args.min_aircraft, args.max_aircraft,
-                       args.metro_traffic_frac, args.layout,
-                       args.illuminator_band, args.dual_aim, args.blind,
-                       args.mode, chi2_max if chi2_max is not None else 2.0,
-                       args.min_span_s, args.history_n, args.exclusive,
-                       args.cv_fit_mode, args.claim_policy, args.claim_ttl_s)
-            agg.merge(last, tag=f"s{args.seed + k}")
-            # Track-level is the comparable metric — solve-level and
-            # track-level differ by ~20x on the same data, so mixing them is
-            # how two staging conclusions went wrong.
-            rates.append(last.track_ghost_pct)
-            n2_rates.append(last.track_ghost_pct_n2)
-            solve_rates.append(last.ghost_pct)
-            reals.append(len(last.matched_tracks))
-            fakes.append(len(last.ghost_tracks))
-            if last.speed_err_ms:
-                speed_errs.append(statistics.median(last.speed_err_ms))
-        label = f"assoc_interval={interval:g}s"
-        if chi2_max is not None:
-            label += f"  chi2/dof<={chi2_max:g}"
-        if args.repeat > 1:
-            label += f"  (pooled over {args.repeat} seeds)"
-        report(label, agg if args.repeat > 1 else last)
-        if args.repeat > 1:
-            mean = statistics.mean(rates)
-            sd = statistics.pstdev(rates)
-            print(f"  across {args.repeat} seeds (by track): "
-                  f"{', '.join(f'{x:.0f}%' for x in rates)}")
-            print(f"    mean {mean:.0f}%   sd {sd:.0f}   "
-                  f"range {min(rates):.0f}-{max(rates):.0f}%   "
-                  f"real {min(reals)}-{max(reals)}  false {min(fakes)}-{max(fakes)}")
-            print(f"    n=2-only tracks: mean {statistics.mean(n2_rates):.0f}%   "
-                  f"sd {statistics.pstdev(n2_rates):.0f}   "
-                  f"({', '.join(f'{x:.0f}%' for x in n2_rates)})")
-            print(f"    by solve: {', '.join(f'{x:.1f}%' for x in solve_rates)}")
-            if speed_errs:
-                print(f"    median speed error per seed: "
-                      f"{', '.join(f'{x:.0f}' for x in speed_errs)} m/s"
-                      f"   mean {statistics.mean(speed_errs):.0f}")
+        for chi2_max in chi2_values:
+            rates, solve_rates, reals, fakes, speed_errs = [], [], [], [], []
+            n2_rates = []
+            agg = Result()
+            last = None
+            for k in range(args.repeat):
+                last = run(
+                    args.seed + k,
+                    args.seconds,
+                    args.dt,
+                    args.frame_interval,
+                    interval,
+                    args.nodes,
+                    args.n_cluster,
+                    args.metro,
+                    args.min_aircraft,
+                    args.max_aircraft,
+                    args.metro_traffic_frac,
+                    args.layout,
+                    args.illuminator_band,
+                    args.dual_aim,
+                    args.blind,
+                    args.mode,
+                    chi2_max if chi2_max is not None else 2.0,
+                    args.min_span_s,
+                    args.history_n,
+                    args.exclusive,
+                    args.cv_fit_mode,
+                    args.claim_policy,
+                    args.claim_ttl_s,
+                )
+                agg.merge(last, tag=f"s{args.seed + k}")
+                # Track-level is the comparable metric — solve-level and
+                # track-level differ by ~20x on the same data, so mixing them is
+                # how two staging conclusions went wrong.
+                rates.append(last.track_ghost_pct)
+                n2_rates.append(last.track_ghost_pct_n2)
+                solve_rates.append(last.ghost_pct)
+                reals.append(len(last.matched_tracks))
+                fakes.append(len(last.ghost_tracks))
+                if last.speed_err_ms:
+                    speed_errs.append(statistics.median(last.speed_err_ms))
+            label = f"assoc_interval={interval:g}s"
+            if chi2_max is not None:
+                label += f"  chi2/dof<={chi2_max:g}"
+            if args.repeat > 1:
+                label += f"  (pooled over {args.repeat} seeds)"
+            report(label, agg if args.repeat > 1 else last)
+            if args.repeat > 1:
+                mean = statistics.mean(rates)
+                sd = statistics.pstdev(rates)
+                print(f"  across {args.repeat} seeds (by track): {', '.join(f'{x:.0f}%' for x in rates)}")
+                print(
+                    f"    mean {mean:.0f}%   sd {sd:.0f}   "
+                    f"range {min(rates):.0f}-{max(rates):.0f}%   "
+                    f"real {min(reals)}-{max(reals)}  false {min(fakes)}-{max(fakes)}"
+                )
+                print(
+                    f"    n=2-only tracks: mean {statistics.mean(n2_rates):.0f}%   "
+                    f"sd {statistics.pstdev(n2_rates):.0f}   "
+                    f"({', '.join(f'{x:.0f}%' for x in n2_rates)})"
+                )
+                print(f"    by solve: {', '.join(f'{x:.1f}%' for x in solve_rates)}")
+                if speed_errs:
+                    print(
+                        f"    median speed error per seed: "
+                        f"{', '.join(f'{x:.0f}' for x in speed_errs)} m/s"
+                        f"   mean {statistics.mean(speed_errs):.0f}"
+                    )
 
 
 if __name__ == "__main__":

@@ -32,8 +32,7 @@ def _target_exists(key: str) -> bool:
     return r2_client.download_bytes(key) is not None
 
 
-def run(prefix: str = "archive/", limit: int | None = None,
-        dry_run: bool = False, force: bool = False) -> dict:
+def run(prefix: str = "archive/", limit: int | None = None, dry_run: bool = False, force: bool = False) -> dict:
     if not r2_client.is_enabled():
         logger.error("R2 is not configured; aborting.")
         return {"error": "r2_disabled"}
@@ -60,7 +59,8 @@ def run(prefix: str = "archive/", limit: int | None = None,
                 logger.info("DRY: %s -> %s (%d bytes)", src_key, target_key, len(parquet_bytes))
             else:
                 ok = r2_client.upload_bytes(
-                    target_key, parquet_bytes,
+                    target_key,
+                    parquet_bytes,
                     content_type="application/octet-stream",
                 )
                 if not ok:
@@ -86,8 +86,7 @@ def main():
     p.add_argument("--force", action="store_true")
     args = p.parse_args()
 
-    stats = run(prefix=args.prefix, limit=args.limit,
-                dry_run=args.dry_run, force=args.force)
+    stats = run(prefix=args.prefix, limit=args.limit, dry_run=args.dry_run, force=args.force)
     if stats.get("error"):
         sys.exit(2)
 

@@ -56,8 +56,10 @@ class TestSendAlert:
         monkeypatch.setattr(_alerting, "WEBHOOK_URL", "http://test-hook/alert")
         mock_client = _make_mock_client()
 
-        with patch("services.alerting.httpx.Client", return_value=mock_client), \
-             patch("services.alerting.threading.Thread", side_effect=_make_sync_thread):
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
+        ):
             send_alert("test", "msg")
 
         mock_client.post.assert_called_once()
@@ -68,8 +70,10 @@ class TestSendAlert:
         monkeypatch.setattr(_alerting, "COOLDOWN_S", 3600.0)
         mock_client = _make_mock_client()
 
-        with patch("services.alerting.httpx.Client", return_value=mock_client), \
-             patch("services.alerting.threading.Thread", side_effect=_make_sync_thread):
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
+        ):
             send_alert("dup", "first")
             send_alert("dup", "second")
 
@@ -81,8 +85,10 @@ class TestSendAlert:
         monkeypatch.setattr(_alerting, "COOLDOWN_S", 3600.0)
         mock_client = _make_mock_client()
 
-        with patch("services.alerting.httpx.Client", return_value=mock_client), \
-             patch("services.alerting.threading.Thread", side_effect=_make_sync_thread):
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
+        ):
             send_alert("type_a", "msg")
             send_alert("type_b", "msg")
 
@@ -93,8 +99,10 @@ class TestSendAlert:
         monkeypatch.setattr(_alerting, "WEBHOOK_URL", "http://test-hook/alert")
         mock_client = _make_mock_client(raise_exc=Exception("network error"))
 
-        with patch("services.alerting.httpx.Client", return_value=mock_client), \
-             patch("services.alerting.threading.Thread", side_effect=_make_sync_thread):
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
+        ):
             send_alert("err", "msg")  # must not raise
 
     def test_webhook_4xx_response_does_not_raise(self, monkeypatch):
@@ -102,8 +110,10 @@ class TestSendAlert:
         monkeypatch.setattr(_alerting, "WEBHOOK_URL", "http://test-hook/alert")
         mock_client = _make_mock_client(status_code=400)
 
-        with patch("services.alerting.httpx.Client", return_value=mock_client), \
-             patch("services.alerting.threading.Thread", side_effect=_make_sync_thread):
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
+        ):
             send_alert("4xx", "msg")  # must not raise
 
     def test_is_enabled_true_when_url_set(self, monkeypatch):

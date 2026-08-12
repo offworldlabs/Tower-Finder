@@ -32,9 +32,7 @@ async def close_http_clients() -> None:
             pass
         _opensky_client = None
     if _adsb_lol_client is not None:
-        closer = getattr(_adsb_lol_client, "aclose", None) or getattr(
-            _adsb_lol_client, "close", None
-        )
+        closer = getattr(_adsb_lol_client, "aclose", None) or getattr(_adsb_lol_client, "close", None)
         if closer is not None:
             try:
                 res = closer()
@@ -79,7 +77,8 @@ async def reputation_evaluator():
         await asyncio.sleep(REPUTATION_INTERVAL_S)
         try:
             await loop.run_in_executor(
-                None, state.node_analytics.evaluate_reputations,
+                None,
+                state.node_analytics.evaluate_reputations,
             )
             state.task_last_success["reputation_evaluator"] = time.time()
         except Exception:
@@ -114,9 +113,7 @@ async def prune_synthetic_nodes():
                     # disconnect timestamp existed (or restored from an old
                     # snapshot) have no disconnected_ts; fall back to
                     # first_seen_ts so they still age out eventually.
-                    disconnected_at = info.get("disconnected_ts") or info.get(
-                        "first_seen_ts", now
-                    )
+                    disconnected_at = info.get("disconnected_ts") or info.get("first_seen_ts", now)
                     if now - disconnected_at > MAX_AGE_DISCONNECTED_S:
                         to_remove.append(node_id)
                         pruned.append(node_id)
@@ -154,7 +151,8 @@ async def _fetch_external_adsb() -> bool:
     Returns True if OpenSky was rate-limited (HTTP 429), False otherwise.
     """
     active_nodes = [
-        info for info in list(state.connected_nodes.values())
+        info
+        for info in list(state.connected_nodes.values())
         if info.get("status") != "disconnected" and info.get("config")
     ]
     if not active_nodes:
@@ -184,10 +182,15 @@ async def _fetch_external_adsb() -> bool:
     if _opensky_client is None or _opensky_client.is_closed:
         _opensky_client = httpx.AsyncClient(timeout=15.0)
     try:
-        resp = await _opensky_client.get(url, params={
-            "lamin": lamin, "lamax": lamax,
-            "lomin": lomin, "lomax": lomax,
-        })
+        resp = await _opensky_client.get(
+            url,
+            params={
+                "lamin": lamin,
+                "lamax": lamax,
+                "lomin": lomin,
+                "lomax": lomax,
+            },
+        )
         if resp.status_code == 429:
             logging.debug("OpenSky rate-limited (429) — trying adsb.lol fallback")
             rate_limited = True
@@ -246,6 +249,7 @@ async def _fetch_adsb_lol(lat: float, lon: float) -> dict:
     Returns {hex: {lat, lon, alt_m, velocity, heading}} matching external_adsb_cache format.
     """
     from clients.adsb_lol import AdsbLolClient
+
     global _adsb_lol_client
     loop = asyncio.get_running_loop()
     area = {"name": "auto", "lat": lat, "lon": lon, "radius_nm": 200}
@@ -285,17 +289,17 @@ def _cross_validate_adsb_reports():
             ext = state.external_adsb_cache.get(sample.adsb_hex.lower())
             if ext is None:
                 continue
-            dist_km = haversine_km(sample.adsb_lat, sample.adsb_lon,
-                                   ext["lat"], ext["lon"])
+            dist_km = haversine_km(sample.adsb_lat, sample.adsb_lon, ext["lat"], ext["lon"])
             if dist_km > 10.0:
                 rep = state.node_analytics.reputations.get(node_id)
                 if rep:
                     rep.apply_penalty(
                         0.1,
-                        f"ADS-B position mismatch: {sample.adsb_hex} "
-                        f"reported {dist_km:.1f}km from external truth",
+                        f"ADS-B position mismatch: {sample.adsb_hex} reported {dist_km:.1f}km from external truth",
                     )
                     logging.warning(
                         "Node %s ADS-B mismatch for %s: %.1f km off",
-                        node_id, sample.adsb_hex, dist_km,
+                        node_id,
+                        sample.adsb_hex,
+                        dist_km,
                     )

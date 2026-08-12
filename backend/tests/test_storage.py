@@ -15,7 +15,8 @@ class TestArchiveStorage:
         yield
         archive_dir = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
-            "coverage_data", "archive",
+            "coverage_data",
+            "archive",
         )
         if os.path.exists(archive_dir):
             for child in os.listdir(archive_dir):
@@ -24,16 +25,22 @@ class TestArchiveStorage:
                     shutil.rmtree(p)
 
     def test_archive_returns_key(self):
-        key = archive_detections("test-storage-node", [
-            {"delay": [10.0], "doppler": [50.0], "snr": [12.0], "timestamp": 1000},
-        ])
+        key = archive_detections(
+            "test-storage-node",
+            [
+                {"delay": [10.0], "doppler": [50.0], "snr": [12.0], "timestamp": 1000},
+            ],
+        )
         assert isinstance(key, str) and "/" in key
         assert "test-storage-node" in key
 
     def test_list_finds_archived(self):
-        archive_detections("test-storage-node", [
-            {"delay": [10.0], "doppler": [50.0], "snr": [12.0], "timestamp": 1000},
-        ])
+        archive_detections(
+            "test-storage-node",
+            [
+                {"delay": [10.0], "doppler": [50.0], "snr": [12.0], "timestamp": 1000},
+            ],
+        )
         result = list_archived_files(node_id="test-storage-node")
         files = result["files"]
         assert len(files) >= 1
@@ -41,9 +48,12 @@ class TestArchiveStorage:
         assert "size_bytes" in files[0]
 
     def test_read_archived_file(self):
-        archive_detections("test-storage-node", [
-            {"delay": [10.0], "doppler": [50.0], "snr": [12.0], "timestamp": 1000},
-        ])
+        archive_detections(
+            "test-storage-node",
+            [
+                {"delay": [10.0], "doppler": [50.0], "snr": [12.0], "timestamp": 1000},
+            ],
+        )
         result = list_archived_files(node_id="test-storage-node")
         data = read_archived_file(result["files"][0]["key"])
         assert isinstance(data, dict)

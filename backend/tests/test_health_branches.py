@@ -50,7 +50,9 @@ class TestHealthDegradedBranches:
         class _StubQueue:
             def qsize(self):
                 return 6
+
             maxsize = 10
+
         monkeypatch.setattr(state, "solver_queue", _StubQueue())
         _assert_degraded(client.get("/api/health"))
 
@@ -89,10 +91,13 @@ class TestHealthDegradedBranches:
 
     def test_solver_accuracy_degraded(self, client):
         orig = state.latest_accuracy_bytes
-        state.latest_accuracy_bytes = orjson.dumps({
-            "n_samples": 50, "mean_km": 25.0,
-            "by_source": {"multinode_solve": {"n_samples": 50, "mean_km": 25.0}},
-        })
+        state.latest_accuracy_bytes = orjson.dumps(
+            {
+                "n_samples": 50,
+                "mean_km": 25.0,
+                "by_source": {"multinode_solve": {"n_samples": 50, "mean_km": 25.0}},
+            }
+        )
         try:
             _assert_degraded(client.get("/api/health"))
         finally:
@@ -101,10 +106,12 @@ class TestHealthDegradedBranches:
     def test_high_miss_rate(self, client):
         orig = dict(state.latest_missed_detections)
         state.latest_missed_detections.clear()
-        state.latest_missed_detections.update({
-            "n1": {"in_range": 10, "miss_rate": 0.8},
-            "n2": {"in_range": 20, "miss_rate": 0.9},
-        })
+        state.latest_missed_detections.update(
+            {
+                "n1": {"in_range": 10, "miss_rate": 0.8},
+                "n2": {"in_range": 20, "miss_rate": 0.9},
+            }
+        )
         try:
             _assert_degraded(client.get("/api/health"))
         finally:

@@ -27,6 +27,7 @@ from services.frame_processor import (
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _make_frame(ts: int = None, n: int = 3) -> dict:
     if ts is None:
         ts = int(time.time() * 1000)
@@ -58,6 +59,7 @@ def _cleanup():
 
 
 # ── Unit tests for helper functions ──────────────────────────────────────────
+
 
 class TestNormalizeHexKey:
     def test_basic(self):
@@ -116,18 +118,21 @@ class TestAppendTrackHistory:
 class TestResolveGroundTruthHex:
     def test_exact_match(self):
         from collections import deque
+
         state.ground_truth_trails["testhex1"] = deque([[33.9, -84.6, 35000, time.time()]])
         result = resolve_ground_truth_hex("testhex1", 33.9, -84.6)
         assert result == "testhex1"
 
     def test_proximity_match(self):
         from collections import deque
+
         state.ground_truth_trails["testnear"] = deque([[33.9, -84.6, 35000, time.time()]])
         result = resolve_ground_truth_hex("testunknown", 33.901, -84.601)
         assert result == "testnear"
 
     def test_no_match_too_far(self):
         from collections import deque
+
         state.ground_truth_trails["testfar"] = deque([[40.0, -74.0, 35000, time.time()]])
         result = resolve_ground_truth_hex("testunknown2", 33.9, -84.6)
         assert result is None
@@ -151,13 +156,18 @@ class TestGetNodeConfigs:
 
 # ── Pipeline factory ─────────────────────────────────────────────────────────
 
+
 class TestGetOrCreateNodePipeline:
     def test_creates_pipeline_for_new_node(self):
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         state.connected_nodes["test-new"] = {
             "config": {
-                "rx_lat": 34.0, "rx_lon": -84.0, "rx_alt_ft": 900,
-                "tx_lat": 33.8, "tx_lon": -83.8, "tx_alt_ft": 1200,
+                "rx_lat": 34.0,
+                "rx_lon": -84.0,
+                "rx_alt_ft": 900,
+                "tx_lat": 33.8,
+                "tx_lon": -83.8,
+                "tx_alt_ft": 1200,
             },
         }
         p = get_or_create_node_pipeline("test-new", default)
@@ -168,8 +178,12 @@ class TestGetOrCreateNodePipeline:
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         state.connected_nodes["test-cached"] = {
             "config": {
-                "rx_lat": 34.0, "rx_lon": -84.0, "rx_alt_ft": 900,
-                "tx_lat": 33.8, "tx_lon": -83.8, "tx_alt_ft": 1200,
+                "rx_lat": 34.0,
+                "rx_lon": -84.0,
+                "rx_alt_ft": 900,
+                "tx_lat": 33.8,
+                "tx_lon": -83.8,
+                "tx_alt_ft": 1200,
             },
         }
         p1 = get_or_create_node_pipeline("test-cached", default)
@@ -183,6 +197,7 @@ class TestGetOrCreateNodePipeline:
 
 
 # ── Frame processing ─────────────────────────────────────────────────────────
+
 
 class TestProcessOneFrame:
     def test_process_valid_frame(self):
@@ -215,13 +230,19 @@ class TestProcessOneFrame:
 
 # ── Multinode result conversion ──────────────────────────────────────────────
 
+
 class TestMultinodeToAircraft:
     def test_basic_conversion(self):
         r = {
-            "lat": 33.9, "lon": -84.6, "alt_m": 3048.0,
-            "vel_east": 100.0, "vel_north": 0.0,
-            "n_nodes": 3, "n_measurements": 15,
-            "rms_delay": 0.5, "rms_doppler": 1.2,
+            "lat": 33.9,
+            "lon": -84.6,
+            "alt_m": 3048.0,
+            "vel_east": 100.0,
+            "vel_north": 0.0,
+            "n_nodes": 3,
+            "n_measurements": 15,
+            "rms_delay": 0.5,
+            "rms_doppler": 1.2,
         }
         ac = multinode_to_aircraft("mn-key-1", r)
         assert ac["type"] == "multinode_solve"
@@ -236,10 +257,15 @@ class TestMultinodeToAircraft:
         through un-flagged and un-clamped.  (The implausible-velocity gate
         that used to mark this anomalous was removed deliberately.)"""
         r = {
-            "lat": 33.9, "lon": -84.6, "alt_m": 10000.0,
-            "vel_east": 400.0, "vel_north": 0.0,
-            "n_nodes": 2, "n_measurements": 10,
-            "rms_delay": 0.3, "rms_doppler": 0.8,
+            "lat": 33.9,
+            "lon": -84.6,
+            "alt_m": 10000.0,
+            "vel_east": 400.0,
+            "vel_north": 0.0,
+            "n_nodes": 2,
+            "n_measurements": 10,
+            "rms_delay": 0.3,
+            "rms_doppler": 0.8,
         }
         ac = multinode_to_aircraft("mn-key-2", r)
         assert ac["is_anomalous"] is False
@@ -250,10 +276,15 @@ class TestMultinodeToAircraft:
 
     def test_subsonic_not_flagged(self):
         r = {
-            "lat": 33.9, "lon": -84.6, "alt_m": 3000.0,
-            "vel_east": 100.0, "vel_north": 100.0,
-            "n_nodes": 2, "n_measurements": 8,
-            "rms_delay": 0.2, "rms_doppler": 0.5,
+            "lat": 33.9,
+            "lon": -84.6,
+            "alt_m": 3000.0,
+            "vel_east": 100.0,
+            "vel_north": 100.0,
+            "n_nodes": 2,
+            "n_measurements": 8,
+            "rms_delay": 0.2,
+            "rms_doppler": 0.5,
         }
         ac = multinode_to_aircraft("mn-key-3", r)
         assert ac["is_anomalous"] is False
@@ -261,6 +292,7 @@ class TestMultinodeToAircraft:
 
 
 # ── Build combined aircraft JSON ─────────────────────────────────────────────
+
 
 class TestBuildCombinedAircraftJson:
     def test_returns_valid_structure(self):
@@ -276,8 +308,11 @@ class TestBuildCombinedAircraftJson:
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         state.adsb_aircraft["testabc"] = {
             "hex": "testabc",
-            "lat": 33.9, "lon": -84.6,
-            "alt_baro": 35000, "gs": 250, "track": 90,
+            "lat": 33.9,
+            "lon": -84.6,
+            "alt_baro": 35000,
+            "gs": 250,
+            "track": 90,
             "flight": "TEST123",
             "last_seen_ms": int(time.time() * 1000),
         }
@@ -290,6 +325,7 @@ class TestBuildCombinedAircraftJson:
 
 
 # ── Archive buffering ────────────────────────────────────────────────────────
+
 
 class TestArchiveBuffering:
     def test_flush_empty_is_noop(self):
@@ -316,8 +352,7 @@ class TestArchiveBuffering:
         try:
             fp._flush_archive_node(node_id)
             with fp._archive_buffer_lock:
-                assert len(fp._archive_buffer[node_id]) == 3, \
-                    "frames must be retained when the disk write fails"
+                assert len(fp._archive_buffer[node_id]) == 3, "frames must be retained when the disk write fails"
         finally:
             with fp._archive_buffer_lock:
                 fp._archive_buffer.pop(node_id, None)
@@ -345,8 +380,7 @@ class TestArchiveBuffering:
             fp._flush_archive_node(node_id)
             with fp._archive_buffer_lock:
                 remaining = list(fp._archive_buffer.get(node_id, []))
-            assert remaining == [{"ts": 3}], \
-                f"only the late-arriving frame should remain, got {remaining}"
+            assert remaining == [{"ts": 3}], f"only the late-arriving frame should remain, got {remaining}"
         finally:
             with fp._archive_buffer_lock:
                 fp._archive_buffer.pop(node_id, None)
@@ -358,11 +392,15 @@ class TestArchiveBuffering:
 # solve is named mn<sha> and a single-node arc by ICAO, so the builder's
 # exact-string `seen_hex` set could never collapse them.
 
+
 class TestDedupAircraft:
     def _entry(self, hex_code, src, lat, lon, alt=30000, gt=None, node=None):
         e = {
-            "hex": hex_code, "position_source": src,
-            "lat": lat, "lon": lon, "alt_baro": alt,
+            "hex": hex_code,
+            "position_source": src,
+            "lat": lat,
+            "lon": lon,
+            "alt_baro": alt,
         }
         if gt is not None:
             e["ground_truth_hex"] = gt
@@ -373,11 +411,9 @@ class TestDedupAircraft:
     def test_one_aircraft_one_entry_via_ground_truth(self):
         """The production failure: 1 arc + 5 multinode solves for one target."""
         entries = [
-            self._entry("abf380", "single_node_ellipse_arc", 34.895, -81.805,
-                        gt="abf380", node="synth-RING-0007"),
+            self._entry("abf380", "single_node_ellipse_arc", 34.895, -81.805, gt="abf380", node="synth-RING-0007"),
             *[
-                self._entry(f"mn{i:010x}", "multinode_solve", 34.984 + i * 1e-4,
-                            -81.97 + i * 1e-4, gt="abf380")
+                self._entry(f"mn{i:010x}", "multinode_solve", 34.984 + i * 1e-4, -81.97 + i * 1e-4, gt="abf380")
                 for i in range(5)
             ],
         ]
@@ -385,56 +421,69 @@ class TestDedupAircraft:
         assert len(out) == 1, f"expected 1 aircraft, got {len(out)}"
 
     def test_multinode_wins_over_single_node_arc(self):
-        out = dedup_aircraft([
-            self._entry("abcdef", "single_node_ellipse_arc", 34.9, -82.0, gt="t1"),
-            self._entry("mn0000000001", "multinode_solve", 34.9, -82.0, gt="t1"),
-        ])
+        out = dedup_aircraft(
+            [
+                self._entry("abcdef", "single_node_ellipse_arc", 34.9, -82.0, gt="t1"),
+                self._entry("mn0000000001", "multinode_solve", 34.9, -82.0, gt="t1"),
+            ]
+        )
         assert len(out) == 1
         assert out[0]["position_source"] == "multinode_solve"
 
     def test_contributing_nodes_merged_onto_survivor(self):
         """Node filtering and the frontend highlight must still find the plane
         under every node that saw it."""
-        out = dedup_aircraft([
-            self._entry("abcdef", "single_node_ellipse_arc", 34.9, -82.0,
-                        gt="t1", node="node-a"),
-            {**self._entry("mn0000000001", "multinode_solve", 34.9, -82.0, gt="t1"),
-             "contributing_node_ids": ["node-b", "node-c"]},
-        ])
+        out = dedup_aircraft(
+            [
+                self._entry("abcdef", "single_node_ellipse_arc", 34.9, -82.0, gt="t1", node="node-a"),
+                {
+                    **self._entry("mn0000000001", "multinode_solve", 34.9, -82.0, gt="t1"),
+                    "contributing_node_ids": ["node-b", "node-c"],
+                },
+            ]
+        )
         assert len(out) == 1
         assert set(out[0]["contributing_node_ids"]) == {"node-a", "node-b", "node-c"}
 
     def test_proximity_fallback_without_ground_truth(self):
         """Real hardware has no ground_truth_hex — proximity must carry it."""
-        out = dedup_aircraft([
-            self._entry("pr0001", "single_node_ellipse_arc", 34.900, -82.000),
-            self._entry("mn0000000001", "multinode_solve", 34.902, -82.001),
-        ])
+        out = dedup_aircraft(
+            [
+                self._entry("pr0001", "single_node_ellipse_arc", 34.900, -82.000),
+                self._entry("mn0000000001", "multinode_solve", 34.902, -82.001),
+            ]
+        )
         assert len(out) == 1
         assert out[0]["position_source"] == "multinode_solve"
 
     def test_distinct_aircraft_are_not_merged(self):
         """Over-merging would hide real traffic — worse than a cosmetic double."""
-        out = dedup_aircraft([
-            self._entry("aaa111", "multinode_solve", 34.90, -82.00),
-            self._entry("bbb222", "multinode_solve", 35.30, -82.00),  # ~44 km
-        ])
+        out = dedup_aircraft(
+            [
+                self._entry("aaa111", "multinode_solve", 34.90, -82.00),
+                self._entry("bbb222", "multinode_solve", 35.30, -82.00),  # ~44 km
+            ]
+        )
         assert len(out) == 2
 
     def test_vertically_separated_aircraft_not_merged(self):
         """Same lat/lon, 10000 ft apart — two aircraft, not one."""
-        out = dedup_aircraft([
-            self._entry("aaa111", "multinode_solve", 34.90, -82.00, alt=20000),
-            self._entry("bbb222", "multinode_solve", 34.90, -82.00, alt=30000),
-        ])
+        out = dedup_aircraft(
+            [
+                self._entry("aaa111", "multinode_solve", 34.90, -82.00, alt=20000),
+                self._entry("bbb222", "multinode_solve", 34.90, -82.00, alt=30000),
+            ]
+        )
         assert len(out) == 2
 
     def test_distinct_ground_truth_never_merged_despite_proximity(self):
         """Identity beats proximity: two known-distinct targets stay distinct."""
-        out = dedup_aircraft([
-            self._entry("mn0000000001", "multinode_solve", 34.900, -82.000, gt="t1"),
-            self._entry("mn0000000002", "multinode_solve", 34.901, -82.000, gt="t2"),
-        ])
+        out = dedup_aircraft(
+            [
+                self._entry("mn0000000001", "multinode_solve", 34.900, -82.000, gt="t1"),
+                self._entry("mn0000000002", "multinode_solve", 34.901, -82.000, gt="t2"),
+            ]
+        )
         assert len(out) == 2
 
     def test_empty_and_singleton_are_passthrough(self):
@@ -444,6 +493,7 @@ class TestDedupAircraft:
 
 
 # ─── Regression: despawned simulated aircraft must not linger ────────────────
+
 
 class TestGroundTruthGhostPruning:
     """A ground-truth entry is a *current* position, not a trail tail.
@@ -462,13 +512,11 @@ class TestGroundTruthGhostPruning:
 
     @pytest.fixture(autouse=True)
     def _clean(self):
-        for d in (state.ground_truth_trails, state.ground_truth_meta,
-                  state.track_histories):
+        for d in (state.ground_truth_trails, state.ground_truth_meta, state.track_histories):
             for k in [x for x in d if str(x).startswith("ghost")]:
                 d.pop(k, None)
         yield
-        for d in (state.ground_truth_trails, state.ground_truth_meta,
-                  state.track_histories):
+        for d in (state.ground_truth_trails, state.ground_truth_meta, state.track_histories):
             for k in [x for x in d if str(x).startswith("ghost")]:
                 d.pop(k, None)
 
@@ -482,6 +530,7 @@ class TestGroundTruthGhostPruning:
 
     def test_despawned_aircraft_is_pruned(self):
         from collections import deque
+
         stale = time.time() - (GT_DISPLAY_STALE_S + 5.0)
         state.ground_truth_trails["ghostgone"] = deque([[34.9, -82.4, 30000, stale]])
         state.ground_truth_meta["ghostgone"] = {"object_type": "aircraft"}
@@ -492,6 +541,7 @@ class TestGroundTruthGhostPruning:
 
     def test_live_aircraft_survives(self):
         from collections import deque
+
         state.ground_truth_trails["ghostlive"] = deque([[34.9, -82.4, 30000, time.time()]])
         self._build()
         assert "ghostlive" in state.ground_truth_trails
@@ -499,6 +549,7 @@ class TestGroundTruthGhostPruning:
     def test_aircraft_between_pushes_survives(self):
         """A dropped push or two must not blink the aircraft off the map."""
         from collections import deque
+
         recent = time.time() - 6.0  # 3 missed 2 s pushes, still inside the window
         state.ground_truth_trails["ghostgap"] = deque([[34.9, -82.4, 30000, recent]])
         self._build()
@@ -507,6 +558,7 @@ class TestGroundTruthGhostPruning:
     def test_track_history_keeps_the_longer_window(self):
         """Render trails are not ground truth — they keep the 300 s tail."""
         from collections import deque
+
         old = time.time() - (GT_DISPLAY_STALE_S + 60.0)
         state.track_histories["ghosttrail"] = deque([[34.9, -82.4, 30000, old]])
         self._build()
