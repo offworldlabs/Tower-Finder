@@ -33,15 +33,70 @@ setup:
         -e ../libs/retina-custody -e ../libs/retina-analytics \
         -e ../libs/retina-simulation
     [ -f .env ] || cp .env.example .env   # Maprad key not needed for the testmap
-    echo "→ database schema (alembic)"
-    # env.py does not load .env (only main.py does), and a fresh clone has no
-    # database yet, and create_all is guarded off outside tests, so without this a
-    # fresh `just up` boots against an empty file and fails later on the first
-    # query, at "no such table", instead of here where the cause is obvious.
-    RETINA_ENV=dev "{{py}}" -m alembic upgrade head
+    just --justfile "{{justfile()}}" migrate
     echo "→ frontend deps"
     cd "{{fe}}" && npm install
     echo "✓ setup complete — now: just up"
+
+# Bring the dev database to head. Idempotent, and run by both setup and up.
+migrate:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ -x "{{py}}" ] || { echo "no backend venv — run: just setup"; exit 1; }
+    # RETINA_ENV is passed explicitly because migrations/env.py does not load
+    # .env (only main.py does). create_all is guarded off outside tests, so this
+    # is the only thing that ever builds the dev schema: without it a fresh clone
+    # boots against an empty file, and a tree that has just pulled a new revision
+    # boots against a stale one — both failing later, on the first query to touch
+    # the missing table or column, instead of here where the cause is obvious.
+    # That is why `up` runs it on every start rather than `setup` running it
+    # once, and it is the same reasoning that has deploy/start.sh migrate on
+    # every container boot.
+    #
+    # A revision this tree cannot locate is not automatically fatal, for the
+    # reason start.sh sets out at length: checking out an older branch is the dev
+    # equivalent of a rollback, and a revision the older code never touches is
+    # harmless to leave in place. Unlike a deploy, though, dev branches diverge,
+    # so "a revision I do not recognise" does NOT imply "the database is ahead of
+    # me" here — it is equally the shape of a sibling branch's revision, where
+    # this tree's own tables and columns were never applied and booting gives the
+    # "no such table" this recipe exists to prevent. Alembic reports both
+    # identically, since the recorded revision is absent from the graph either
+    # way, so the schema is asked instead: a rollback leaves a superset of what
+    # the models want, a sibling leaves a gap. See scripts/check_schema.py.
+    #
+    # Anything else — a broken revision, a locked database — still aborts. The
+    # substring matched is Alembic's own wording, kept honest by
+    # backend/tests/test_migrations.py's
+    # test_rollback_ahead_sentinel_matches_alembics_wording (the literal lives in
+    # backend/tests/migration_helpers.py as ROLLBACK_AHEAD_SENTINEL).
+    #
+    # Testing the assignment itself is what keeps set -e from aborting on the
+    # very failure this block exists to inspect.
+    echo "→ database schema (alembic)"
+    cd "{{be}}"
+    if out=$(RETINA_ENV=dev "{{py}}" -m alembic upgrade head 2>&1); then
+        # alembic.ini pins the root logger to WARN, so a successful upgrade says
+        # nothing at all; print whatever it does say and leave it at that.
+        if [ -n "$out" ]; then printf '%s\n' "$out"; fi
+    elif printf '%s\n' "$out" | grep -q "Can't locate revision"; then
+        printf '%s\n' "$out"
+        if gaps=$(RETINA_ENV=dev "{{py}}" -m scripts.check_schema 2>&1); then
+            echo "⚠ that revision is not in this tree, but the schema has everything"
+            echo "  this tree expects (rolled back to an older branch?) — continuing"
+        else
+            echo "✗ the database is at a revision this tree does not have, AND is missing"
+            echo "  what this tree expects — another branch's migrations are in it:"
+            printf '%s\n' "$gaps"
+            echo "  Fix it on the branch that made them (alembic downgrade), or, if the dev"
+            echo "  data is expendable, delete that database file and re-run."
+            exit 1
+        fi
+    else
+        echo "✗ alembic upgrade head failed:"
+        printf '%s\n' "$out"
+        exit 1
+    fi
 
 # Bring up backend + synthetic fleet + frontend (background). Open http://testmap.localhost:5173/
 # Fleet profile: `just up` (local, dense) · `just up test` (50 fps) · `just up prod` (12.5 fps).
@@ -90,6 +145,11 @@ up profile="local":
         fi
     done
     mkdir -p "{{run}}"
+
+    # Every start, not just `setup`: pulling a branch that adds a revision is the
+    # ordinary case, and booting against the schema it expects has to be the
+    # default rather than something you remember to do. See the migrate recipe.
+    just --justfile "{{justfile()}}" migrate
 
     echo "→ backend (uvicorn — http :8000, detection TCP ingest :3012)"
     ( cd "{{be}}" && RETINA_ENV=dev "{{venv}}/bin/uvicorn" main:app --reload ) \

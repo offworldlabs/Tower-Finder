@@ -78,8 +78,9 @@ it.
 
 The schema is owned by Alembic (`backend/migrations/`). `create_all` runs only
 in the test suite, which sets `RETINA_SCHEMA_SOURCE=create_all`; everywhere else
-`just setup` applies migrations on first clone and `deploy/start.sh` applies them
-on every boot.
+migrations are applied on every start, by `just up` locally (`just migrate` runs
+it on its own) and by `deploy/start.sh` on every container boot. Pulling a branch
+that adds a revision therefore needs nothing extra.
 
 To change the schema, edit the models, then from `backend/`:
 
