@@ -622,57 +622,69 @@ Leave it enabled with no origin change. Re-run the smoke tests the next day befo
 
 ## Post-Implementation Verification
 
-Run the full acceptance list from the spec's §7 once Tasks 1–5 are complete:
+**Completed 2026-08-12.** Values are what was observed, not what was expected.
+Droplet addresses stay out of this file; see the runbook's note on why.
 
-- [ ] `nc -z <staging-ip> 443` → refused
-- [ ] `nc -z <staging-ip> 80` → refused
-- [ ] `nc -z <prod-ip> 443` → refused
-- [ ] `nc -z <prod-ip> 80` → refused
-- [ ] `nc -z <prod-ip> 3012` → **open**
-- [ ] `bash deploy/staging-smoke-test.sh` passes
-- [ ] `curl https://towers.retina.fm/api/health` → 200
-- [ ] `python3 deploy/check-env-parity.py` → exit 0
-- [ ] nginx access log shows real client addresses, not Cloudflare's
-- [ ] `docker compose -f docker-compose.yml -f docker-compose.local.yml up` comes up on the laptop
-- [ ] Reboot both droplets; `iptables -L DOCKER-USER -n` still shows the tagged rules
-- [ ] `ss -lntH '( sport = :80 or sport = :443 )'` on each droplet — record whether any IPv6 listener exists, and confirm the script's IPv6 branch took the matching path
-- [ ] **Container egress still works.** `DOCKER-USER` hangs off `FORWARD`, which
-  carries container→internet traffic too, so an ingress rule written without `-i`
-  would blackhole every outbound call to :443 — silently, as a hang. From a
-  droplet: `docker compose exec -T tower-finder python3 -c "import urllib.request; print(urllib.request.urlopen('https://api.adsb.lol/v2/point/51.5/-0.1/5', timeout=10).status)"`
-  → expect `200`, not a timeout. **Not `curl`:** the image is `python:3.12-slim`
-  and installs only `nginx tini libcap2-bin` (`Dockerfile:22-24`), so `curl` is
-  not present and the probe dies with "executable file not found in $PATH" —
-  which reads as a failure of the thing being tested rather than of the tool.
-  `urllib` is what the compose healthcheck and `deploy-test` already use, for the
-  same reason. Then `docker compose build --no-cache tower-finder` and confirm
-  `npm install` completes: a `--no-cache` build pulls from registry.npmjs.org and
-  pypi.org over :443 from inside a build container, which traverses the same
-  `FORWARD` → `DOCKER-USER` path, so its normal completion time is itself the
-  egress evidence — a blackholing DROP would hang it rather than fail it.
-- [ ] `iptables -S DOCKER-USER | grep retina-cf-boundary` — every tagged rule
-  carries `-i <uplink>`, and that name matches `ip -4 route show default`.
+- [x] `nc -z <staging-ip> 443` → refused (exit 1)
+- [x] `nc -z <staging-ip> 80` → refused (exit 1)
+- [x] `nc -z <prod-ip> 443` → refused (exit 1)
+- [x] `nc -z <prod-ip> 80` → refused (exit 1)
+- [x] `nc -z <prod-ip> 3012` → **open** (exit 0), measured in the same run as the two above
+- [x] `bash deploy/staging-smoke-test.sh` → 17 passed, 0 failed
+- [x] `curl https://towers.retina.fm/api/health` → 200. `map`, `testmap` and `dash` also 200
+- [x] `python3 deploy/check-env-parity.py` → exit 0
+- [x] nginx access log shows real client addresses. Verified with a matched pair
+  rather than by eye: a request from a known address appeared as
+  `<known-ip> - - [12/Aug/2026:02:01:48] "GET /rip1786500108" 200`. Organic browser
+  traffic logs addresses checked against every CIDR in `deploy/cloudflare-ranges.txt`
+  programmatically — all outside. Do that by arithmetic rather than by eye: one of the
+  observed client addresses began `172.`, which reads as Cloudflare at a glance, but
+  Cloudflare's block is `172.64.0.0/13` — only `172.64.0.0`–`172.71.255.255`. End-user
+  addresses are deliberately not reproduced here; this repository is public.
+- [ ] **Not run:** laptop stack via `docker-compose.local.yml`. Docker was not
+  available on the machine driving the rollout. The spec argues this is satisfied by
+  construction (the laptop overlay renders the template's plain-HTTP branch and never
+  emits `ssl_verify_client`); that is reasoning, not evidence, and the box stays open.
+- [x] Reboot: **staging** rebooted, tagged rules present afterwards.
+  **Production was not rebooted** — it runs the identical unit and an outage was
+  judged not worth it. `systemctl restart docker` on production covers the same
+  question more cheaply; see below.
+- [x] `ss -lntH '( sport = :80 or sport = :443 )'` on each droplet → both show
+  `0.0.0.0:80`, `0.0.0.0:443`, `[::]:80`, `[::]:443`. The `[::]` entries are
+  docker-proxy binding dual-stack, not IPv6 reachability: neither droplet has a
+  global v6 address on `eth0` or a v6 default route. The script's v6 branch therefore
+  takes the skip path. **This is what the first staging apply got wrong** — see #156.
+- [x] **Container egress still works.** Production: the `urllib` probe returned 200.
+  Staging: `docker compose build --no-cache tower-finder` completed, with `npm install`
+  at 37s/40s and `pip install` at 70s/30s — all pulled over :443 from inside a build
+  container on the same `FORWARD` → `DOCKER-USER` path. Normal completion times are the
+  signal, since a blackholing DROP hangs rather than fails.
+- [x] `iptables -S DOCKER-USER | grep retina-cf-boundary` → 17 tagged rules on each
+  droplet, every one carrying `-i eth0`, matching `ip -4 route show default` on both.
 
 ### Items that can only be settled on a live droplet
 
-Raised by the Task 4 review as "cannot verify from diff". Each is a real question,
-not a formality — check them during the staging apply, before production.
+- [x] **Does `DOCKER-USER` survive `systemctl restart docker`?** Yes — verified on
+  production: 17 tagged rules still present immediately after the restart. This was the
+  sharpest of the three, because `setup-server.sh` restarts Docker *after* applying the
+  boundary in the same provisioning run: had the contract not held, the boundary would
+  have been gone by the end of the run that created it, with the script still reporting
+  success.
+- [x] **Does the droplet's `iproute2` accept the script's `ss` filter?** Yes — the
+  filter ran cleanly on both droplets and returned the four listeners above, so the
+  code took the "ss ran and found something" path rather than either defensive branch.
+- [ ] **Does `DOCKER-USER` exist by the time provisioning applies the rules?** Still
+  untested: both droplets already ran Docker, so the chain pre-existed. Needs a genuinely
+  fresh droplet and will be settled by the next `setup-server.sh` provisioning run.
 
-- [ ] **Does `DOCKER-USER` survive `systemctl restart docker`?** The chain's
-  documented contract says its contents persist, but `setup-server.sh` restarts
-  Docker *after* applying the boundary in the same provisioning run. If the
-  contract does not hold on this Docker version, the boundary is already gone by
-  the end of the run that created it. Verify: apply, `systemctl restart docker`,
-  then `iptables -L DOCKER-USER -n` and confirm the tagged rules are still there.
-- [ ] **Does the droplet's `iproute2` accept the script's `ss` filter?** The IPv6
-  branch keys off `ss -lntH '( sport = :80 or sport = :443 )'`. A rejected filter
-  syntax is handled defensively now (it applies IPv6 rules rather than claiming
-  IPv4 is sufficient), but confirm which path actually runs so the behaviour is
-  known rather than merely safe.
-- [ ] **Does `DOCKER-USER` exist by the time provisioning applies the rules?** On
-  a genuinely fresh droplet the chain is created by Docker on first start. The
-  script checks for it and fails with a diagnosis if absent, so a fresh-droplet
-  provision is the case to test.
+### Discovered during the rollout
+
+The first staging apply exited 1 while leaving the IPv4 boundary correctly installed —
+`systemctl status` reported `failed` on a droplet that was, in fact, protected. Root
+cause and fix in #156: docker-proxy binds published ports dual-stack on any kernel with
+IPv6 compiled in, so `ss` reported `[::]` listeners on a droplet whose only v6 address
+is link-local. §7a of the design doc carries the full reasoning.
+
 
 ## Rollback
 
