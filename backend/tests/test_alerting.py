@@ -79,10 +79,15 @@ class TestSendAlert:
         mock_cls.assert_not_called()
 
     def test_cooldown_blocks_duplicate_alert(self, monkeypatch):
-        """A second call with the same alert_type within cooldown is suppressed."""
+        """A second call with the same alert_type within cooldown is
+        suppressed after a *successful* first send: the regression guard for
+        the whole cooldown-release change in finding 3.  Asserts the single
+        call that did go out, not just its count, so a mutation that lets
+        the second call through with a mangled first payload cannot pass.
+        """
         monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
         monkeypatch.setenv("ALERT_COOLDOWN_S", "3600")
-        mock_client = _make_mock_client()
+        mock_client = _make_mock_client(status_code=200)
 
         with (
             patch("services.alerting.httpx.Client", return_value=mock_client),
@@ -91,7 +96,10 @@ class TestSendAlert:
             send_alert("dup", "first")
             send_alert("dup", "second")
 
-        assert mock_client.post.call_count == 1
+        mock_client.post.assert_called_once_with(
+            "http://test-hook/alert",
+            json={"alert_type": "dup", "message": "first", "timestamp": ANY, "meta": {}},
+        )
 
     def test_zero_cooldown_disables_suppression(self, monkeypatch):
         """A cooldown of 0 means the second call is never suppressed."""
@@ -154,6 +162,25 @@ class TestSendAlert:
         """
         monkeypatch.setenv("ALERT_COOLDOWN_S", "")
         assert _alerting._cooldown_s() == 300.0
+
+    def test_whitespace_only_cooldown_treated_as_unset_and_does_not_warn(self, monkeypatch, caplog):
+        """ALERT_COOLDOWN_S="   " (whitespace only) must be treated as
+        unset, defaulting to 300.0 quietly. A padded numeric value cannot
+        pin the strip: float() already tolerates surrounding whitespace, so
+        e.g. " 3600 " parses the same whether or not _cooldown_s() strips
+        it first. Whitespace-only does discriminate: unstripped, the "not
+        raw" check sees a non-empty string, falls through to float("   "),
+        which raises, and a spurious "malformed ALERT_COOLDOWN_S" warning
+        is logged before the same 300.0 fallback. Asserting the return
+        value alone would pass on that spurious-warning path too, so the
+        no-warning assertion is the one that actually catches it.
+        """
+        monkeypatch.setenv("ALERT_COOLDOWN_S", "   ")
+        with caplog.at_level(logging.WARNING):
+            result = _alerting._cooldown_s()
+
+        assert result == 300.0
+        assert caplog.text == ""
 
     def test_unrecognised_format_warns_and_falls_back_to_raw(self, monkeypatch, caplog):
         """An unrecognised ALERT_WEBHOOK_FORMAT logs a warning naming it and
@@ -468,3 +495,229 @@ class TestLogDestination:
             _alerting.log_destination()  # must not raise
 
         assert "does not parse as a URL" in caplog.text
+
+
+class TestSettingsWhitespaceTolerance:
+    """docker-compose's env_file passes .env values literally, unlike a
+    shell: a trailing space typed into ALERT_WEBHOOK_FORMAT, ALERT_WEBHOOK_AUTH
+    or ALERT_WEBHOOK_URL is not stripped before the process sees it. Each of
+    the four settings read by this module must tolerate that.
+    """
+
+    def test_webhook_url_strips_surrounding_whitespace(self, monkeypatch):
+        """A padded ALERT_WEBHOOK_URL must still be posted to the trimmed
+        target, not a URL corrupted by the stray whitespace.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "  http://test-hook/alert  ")
+        mock_client = _make_mock_client()
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("test", "msg")
+
+        mock_client.post.assert_called_once_with(
+            "http://test-hook/alert",
+            json={"alert_type": "test", "message": "msg", "timestamp": ANY, "meta": {}},
+        )
+
+    def test_cooldown_strips_surrounding_whitespace(self, monkeypatch):
+        """A padded ALERT_COOLDOWN_S must parse to the same float as the
+        unpadded value. float() already tolerates surrounding whitespace, so
+        this is a consistency pin alongside the other three settings rather
+        than a behaviour change on its own.
+        """
+        monkeypatch.setenv("ALERT_COOLDOWN_S", "  3600  ")
+        assert _alerting._cooldown_s() == 3600.0
+
+    def test_webhook_format_strips_whitespace_and_uses_clickup_body(self, monkeypatch, caplog):
+        """ALERT_WEBHOOK_FORMAT=" clickup_chat " (padded) must still be
+        recognised as clickup_chat: it must not fail the `not in _FORMATS`
+        check, warn, and silently fall back to posting a raw body that
+        ClickUp rejects with 400. Asserts the full call, not a count, and
+        that no fallback warning was logged.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setenv("ALERT_WEBHOOK_FORMAT", " clickup_chat ")
+        mock_client = _make_mock_client()
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+            caplog.at_level(logging.WARNING),
+        ):
+            send_alert("test", "msg", {})
+
+        mock_client.post.assert_called_once_with(
+            "http://test-hook/alert",
+            json={"type": "message", "content": "**test**\nmsg"},
+        )
+        assert "unrecognised" not in caplog.text
+
+    def test_webhook_auth_strips_surrounding_whitespace(self, monkeypatch):
+        """A padded ALERT_WEBHOOK_AUTH must be sent as exactly the trimmed
+        token: ClickUp 401s on anything else, including a token with a
+        trailing space still attached.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setenv("ALERT_WEBHOOK_AUTH", " pk_test_notreal ")
+        mock_client = _make_mock_client()
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("test", "msg")
+
+        mock_client.post.assert_called_once_with(
+            "http://test-hook/alert",
+            json={"alert_type": "test", "message": "msg", "timestamp": ANY, "meta": {}},
+            headers={"Authorization": "pk_test_notreal"},
+        )
+
+
+class TestLogDestinationClickupAuthWarning:
+    """log_destination() must not call a dead configuration healthy: the
+    clickup_chat format with no ALERT_WEBHOOK_AUTH set 401s on every alert,
+    since ClickUp requires the header, so the startup log must warn about
+    that specific combination rather than only logging the destination.
+    """
+
+    def test_warns_when_clickup_chat_format_and_auth_empty(self, monkeypatch, caplog):
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setenv("ALERT_WEBHOOK_FORMAT", "clickup_chat")
+        with caplog.at_level(logging.WARNING):
+            _alerting.log_destination()
+
+        assert "ALERT_WEBHOOK_FORMAT" in caplog.text
+        assert "ALERT_WEBHOOK_AUTH" in caplog.text
+
+    def test_warns_when_url_unparseable_and_clickup_chat_auth_empty(self, monkeypatch, caplog):
+        """The warning must fire regardless of which INFO branch produced
+        the line above it. Every other test in this class uses a URL that
+        parses, so log_destination() takes the else: branch each time and
+        cannot tell whether the warning sits inside that branch or after
+        it: a warning block moved inside else: would pass all of them. This
+        uses an unparseable ALERT_WEBHOOK_URL, taking the if: branch
+        instead, so the warning must be reached from there too.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "notaurl")
+        monkeypatch.setenv("ALERT_WEBHOOK_FORMAT", "clickup_chat")
+        with caplog.at_level(logging.WARNING):
+            _alerting.log_destination()
+
+        assert "ALERT_WEBHOOK_FORMAT" in caplog.text
+        assert "ALERT_WEBHOOK_AUTH" in caplog.text
+
+    def test_no_warning_when_clickup_chat_format_and_auth_set(self, monkeypatch, caplog):
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setenv("ALERT_WEBHOOK_FORMAT", "clickup_chat")
+        monkeypatch.setenv("ALERT_WEBHOOK_AUTH", "pk_test_notreal")
+        with caplog.at_level(logging.WARNING):
+            _alerting.log_destination()
+
+        assert caplog.text == ""
+
+    def test_no_warning_when_raw_format_and_auth_empty(self, monkeypatch, caplog):
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        with caplog.at_level(logging.WARNING):
+            _alerting.log_destination()
+
+        assert caplog.text == ""
+
+
+class TestCooldownReleaseOnFailure:
+    """A failed delivery must not consume the cooldown slot it reserved:
+    otherwise one failed POST buys a full ALERT_COOLDOWN_S of silence on
+    exactly the alert type that just failed to deliver.
+    """
+
+    def test_4xx_response_releases_cooldown_for_immediate_retry(self, monkeypatch):
+        """No prior send for this alert_type, so there is no previous value
+        to restore: the release must remove the key entirely, and the next
+        send_alert for the same type must attempt a second POST rather than
+        being suppressed.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setenv("ALERT_COOLDOWN_S", "3600")
+        mock_client = _make_mock_client(status_code=401)
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("mender_unreachable", "first")
+            send_alert("mender_unreachable", "second")
+
+        assert mock_client.post.call_count == 2
+        assert "mender_unreachable" not in _alerting._last_sent
+
+    def test_exception_releases_cooldown_for_immediate_retry(self, monkeypatch):
+        """A network exception (not just a 4xx response) must release the
+        cooldown too, so a following send for the same alert_type retries
+        rather than being suppressed for the full cooldown window.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setenv("ALERT_COOLDOWN_S", "3600")
+        mock_client = _make_mock_client(raise_exc=Exception("network error"))
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("mender_unreachable", "first")
+            send_alert("mender_unreachable", "second")
+
+        assert mock_client.post.call_count == 2
+        assert "mender_unreachable" not in _alerting._last_sent
+
+    def test_failed_release_restores_previous_timestamp_rather_than_deleting(self, monkeypatch):
+        """When a prior send already occupied the slot, releasing on
+        failure must put that previous timestamp back, not just delete the
+        key: the brief's compare-and-restore rule, exercised on the "there
+        was a previous value" branch. The previous timestamp is set far
+        enough in the past that this send is not itself suppressed by
+        cooldown.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setenv("ALERT_COOLDOWN_S", "3600")
+        _alerting._last_sent["registration_held"] = 1000.0
+        mock_client = _make_mock_client(status_code=400)
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("registration_held", "msg")
+
+        assert _alerting._last_sent["registration_held"] == 1000.0
+
+    def test_failed_release_does_not_clobber_slot_claimed_by_later_send(self, monkeypatch):
+        """Compare-and-restore: if a later send has already claimed the slot
+        by the time an earlier, failing send tries to release it, the
+        earlier release must leave the newer value alone. Exercised
+        deterministically (no real threads) by having the mocked POST itself
+        overwrite _last_sent before raising, simulating a second caller
+        claiming the slot while the first call's request is in flight.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setenv("ALERT_COOLDOWN_S", "3600")
+        newer_claim = 99999999999.0
+
+        def _claim_slot_then_fail(*args, **kwargs):
+            _alerting._last_sent["race"] = newer_claim
+            raise Exception("network error")
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = lambda s: mock_client
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post.side_effect = _claim_slot_then_fail
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("race", "msg")  # must not raise, must not clobber the newer claim
+
+        assert _alerting._last_sent["race"] == newer_claim

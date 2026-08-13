@@ -46,7 +46,7 @@ def _reset_for_tests() -> None:
 
 
 def _webhook_url() -> str:
-    return os.getenv("ALERT_WEBHOOK_URL", "")
+    return os.getenv("ALERT_WEBHOOK_URL", "").strip()
 
 
 def is_enabled() -> bool:
@@ -60,7 +60,7 @@ def _cooldown_s() -> float:
     must not raise out of it (that would turn a reportable problem into a
     second one) and must not silence the alert either.
     """
-    raw = os.getenv("ALERT_COOLDOWN_S", "")
+    raw = os.getenv("ALERT_COOLDOWN_S", "").strip()
     if not raw:
         return _DEFAULT_COOLDOWN_S
     try:
@@ -76,7 +76,7 @@ def _webhook_format() -> str:
     Same shape as _cooldown_s(): send_alert must never raise or go silent
     over a stray setting, since it is itself called from failure paths.
     """
-    raw = os.getenv("ALERT_WEBHOOK_FORMAT", "")
+    raw = os.getenv("ALERT_WEBHOOK_FORMAT", "").strip()
     if not raw:
         return _DEFAULT_FORMAT
     if raw not in _FORMATS:
@@ -92,7 +92,7 @@ def _auth_headers() -> dict[str, str]:
     401. An empty setting means no Authorization header at all, not an empty
     one.
     """
-    auth = os.getenv("ALERT_WEBHOOK_AUTH", "")
+    auth = os.getenv("ALERT_WEBHOOK_AUTH", "").strip()
     return {"Authorization": auth} if auth else {}
 
 
@@ -132,12 +132,20 @@ def log_destination() -> None:
         # parse as a URL" branch below rather than propagating: it must
         # never be able to stop the server booting.
         parsed = None
+    webhook_format = _webhook_format()
     if parsed is None or not parsed.scheme or not parsed.hostname:
-        logger.info(
-            "Alerting enabled: posting %s alerts (ALERT_WEBHOOK_URL does not parse as a URL)", _webhook_format()
+        logger.info("Alerting enabled: posting %s alerts (ALERT_WEBHOOK_URL does not parse as a URL)", webhook_format)
+    else:
+        logger.info("Alerting enabled: posting %s alerts to %s://%s", webhook_format, parsed.scheme, parsed.hostname)
+
+    # ClickUp has no inbound webhook of its own, so the clickup_chat format
+    # requires the Authorization header; without it every alert 401s and the
+    # INFO line above reads as healthy while delivering nothing.
+    if webhook_format == "clickup_chat" and not _auth_headers():
+        logger.warning(
+            "ALERT_WEBHOOK_FORMAT=clickup_chat but ALERT_WEBHOOK_AUTH is not set: "
+            "ClickUp will reject every alert with 401"
         )
-        return
-    logger.info("Alerting enabled: posting %s alerts to %s://%s", _webhook_format(), parsed.scheme, parsed.hostname)
 
 
 def send_alert(alert_type: str, message: str, meta: dict | None = None) -> None:
@@ -152,9 +160,31 @@ def send_alert(alert_type: str, message: str, meta: dict | None = None) -> None:
         last = _last_sent.get(alert_type, 0)
         if now - last < cooldown_s:
             return
+        # Stamped before the POST, not after, so that two concurrent callers
+        # (the health monitor and a solver worker can both call send_alert)
+        # cannot both pass the check above while one request is in flight.
+        # had_previous/previous are captured so a failed delivery can put
+        # the slot back exactly as it found it rather than just deleting it.
+        had_previous = alert_type in _last_sent
+        previous = _last_sent.get(alert_type)
         _last_sent[alert_type] = now
 
     meta = meta or {}
+
+    def _release_cooldown():
+        """Undo the reservation above on a failed delivery, so the next
+        occurrence of the same problem is not suppressed for the rest of the
+        cooldown window. Only releases the slot this call reserved: if a
+        newer send has since claimed it (the stored value is no longer
+        exactly `now`), that claim is left alone rather than clobbered.
+        """
+        with _lock:
+            if _last_sent.get(alert_type) != now:
+                return
+            if had_previous:
+                _last_sent[alert_type] = previous
+            else:
+                del _last_sent[alert_type]
 
     # Captured here, not re-read inside _fire: the thread runs later, and by
     # then the environment (or a test asserting against it) may have moved on.
@@ -181,7 +211,9 @@ def send_alert(alert_type: str, message: str, meta: dict | None = None) -> None:
                 resp = client.post(webhook_url, **post_kwargs)
                 if resp.status_code >= 400:
                     logger.warning("Alert webhook returned %d for %s", resp.status_code, alert_type)
+                    _release_cooldown()
         except Exception:
             logger.warning("Alert webhook failed for %s", alert_type, exc_info=True)
+            _release_cooldown()
 
     threading.Thread(target=_fire, daemon=True).start()
