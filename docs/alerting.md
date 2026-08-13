@@ -17,13 +17,22 @@ Three layers, in order of what they catch:
 
 2. **Webhook delivery.** `services/alerting.py` POSTs to `ALERT_WEBHOOK_URL`.
    `ALERT_WEBHOOK_FORMAT` selects the body shape: `raw` (default) sends a
-   plain JSON payload, for a Slack/Discord/PagerDuty incoming webhook;
+   plain JSON payload (`alert_type`, `message`, `timestamp`, `environment`,
+   `host`, `meta`), for a Slack/Discord/PagerDuty incoming webhook;
    `clickup_chat` sends `{"type": "message", "content": "<markdown>"}`, for
-   ClickUp's chat message endpoint. The ClickUp branch exists because ClickUp
-   has no inbound webhook of its own (its webhooks are outbound only), so
-   reaching a ClickUp chat channel needs a shaped body and an `Authorization`
-   header rather than a plain POST URL. `ALERT_WEBHOOK_AUTH`, when set, is
-   sent verbatim as that header (no `Bearer` prefix: ClickUp personal tokens
+   ClickUp's chat message endpoint, with the rendered content carrying the
+   bold `alert_type`, the message, an `environment: <value>` line, a
+   `host: <value>` line, then one `key: value` line per `meta` entry. Both
+   shapes carry `environment` (from `RETINA_ENV`, or the literal `unknown`
+   when unset) and `host` (from `socket.gethostname()`, or `unknown` if that
+   call fails), because each droplet's `ALERT_WEBHOOK_URL` points at its own
+   channel: channel routing is configuration, and a misrouted URL would
+   otherwise put an alert in the wrong channel with nothing in the payload
+   to reveal that. The ClickUp branch exists because ClickUp has no inbound
+   webhook of its own (its webhooks are outbound only), so reaching a
+   ClickUp chat channel needs a shaped body and an `Authorization` header
+   rather than a plain POST URL. `ALERT_WEBHOOK_AUTH`, when set, is sent
+   verbatim as that header (no `Bearer` prefix: ClickUp personal tokens
    carry none). ClickUp documents the chat endpoint as experimental, so the
    server logs its alert destination (scheme and host only) at startup, as a
    trail back to the dependency if the endpoint ever breaks. Alerts are

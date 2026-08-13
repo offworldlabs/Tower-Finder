@@ -23,6 +23,7 @@ deploy of ours to blame.
 
 import logging
 import os
+import socket
 import threading
 import time
 from urllib.parse import urlsplit
@@ -96,14 +97,17 @@ def _auth_headers() -> dict[str, str]:
     return {"Authorization": auth} if auth else {}
 
 
-def _render_clickup_chat(alert_type: str, message: str, meta: dict) -> dict:
+def _render_clickup_chat(alert_type: str, message: str, meta: dict, environment: str, host: str) -> dict:
     """Render an alert as a ClickUp chat message body.
 
     ClickUp timestamps each message on arrival, so the channel's own message
     time stands in for the payload's timestamp field; it is not repeated in
-    the rendered content.
+    the rendered content. environment and host are rendered as their own
+    key: value lines, ahead of meta, so which box raised the alert is
+    visible in the message itself rather than depending solely on which
+    channel it landed in.
     """
-    lines = [f"**{alert_type}**", message]
+    lines = [f"**{alert_type}**", message, f"environment: {environment}", f"host: {host}"]
     lines.extend(f"{key}: {value}" for key, value in meta.items())
     return {"type": "message", "content": "\n".join(lines)}
 
@@ -189,13 +193,31 @@ def send_alert(alert_type: str, message: str, meta: dict | None = None) -> None:
     # Captured here, not re-read inside _fire: the thread runs later, and by
     # then the environment (or a test asserting against it) may have moved on.
     headers = _auth_headers()
+
+    # Channel routing (a different ALERT_WEBHOOK_URL per box) is the only
+    # other signal for which environment an alert came from, and a
+    # copy-pasted URL would put it in the wrong channel with nothing in the
+    # payload to reveal that. environment and host make that visible in the
+    # alert itself. An unset RETINA_ENV renders as "unknown" rather than
+    # being omitted: a box with no environment configured is itself worth
+    # seeing. gethostname() can raise (e.g. a broken resolver); this is
+    # best-effort identification, not the alert's substance, so it must not
+    # turn a reportable problem into a second one.
+    environment = os.getenv("RETINA_ENV", "").strip() or "unknown"
+    try:
+        host = socket.gethostname()
+    except Exception:
+        host = "unknown"
+
     if _webhook_format() == "clickup_chat":
-        body = _render_clickup_chat(alert_type, message, meta)
+        body = _render_clickup_chat(alert_type, message, meta, environment, host)
     else:
         body = {
             "alert_type": alert_type,
             "message": message,
             "timestamp": now,
+            "environment": environment,
+            "host": host,
             "meta": meta,
         }
 

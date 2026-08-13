@@ -1,9 +1,9 @@
 """Unit tests for the webhook alerting helper in services/alerting.py.
 
-The module reads ALERT_WEBHOOK_URL, ALERT_COOLDOWN_S, ALERT_WEBHOOK_AUTH and
-ALERT_WEBHOOK_FORMAT from the environment on each call rather than once at
-import (see the module docstring for why), so these tests drive it through
-monkeypatch.setenv/delenv rather than patching module attributes.
+The module reads ALERT_WEBHOOK_URL, ALERT_COOLDOWN_S, ALERT_WEBHOOK_AUTH,
+ALERT_WEBHOOK_FORMAT and RETINA_ENV from the environment on each call rather
+than once at import (see the module docstring for why), so these tests drive
+it through monkeypatch.setenv/delenv rather than patching module attributes.
 """
 
 import logging
@@ -20,11 +20,25 @@ from services.alerting import is_enabled, send_alert
 def _clean_alert_env(monkeypatch):
     """Start every test with all settings unset, whatever the ambient shell
     or .env holds, so each test's setenv/delenv calls are the only source of
-    truth for what the module sees."""
+    truth for what the module sees. RETINA_ENV is included even though it is
+    not an ALERT_* setting: send_alert() now reads it too, and it must not
+    leak in from the shell running the tests."""
     monkeypatch.delenv("ALERT_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("ALERT_COOLDOWN_S", raising=False)
     monkeypatch.delenv("ALERT_WEBHOOK_AUTH", raising=False)
     monkeypatch.delenv("ALERT_WEBHOOK_FORMAT", raising=False)
+    monkeypatch.delenv("RETINA_ENV", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _fixed_hostname(monkeypatch):
+    """Pin socket.gethostname() to a fixed value for every test, so
+    assertions on the posted body do not depend on the machine running them
+    (per the brief: patch gethostname rather than assert against the real
+    name). Tests exercising the gethostname()-raises fallback override this
+    within their own patch.
+    """
+    monkeypatch.setattr(_alerting.socket, "gethostname", lambda: "test-host")
 
 
 def _make_mock_client(status_code=200, raise_exc=None):
@@ -98,7 +112,14 @@ class TestSendAlert:
 
         mock_client.post.assert_called_once_with(
             "http://test-hook/alert",
-            json={"alert_type": "dup", "message": "first", "timestamp": ANY, "meta": {}},
+            json={
+                "alert_type": "dup",
+                "message": "first",
+                "timestamp": ANY,
+                "environment": "unknown",
+                "host": "test-host",
+                "meta": {},
+            },
         )
 
     def test_zero_cooldown_disables_suppression(self, monkeypatch):
@@ -202,7 +223,14 @@ class TestSendAlert:
         assert "bogus_format" in caplog.text
         mock_client.post.assert_called_once_with(
             "http://test-hook/alert",
-            json={"alert_type": "test", "message": "msg", "timestamp": ANY, "meta": {}},
+            json={
+                "alert_type": "test",
+                "message": "msg",
+                "timestamp": ANY,
+                "environment": "unknown",
+                "host": "test-host",
+                "meta": {},
+            },
         )
 
     def test_different_alert_types_independent_cooldown(self, monkeypatch):
@@ -255,11 +283,20 @@ class TestSendAlert:
         """is_enabled() returns False when ALERT_WEBHOOK_URL is unset."""
         assert is_enabled() is False
 
-    def test_raw_format_default_matches_historical_payload_exactly(self, monkeypatch):
+    def test_raw_format_default_matches_current_payload_exactly(self, monkeypatch):
         """ALERT_WEBHOOK_FORMAT unset must default to raw and produce exactly
         today's payload shape, with no headers kwarg when ALERT_WEBHOOK_AUTH
-        is unset. Pins backward compatibility for every pre-existing webhook
-        sink relying on the old body shape and call signature.
+        is unset. Pins the body for every pre-existing webhook sink relying
+        on this shape and call signature.
+
+        NOTE: this test was named test_raw_format_default_matches_historical_
+        payload_exactly and pinned the raw body byte-for-byte identical to
+        its shape for the whole branch, up to this commit. This commit adds
+        "environment" and "host" to that body deliberately (see
+        docs/alerting.md and the module docstring), so the pin below and the
+        name were both updated to match. This is not a weakened or deleted
+        assertion: it is still a full-dict pin, just of the new shape. Do
+        not read this diff as a regression.
         """
         monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
         mock_client = _make_mock_client()
@@ -272,7 +309,14 @@ class TestSendAlert:
 
         mock_client.post.assert_called_once_with(
             "http://test-hook/alert",
-            json={"alert_type": "test", "message": "msg", "timestamp": ANY, "meta": {"node_id": "n1"}},
+            json={
+                "alert_type": "test",
+                "message": "msg",
+                "timestamp": ANY,
+                "environment": "unknown",
+                "host": "test-host",
+                "meta": {"node_id": "n1"},
+            },
         )
         assert "headers" not in mock_client.post.call_args.kwargs
 
@@ -303,7 +347,8 @@ class TestClickupChatFormat:
 
     def test_empty_meta_renders_cleanly(self, monkeypatch):
         """meta={} must not leave a dangling heading or trailing whitespace.
-        Pins the exact rendering for the no-meta case.
+        Pins the exact rendering for the no-meta case, which now includes
+        the environment and host lines added by this commit.
         """
         monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
         monkeypatch.setenv("ALERT_WEBHOOK_FORMAT", "clickup_chat")
@@ -316,7 +361,27 @@ class TestClickupChatFormat:
             send_alert("test", "msg", {})
 
         content = mock_client.post.call_args.kwargs["json"]["content"]
-        assert content == "**test**\nmsg"
+        assert content == "**test**\nmsg\nenvironment: unknown\nhost: test-host"
+
+    def test_content_includes_environment_and_host_lines(self, monkeypatch):
+        """environment and host are rendered as their own key: value lines,
+        the same shape as a meta entry, ahead of meta itself. This is the
+        change this commit makes: the ClickUp channel an alert lands in is
+        no longer the only clue to which box raised it.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setenv("ALERT_WEBHOOK_FORMAT", "clickup_chat")
+        monkeypatch.setenv("RETINA_ENV", "production")
+        mock_client = _make_mock_client()
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("test", "msg", {"node_id": "n1"})
+
+        content = mock_client.post.call_args.kwargs["json"]["content"]
+        assert content == "**test**\nmsg\nenvironment: production\nhost: test-host\nnode_id: n1"
 
     def test_full_call_pins_url_headers_and_body_together(self, monkeypatch):
         """None of the tests above assert the URL or the headers on the
@@ -343,7 +408,10 @@ class TestClickupChatFormat:
 
         mock_client.post.assert_called_once_with(
             "http://test-hook/alert",
-            json={"type": "message", "content": "**test**\nmsg"},
+            json={
+                "type": "message",
+                "content": "**test**\nmsg\nenvironment: unknown\nhost: test-host",
+            },
             headers={"Authorization": "pk_test_notreal"},
         )
 
@@ -380,7 +448,14 @@ class TestCallTimeCapture:
 
         mock_client.post.assert_called_once_with(
             "http://test-hook/alert",
-            json={"alert_type": "test", "message": "msg", "timestamp": ANY, "meta": {}},
+            json={
+                "alert_type": "test",
+                "message": "msg",
+                "timestamp": ANY,
+                "environment": "unknown",
+                "host": "test-host",
+                "meta": {},
+            },
         )
 
     def test_format_captured_once_not_reread_when_thread_runs(self, monkeypatch):
@@ -406,7 +481,10 @@ class TestCallTimeCapture:
 
         mock_client.post.assert_called_once_with(
             "http://test-hook/alert",
-            json={"type": "message", "content": "**test**\nmsg"},
+            json={
+                "type": "message",
+                "content": "**test**\nmsg\nenvironment: unknown\nhost: test-host",
+            },
         )
 
     def test_auth_captured_once_not_reread_when_thread_runs(self, monkeypatch):
@@ -433,9 +511,164 @@ class TestCallTimeCapture:
 
         mock_client.post.assert_called_once_with(
             "http://test-hook/alert",
-            json={"alert_type": "test", "message": "msg", "timestamp": ANY, "meta": {}},
+            json={
+                "alert_type": "test",
+                "message": "msg",
+                "timestamp": ANY,
+                "environment": "unknown",
+                "host": "test-host",
+                "meta": {},
+            },
             headers={"Authorization": "pk_test_notreal"},
         )
+
+    def test_environment_captured_once_not_reread_when_thread_runs(self, monkeypatch):
+        """RETINA_ENV must be captured at send_alert() call time, exactly
+        like ALERT_WEBHOOK_URL/FORMAT/AUTH above, and closed over by _fire
+        rather than re-read when the thread actually runs. Uses the same
+        env-popping thread stub, parameterised on RETINA_ENV this time.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setenv("RETINA_ENV", "staging")
+        mock_client = _make_mock_client()
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread("RETINA_ENV")),
+        ):
+            send_alert("test", "msg")
+
+        mock_client.post.assert_called_once_with(
+            "http://test-hook/alert",
+            json={
+                "alert_type": "test",
+                "message": "msg",
+                "timestamp": ANY,
+                "environment": "staging",
+                "host": "test-host",
+                "meta": {},
+            },
+        )
+
+    def test_host_captured_once_not_reread_when_thread_runs(self, monkeypatch):
+        """Host must likewise be read once, before the thread starts, not
+        re-read inside _fire. socket.gethostname() takes no arguments and is
+        deterministic, so the env-popping stub used above cannot distinguish
+        capture from re-read for it: there is no environment variable to
+        pop. Instead this swaps the mocked hostname's return value between
+        send_alert()'s capture point and the (stubbed, synchronous) thread
+        run, so a re-read inside _fire has a different value to be caught
+        reading.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        hostname_state = {"value": "host-at-call-time"}
+        monkeypatch.setattr(_alerting.socket, "gethostname", lambda: hostname_state["value"])
+        mock_client = _make_mock_client()
+
+        def _side_effect(**kwargs):
+            def _run():
+                hostname_state["value"] = "host-at-thread-time"
+                kwargs["target"]()
+
+            t = MagicMock()
+            t.start.side_effect = _run
+            return t
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_side_effect),
+        ):
+            send_alert("test", "msg")
+
+        assert mock_client.post.call_args.kwargs["json"]["host"] == "host-at-call-time"
+
+
+class TestEnvironmentAndHost:
+    """RETINA_ENV and socket.gethostname() are added to every alert so the
+    payload itself says which box raised it: channel routing alone is
+    configuration, and a fumbled ALERT_WEBHOOK_URL would otherwise put an
+    alert in the wrong channel with nothing in it to reveal that.
+    """
+
+    def test_raw_body_reflects_call_time_environment_and_host(self, monkeypatch):
+        """Exact-dict assertion with both fields set to distinguishing,
+        non-default values, so this cannot pass by coincidence with the
+        "unknown" fallback used everywhere else in this file.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setenv("RETINA_ENV", "staging")
+        monkeypatch.setattr(_alerting.socket, "gethostname", lambda: "retina-staging")
+        mock_client = _make_mock_client()
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("test", "msg", {"node_id": "n1"})
+
+        mock_client.post.assert_called_once_with(
+            "http://test-hook/alert",
+            json={
+                "alert_type": "test",
+                "message": "msg",
+                "timestamp": ANY,
+                "environment": "staging",
+                "host": "retina-staging",
+                "meta": {"node_id": "n1"},
+            },
+        )
+
+    def test_retina_env_unset_yields_unknown(self, monkeypatch):
+        """RETINA_ENV unset must render as the literal "unknown", not an
+        omitted field: a box with no environment configured is itself worth
+        seeing, and a missing field would read as an oversight rather than
+        a fact.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        mock_client = _make_mock_client()
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("test", "msg")
+
+        assert mock_client.post.call_args.kwargs["json"]["environment"] == "unknown"
+
+    def test_retina_env_stripped(self, monkeypatch):
+        """docker-compose's env_file passes .env values literally, so a
+        trailing space typed into RETINA_ENV is not stripped before the
+        process sees it, matching every other setting in this module.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setenv("RETINA_ENV", "  staging  ")
+        mock_client = _make_mock_client()
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("test", "msg")
+
+        assert mock_client.post.call_args.kwargs["json"]["environment"] == "staging"
+
+    def test_gethostname_raising_falls_back_to_unknown_and_does_not_propagate(self, monkeypatch):
+        """socket.gethostname() can raise (e.g. OSError from a broken
+        resolver). send_alert is itself called from failure-handling paths,
+        so that must not turn a reportable problem into a second one: it
+        must fall back to "unknown" and send_alert must not raise.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setattr(_alerting.socket, "gethostname", MagicMock(side_effect=OSError("no hostname")))
+        mock_client = _make_mock_client()
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("test", "msg")  # must not raise
+
+        assert mock_client.post.call_args.kwargs["json"]["host"] == "unknown"
 
 
 class TestLogDestination:
@@ -519,7 +752,14 @@ class TestSettingsWhitespaceTolerance:
 
         mock_client.post.assert_called_once_with(
             "http://test-hook/alert",
-            json={"alert_type": "test", "message": "msg", "timestamp": ANY, "meta": {}},
+            json={
+                "alert_type": "test",
+                "message": "msg",
+                "timestamp": ANY,
+                "environment": "unknown",
+                "host": "test-host",
+                "meta": {},
+            },
         )
 
     def test_cooldown_strips_surrounding_whitespace(self, monkeypatch):
@@ -551,7 +791,10 @@ class TestSettingsWhitespaceTolerance:
 
         mock_client.post.assert_called_once_with(
             "http://test-hook/alert",
-            json={"type": "message", "content": "**test**\nmsg"},
+            json={
+                "type": "message",
+                "content": "**test**\nmsg\nenvironment: unknown\nhost: test-host",
+            },
         )
         assert "unrecognised" not in caplog.text
 
@@ -572,7 +815,14 @@ class TestSettingsWhitespaceTolerance:
 
         mock_client.post.assert_called_once_with(
             "http://test-hook/alert",
-            json={"alert_type": "test", "message": "msg", "timestamp": ANY, "meta": {}},
+            json={
+                "alert_type": "test",
+                "message": "msg",
+                "timestamp": ANY,
+                "environment": "unknown",
+                "host": "test-host",
+                "meta": {},
+            },
             headers={"Authorization": "pk_test_notreal"},
         )
 
