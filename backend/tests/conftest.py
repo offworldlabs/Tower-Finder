@@ -14,6 +14,11 @@ from tests.migration_helpers import _alembic
 os.environ.setdefault("RETINA_ENV", "test")
 # Needed so the /api/radar/detections auth guard is active in tests.
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
+# The suite has no OAuth provider to log in against, so the route tests reach the
+# admin endpoints through core.users' anonymous-admin bypass. That bypass is an
+# explicit opt-in and no longer follows from RETINA_ENV=test, so ask for it here.
+# Set before core.users is imported: AUTH_BYPASS is derived once, at import.
+os.environ.setdefault("AUTH_ALLOW_ANONYMOUS_ADMIN", "1")
 # The suite truncates tables and creates schema, so it must never be pointed at
 # a real database. A hard assignment, not setdefault: the README tells readers
 # to export RETINA_DB_PATH to try a migration against a scratch file, and a
