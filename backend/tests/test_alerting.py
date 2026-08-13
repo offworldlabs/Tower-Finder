@@ -17,13 +17,6 @@ from services.alerting import is_enabled, send_alert
 
 
 @pytest.fixture(autouse=True)
-def _reset_last_sent():
-    _alerting._last_sent.clear()
-    yield
-    _alerting._last_sent.clear()
-
-
-@pytest.fixture(autouse=True)
 def _clean_alert_env(monkeypatch):
     """Start every test with all settings unset, whatever the ambient shell
     or .env holds, so each test's setenv/delenv calls are the only source of
@@ -51,23 +44,18 @@ def _make_mock_client(status_code=200, raise_exc=None):
     return mock_client
 
 
-def _make_sync_thread(**kwargs):
-    """Thread replacement that calls target() synchronously on .start()."""
-    t = MagicMock()
-    t.start.side_effect = lambda: kwargs["target"]()
-    return t
+def _make_sync_thread(*env_vars):
+    """Build a Thread replacement that calls target() synchronously on
+    .start(), first removing any named environment variables.
 
-
-def _make_env_popping_sync_thread(*env_vars):
-    """Build a Thread replacement that removes the named environment
-    variables before invoking target() synchronously on .start().
-
-    Simulates the environment changing between send_alert() capturing a
-    setting and the (normally later, real) thread run. Proves _fire (and
-    whatever send_alert computed before creating it) closes over a value
-    captured at call time rather than re-reading os.environ when the thread
-    actually runs. Parameterised on the variable name(s) so the same stub
-    covers ALERT_WEBHOOK_URL, ALERT_WEBHOOK_FORMAT and ALERT_WEBHOOK_AUTH.
+    With no arguments this is a plain synchronous stand-in for
+    threading.Thread. With names given, it simulates the environment
+    changing between send_alert() capturing a setting and the (normally
+    later, real) thread run, proving _fire (and whatever send_alert
+    computed before creating it) closes over a value captured at call time
+    rather than re-reading os.environ when the thread actually runs.
+    Parameterised on the variable name(s) so the same stub covers
+    ALERT_WEBHOOK_URL, ALERT_WEBHOOK_FORMAT and ALERT_WEBHOOK_AUTH.
     """
 
     def _side_effect(**kwargs):
@@ -90,49 +78,6 @@ class TestSendAlert:
             send_alert("test", "msg")
         mock_cls.assert_not_called()
 
-    def test_url_set_after_import_is_honoured(self, monkeypatch):
-        """ALERT_WEBHOOK_URL set via the environment (never touching a module
-        attribute) must cause send_alert to fire, posting to that URL with
-        the documented payload shape. This is the case the import-time
-        constant broke: the value only reaches the module if it is read at
-        call time.
-        """
-        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
-        mock_client = _make_mock_client()
-
-        with (
-            patch("services.alerting.httpx.Client", return_value=mock_client),
-            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
-        ):
-            send_alert("test", "msg")
-
-        mock_client.post.assert_called_once_with(
-            "http://test-hook/alert",
-            json={"alert_type": "test", "message": "msg", "timestamp": ANY, "meta": {}},
-        )
-
-    def test_url_captured_once_not_reread_when_thread_runs(self, monkeypatch):
-        """The URL send_alert captures at call time must be the one the
-        thread posts to, even if the environment changes before the thread
-        actually runs. Guards against _fire re-reading os.environ instead of
-        closing over the captured value, which would post to whatever URL
-        (or none) happens to be set when the thread executes rather than the
-        one in force when the alert was raised.
-        """
-        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
-        mock_client = _make_mock_client()
-
-        with (
-            patch("services.alerting.httpx.Client", return_value=mock_client),
-            patch("services.alerting.threading.Thread", side_effect=_make_env_popping_sync_thread("ALERT_WEBHOOK_URL")),
-        ):
-            send_alert("test", "msg")
-
-        mock_client.post.assert_called_once_with(
-            "http://test-hook/alert",
-            json={"alert_type": "test", "message": "msg", "timestamp": ANY, "meta": {}},
-        )
-
     def test_cooldown_blocks_duplicate_alert(self, monkeypatch):
         """A second call with the same alert_type within cooldown is suppressed."""
         monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
@@ -141,26 +86,22 @@ class TestSendAlert:
 
         with (
             patch("services.alerting.httpx.Client", return_value=mock_client),
-            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
         ):
             send_alert("dup", "first")
             send_alert("dup", "second")
 
         assert mock_client.post.call_count == 1
 
-    def test_cooldown_set_after_import_is_honoured(self, monkeypatch):
-        """ALERT_COOLDOWN_S set via the environment (never touching a module
-        attribute) must govern deduplication. A cooldown of 0 means the
-        second call is never suppressed, which only holds if the value is
-        re-read rather than fixed at import to the 300s default.
-        """
+    def test_zero_cooldown_disables_suppression(self, monkeypatch):
+        """A cooldown of 0 means the second call is never suppressed."""
         monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
         monkeypatch.setenv("ALERT_COOLDOWN_S", "0")
         mock_client = _make_mock_client()
 
         with (
             patch("services.alerting.httpx.Client", return_value=mock_client),
-            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
         ):
             send_alert("dup", "first")
             send_alert("dup", "second")
@@ -180,7 +121,7 @@ class TestSendAlert:
 
         with (
             patch("services.alerting.httpx.Client", return_value=mock_client),
-            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
         ):
             send_alert("dup", "first")  # must not raise
 
@@ -197,8 +138,8 @@ class TestSendAlert:
         assert _alerting._cooldown_s() == 300.0
 
     def test_malformed_cooldown_logs_warning_with_bad_value(self, monkeypatch, caplog):
-        """Requirement 4: a malformed ALERT_COOLDOWN_S must be logged as a
-        warning naming the bad value, not swallowed silently."""
+        """A malformed ALERT_COOLDOWN_S must be logged as a warning naming
+        the bad value, not swallowed silently."""
         monkeypatch.setenv("ALERT_COOLDOWN_S", "not-a-number")
         with caplog.at_level(logging.WARNING):
             _alerting._cooldown_s()
@@ -214,6 +155,29 @@ class TestSendAlert:
         monkeypatch.setenv("ALERT_COOLDOWN_S", "")
         assert _alerting._cooldown_s() == 300.0
 
+    def test_unrecognised_format_warns_and_falls_back_to_raw(self, monkeypatch, caplog):
+        """An unrecognised ALERT_WEBHOOK_FORMAT logs a warning naming it and
+        falls back to raw, mirroring _cooldown_s()'s handling of a malformed
+        ALERT_COOLDOWN_S. It must not raise: send_alert runs on failure
+        paths and must never turn a reportable problem into a second one.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setenv("ALERT_WEBHOOK_FORMAT", "bogus_format")
+        mock_client = _make_mock_client()
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+            caplog.at_level(logging.WARNING),
+        ):
+            send_alert("test", "msg")  # must not raise
+
+        assert "bogus_format" in caplog.text
+        mock_client.post.assert_called_once_with(
+            "http://test-hook/alert",
+            json={"alert_type": "test", "message": "msg", "timestamp": ANY, "meta": {}},
+        )
+
     def test_different_alert_types_independent_cooldown(self, monkeypatch):
         """Different alert_types each have their own cooldown entry."""
         monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
@@ -222,7 +186,7 @@ class TestSendAlert:
 
         with (
             patch("services.alerting.httpx.Client", return_value=mock_client),
-            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
         ):
             send_alert("type_a", "msg")
             send_alert("type_b", "msg")
@@ -236,7 +200,7 @@ class TestSendAlert:
 
         with (
             patch("services.alerting.httpx.Client", return_value=mock_client),
-            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
         ):
             send_alert("err", "msg")  # must not raise
 
@@ -249,7 +213,7 @@ class TestSendAlert:
 
         with (
             patch("services.alerting.httpx.Client", return_value=mock_client),
-            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
         ):
             send_alert("4xx", "msg")  # must not raise
 
@@ -275,7 +239,7 @@ class TestSendAlert:
 
         with (
             patch("services.alerting.httpx.Client", return_value=mock_client),
-            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
         ):
             send_alert("test", "msg", {"node_id": "n1"})
 
@@ -286,61 +250,7 @@ class TestSendAlert:
         assert "headers" not in mock_client.post.call_args.kwargs
 
 
-class TestWebhookAuth:
-    def test_auth_sent_verbatim_no_bearer_prefix(self, monkeypatch):
-        """ALERT_WEBHOOK_AUTH must be sent as-is in the Authorization header:
-        a ClickUp personal token carries no "Bearer " prefix, and adding one
-        would silently produce a 401.
-        """
-        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
-        monkeypatch.setenv("ALERT_WEBHOOK_AUTH", "pk_test_notreal")
-        mock_client = _make_mock_client()
-
-        with (
-            patch("services.alerting.httpx.Client", return_value=mock_client),
-            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
-        ):
-            send_alert("test", "msg")
-
-        kwargs = mock_client.post.call_args.kwargs
-        assert kwargs["headers"] == {"Authorization": "pk_test_notreal"}
-
-    def test_empty_auth_sends_no_authorization_header(self, monkeypatch):
-        """With ALERT_WEBHOOK_AUTH unset (empty), no Authorization header is
-        sent at all, rather than an empty one.
-        """
-        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
-        mock_client = _make_mock_client()
-
-        with (
-            patch("services.alerting.httpx.Client", return_value=mock_client),
-            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
-        ):
-            send_alert("test", "msg")
-
-        assert "headers" not in mock_client.post.call_args.kwargs
-
-
 class TestClickupChatFormat:
-    def test_body_has_exactly_type_and_content_keys(self, monkeypatch):
-        """clickup_chat must produce exactly {"type": "message", "content":
-        ...} with no other keys: not the raw payload shape, and not a
-        superset of it.
-        """
-        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
-        monkeypatch.setenv("ALERT_WEBHOOK_FORMAT", "clickup_chat")
-        mock_client = _make_mock_client()
-
-        with (
-            patch("services.alerting.httpx.Client", return_value=mock_client),
-            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
-        ):
-            send_alert("mender_unreachable", "node offline", {"node_id": "n1"})
-
-        body = mock_client.post.call_args.kwargs["json"]
-        assert set(body.keys()) == {"type", "content"}
-        assert body["type"] == "message"
-
     def test_content_contains_alert_type_message_and_each_meta_pair(self, monkeypatch):
         """The rendered content must carry alert_type, message and every
         meta key/value: meta is what carries the node id, and is the
@@ -352,7 +262,7 @@ class TestClickupChatFormat:
 
         with (
             patch("services.alerting.httpx.Client", return_value=mock_client),
-            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
         ):
             send_alert("registration_held", "node stuck", {"node_id": "n42", "reason": "fingerprint mismatch"})
 
@@ -374,36 +284,12 @@ class TestClickupChatFormat:
 
         with (
             patch("services.alerting.httpx.Client", return_value=mock_client),
-            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
         ):
             send_alert("test", "msg", {})
 
         content = mock_client.post.call_args.kwargs["json"]["content"]
         assert content == "**test**\nmsg"
-        assert content == content.rstrip()
-
-    def test_unrecognised_format_warns_and_falls_back_to_raw(self, monkeypatch, caplog):
-        """An unrecognised ALERT_WEBHOOK_FORMAT logs a warning naming it and
-        falls back to raw, mirroring _cooldown_s()'s handling of a malformed
-        ALERT_COOLDOWN_S. It must not raise: send_alert runs on failure
-        paths and must never turn a reportable problem into a second one.
-        """
-        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
-        monkeypatch.setenv("ALERT_WEBHOOK_FORMAT", "bogus_format")
-        mock_client = _make_mock_client()
-
-        with (
-            patch("services.alerting.httpx.Client", return_value=mock_client),
-            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
-            caplog.at_level(logging.WARNING),
-        ):
-            send_alert("test", "msg")  # must not raise
-
-        assert "bogus_format" in caplog.text
-        mock_client.post.assert_called_once_with(
-            "http://test-hook/alert",
-            json={"alert_type": "test", "message": "msg", "timestamp": ANY, "meta": {}},
-        )
 
     def test_full_call_pins_url_headers_and_body_together(self, monkeypatch):
         """None of the tests above assert the URL or the headers on the
@@ -424,7 +310,7 @@ class TestClickupChatFormat:
 
         with (
             patch("services.alerting.httpx.Client", return_value=mock_client),
-            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
         ):
             send_alert("test", "msg", {})
 
@@ -436,17 +322,39 @@ class TestClickupChatFormat:
 
 
 class TestCallTimeCapture:
-    """ALERT_WEBHOOK_FORMAT and ALERT_WEBHOOK_AUTH must be read once, at
-    send_alert() call time, and closed over by _fire, not re-read from
-    os.environ when the thread actually runs. _make_sync_thread runs the
+    """ALERT_WEBHOOK_URL, ALERT_WEBHOOK_FORMAT and ALERT_WEBHOOK_AUTH must
+    each be read once, at send_alert() call time, and closed over by _fire,
+    not re-read from os.environ when the thread actually runs. A plain
+    synchronous stub (_make_sync_thread() with no arguments) runs the
     closure inline, at the same moment as the rest of send_alert, so it
-    cannot tell capture from re-read for these two settings: whichever way
-    the code is written, the environment has not changed by the time _fire
-    executes. These tests use _make_env_popping_sync_thread instead, exactly
-    as test_url_captured_once_not_reread_when_thread_runs already does for
-    ALERT_WEBHOOK_URL, so that a re-read regression has an environment to be
-    caught re-reading from.
+    cannot tell capture from re-read: whichever way the code is written,
+    the environment has not changed by the time _fire executes. These tests
+    instead pass the setting's name to _make_sync_thread so it is popped
+    from the environment just before _fire runs, so that a re-read
+    regression has an environment to be caught re-reading from.
     """
+
+    def test_url_captured_once_not_reread_when_thread_runs(self, monkeypatch):
+        """The URL send_alert captures at call time must be the one the
+        thread posts to, even if the environment changes before the thread
+        actually runs. Guards against _fire re-reading os.environ instead of
+        closing over the captured value, which would post to whatever URL
+        (or none) happens to be set when the thread executes rather than the
+        one in force when the alert was raised.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        mock_client = _make_mock_client()
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread("ALERT_WEBHOOK_URL")),
+        ):
+            send_alert("test", "msg")
+
+        mock_client.post.assert_called_once_with(
+            "http://test-hook/alert",
+            json={"alert_type": "test", "message": "msg", "timestamp": ANY, "meta": {}},
+        )
 
     def test_format_captured_once_not_reread_when_thread_runs(self, monkeypatch):
         """ALERT_WEBHOOK_FORMAT set to clickup_chat must still produce the
@@ -464,7 +372,7 @@ class TestCallTimeCapture:
             patch("services.alerting.httpx.Client", return_value=mock_client),
             patch(
                 "services.alerting.threading.Thread",
-                side_effect=_make_env_popping_sync_thread("ALERT_WEBHOOK_FORMAT"),
+                side_effect=_make_sync_thread("ALERT_WEBHOOK_FORMAT"),
             ),
         ):
             send_alert("test", "msg", {})
@@ -491,7 +399,7 @@ class TestCallTimeCapture:
             patch("services.alerting.httpx.Client", return_value=mock_client),
             patch(
                 "services.alerting.threading.Thread",
-                side_effect=_make_env_popping_sync_thread("ALERT_WEBHOOK_AUTH"),
+                side_effect=_make_sync_thread("ALERT_WEBHOOK_AUTH"),
             ),
         ):
             send_alert("test", "msg")
@@ -545,3 +453,18 @@ class TestLogDestination:
 
         assert "://None" not in caplog.text
         assert "://" not in caplog.text
+
+    def test_unbalanced_ipv6_bracket_does_not_raise(self, monkeypatch, caplog):
+        """ALERT_WEBHOOK_URL='http://[::1' makes urlsplit() raise
+        ValueError("Invalid IPv6 URL") rather than return an unparsed
+        result. main.py calls log_destination() at module scope, before
+        uvicorn starts, so an uncaught exception here would take the whole
+        server down over a typo in this optional, best-effort setting.
+        Falls into the same "does not parse as a URL" branch as any other
+        unparseable value.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://[::1")
+        with caplog.at_level(logging.INFO):
+            _alerting.log_destination()  # must not raise
+
+        assert "does not parse as a URL" in caplog.text

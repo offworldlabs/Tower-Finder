@@ -45,8 +45,12 @@ def _reset_for_tests() -> None:
         _last_sent.clear()
 
 
+def _webhook_url() -> str:
+    return os.getenv("ALERT_WEBHOOK_URL", "")
+
+
 def is_enabled() -> bool:
-    return bool(os.getenv("ALERT_WEBHOOK_URL", ""))
+    return bool(_webhook_url())
 
 
 def _cooldown_s() -> float:
@@ -115,12 +119,20 @@ def log_destination() -> None:
     never the Authorization value, and never the full URL, which may carry
     workspace/channel ids or other identifiers in its path or query string.
     """
-    webhook_url = os.getenv("ALERT_WEBHOOK_URL", "")
+    webhook_url = _webhook_url()
     if not webhook_url:
         logger.info("Alerting disabled: ALERT_WEBHOOK_URL is not set")
         return
-    parsed = urlsplit(webhook_url)
-    if not parsed.scheme or not parsed.hostname:
+    try:
+        parsed = urlsplit(webhook_url)
+    except ValueError:
+        # e.g. an unbalanced "[" makes urlsplit raise "Invalid IPv6 URL"
+        # rather than return an unparsed result. This is best-effort startup
+        # diagnostics, so a malformed value falls into the same "does not
+        # parse as a URL" branch below rather than propagating: it must
+        # never be able to stop the server booting.
+        parsed = None
+    if parsed is None or not parsed.scheme or not parsed.hostname:
         logger.info(
             "Alerting enabled: posting %s alerts (ALERT_WEBHOOK_URL does not parse as a URL)", _webhook_format()
         )
@@ -130,14 +142,15 @@ def log_destination() -> None:
 
 def send_alert(alert_type: str, message: str, meta: dict | None = None) -> None:
     """Fire a webhook alert if not in cooldown. Non-blocking (fire-and-forget)."""
-    webhook_url = os.getenv("ALERT_WEBHOOK_URL", "")
+    webhook_url = _webhook_url()
     if not webhook_url:
         return
 
     now = time.time()
+    cooldown_s = _cooldown_s()
     with _lock:
         last = _last_sent.get(alert_type, 0)
-        if now - last < _cooldown_s():
+        if now - last < cooldown_s:
             return
         _last_sent[alert_type] = now
 
@@ -160,10 +173,9 @@ def send_alert(alert_type: str, message: str, meta: dict | None = None) -> None:
         try:
             with httpx.Client(timeout=10.0) as client:
                 post_kwargs = {"json": body}
-                # Only add the headers kwarg when there is a header to send,
-                # so the no-auth call signature stays exactly
-                # post(url, json=...): several task-1 tests pin that call
-                # with no headers kwarg at all.
+                # An empty Authorization header is not the same as no header,
+                # and the existing raw sinks are called with no headers kwarg
+                # at all, so only add it when there is a header to send.
                 if headers:
                     post_kwargs["headers"] = headers
                 resp = client.post(webhook_url, **post_kwargs)
