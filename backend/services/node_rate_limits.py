@@ -4,7 +4,7 @@ Two limiters, because the fleet reaches the server two different ways. The
 authenticated paths are limited per (node_id, endpoint) and refuse with a 429:
 the caller already holds a token, so telling it that it is going too fast leaks
 nothing it does not know. Registration has no token, so it is limited on the
-node_id in the request body and refuses with the shared 403; see task 3 below.
+node_id in the request body and refuses with the shared 403 rather than a 429.
 
 Detections are held to 8 a second, sized against the 2 Hz contract ceiling
 rather than the roughly 1.1 Hz measured cadence of D45. A node cannot exceed one
