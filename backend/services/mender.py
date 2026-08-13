@@ -58,17 +58,28 @@ def _fingerprint(pem: str) -> str:
     return hashlib.sha256(base64.b64decode(body, validate=True)).hexdigest()
 
 
+def _str_or_none(value: object) -> str | None:
+    """Coerce a value onto a field typed str | None: anything else is a malformed record."""
+    return value if isinstance(value, str) else None
+
+
 def _identity_node_id(device: dict) -> str:
     """The device's identity_data.node_id, or "" if there is no identity_data.
 
     deviceauth's older API carried identity data as a JSON-encoded string; that
     or a list here would raise AttributeError out of .get, the same shape
-    failure closed for the device list and for auth_sets.
+    failure closed for the device list and for auth_sets. A node_id that is
+    present but not a string is the same shape failure: it can never equal the
+    requested string, so left unchecked it would pass for an ordinary miss
+    rather than the malformed record it is.
     """
     identity_data = device.get("identity_data")
     if identity_data is not None and not isinstance(identity_data, dict):
         raise MenderUnreachable(f"device {device.get('id')} has malformed identity_data")
-    return (identity_data or {}).get("node_id", "")
+    node_id = (identity_data or {}).get("node_id", "")
+    if not isinstance(node_id, str):
+        raise MenderUnreachable(f"device {device.get('id')} has a non-string node_id")
+    return node_id
 
 
 def _record(device: dict) -> MenderDeviceRecord:
@@ -96,11 +107,26 @@ def _record(device: dict) -> MenderDeviceRecord:
             return MenderDeviceRecord(device.get("id", ""), node_id, "ambiguous", None, None, None)
         return MenderDeviceRecord(device.get("id", ""), node_id, status, None, None, None)
     auth_set = accepted[0]
+    status = device.get("status", "accepted")
+    if status != "accepted":
+        # The opposite contradiction to the one above (an accepted auth set
+        # while the top-level status disagrees) is not symmetric with it in
+        # consequence, so it is not refused the same way: trusting the
+        # aggregate above would admit a node with no key identified, whereas
+        # here the aggregate is the conservative reading, and auth_status
+        # below carries `status` rather than "accepted", so a caller gating
+        # registration on auth_status already fails closed on it exactly as
+        # refusing outright would. mender-auto-accept sweeps every 30 seconds,
+        # so a device caught here is ordinarily mid bring-up rather than
+        # faulty; the warning exists only to make the disagreement visible.
+        logger.warning("mender device %s has an accepted auth set but device status %s", device.get("id"), status)
     pubkey = auth_set.get("pubkey")
-    # auth_set_pubkey is str | None, so a pubkey that is not a string (a malformed
-    # record) must not reach it as-is. A string that fails to decode below is kept
-    # regardless: it is exactly the one worth carrying for diagnosis.
-    auth_set_pubkey = pubkey if isinstance(pubkey, str) else None
+    # auth_set_id and auth_set_pubkey are both str | None, so a value that is
+    # not a string (a malformed record) must not reach either field as-is. A
+    # pubkey that fails to decode below is kept regardless: it is exactly the
+    # one worth carrying for diagnosis.
+    auth_set_id = _str_or_none(auth_set.get("id"))
+    auth_set_pubkey = _str_or_none(pubkey)
     fingerprint = None
     if pubkey:
         try:
@@ -112,8 +138,8 @@ def _record(device: dict) -> MenderDeviceRecord:
     return MenderDeviceRecord(
         device.get("id", ""),
         node_id,
-        device.get("status", "accepted"),
-        auth_set.get("id"),
+        status,
+        auth_set_id,
         auth_set_pubkey,
         fingerprint,
     )
@@ -156,7 +182,14 @@ async def lookup_device(node_id: str) -> MenderDeviceRecord | None:
             response = await client.get(
                 "/api/management/v2/devauth/devices", params={"per_page": _PER_PAGE}, headers=headers
             )
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
+        # A malformed MENDER_SERVER does not necessarily raise httpx.HTTPError:
+        # httpx.InvalidURL (a non-ASCII host that fails IDNA encoding, a
+        # malformed IPv6 literal) inherits Exception rather than HTTPError in
+        # httpx 0.27, and a value with no recognisable scheme reaches urllib
+        # as a bare ValueError. Both are as much a failure to reach Mender as
+        # anything HTTPError already covers, and must not escape as an
+        # uncaught exception.
         raise MenderUnreachable(str(exc)) from exc
     if response.status_code != 200:
         # A 401 lands here too, per the module docstring: it blocks the whole fleet.

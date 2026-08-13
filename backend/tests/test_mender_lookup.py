@@ -327,6 +327,73 @@ async def test_accepted_status_with_no_accepted_auth_set_is_ambiguous(monkeypatc
     assert any("no accepted auth set" in message for message in caplog.messages)
 
 
+async def test_a_non_ascii_mender_server_raises_mender_unreachable(monkeypatch):
+    """See lookup_device's comment: httpx.InvalidURL (an IDNA encoding failure
+    on a non-ASCII host) inherits Exception rather than HTTPError in httpx
+    0.27, so a MENDER_SERVER this malformed would otherwise 500 the register
+    handler instead of returning the shared 403."""
+    monkeypatch.setenv("MENDER_SERVER", "http://☃.com")
+    monkeypatch.setattr(mender, "_transport", _responds([]))
+    with pytest.raises(mender.MenderUnreachable):
+        await mender.lookup_device("ret1a2b3c4d")
+
+
+async def test_a_garbage_mender_server_raises_mender_unreachable(monkeypatch):
+    """See lookup_device's comment: a MENDER_SERVER with no recognisable
+    scheme reaches urllib as a bare ValueError, not an httpx.HTTPError."""
+    monkeypatch.setenv("MENDER_SERVER", "not a url at all")
+    monkeypatch.setattr(mender, "_transport", _responds([]))
+    with pytest.raises(mender.MenderUnreachable):
+        await mender.lookup_device("ret1a2b3c4d")
+
+
+async def test_a_non_string_node_id_raises_mender_unreachable(monkeypatch):
+    """See _identity_node_id's comment: a node_id that is present but not a
+    string can never equal the requested string, so without the guard the
+    device would pass for an ordinary miss and a scan that finds nothing else
+    would wrongly return None instead of raising."""
+    device = _device("ret1a2b3c4d")
+    device["identity_data"] = {"node_id": 12345}
+    monkeypatch.setattr(mender, "_transport", _responds([device]))
+    with pytest.raises(mender.MenderUnreachable):
+        await mender.lookup_device("ret1a2b3c4d")
+
+
+async def test_a_non_string_auth_set_id_resolves_without_it(monkeypatch):
+    """See _record's comment: auth_set_id is str | None, same as
+    auth_set_pubkey above it, so a value that is not a string must not reach
+    it as-is."""
+    monkeypatch.setattr(
+        mender,
+        "_transport",
+        _responds([_device("ret1a2b3c4d", auth_sets=[{"id": 12345, "status": "accepted", "pubkey": PUBKEY}])]),
+    )
+    record = await mender.lookup_device("ret1a2b3c4d")
+    assert record is not None
+    assert record.auth_status == "accepted"
+    assert record.auth_set_id is None
+
+
+async def test_an_accepted_auth_set_with_a_non_accepted_status_warns_but_resolves_to_its_own_status(
+    monkeypatch, caplog
+):
+    """See _record's comment for why this direction warns rather than
+    refuses, unlike the top-level-accepted/no-accepted-auth-set contradiction
+    above: auth_status still carries the device's own status."""
+    accepted_set = {"id": "as-1", "status": "accepted", "pubkey": PUBKEY}
+    monkeypatch.setattr(
+        mender,
+        "_transport",
+        _responds([_device("ret1a2b3c4d", status="pending", auth_sets=[accepted_set])]),
+    )
+    with caplog.at_level(logging.WARNING, logger=mender.logger.name):
+        record = await mender.lookup_device("ret1a2b3c4d")
+    assert record is not None
+    assert record.auth_status == "pending"
+    assert record.auth_set_id == "as-1"
+    assert any("accepted auth set but device status" in message for message in caplog.messages)
+
+
 async def test_a_full_page_logs_a_warning_and_still_resolves(monkeypatch, caplog):
     """A device past _PER_PAGE resolves to the same None as one Mender has never
     heard of; the warning is what tells the two apart, so it must fire on a full
