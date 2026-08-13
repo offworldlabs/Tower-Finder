@@ -7,7 +7,6 @@ every enrolment in the fleet is blocked, and that difference belongs in an alert
 """
 
 import base64
-import binascii
 import hashlib
 import logging
 import os
@@ -22,8 +21,8 @@ MENDER_PAT = os.getenv("MENDER_PAT", "")
 MENDER_TIMEOUT_S = float(os.getenv("MENDER_TIMEOUT_S", "3.0"))
 
 # The page size the client-side filter needs to see the whole fleet in one request.
-# Phase 1 targets twelve nodes and the tenant holds fifteen devices, so this is one
-# page with room to spare; a fleet past 500 needs pagination here, not a bigger number.
+# Phase 1 targets twelve nodes, comfortably inside one page; a fleet past 500 needs
+# pagination here, not a bigger number.
 _PER_PAGE = 500
 
 # Overridden by tests with an httpx.MockTransport. None means httpx's default.
@@ -61,8 +60,9 @@ def _record(device: dict) -> MenderDeviceRecord:
     node_id = (device.get("identity_data") or {}).get("node_id", "")
     accepted = [s for s in device.get("auth_sets") or [] if s.get("status") == "accepted"]
     if len(accepted) > 1:
-        # The ADR refuses rather than choosing: picking one would silently bless
-        # whichever key happened to sort first on a device with two live identities.
+        # The phase 1 ADR (claude-shared/docs/decisions/2026-08-03-node-server-phase-1.md)
+        # refuses rather than choosing: picking one would silently bless whichever key
+        # happened to sort first on a device with two live identities.
         logger.warning("mender device %s has %d accepted auth sets", device.get("id"), len(accepted))
         return MenderDeviceRecord(device.get("id", ""), node_id, "ambiguous", None, None)
     if not accepted:
@@ -73,7 +73,9 @@ def _record(device: dict) -> MenderDeviceRecord:
     if pubkey:
         try:
             fingerprint = _fingerprint(pubkey)
-        except (binascii.Error, ValueError):
+        except (ValueError, AttributeError):
+            # ValueError covers undecodable base64 (binascii.Error is a subclass);
+            # AttributeError covers a pubkey that is not a string at all.
             logger.warning("mender device %s has an undecodable pubkey", device.get("id"))
     return MenderDeviceRecord(
         device.get("id", ""),
@@ -109,10 +111,29 @@ async def lookup_device(node_id: str) -> MenderDeviceRecord | None:
     except httpx.HTTPError as exc:
         raise MenderUnreachable(str(exc)) from exc
     if response.status_code != 200:
-        # A 401 lands here too: a dead credential blocks the whole fleet, which is
-        # the alerting case rather than a device Mender does not know about.
+        # A 401 lands here too, per the module docstring: it blocks the whole fleet.
         raise MenderUnreachable(f"status {response.status_code}")
-    for device in response.json():
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        # A 200 with a body that is not JSON at all, e.g. an error page from
+        # something in front of Mender. Not an httpx.HTTPError, so it needs its
+        # own route to MenderUnreachable rather than an AttributeError or a
+        # KeyError surfacing as a 500 downstream.
+        raise MenderUnreachable(f"non-JSON response body: {exc}") from exc
+    if not isinstance(payload, list):
+        # Equally not an httpx.HTTPError: a JSON object body, from an error
+        # response or a future envelope change, would otherwise iterate its
+        # string keys into _record and fail there instead of here.
+        raise MenderUnreachable(f"expected a list of devices, got {type(payload).__name__}")
+    if len(payload) >= _PER_PAGE:
+        # A full page means the fleet may have grown past what one request returns,
+        # and a real device sitting beyond it resolves to the same None as one
+        # Mender has never heard of. This is what would tell the two apart.
+        logger.warning("mender device list filled the page (%d devices); the fleet may exceed _PER_PAGE", len(payload))
+    for device in payload:
+        if (device.get("identity_data") or {}).get("node_id") != node_id:
+            continue
         record = _record(device)
         if record.node_id == node_id:
             return record
