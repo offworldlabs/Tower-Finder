@@ -84,7 +84,14 @@ def _record(device: dict) -> MenderDeviceRecord:
         logger.warning("mender device %s has %d accepted auth sets", device.get("id"), len(accepted))
         return MenderDeviceRecord(device.get("id", ""), node_id, "ambiguous", None, None)
     if not accepted:
-        return MenderDeviceRecord(device.get("id", ""), node_id, device.get("status", "pending"), None, None)
+        status = device.get("status", "pending")
+        if status == "accepted":
+            # The device's own status says accepted while nothing in auth_sets
+            # agrees: the same contradiction as more than one accepted set, so
+            # it gets the same refusal rather than trusting the aggregate.
+            logger.warning("mender device %s is accepted with no accepted auth set", device.get("id"))
+            return MenderDeviceRecord(device.get("id", ""), node_id, "ambiguous", None, None)
+        return MenderDeviceRecord(device.get("id", ""), node_id, status, None, None)
     auth_set = accepted[0]
     pubkey = auth_set.get("pubkey")
     fingerprint = None
@@ -123,10 +130,15 @@ async def lookup_device(node_id: str) -> MenderDeviceRecord | None:
     # Read per call, not at import: backend/main.py calls load_dotenv() after its
     # service imports, so a module-level read here would see an empty MENDER_PAT
     # on a non-compose run and misreport a dead credential as MenderUnreachable.
-    mender_server = os.getenv("MENDER_SERVER", "https://hosted.mender.io").rstrip("/")
+    #
+    # `or` rather than getenv's own default, on this line and MENDER_TIMEOUT_S
+    # below: a variable that is set but empty (a bare `MENDER_SERVER=` line in
+    # .env, passed through by compose's env_file) is "" from getenv, not None,
+    # so getenv's own default never fires.
+    mender_server = (os.getenv("MENDER_SERVER") or "https://hosted.mender.io").rstrip("/")
     mender_pat = os.getenv("MENDER_PAT", "")
     try:
-        mender_timeout_s = float(os.getenv("MENDER_TIMEOUT_S", "3.0"))
+        mender_timeout_s = float(os.getenv("MENDER_TIMEOUT_S") or "3.0")
     except ValueError as exc:
         # A stray value here should not turn into an uncaught 500.
         raise MenderUnreachable(f"malformed MENDER_TIMEOUT_S: {exc}") from exc
@@ -160,12 +172,29 @@ async def lookup_device(node_id: str) -> MenderDeviceRecord | None:
         # and a real device sitting beyond it resolves to the same None as one
         # Mender has never heard of. This is what would tell the two apart.
         logger.warning("mender device list filled the page (%d devices); the fleet may exceed _PER_PAGE", len(payload))
+    # A malformed element (not a dict, or an unparseable identity_data) is skipped
+    # rather than raised on the spot: it runs over every device in the page, so
+    # raising here would let one unrelated bad record in the tenant block every
+    # node's registration. But a skip is not the same as a clean miss: the
+    # skipped record could have been the one asked for, and that is
+    # indistinguishable from "Mender does not know this device" without seeing
+    # its identity_data. So a skip only resolves to None if the scan finds a
+    # match despite it; if it reaches the end without one, MenderUnreachable is
+    # what the module docstring calls for whenever the answer is not certain.
+    skipped = False
     for device in payload:
         if not isinstance(device, dict):
-            # E.g. ["unauthorized"], or a future list of bare device ids: a shape
-            # problem, not "Mender does not know this device".
-            raise MenderUnreachable(f"expected a list of device objects, got element of type {type(device).__name__}")
-        if _identity_node_id(device) != node_id:
+            # E.g. ["unauthorized"], or a future list of bare device ids.
+            logger.warning("mender device list contains a non-object element of type %s", type(device).__name__)
+            skipped = True
+            continue
+        try:
+            identity = _identity_node_id(device)
+        except MenderUnreachable:
+            logger.warning("mender device %s has malformed identity_data", device.get("id"))
+            skipped = True
+            continue
+        if identity != node_id:
             continue
         record = _record(device)
         # Deliberately redundant now that node_id is matched above: this is the
@@ -173,4 +202,6 @@ async def lookup_device(node_id: str) -> MenderDeviceRecord | None:
         # changes and might rely on a filter deviceauth silently ignores.
         if record.node_id == node_id:
             return record
+    if skipped:
+        raise MenderUnreachable("a malformed device in the list could not be checked against the requested node_id")
     return None

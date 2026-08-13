@@ -134,9 +134,9 @@ async def test_a_json_object_body_raises_mender_unreachable(monkeypatch):
 
 
 async def test_a_list_of_non_dict_elements_raises_mender_unreachable(monkeypatch):
-    """A 200 carrying ["unauthorized"], or a future list of bare device ids, would
-    otherwise raise AttributeError on device.get and escape as an uncaught 500
-    instead of the shared MenderUnreachable."""
+    """A 200 carrying ["unauthorized"], or a future list of bare device ids, is
+    skipped rather than matched; see lookup_device's comment for why a scan
+    that ends with a skip and no match still raises rather than returning None."""
     monkeypatch.setattr(mender, "_transport", _responds(["unauthorized"]))
     with pytest.raises(mender.MenderUnreachable):
         await mender.lookup_device("ret1a2b3c4d")
@@ -168,10 +168,42 @@ async def test_an_auth_set_list_with_a_non_dict_element_raises_mender_unreachabl
 
 async def test_identity_data_as_a_string_raises_mender_unreachable(monkeypatch):
     """See _identity_node_id's comment for why a JSON-encoded identity_data
-    string, rather than an object, must not reach .get."""
+    string, rather than an object, must not reach .get. This is the only device
+    in the response, so the skip in lookup_device's loop leaves no match and
+    the scan still raises; see the malformed-device tests below for the case
+    where a good match is found despite a skip elsewhere in the page."""
     device = _device("ret1a2b3c4d")
     device["identity_data"] = '{"node_id": "ret1a2b3c4d"}'
     monkeypatch.setattr(mender, "_transport", _responds([device]))
+    with pytest.raises(mender.MenderUnreachable):
+        await mender.lookup_device("ret1a2b3c4d")
+
+
+async def test_a_malformed_device_ahead_of_the_requested_one_still_resolves_it(monkeypatch):
+    """See lookup_device's comment for why a malformed element is skipped
+    rather than raised on the spot: one bad record earlier in the page must
+    not stop the scan from reaching the device actually asked for."""
+    bad = _device("ret00000000")
+    bad["identity_data"] = '{"node_id": "ret00000000"}'
+    good = _device(
+        "ret1a2b3c4d",
+        auth_sets=[{"id": "as-1", "status": "accepted", "pubkey": PUBKEY, "identity_data": {"node_id": "ret1a2b3c4d"}}],
+    )
+    monkeypatch.setattr(mender, "_transport", _responds([bad, "garbage", good]))
+    record = await mender.lookup_device("ret1a2b3c4d")
+    assert record is not None
+    assert record.auth_status == "accepted"
+    assert record.auth_set_id == "as-1"
+
+
+async def test_a_malformed_device_with_no_match_raises_mender_unreachable(monkeypatch):
+    """A skip with no match is indistinguishable from the skipped record having
+    been the one asked for, so it must not resolve to the same None as a clean
+    miss; see lookup_device's comment."""
+    bad = _device("ret00000000")
+    bad["identity_data"] = '{"node_id": "ret00000000"}'
+    other = _device("retffffffff")
+    monkeypatch.setattr(mender, "_transport", _responds([other, bad]))
     with pytest.raises(mender.MenderUnreachable):
         await mender.lookup_device("ret1a2b3c4d")
 
@@ -220,6 +252,25 @@ async def test_a_malformed_timeout_raises_mender_unreachable(monkeypatch):
         await mender.lookup_device("ret1a2b3c4d")
 
 
+async def test_an_empty_timeout_falls_back_to_the_default(monkeypatch):
+    """A bare `MENDER_TIMEOUT_S=` line in .env, passed through by compose's
+    env_file, is "" from os.getenv, not unset; see lookup_device's comment for
+    why that must fall back to the default rather than reach float()."""
+    monkeypatch.setenv("MENDER_TIMEOUT_S", "")
+    monkeypatch.setattr(mender, "_transport", _responds([]))
+    assert await mender.lookup_device("ret1a2b3c4d") is None
+
+
+async def test_an_empty_server_falls_back_to_the_default(monkeypatch):
+    """Same set-but-empty case as MENDER_TIMEOUT_S above, see lookup_device's
+    comment: a bare `MENDER_SERVER=` line in .env leaves base_url empty rather
+    than reaching the default, and httpx then has no host to send the request
+    to at all."""
+    monkeypatch.setenv("MENDER_SERVER", "")
+    monkeypatch.setattr(mender, "_transport", _responds([]))
+    assert await mender.lookup_device("ret1a2b3c4d") is None
+
+
 async def test_a_non_string_pubkey_resolves_without_a_fingerprint(monkeypatch):
     """A pubkey that is not a string raises AttributeError out of str.splitlines,
     not the binascii/ValueError that an undecodable string raises."""
@@ -244,6 +295,22 @@ async def test_more_than_one_accepted_set_is_refused_rather_than_resolved(monkey
     record = await mender.lookup_device("ret1a2b3c4d")
     assert record is not None and record.auth_status == "ambiguous"
     assert record.auth_set_id is None and record.auth_set_fingerprint is None
+
+
+async def test_accepted_status_with_no_accepted_auth_set_is_ambiguous(monkeypatch, caplog):
+    """See _record's comment: a device claiming accepted at the top level while
+    no auth set agrees is the same contradiction as more than one accepted set,
+    so it resolves the same way rather than trusting the aggregate status."""
+    monkeypatch.setattr(
+        mender,
+        "_transport",
+        _responds([_device("ret1a2b3c4d", status="accepted", auth_sets=[{"id": "as-1", "status": "pending"}])]),
+    )
+    with caplog.at_level(logging.WARNING, logger=mender.logger.name):
+        record = await mender.lookup_device("ret1a2b3c4d")
+    assert record is not None and record.auth_status == "ambiguous"
+    assert record.auth_set_id is None and record.auth_set_fingerprint is None
+    assert any("no accepted auth set" in message for message in caplog.messages)
 
 
 async def test_a_full_page_logs_a_warning_and_still_resolves(monkeypatch, caplog):
