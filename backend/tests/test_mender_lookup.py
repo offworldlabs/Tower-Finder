@@ -1,3 +1,5 @@
+import logging
+
 import httpx
 import pytest
 
@@ -111,8 +113,8 @@ async def test_a_401_raises_mender_unreachable(monkeypatch):
 
 
 async def test_a_non_json_200_raises_mender_unreachable(monkeypatch):
-    """Not an httpx.HTTPError, so it needs its own route to MenderUnreachable:
-    an error page served with a 200 is otherwise a bare JSONDecodeError."""
+    """An error page served with a 200 is otherwise a bare JSONDecodeError; see
+    lookup_device's comment for why this needs its own route to MenderUnreachable."""
 
     async def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"<html>not json</html>")
@@ -123,8 +125,9 @@ async def test_a_non_json_200_raises_mender_unreachable(monkeypatch):
 
 
 async def test_a_json_object_body_raises_mender_unreachable(monkeypatch):
-    """A JSON object rather than a device list, from an error response or a future
-    envelope change, would otherwise iterate its string keys into _record."""
+    """A JSON object rather than a device list, e.g. from an error response or a
+    future envelope change; see lookup_device's comment for why this must not
+    reach _record."""
     monkeypatch.setattr(mender, "_transport", _responds({"devices": []}))
     with pytest.raises(mender.MenderUnreachable):
         await mender.lookup_device("ret1a2b3c4d")
@@ -154,3 +157,17 @@ async def test_more_than_one_accepted_set_is_refused_rather_than_resolved(monkey
     record = await mender.lookup_device("ret1a2b3c4d")
     assert record is not None and record.auth_status == "ambiguous"
     assert record.auth_set_id is None and record.auth_set_fingerprint is None
+
+
+async def test_a_full_page_logs_a_warning_and_still_resolves(monkeypatch, caplog):
+    """A device past _PER_PAGE resolves to the same None as one Mender has never
+    heard of; the warning is what tells the two apart, so it must fire on a full
+    page. _PER_PAGE is pinned down to keep the fixture to two devices rather than
+    five hundred."""
+    monkeypatch.setattr(mender, "_PER_PAGE", 2)
+    devices = [_device("ret1a2b3c4d", status="pending"), _device("ret2b3c4d5e", status="pending")]
+    monkeypatch.setattr(mender, "_transport", _responds(devices))
+    with caplog.at_level(logging.WARNING, logger=mender.logger.name):
+        record = await mender.lookup_device("ret1a2b3c4d")
+    assert record is not None and record.auth_status == "pending"
+    assert any("filled the page" in message for message in caplog.messages)

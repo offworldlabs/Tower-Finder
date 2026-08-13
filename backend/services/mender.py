@@ -113,18 +113,19 @@ async def lookup_device(node_id: str) -> MenderDeviceRecord | None:
     if response.status_code != 200:
         # A 401 lands here too, per the module docstring: it blocks the whole fleet.
         raise MenderUnreachable(f"status {response.status_code}")
+    # A 200 does not guarantee a device list: neither of the next two checks is
+    # an httpx.HTTPError, so each needs its own explicit route to MenderUnreachable
+    # rather than surfacing as an uncaught exception downstream.
     try:
         payload = response.json()
     except ValueError as exc:
         # A 200 with a body that is not JSON at all, e.g. an error page from
-        # something in front of Mender. Not an httpx.HTTPError, so it needs its
-        # own route to MenderUnreachable rather than an AttributeError or a
-        # KeyError surfacing as a 500 downstream.
+        # something in front of Mender.
         raise MenderUnreachable(f"non-JSON response body: {exc}") from exc
     if not isinstance(payload, list):
-        # Equally not an httpx.HTTPError: a JSON object body, from an error
-        # response or a future envelope change, would otherwise iterate its
-        # string keys into _record and fail there instead of here.
+        # A JSON object body, from an error response or a future envelope change,
+        # would otherwise iterate its string keys into _record and fail there
+        # instead of here.
         raise MenderUnreachable(f"expected a list of devices, got {type(payload).__name__}")
     if len(payload) >= _PER_PAGE:
         # A full page means the fleet may have grown past what one request returns,
@@ -135,6 +136,9 @@ async def lookup_device(node_id: str) -> MenderDeviceRecord | None:
         if (device.get("identity_data") or {}).get("node_id") != node_id:
             continue
         record = _record(device)
+        # Deliberately redundant now that node_id is matched above: this is the
+        # fail-closed guard the docstring describes, kept for when the query
+        # changes and might rely on a filter deviceauth silently ignores.
         if record.node_id == node_id:
             return record
     return None
