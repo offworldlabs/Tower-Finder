@@ -154,12 +154,34 @@ async def test_a_non_list_auth_sets_raises_mender_unreachable(monkeypatch):
         await mender.lookup_device("ret1a2b3c4d")
 
 
+async def test_an_auth_set_list_with_a_non_dict_element_raises_mender_unreachable(monkeypatch):
+    """See _record's comment: a list containing a non-dict element fails the
+    same way as auth_sets being a dict outright."""
+    monkeypatch.setattr(
+        mender,
+        "_transport",
+        _responds([_device("ret1a2b3c4d", auth_sets=[{"id": "as-1", "status": "accepted"}, "garbage"])]),
+    )
+    with pytest.raises(mender.MenderUnreachable):
+        await mender.lookup_device("ret1a2b3c4d")
+
+
+async def test_identity_data_as_a_string_raises_mender_unreachable(monkeypatch):
+    """See _identity_node_id's comment for why a JSON-encoded identity_data
+    string, rather than an object, must not reach .get."""
+    device = _device("ret1a2b3c4d")
+    device["identity_data"] = '{"node_id": "ret1a2b3c4d"}'
+    monkeypatch.setattr(mender, "_transport", _responds([device]))
+    with pytest.raises(mender.MenderUnreachable):
+        await mender.lookup_device("ret1a2b3c4d")
+
+
 async def test_a_non_pem_pubkey_resolves_without_a_fingerprint(monkeypatch):
     """An OpenSSH-style key has no '-----' lines, so the whole string becomes the
-    decode body; every character of 'ssh-rsa' is in the base64 alphabet, so
-    without validate=True this would silently fingerprint the wrong bytes rather
-    than raise into the except clause below."""
-    ssh_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC user@host"
+    decode body, and its stripped length is still a multiple of 4; see
+    _fingerprint's comment for why validate=True is what rejects it rather than
+    the length check alone."""
+    ssh_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKrPxK2u4pJd3vN7QeR1sT9wXyZ0aBcDeFgHiJkLmNoP al@host"
     monkeypatch.setattr(
         mender,
         "_transport",
@@ -188,9 +210,12 @@ async def test_mender_pat_set_after_import_is_picked_up(monkeypatch):
 
 
 async def test_a_malformed_timeout_raises_mender_unreachable(monkeypatch):
-    """MENDER_TIMEOUT_S is parsed inside lookup_device now, so a malformed value
-    would otherwise raise an uncaught ValueError there instead of at import."""
+    """See lookup_device's comment for why MENDER_TIMEOUT_S is read per call
+    rather than at import; the mock transport is set so a build that regresses
+    to an import-time read (env var not yet malformed) still hits an assertion,
+    rather than falling through to a real request against MENDER_SERVER."""
     monkeypatch.setenv("MENDER_TIMEOUT_S", "not-a-number")
+    monkeypatch.setattr(mender, "_transport", _responds([]))
     with pytest.raises(mender.MenderUnreachable):
         await mender.lookup_device("ret1a2b3c4d")
 

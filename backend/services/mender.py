@@ -55,8 +55,21 @@ def _fingerprint(pem: str) -> str:
     return hashlib.sha256(base64.b64decode(body, validate=True)).hexdigest()
 
 
+def _identity_node_id(device: dict) -> str:
+    """The device's identity_data.node_id, or "" if there is no identity_data.
+
+    deviceauth's older API carried identity data as a JSON-encoded string; that
+    or a list here would raise AttributeError out of .get, the same shape
+    failure closed for the device list and for auth_sets.
+    """
+    identity_data = device.get("identity_data")
+    if identity_data is not None and not isinstance(identity_data, dict):
+        raise MenderUnreachable(f"device {device.get('id')} has malformed identity_data")
+    return (identity_data or {}).get("node_id", "")
+
+
 def _record(device: dict) -> MenderDeviceRecord:
-    node_id = (device.get("identity_data") or {}).get("node_id", "")
+    node_id = _identity_node_id(device)
     auth_sets = device.get("auth_sets") or []
     if not isinstance(auth_sets, list) or not all(isinstance(s, dict) for s in auth_sets):
         # auth_sets as a dict would iterate its string keys into s.get and raise
@@ -152,7 +165,7 @@ async def lookup_device(node_id: str) -> MenderDeviceRecord | None:
             # E.g. ["unauthorized"], or a future list of bare device ids: a shape
             # problem, not "Mender does not know this device".
             raise MenderUnreachable(f"expected a list of device objects, got element of type {type(device).__name__}")
-        if (device.get("identity_data") or {}).get("node_id") != node_id:
+        if _identity_node_id(device) != node_id:
             continue
         record = _record(device)
         # Deliberately redundant now that node_id is matched above: this is the
