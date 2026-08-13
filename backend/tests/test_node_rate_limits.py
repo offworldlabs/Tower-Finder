@@ -354,6 +354,22 @@ def test_a_full_registration_map_still_serves_a_node_id_it_already_tracks():
     assert limiter.admit("ret000000001") is None
 
 
+def test_a_full_map_admits_a_tracked_node_whose_hourly_key_expired_but_daily_key_is_live():
+    """A tracked node must not be refused just because a reclaim swept one of its
+    two keys: the hourly key expires every hour by design, and its daily sibling
+    being alive with allowance left is what makes this node a known identity
+    rather than one the map has never seen."""
+    clock = FakeClock(0.0)
+    limiter = _registration(clock, max_tracked=4)
+    limiter.admit("ret000000000")  # hourly and daily keys open at t=0
+    clock.advance(3600)  # ret000000000's hourly key is now expired
+    limiter.admit("ret000000001")  # fills the map; does not yet trigger reclaim
+    limiter.admit("ret000000002")  # crowds the map: this call's reclaim sweeps the
+    # expired hourly key of ret000000000, then admits ret000000002 past the bound
+    assert limiter.tracked_counters >= 4
+    assert limiter.admit("ret000000000") is None
+
+
 def test_a_previously_refused_node_id_is_admitted_once_its_window_is_reclaimed():
     clock = FakeClock(0.0)
     limiter = _registration(clock, max_tracked=4)

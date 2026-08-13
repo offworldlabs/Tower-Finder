@@ -109,8 +109,16 @@ class _FixedWindowCounters:
         with self._lock:
             self._reclaim_if_crowded(now)
             if self._refuse_when_full and len(self._counters) >= self._max_tracked:
-                unseen = [key for key, _limit, _window_s in specs if key not in self._counters]
-                if unseen:
+                # Refuse only a caller none of whose keys are tracked: that is the
+                # identity an attacker can manufacture. A caller with even one live
+                # key is already known to the map, so it is admitted, even if that
+                # re-inserts a sibling key (an hourly counter the reclaim above just
+                # swept, say) that a full map would otherwise have refused room for.
+                # The bound therefore caps distinct identities rather than exact key
+                # counts, and a known caller can carry the map a little past
+                # max_tracked, up to about twice it in the worst case, rather than
+                # costing an identity it already tracks.
+                if all(key not in self._counters for key, _limit, _window_s in specs):
                     return min(window_s for _key, _limit, window_s in specs)
             for key, limit, _window_s in specs:
                 window_end, count = self._counters.get(key, (0.0, 0))
