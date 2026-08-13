@@ -64,6 +64,10 @@ async def test_an_accepted_device_resolves(monkeypatch):
     record = await mender.lookup_device("ret1a2b3c4d")
     assert record is not None
     assert record.auth_status == "accepted"
+    # Mender's own device id, distinct from node_id and the auth set's id. It is what
+    # an operator searches the tenant by when a registration is refused, so it comes
+    # off the device rather than the auth set and is asserted here for that reason.
+    assert record.mender_device_id == "b7e2"
     assert record.auth_set_id == "as-1"
     assert record.auth_set_pubkey == REAL_PUBKEY
     assert record.auth_set_fingerprint == EXPECTED_FINGERPRINT
