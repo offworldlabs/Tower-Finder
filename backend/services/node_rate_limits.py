@@ -41,10 +41,15 @@ Clock = Callable[[], float]
 # room for several times that before anything is said.
 MAX_TRACKED_KEYS = 512
 
-# The registration limiter's keys are a node_id an unauthenticated caller supplies
-# in the request body, so this bound is enforced rather than merely reported: fifty
-# nodes need 100 registration counters, two per node.
-MAX_REGISTRATION_KEYS = 256
+# The registration limiter's keys are a node_id an unauthenticated caller supplies in
+# the request body, so this bound is enforced rather than merely reported: a full map
+# refuses identities it has never seen. Its size is therefore a security parameter and
+# not a fleet estimate. Fifty nodes need 100 counters, two per node, and everything
+# above that is what an attacker has to get admitted before the map is full and every
+# node it does not already hold is locked out until the counters expire. At one dict
+# entry each, 25,000 identities cost single-digit megabytes, which the droplet can
+# spare far more easily than it can spare the endpoint.
+MAX_REGISTRATION_KEYS = 50_000
 
 OVERFLOW_LOG_INTERVAL_S = 60.0
 RECLAIM_INTERVAL_S = 1.0
@@ -119,7 +124,10 @@ class _FixedWindowCounters:
                 # max_tracked, up to about twice it in the worst case, rather than
                 # costing an identity it already tracks.
                 if all(key not in self._counters for key, _limit, _window_s in specs):
-                    return min(window_s for _key, _limit, window_s in specs)
+                    # A lower bound on the wait rather than a countdown to anything:
+                    # room appears when a live counter expires, which no cheap sum can
+                    # predict, and never before the next reclaim.
+                    return RECLAIM_INTERVAL_S
             for key, limit, _window_s in specs:
                 window_end, count = self._counters.get(key, (0.0, 0))
                 if window_end > now and count >= limit:
