@@ -16,10 +16,6 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-MENDER_SERVER = os.getenv("MENDER_SERVER", "https://hosted.mender.io").rstrip("/")
-MENDER_PAT = os.getenv("MENDER_PAT", "")
-MENDER_TIMEOUT_S = float(os.getenv("MENDER_TIMEOUT_S", "3.0"))
-
 # The page size the client-side filter needs to see the whole fleet in one request.
 # Phase 1 targets twelve nodes, comfortably inside one page; a fleet past 500 needs
 # pagination here, not a bigger number.
@@ -53,12 +49,21 @@ class MenderDeviceRecord:
 def _fingerprint(pem: str) -> str:
     """SHA-256 over the DER SPKI, which is the base64 body of the PEM decoded."""
     body = "".join(line for line in pem.splitlines() if "-----" not in line)
-    return hashlib.sha256(base64.b64decode(body)).hexdigest()
+    # validate=True: without it, b64decode silently drops characters outside the
+    # base64 alphabet instead of raising, so a non-PEM key (an OpenSSH line, say)
+    # would fingerprint the wrong bytes rather than hit the except clause below.
+    return hashlib.sha256(base64.b64decode(body, validate=True)).hexdigest()
 
 
 def _record(device: dict) -> MenderDeviceRecord:
     node_id = (device.get("identity_data") or {}).get("node_id", "")
-    accepted = [s for s in device.get("auth_sets") or [] if s.get("status") == "accepted"]
+    auth_sets = device.get("auth_sets") or []
+    if not isinstance(auth_sets, list) or not all(isinstance(s, dict) for s in auth_sets):
+        # auth_sets as a dict would iterate its string keys into s.get and raise
+        # AttributeError; a list containing a non-dict element fails the same way.
+        # Both are Mender answering something unintelligible, not "no accepted set".
+        raise MenderUnreachable(f"device {device.get('id')} has a malformed auth_sets")
+    accepted = [s for s in auth_sets if s.get("status") == "accepted"]
     if len(accepted) > 1:
         # The phase 1 ADR (claude-shared/docs/decisions/2026-08-03-node-server-phase-1.md)
         # refuses rather than choosing: picking one would silently bless whichever key
@@ -102,9 +107,19 @@ async def lookup_device(node_id: str) -> MenderDeviceRecord | None:
     operator actions. The wire cannot tell them apart (both are the shared 403),
     but the log can, and during bring-up most of the fleet is pending.
     """
-    headers = {"Authorization": f"Bearer {MENDER_PAT}"}
+    # Read per call, not at import: backend/main.py calls load_dotenv() after its
+    # service imports, so a module-level read here would see an empty MENDER_PAT
+    # on a non-compose run and misreport a dead credential as MenderUnreachable.
+    mender_server = os.getenv("MENDER_SERVER", "https://hosted.mender.io").rstrip("/")
+    mender_pat = os.getenv("MENDER_PAT", "")
     try:
-        async with httpx.AsyncClient(base_url=MENDER_SERVER, timeout=MENDER_TIMEOUT_S, transport=_transport) as client:
+        mender_timeout_s = float(os.getenv("MENDER_TIMEOUT_S", "3.0"))
+    except ValueError as exc:
+        # A stray value here should not turn into an uncaught 500.
+        raise MenderUnreachable(f"malformed MENDER_TIMEOUT_S: {exc}") from exc
+    headers = {"Authorization": f"Bearer {mender_pat}"}
+    try:
+        async with httpx.AsyncClient(base_url=mender_server, timeout=mender_timeout_s, transport=_transport) as client:
             response = await client.get(
                 "/api/management/v2/devauth/devices", params={"per_page": _PER_PAGE}, headers=headers
             )
@@ -133,6 +148,10 @@ async def lookup_device(node_id: str) -> MenderDeviceRecord | None:
         # Mender has never heard of. This is what would tell the two apart.
         logger.warning("mender device list filled the page (%d devices); the fleet may exceed _PER_PAGE", len(payload))
     for device in payload:
+        if not isinstance(device, dict):
+            # E.g. ["unauthorized"], or a future list of bare device ids: a shape
+            # problem, not "Mender does not know this device".
+            raise MenderUnreachable(f"expected a list of device objects, got element of type {type(device).__name__}")
         if (device.get("identity_data") or {}).get("node_id") != node_id:
             continue
         record = _record(device)

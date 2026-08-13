@@ -133,6 +133,68 @@ async def test_a_json_object_body_raises_mender_unreachable(monkeypatch):
         await mender.lookup_device("ret1a2b3c4d")
 
 
+async def test_a_list_of_non_dict_elements_raises_mender_unreachable(monkeypatch):
+    """A 200 carrying ["unauthorized"], or a future list of bare device ids, would
+    otherwise raise AttributeError on device.get and escape as an uncaught 500
+    instead of the shared MenderUnreachable."""
+    monkeypatch.setattr(mender, "_transport", _responds(["unauthorized"]))
+    with pytest.raises(mender.MenderUnreachable):
+        await mender.lookup_device("ret1a2b3c4d")
+
+
+async def test_a_non_list_auth_sets_raises_mender_unreachable(monkeypatch):
+    """auth_sets as a dict would iterate its string keys into s.get and raise
+    AttributeError instead of the shared MenderUnreachable."""
+    monkeypatch.setattr(
+        mender,
+        "_transport",
+        _responds([_device("ret1a2b3c4d", auth_sets={"status": "accepted"})]),
+    )
+    with pytest.raises(mender.MenderUnreachable):
+        await mender.lookup_device("ret1a2b3c4d")
+
+
+async def test_a_non_pem_pubkey_resolves_without_a_fingerprint(monkeypatch):
+    """An OpenSSH-style key has no '-----' lines, so the whole string becomes the
+    decode body; every character of 'ssh-rsa' is in the base64 alphabet, so
+    without validate=True this would silently fingerprint the wrong bytes rather
+    than raise into the except clause below."""
+    ssh_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC user@host"
+    monkeypatch.setattr(
+        mender,
+        "_transport",
+        _responds([_device("ret1a2b3c4d", auth_sets=[{"id": "as-1", "status": "accepted", "pubkey": ssh_key}])]),
+    )
+    record = await mender.lookup_device("ret1a2b3c4d")
+    assert record is not None
+    assert record.auth_status == "accepted"
+    assert record.auth_set_fingerprint is None
+
+
+async def test_mender_pat_set_after_import_is_picked_up(monkeypatch):
+    """MENDER_PAT is read inside lookup_device, not at import, so a value set on
+    the environment after the module has loaded (e.g. by load_dotenv() running
+    later in backend/main.py) still reaches the request."""
+    seen_auth = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_auth["header"] = request.headers.get("authorization")
+        return httpx.Response(200, json=[])
+
+    monkeypatch.setenv("MENDER_PAT", "late-token")
+    monkeypatch.setattr(mender, "_transport", httpx.MockTransport(handler))
+    await mender.lookup_device("ret1a2b3c4d")
+    assert seen_auth["header"] == "Bearer late-token"
+
+
+async def test_a_malformed_timeout_raises_mender_unreachable(monkeypatch):
+    """MENDER_TIMEOUT_S is parsed inside lookup_device now, so a malformed value
+    would otherwise raise an uncaught ValueError there instead of at import."""
+    monkeypatch.setenv("MENDER_TIMEOUT_S", "not-a-number")
+    with pytest.raises(mender.MenderUnreachable):
+        await mender.lookup_device("ret1a2b3c4d")
+
+
 async def test_a_non_string_pubkey_resolves_without_a_fingerprint(monkeypatch):
     """A pubkey that is not a string raises AttributeError out of str.splitlines,
     not the binascii/ValueError that an undecodable string raises."""
