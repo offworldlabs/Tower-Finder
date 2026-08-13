@@ -197,9 +197,11 @@ async def test_a_malformed_device_ahead_of_the_requested_one_still_resolves_it(m
 
 
 async def test_a_malformed_device_with_no_match_raises_mender_unreachable(monkeypatch):
-    """A skip with no match is indistinguishable from the skipped record having
-    been the one asked for, so it must not resolve to the same None as a clean
-    miss; see lookup_device's comment."""
+    """This test passes even with the skip-and-keep-scanning behaviour reverted,
+    since an unconditional raise on any malformed device also raises here. It is
+    kept as the guard against the opposite regression: dropping the `skipped`
+    flag so a scan that skipped a record resolves to None like a clean miss;
+    see lookup_device's comment for why that would be wrong."""
     bad = _device("ret00000000")
     bad["identity_data"] = '{"node_id": "ret00000000"}'
     other = _device("retffffffff")
@@ -263,9 +265,9 @@ async def test_an_empty_timeout_falls_back_to_the_default(monkeypatch):
 
 async def test_an_empty_server_falls_back_to_the_default(monkeypatch):
     """Same set-but-empty case as MENDER_TIMEOUT_S above, see lookup_device's
-    comment: a bare `MENDER_SERVER=` line in .env leaves base_url empty rather
-    than reaching the default, and httpx then has no host to send the request
-    to at all."""
+    comment: a bare `MENDER_SERVER=` line in .env leaves the env var set to ""
+    rather than unset, and the `or` fallback there is what keeps base_url at
+    the default instead of reaching an empty string."""
     monkeypatch.setenv("MENDER_SERVER", "")
     monkeypatch.setattr(mender, "_transport", _responds([]))
     assert await mender.lookup_device("ret1a2b3c4d") is None

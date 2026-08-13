@@ -172,15 +172,10 @@ async def lookup_device(node_id: str) -> MenderDeviceRecord | None:
         # and a real device sitting beyond it resolves to the same None as one
         # Mender has never heard of. This is what would tell the two apart.
         logger.warning("mender device list filled the page (%d devices); the fleet may exceed _PER_PAGE", len(payload))
-    # A malformed element (not a dict, or an unparseable identity_data) is skipped
-    # rather than raised on the spot: it runs over every device in the page, so
-    # raising here would let one unrelated bad record in the tenant block every
-    # node's registration. But a skip is not the same as a clean miss: the
-    # skipped record could have been the one asked for, and that is
-    # indistinguishable from "Mender does not know this device" without seeing
-    # its identity_data. So a skip only resolves to None if the scan finds a
-    # match despite it; if it reaches the end without one, MenderUnreachable is
-    # what the module docstring calls for whenever the answer is not certain.
+    # A malformed element (not a dict, or an unparseable identity_data) is skipped rather than raised on
+    # the spot: the loop runs over every device in the page, so raising here would let one unrelated bad
+    # record block every node's registration. The skip is forgiven only if the scan still finds its
+    # match; otherwise the skipped record could have been the one asked for (see the module docstring).
     skipped = False
     for device in payload:
         if not isinstance(device, dict):
