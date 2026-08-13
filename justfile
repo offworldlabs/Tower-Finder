@@ -269,7 +269,6 @@ deploy-test:
     #    notion of "tracked anyway", which git does: a tracked file still ships
     #    even when a pattern matches it. Without these the gitignore filter below
     #    silently drops them and --delete removes them from the droplet.
-    #      tar1090/          — gitignored, but the Dockerfile COPYs it
     #      metro_tower_cache — tracked in retina-simulation, whose own .gitignore
     #                          says *.json; it is what spares fleet generation the
     #                          Tower API round-trips
@@ -286,8 +285,6 @@ deploy-test:
         --exclude 'backend/.env'
         --exclude 'backend/data'
         --exclude 'backend/coverage_data'
-        --include 'tar1090/'
-        --include 'tar1090/**'
         --include '**/metro_tower_cache.json'
         --include '**/.gitkeep'
         --filter=':- .gitignore'
