@@ -15,8 +15,18 @@ Three layers, in order of what they catch:
    schedule. Catches: degraded-but-running conditions (stale tasks, queue
    saturation, disk/memory pressure, solver accuracy, node dropout, etc.).
 
-2. **Webhook delivery.** `services/alerting.py` POSTs a JSON payload to
-   `ALERT_WEBHOOK_URL` (a Slack/Discord/PagerDuty incoming webhook). Alerts are
+2. **Webhook delivery.** `services/alerting.py` POSTs to `ALERT_WEBHOOK_URL`.
+   `ALERT_WEBHOOK_FORMAT` selects the body shape: `raw` (default) sends a
+   plain JSON payload, for a Slack/Discord/PagerDuty incoming webhook;
+   `clickup_chat` sends `{"type": "message", "content": "<markdown>"}`, for
+   ClickUp's chat message endpoint. The ClickUp branch exists because ClickUp
+   has no inbound webhook of its own (its webhooks are outbound only), so
+   reaching a ClickUp chat channel needs a shaped body and an `Authorization`
+   header rather than a plain POST URL. `ALERT_WEBHOOK_AUTH`, when set, is
+   sent verbatim as that header (no `Bearer` prefix: ClickUp personal tokens
+   carry none). ClickUp documents the chat endpoint as experimental, so the
+   server logs its alert destination (scheme and host only) at startup, as a
+   trail back to the dependency if the endpoint ever breaks. Alerts are
    deduplicated per `alert_type` with a `ALERT_COOLDOWN_S` cooldown (default
    300s), so an ongoing problem re-notifies at most every 5 minutes. A
    `resolved:<type>` alert is sent once when a condition clears.
@@ -57,7 +67,13 @@ they're in the logs and the webhook payloads.
 
 ## Setup checklist (no servers to run)
 
-1. Create a Slack/Discord incoming webhook → set `ALERT_WEBHOOK_URL`.
+1. Pick a destination for `ALERT_WEBHOOK_URL`:
+   - Slack/Discord/PagerDuty incoming webhook → set `ALERT_WEBHOOK_URL` to it
+     and leave `ALERT_WEBHOOK_FORMAT` at its `raw` default.
+   - ClickUp chat channel → create a personal token, set `ALERT_WEBHOOK_AUTH`
+     to it, set `ALERT_WEBHOOK_FORMAT=clickup_chat`, and set
+     `ALERT_WEBHOOK_URL` to
+     `https://api.clickup.com/api/v3/workspaces/{workspace_id}/chat/channels/{channel_id}/messages`.
 2. Create a free Healthchecks.io check (period 1m, grace ~2m) → set
    `HEARTBEAT_URL` to its ping URL. Configure its notification channel.
 3. (Optional) Add an UptimeRobot/BetterStack monitor on
@@ -67,6 +83,8 @@ they're in the logs and the webhook payloads.
 | --- | --- | --- |
 | `ALERT_WEBHOOK_URL` | _(unset → disabled)_ | Where alerts are POSTed |
 | `ALERT_COOLDOWN_S` | `300` | Per-alert-type re-notify cooldown |
+| `ALERT_WEBHOOK_AUTH` | _(unset)_ | Sent verbatim as the `Authorization` header when set |
+| `ALERT_WEBHOOK_FORMAT` | `raw` | Payload shape: `raw` or `clickup_chat` |
 | `HEARTBEAT_URL` | _(unset → disabled)_ | External dead-man's-switch ping target |
 | `HEARTBEAT_INTERVAL_S` | `60` | Heartbeat ping period |
 | `HEALTH_MONITOR_INTERVAL_S` | `30` | Health evaluation period |

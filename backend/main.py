@@ -76,6 +76,10 @@ from services.tcp_handler import handle_tcp_client
 load_dotenv()
 logging.basicConfig(level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO))
 
+from services.alerting import log_destination  # noqa: E402
+
+log_destination()
+
 TCP_PORT = int(os.getenv("RADAR_TCP_PORT", "3012"))
 
 # ── Global pipeline (default geometry for file-loaded data) ───────────────────
