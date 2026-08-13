@@ -34,8 +34,9 @@ logger = logging.getLogger(__name__)
 
 Clock = Callable[[], float]
 
-# Twelve nodes are live and the phase caps the fleet at fifty, times three
-# limited endpoints, so anything above this is not the fleet.
+# The bound raises the alarm rather than evicting, so it sits well above the
+# fleet: fifty nodes across three limited endpoints need 150 counters, and this
+# leaves room for several times that before anything is said.
 MAX_TRACKED_KEYS = 512
 OVERFLOW_LOG_INTERVAL_S = 60.0
 
