@@ -65,6 +65,7 @@ async def test_an_accepted_device_resolves(monkeypatch):
     assert record is not None
     assert record.auth_status == "accepted"
     assert record.auth_set_id == "as-1"
+    assert record.auth_set_pubkey == REAL_PUBKEY
     assert record.auth_set_fingerprint == EXPECTED_FINGERPRINT
 
 
@@ -214,7 +215,9 @@ async def test_a_non_pem_pubkey_resolves_without_a_fingerprint(monkeypatch):
     """An OpenSSH-style key has no '-----' lines, so the whole string becomes the
     decode body, and its stripped length is still a multiple of 4; see
     _fingerprint's comment for why validate=True is what rejects it rather than
-    the length check alone."""
+    the length check alone. The raw pubkey is still carried on the record even
+    though it could not be fingerprinted: it is the one worth keeping for
+    diagnosis."""
     ssh_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKrPxK2u4pJd3vN7QeR1sT9wXyZ0aBcDeFgHiJkLmNoP al@host"
     monkeypatch.setattr(
         mender,
@@ -224,6 +227,7 @@ async def test_a_non_pem_pubkey_resolves_without_a_fingerprint(monkeypatch):
     record = await mender.lookup_device("ret1a2b3c4d")
     assert record is not None
     assert record.auth_status == "accepted"
+    assert record.auth_set_pubkey == ssh_key
     assert record.auth_set_fingerprint is None
 
 
@@ -275,7 +279,8 @@ async def test_an_empty_server_falls_back_to_the_default(monkeypatch):
 
 async def test_a_non_string_pubkey_resolves_without_a_fingerprint(monkeypatch):
     """A pubkey that is not a string raises AttributeError out of str.splitlines,
-    not the binascii/ValueError that an undecodable string raises."""
+    not the binascii/ValueError that an undecodable string raises. auth_set_pubkey
+    is str | None, so the int itself must not land there either."""
     monkeypatch.setattr(
         mender,
         "_transport",
@@ -284,6 +289,7 @@ async def test_a_non_string_pubkey_resolves_without_a_fingerprint(monkeypatch):
     record = await mender.lookup_device("ret1a2b3c4d")
     assert record is not None
     assert record.auth_status == "accepted"
+    assert record.auth_set_pubkey is None
     assert record.auth_set_fingerprint is None
 
 
@@ -296,7 +302,8 @@ async def test_more_than_one_accepted_set_is_refused_rather_than_resolved(monkey
     )
     record = await mender.lookup_device("ret1a2b3c4d")
     assert record is not None and record.auth_status == "ambiguous"
-    assert record.auth_set_id is None and record.auth_set_fingerprint is None
+    assert record.auth_set_id is None
+    assert record.auth_set_pubkey is None and record.auth_set_fingerprint is None
 
 
 async def test_accepted_status_with_no_accepted_auth_set_is_ambiguous(monkeypatch, caplog):
@@ -311,7 +318,8 @@ async def test_accepted_status_with_no_accepted_auth_set_is_ambiguous(monkeypatc
     with caplog.at_level(logging.WARNING, logger=mender.logger.name):
         record = await mender.lookup_device("ret1a2b3c4d")
     assert record is not None and record.auth_status == "ambiguous"
-    assert record.auth_set_id is None and record.auth_set_fingerprint is None
+    assert record.auth_set_id is None
+    assert record.auth_set_pubkey is None and record.auth_set_fingerprint is None
     assert any("no accepted auth set" in message for message in caplog.messages)
 
 

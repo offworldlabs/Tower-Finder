@@ -33,16 +33,19 @@ class MenderUnreachable(Exception):
 class MenderDeviceRecord:
     """What one device's entry in the management API reduces to.
 
-    The accepted set's PEM is not carried. Phase 1 has no `mender_devices` table
-    to write it to and nothing reads it until the key-continuity check lands, and
-    it comes back on this same call whenever that happens. The fingerprint is
-    kept because it is the derived form the takeover monitors compare on.
+    The accepted set's raw pubkey is carried alongside its fingerprint. The Mender
+    mirror (D26) needs the pubkey itself to populate `mender_devices.auth_set_pubkey`,
+    which is free to write as the sweep runs and expensive to backfill across the
+    fleet afterwards, and registration signing (D31) cannot verify anything without
+    it either. The fingerprint cannot stand in for either: it is a SHA-256 over the
+    DER SPKI, so it confirms a key you already hold but cannot verify a signature.
     """
 
     mender_device_id: str
     node_id: str
     auth_status: str
     auth_set_id: str | None
+    auth_set_pubkey: str | None
     auth_set_fingerprint: str | None
 
 
@@ -82,7 +85,7 @@ def _record(device: dict) -> MenderDeviceRecord:
         # refuses rather than choosing: picking one would silently bless whichever key
         # happened to sort first on a device with two live identities.
         logger.warning("mender device %s has %d accepted auth sets", device.get("id"), len(accepted))
-        return MenderDeviceRecord(device.get("id", ""), node_id, "ambiguous", None, None)
+        return MenderDeviceRecord(device.get("id", ""), node_id, "ambiguous", None, None, None)
     if not accepted:
         status = device.get("status", "pending")
         if status == "accepted":
@@ -90,10 +93,14 @@ def _record(device: dict) -> MenderDeviceRecord:
             # agrees: the same contradiction as more than one accepted set, so
             # it gets the same refusal rather than trusting the aggregate.
             logger.warning("mender device %s is accepted with no accepted auth set", device.get("id"))
-            return MenderDeviceRecord(device.get("id", ""), node_id, "ambiguous", None, None)
-        return MenderDeviceRecord(device.get("id", ""), node_id, status, None, None)
+            return MenderDeviceRecord(device.get("id", ""), node_id, "ambiguous", None, None, None)
+        return MenderDeviceRecord(device.get("id", ""), node_id, status, None, None, None)
     auth_set = accepted[0]
     pubkey = auth_set.get("pubkey")
+    # auth_set_pubkey is str | None, so a pubkey that is not a string (a malformed
+    # record) must not reach it as-is. A string that fails to decode below is kept
+    # regardless: it is exactly the one worth carrying for diagnosis.
+    auth_set_pubkey = pubkey if isinstance(pubkey, str) else None
     fingerprint = None
     if pubkey:
         try:
@@ -107,6 +114,7 @@ def _record(device: dict) -> MenderDeviceRecord:
         node_id,
         device.get("status", "accepted"),
         auth_set.get("id"),
+        auth_set_pubkey,
         fingerprint,
     )
 
