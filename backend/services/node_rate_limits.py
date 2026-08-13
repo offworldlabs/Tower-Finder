@@ -28,7 +28,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from services.node_refusals import RATE_LIMITED_BODY
+from services.node_refusals import RATE_LIMITED_BODY, REFUSAL_BODY, refusal_retry_after
 
 logger = logging.getLogger(__name__)
 
@@ -145,3 +145,41 @@ class TokenRateLimiter:
 
 
 TOKEN_LIMITER = TokenRateLimiter()
+
+
+# (requests admitted, window in seconds), from the ADR's table. The escalating
+# cooldown it also specified is out of scope for this phase.
+REGISTRATION_LIMITS: tuple[tuple[int, int], ...] = ((5, 3600), (20, 86400))
+
+
+class RegistrationRateLimiter:
+    """Per node_id, for the one endpoint with no token to key on.
+
+    This is the only control bounding the identity-takeover path that
+    re-registration accepts: a node Mender still accepts may register again and
+    the incumbent token is revoked, so the rate at which that can be attempted is
+    the whole of the defence.
+    """
+
+    def __init__(self, clock: Clock = time.monotonic, max_tracked: int = MAX_TRACKED_KEYS) -> None:
+        self._counters = _FixedWindowCounters(clock, max_tracked)
+
+    @property
+    def tracked_counters(self) -> int:
+        return self._counters.tracked_counters
+
+    def check(self, node_id: str) -> Refusal | None:
+        """None if the registration may proceed, otherwise the shared refusal.
+
+        The refusal is the same 403 an unknown device gets, with the same
+        jittered Retry-After. A 429, or a Retry-After counting down this node's
+        window, would confirm to an unauthenticated caller that the identity it
+        named is one the server is tracking.
+        """
+        specs = [((node_id, window_s), limit, window_s) for limit, window_s in REGISTRATION_LIMITS]
+        if self._counters.admit(specs) is None:
+            return None
+        return Refusal(403, REFUSAL_BODY, refusal_retry_after())
+
+
+REGISTRATION_LIMITER = RegistrationRateLimiter()

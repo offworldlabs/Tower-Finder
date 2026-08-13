@@ -8,7 +8,7 @@ import logging
 
 import pytest
 
-from services.node_rate_limits import ENDPOINT_LIMITS, TokenRateLimiter
+from services.node_rate_limits import ENDPOINT_LIMITS, REGISTRATION_LIMITS, RegistrationRateLimiter, TokenRateLimiter
 
 
 class FakeClock:
@@ -144,3 +144,105 @@ def test_a_map_above_the_expected_fleet_size_warns_rather_than_evicting(caplog):
             limiter.check(f"ret00000000{n}", "detection")
     assert any("evict" in record.message or "counters" in record.message for record in caplog.records)
     assert limiter.tracked_counters == 10
+
+
+from services.node_refusals import RETRY_AFTER_BASE_S, RETRY_AFTER_JITTER_S
+
+
+def _registration(clock: FakeClock, max_tracked: int = 64) -> RegistrationRateLimiter:
+    return RegistrationRateLimiter(clock=clock, max_tracked=max_tracked)
+
+
+def test_the_documented_registration_rates_are_the_ones_configured():
+    assert set(REGISTRATION_LIMITS) == {(5, 3600), (20, 86400)}
+
+
+def test_five_registrations_an_hour_are_admitted_and_the_sixth_is_not():
+    clock = FakeClock(0.0)
+    limiter = _registration(clock)
+    assert [limiter.check("ret1a2b3c4d") for _ in range(5)] == [None] * 5
+    refusal = limiter.check("ret1a2b3c4d")
+    assert refusal is not None
+    assert refusal.status_code == 403
+    assert refusal.body == {"error": "forbidden"}
+
+
+def test_the_registration_refusal_carries_the_shared_jittered_retry_after():
+    """A countdown of this node's window would time the refusal, and timing it
+    would say what the shared 403 body deliberately does not."""
+    clock = FakeClock(0.0)
+    limiter = _registration(clock)
+    for _ in range(5):
+        limiter.check("ret1a2b3c4d")
+    values = {limiter.check("ret1a2b3c4d").retry_after_s for _ in range(100)}
+    assert all(
+        RETRY_AFTER_BASE_S - RETRY_AFTER_JITTER_S <= v < RETRY_AFTER_BASE_S + RETRY_AFTER_JITTER_S for v in values
+    )
+    assert len(values) > 1
+
+
+def test_the_hourly_window_resets():
+    clock = FakeClock(0.0)
+    limiter = _registration(clock)
+    for _ in range(5):
+        limiter.check("ret1a2b3c4d")
+    assert limiter.check("ret1a2b3c4d") is not None
+    clock.advance(3600)
+    assert limiter.check("ret1a2b3c4d") is None
+
+
+def test_the_daily_cap_holds_though_the_hourly_window_is_fresh():
+    clock = FakeClock(0.0)
+    limiter = _registration(clock)
+    for _ in range(4):
+        for _ in range(5):
+            assert limiter.check("ret1a2b3c4d") is None
+        clock.advance(3600)
+    refusal = limiter.check("ret1a2b3c4d")
+    assert refusal is not None
+    assert refusal.status_code == 403
+
+
+def test_the_daily_window_resets():
+    clock = FakeClock(0.0)
+    limiter = _registration(clock)
+    for _ in range(4):
+        for _ in range(5):
+            limiter.check("ret1a2b3c4d")
+        clock.advance(3600)
+    assert limiter.check("ret1a2b3c4d") is not None
+    clock.advance(86400)
+    assert limiter.check("ret1a2b3c4d") is None
+
+
+def test_a_refusal_by_the_daily_cap_does_not_spend_the_hourly_allowance():
+    """Both limits have to have room before either is charged."""
+    clock = FakeClock(0.0)
+    limiter = _registration(clock)
+    for _ in range(4):
+        for _ in range(5):
+            limiter.check("ret1a2b3c4d")
+        clock.advance(3600)
+    for _ in range(10):
+        assert limiter.check("ret1a2b3c4d") is not None
+    clock.advance(86400 - 4 * 3600)
+    assert [limiter.check("ret1a2b3c4d") for _ in range(5)] == [None] * 5
+
+
+def test_two_node_ids_do_not_share_a_registration_counter():
+    clock = FakeClock(0.0)
+    limiter = _registration(clock)
+    for _ in range(5):
+        limiter.check("ret1a2b3c4d")
+    assert limiter.check("ret1a2b3c4d") is not None
+    assert limiter.check("ret000000001") is None
+
+
+def test_a_live_registration_counter_survives_a_crowded_map():
+    clock = FakeClock(0.0)
+    limiter = _registration(clock, max_tracked=2)
+    for _ in range(5):
+        limiter.check("ret1a2b3c4d")
+    for n in range(20):
+        limiter.check(f"ret00000000{n}")
+    assert limiter.check("ret1a2b3c4d") is not None
