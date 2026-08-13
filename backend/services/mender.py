@@ -36,11 +36,18 @@ class MenderUnreachable(Exception):
 
 @dataclass(frozen=True)
 class MenderDeviceRecord:
+    """What one device's entry in the management API reduces to.
+
+    The accepted set's PEM is not carried. Phase 1 has no `mender_devices` table
+    to write it to and nothing reads it until the key-continuity check lands, and
+    it comes back on this same call whenever that happens. The fingerprint is
+    kept because it is the derived form the takeover monitors compare on.
+    """
+
     mender_device_id: str
     node_id: str
     auth_status: str
     auth_set_id: str | None
-    auth_set_pubkey: str | None
     auth_set_fingerprint: str | None
 
 
@@ -57,9 +64,9 @@ def _record(device: dict) -> MenderDeviceRecord:
         # The ADR refuses rather than choosing: picking one would silently bless
         # whichever key happened to sort first on a device with two live identities.
         logger.warning("mender device %s has %d accepted auth sets", device.get("id"), len(accepted))
-        return MenderDeviceRecord(device.get("id", ""), node_id, "ambiguous", None, None, None)
+        return MenderDeviceRecord(device.get("id", ""), node_id, "ambiguous", None, None)
     if not accepted:
-        return MenderDeviceRecord(device.get("id", ""), node_id, device.get("status", "pending"), None, None, None)
+        return MenderDeviceRecord(device.get("id", ""), node_id, device.get("status", "pending"), None, None)
     auth_set = accepted[0]
     pubkey = auth_set.get("pubkey")
     fingerprint = None
@@ -73,7 +80,6 @@ def _record(device: dict) -> MenderDeviceRecord:
         node_id,
         device.get("status", "accepted"),
         auth_set.get("id"),
-        pubkey,
         fingerprint,
     )
 
