@@ -1,9 +1,10 @@
 """Unit tests for the webhook alerting helper in services/alerting.py.
 
 The module reads ALERT_WEBHOOK_URL, ALERT_COOLDOWN_S, ALERT_WEBHOOK_AUTH,
-ALERT_WEBHOOK_FORMAT and RETINA_ENV from the environment on each call rather
-than once at import (see the module docstring for why), so these tests drive
-it through monkeypatch.setenv/delenv rather than patching module attributes.
+ALERT_WEBHOOK_FORMAT and ALERT_ENVIRONMENT from the environment on each call
+rather than once at import (see the module docstring for why), so these tests
+drive it through monkeypatch.setenv/delenv rather than patching module
+attributes.
 """
 
 import logging
@@ -20,14 +21,14 @@ from services.alerting import is_enabled, send_alert
 def _clean_alert_env(monkeypatch):
     """Start every test with all settings unset, whatever the ambient shell
     or .env holds, so each test's setenv/delenv calls are the only source of
-    truth for what the module sees. RETINA_ENV is included even though it is
-    not an ALERT_* setting: send_alert() now reads it too, and it must not
-    leak in from the shell running the tests."""
+    truth for what the module sees. ALERT_ENVIRONMENT is included even
+    though it is not an ALERT_WEBHOOK_* setting: send_alert() reads it too,
+    and it must not leak in from the shell running the tests."""
     monkeypatch.delenv("ALERT_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("ALERT_COOLDOWN_S", raising=False)
     monkeypatch.delenv("ALERT_WEBHOOK_AUTH", raising=False)
     monkeypatch.delenv("ALERT_WEBHOOK_FORMAT", raising=False)
-    monkeypatch.delenv("RETINA_ENV", raising=False)
+    monkeypatch.delenv("ALERT_ENVIRONMENT", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -371,7 +372,7 @@ class TestClickupChatFormat:
         """
         monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
         monkeypatch.setenv("ALERT_WEBHOOK_FORMAT", "clickup_chat")
-        monkeypatch.setenv("RETINA_ENV", "production")
+        monkeypatch.setenv("ALERT_ENVIRONMENT", "production")
         mock_client = _make_mock_client()
 
         with (
@@ -523,18 +524,19 @@ class TestCallTimeCapture:
         )
 
     def test_environment_captured_once_not_reread_when_thread_runs(self, monkeypatch):
-        """RETINA_ENV must be captured at send_alert() call time, exactly
-        like ALERT_WEBHOOK_URL/FORMAT/AUTH above, and closed over by _fire
-        rather than re-read when the thread actually runs. Uses the same
-        env-popping thread stub, parameterised on RETINA_ENV this time.
+        """ALERT_ENVIRONMENT must be captured at send_alert() call time,
+        exactly like ALERT_WEBHOOK_URL/FORMAT/AUTH above, and closed over by
+        _fire rather than re-read when the thread actually runs. Uses the
+        same env-popping thread stub, parameterised on ALERT_ENVIRONMENT
+        this time.
         """
         monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
-        monkeypatch.setenv("RETINA_ENV", "staging")
+        monkeypatch.setenv("ALERT_ENVIRONMENT", "staging")
         mock_client = _make_mock_client()
 
         with (
             patch("services.alerting.httpx.Client", return_value=mock_client),
-            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread("RETINA_ENV")),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread("ALERT_ENVIRONMENT")),
         ):
             send_alert("test", "msg")
 
@@ -584,8 +586,8 @@ class TestCallTimeCapture:
 
 
 class TestEnvironmentAndHost:
-    """RETINA_ENV and socket.gethostname() are added to every alert so the
-    payload itself says which box raised it: channel routing alone is
+    """ALERT_ENVIRONMENT and socket.gethostname() are added to every alert
+    so the payload itself says which box raised it: channel routing alone is
     configuration, and a fumbled ALERT_WEBHOOK_URL would otherwise put an
     alert in the wrong channel with nothing in it to reveal that.
     """
@@ -596,7 +598,7 @@ class TestEnvironmentAndHost:
         "unknown" fallback used everywhere else in this file.
         """
         monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
-        monkeypatch.setenv("RETINA_ENV", "staging")
+        monkeypatch.setenv("ALERT_ENVIRONMENT", "staging")
         monkeypatch.setattr(_alerting.socket, "gethostname", lambda: "retina-staging")
         mock_client = _make_mock_client()
 
@@ -618,11 +620,11 @@ class TestEnvironmentAndHost:
             },
         )
 
-    def test_retina_env_unset_yields_unknown(self, monkeypatch):
-        """RETINA_ENV unset must render as the literal "unknown", not an
-        omitted field: a box with no environment configured is itself worth
-        seeing, and a missing field would read as an oversight rather than
-        a fact.
+    def test_alert_environment_unset_yields_unknown(self, monkeypatch):
+        """ALERT_ENVIRONMENT unset must render as the literal "unknown", not
+        an omitted field: a box with no environment configured is itself
+        worth seeing, and a missing field would read as an oversight rather
+        than a fact.
         """
         monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
         mock_client = _make_mock_client()
@@ -635,13 +637,30 @@ class TestEnvironmentAndHost:
 
         assert mock_client.post.call_args.kwargs["json"]["environment"] == "unknown"
 
-    def test_retina_env_stripped(self, monkeypatch):
-        """docker-compose's env_file passes .env values literally, so a
-        trailing space typed into RETINA_ENV is not stripped before the
-        process sees it, matching every other setting in this module.
+    def test_alert_environment_empty_yields_unknown(self, monkeypatch):
+        """ALERT_ENVIRONMENT="" (an .env line with no value, matching how
+        .env.example declares it) must be treated the same as unset, not
+        rendered as an empty string.
         """
         monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
-        monkeypatch.setenv("RETINA_ENV", "  staging  ")
+        monkeypatch.setenv("ALERT_ENVIRONMENT", "")
+        mock_client = _make_mock_client()
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("test", "msg")
+
+        assert mock_client.post.call_args.kwargs["json"]["environment"] == "unknown"
+
+    def test_alert_environment_stripped(self, monkeypatch):
+        """docker-compose's env_file passes .env values literally, so a
+        trailing space typed into ALERT_ENVIRONMENT is not stripped before
+        the process sees it, matching every other setting in this module.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setenv("ALERT_ENVIRONMENT", "  staging  ")
         mock_client = _make_mock_client()
 
         with (
@@ -667,6 +686,24 @@ class TestEnvironmentAndHost:
             patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
         ):
             send_alert("test", "msg")  # must not raise
+
+        assert mock_client.post.call_args.kwargs["json"]["host"] == "unknown"
+
+    def test_gethostname_empty_string_yields_unknown(self, monkeypatch):
+        """socket.gethostname() returning "" (no OSError, just an empty
+        result) must also fall back to "unknown" rather than posting an
+        empty host field: an empty string is as useless as a failure for
+        identifying the box.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setattr(_alerting.socket, "gethostname", lambda: "")
+        mock_client = _make_mock_client()
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("test", "msg")
 
         assert mock_client.post.call_args.kwargs["json"]["host"] == "unknown"
 

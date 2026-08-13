@@ -23,12 +23,17 @@ Three layers, in order of what they catch:
    ClickUp's chat message endpoint, with the rendered content carrying the
    bold `alert_type`, the message, an `environment: <value>` line, a
    `host: <value>` line, then one `key: value` line per `meta` entry. Both
-   shapes carry `environment` (from `RETINA_ENV`, or the literal `unknown`
-   when unset) and `host` (from `socket.gethostname()`, or `unknown` if that
-   call fails), because each droplet's `ALERT_WEBHOOK_URL` points at its own
-   channel: channel routing is configuration, and a misrouted URL would
-   otherwise put an alert in the wrong channel with nothing in the payload
-   to reveal that. The ClickUp branch exists because ClickUp has no inbound
+   shapes carry `environment` (from `ALERT_ENVIRONMENT`, or the literal
+   `unknown` when unset or empty) and `host` (from `socket.gethostname()`, set
+   by the `hostname:` each droplet overlay gives its `tower-finder` service, or
+   `unknown` if that call fails or returns empty), because each droplet's
+   `ALERT_WEBHOOK_URL` points at its own channel: channel routing is
+   configuration, and a misrouted URL would otherwise put an alert in the
+   wrong channel with nothing in the payload to reveal that.
+   `ALERT_ENVIRONMENT` is deliberately its own setting rather than `RETINA_ENV`:
+   every deployed overlay pins `RETINA_ENV=test` for the build-out's auth-guard
+   workaround (ClickUp 86cb1emcx), so a field sourced from it would read `test`
+   everywhere and say nothing. The ClickUp branch exists because ClickUp has no inbound
    webhook of its own (its webhooks are outbound only), so reaching a
    ClickUp chat channel needs a shaped body and an `Authorization` header
    rather than a plain POST URL. `ALERT_WEBHOOK_AUTH`, when set, is sent

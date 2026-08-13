@@ -21,6 +21,10 @@
 services:
   tower-finder:
     container_name: retina-test-server
+    # Consumed by services/alerting.py, which otherwise sees the container id or
+    # the service name (varies by Compose version), neither of which says which
+    # droplet raised an alert.
+    hostname: retina-test
     # No TCP ingest, for the same reason staging closes it: there are no real
     # receiver nodes here, and the fleet reaches the server as tower-finder:3012
     # over the compose network rather than via the host port. Publishing it would
@@ -34,6 +38,10 @@ services:
       # build-out. Tracked in ClickUp 86cb1emcx; revert to the real environment
       # name there, not here.
       - RETINA_ENV=test
+      # Unrelated to RETINA_ENV above: this labels alerts only, so it carries the
+      # real environment name even while RETINA_ENV is pinned to `test`. See
+      # services/alerting.py for why the two must not be the same variable.
+      - ALERT_ENVIRONMENT=test
       - CORS_ORIGINS=https://test-towers.retina.fm,https://test-api.retina.fm,https://test-map.retina.fm,https://test-dash.retina.fm,https://test-admin.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
       # at boot to render deploy/nginx/nginx.conf.template.

@@ -198,14 +198,22 @@ def send_alert(alert_type: str, message: str, meta: dict | None = None) -> None:
     # other signal for which environment an alert came from, and a
     # copy-pasted URL would put it in the wrong channel with nothing in the
     # payload to reveal that. environment and host make that visible in the
-    # alert itself. An unset RETINA_ENV renders as "unknown" rather than
+    # alert itself. ALERT_ENVIRONMENT is a setting of its own, deliberately
+    # separate from the variable that gates the build-out's auth guards
+    # (tracked in ClickUp 86cb1emcx): that variable is pinned to the same
+    # value on every deployed box for as long as the build-out lasts, so a
+    # field sourced from it would read as authoritative while distinguishing
+    # nothing, and would silently change meaning the day the pin is lifted.
+    # ALERT_ENVIRONMENT exists solely to label alerts and carries no other
+    # meaning. An unset or empty value renders as "unknown" rather than
     # being omitted: a box with no environment configured is itself worth
-    # seeing. gethostname() can raise (e.g. a broken resolver); this is
-    # best-effort identification, not the alert's substance, so it must not
-    # turn a reportable problem into a second one.
-    environment = os.getenv("RETINA_ENV", "").strip() or "unknown"
+    # seeing. gethostname() can raise (e.g. a broken resolver) or return an
+    # empty string; this is best-effort identification, not the alert's
+    # substance, so neither outcome may turn a reportable problem into a
+    # second one.
+    environment = os.getenv("ALERT_ENVIRONMENT", "").strip() or "unknown"
     try:
-        host = socket.gethostname()
+        host = socket.gethostname() or "unknown"
     except Exception:
         host = "unknown"
 

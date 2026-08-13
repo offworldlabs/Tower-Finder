@@ -63,10 +63,18 @@ EXPECTED_TLS_VHOSTS = 7
 ALLOWED_DIVERGENCE = (
     # Different droplets, different container names.
     r"^services\.[^.]+\.container_name$",
+    # Different droplets, different Docker hostnames — same reasoning as
+    # container_name above, and what makes socket.gethostname() inside the
+    # container say which droplet it is, for services/alerting.py's `host` field.
+    r"^services\.[^.]+\.hostname$",
     # Different droplet sizes.
     r"^services\.[^.]+\.deploy\.resources\.limits\.(cpus|memory)$",
     # Which environment this is, and the hostnames that follow from it.
     r"^services\.tower-finder\.environment\.RETINA_ENV$",
+    # Deliberately a different variable from RETINA_ENV above: it labels alerts
+    # with the real environment name while RETINA_ENV stays pinned to `test`
+    # for the auth-guard workaround (ClickUp 86cb1emcx). See services/alerting.py.
+    r"^services\.tower-finder\.environment\.ALERT_ENVIRONMENT$",
     r"^services\.tower-finder\.environment\.CORS_ORIGINS$",
     r"^services\.tower-finder\.environment\.CSP_CONNECT_SRC$",
     r"^services\.tower-finder\.environment\.HOST_[A-Z_]+$",
