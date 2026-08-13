@@ -163,7 +163,13 @@ def test_rollback_ahead_sentinel_matches_alembics_wording(tmp_path):
     old_image = tmp_path / "old_image"
     shutil.copytree(BACKEND / "core", old_image / "core", ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copytree(BACKEND / "migrations", old_image / "migrations", ignore=shutil.ignore_patterns("__pycache__"))
-    (old_image / "migrations" / "versions" / "0002_nodes.py").unlink()
+    # The newest revision, found rather than named: revisions are numbered
+    # 000N_*.py so the last by filename is the head. Naming one here meant that
+    # adding a revision on top of it left the older one's removal orphaning every
+    # revision after it, and Alembic then raised a bare KeyError on the missing
+    # down_revision instead of the message this test exists to pin.
+    versions = sorted((old_image / "migrations" / "versions").glob("[0-9]*.py"))
+    versions[-1].unlink()
     shutil.copyfile(BACKEND / "alembic.ini", old_image / "alembic.ini")
 
     env = os.environ | {"RETINA_ENV": "test", "RETINA_DB_PATH": str(db)}
