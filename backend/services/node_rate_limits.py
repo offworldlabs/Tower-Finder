@@ -206,7 +206,10 @@ class TokenRateLimiter:
         return Refusal(429, dict(RATE_LIMITED_BODY), max(1, math.ceil(wait_s)))
 
 
-TOKEN_LIMITER = TokenRateLimiter()
+# A process wants exactly one of each limiter, since the counters are the bound and
+# a second instance is a second allowance. The module-level singleton belongs here,
+# next to the class, and the branch that first imports one adds it: an instance with
+# no caller is dead code, and the dead-code gate is right to say so.
 
 
 # (requests admitted, window in seconds), from the ADR's table. The escalating
@@ -249,6 +252,3 @@ class RegistrationRateLimiter:
         if self._counters.admit(specs) is None:
             return None
         return Refusal(403, dict(REFUSAL_BODY), refusal_retry_after())
-
-
-REGISTRATION_LIMITER = RegistrationRateLimiter()
