@@ -44,9 +44,6 @@ COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
 # Built dashboard
 COPY --from=dashboard-build /app/dashboard/dist /app/dashboard/dist
 
-# tar1090 static files
-COPY tar1090/html /app/tar1090/html
-
 # Rate-limit zones — http{} context, identical in every environment.
 COPY deploy/nginx-security.conf /etc/nginx/conf.d/security.conf
 

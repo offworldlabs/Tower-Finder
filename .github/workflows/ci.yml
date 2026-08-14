@@ -73,8 +73,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Fetch tar1090 static assets
-        run: git clone --depth 1 https://github.com/wiedehopf/tar1090.git tar1090
       - run: docker build -t tower-finder:ci .
 
   env-parity:
@@ -249,8 +247,6 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
             git submodule update --init --recursive
-            # Ensure tar1090 static assets are present
-            [ -d tar1090/html ] || git clone --depth 1 https://github.com/wiedehopf/tar1090.git tar1090
             # The host's ./.env sets COMPOSE_FILE (base + staging overlay), so
             # every command below is character-identical to the production deploy
             # block. Written from the tree we just checked out rather than assumed
