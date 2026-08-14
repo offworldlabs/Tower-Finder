@@ -10,6 +10,8 @@
  *    The auth-enforcement describe block runs without it (it tests server rejection
  *    of bad credentials). The main suite skips gracefully on fork PRs without the secret.
  *  - Uses unique node IDs per run to avoid cross-run state pollution.
+ *  - Everything that registers is skipped under E2E_ENV=prod, leaving only the
+ *    auth-enforcement block; see describeUnlessProd below for why.
  *
  * Cache timing:
  *  - /api/radar/nodes                served from pre-computed bytes, refreshed every 30 s
@@ -24,10 +26,29 @@
  *  BULK_B_NODE_ID — real prefix, full geo config, registered via bulk POST
  */
 import { test, expect, request } from "@playwright/test";
-import { hosts } from "../playwright.config";
+import { env, hosts } from "../playwright.config";
 
 const API = hosts.api;
 const API_KEY = process.env.RADAR_API_KEY ?? "";
+
+// Registering a node the server has not seen is the one expensive thing this
+// API does: it recomputes overlap geometry against every node already
+// registered, on the request's own thread. Measured against production's fleet
+// that is 9.1 s for a single registration and 39-51 s each once six arrive
+// together, and it holds the event loop while it runs, so unrelated requests
+// time out beside it — /api/health went from 0.11 s to 50.7 s under six. This
+// file is the only thing anywhere that registers unseen nodes, and at two
+// workers it registers six per run, so it fails against production every time
+// and takes the deploy down with it via the E2E rollback (86cb5jnnf).
+//
+// Staging runs the same code against a small fleet and passes, so the contract
+// stays covered there. Production keeps the auth-enforcement block below, which
+// probes without a key and is refused before it can register anything.
+//
+// `describe.skip` rather than a condition inside the group: the main suite
+// registers its four nodes from `beforeAll`, and only a statically skipped
+// group is guaranteed not to run its hooks.
+const describeUnlessProd = env === "prod" ? test.describe.skip : test.describe;
 
 const RUN_ID = Date.now().toString(36);
 const REAL_NODE_ID   = `e2e-real-${RUN_ID}`;
@@ -134,7 +155,7 @@ test.describe("Node registration — auth enforcement", () => {
 //    These tests run their own registrations (not the shared state) so they
 //    have their own ctx and do not need the 30 s cache wait.
 // =============================================================================
-test.describe("Node registration — POST response and frame queuing", () => {
+describeUnlessProd("Node registration — POST response and frame queuing", () => {
   let ctx: Ctx;
 
   test.beforeAll(async () => {
@@ -190,7 +211,7 @@ test.describe("Node registration — POST response and frame queuing", () => {
 //    beforeAll: registers 4 nodes (2 single, 2 bulk) and waits for the 30 s
 //    cache cycle so /api/radar/nodes reflects all of them.
 // =============================================================================
-test.describe("Node registration — main integration suite", () => {
+describeUnlessProd("Node registration — main integration suite", () => {
   let ctx: Ctx;
 
   // Cached response bodies populated in the outer beforeAll

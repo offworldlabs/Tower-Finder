@@ -35,6 +35,7 @@ const HOSTS = {
   },
 } as const;
 
+export const env = ENV;
 export const hosts = HOSTS[ENV];
 
 export default defineConfig({
