@@ -66,6 +66,13 @@ class NodeConfig(Base):
     # Nullable, and it matters: null is broadside, 0.0 is aimed due north.
     beam_azimuth_deg: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_range_km: Mapped[float] = mapped_column(Float)
+    # Processing parameters, required on the wire since contract 1.1.0. Not null
+    # like the other required columns: the validator rejects a config missing any
+    # of them, so a null here would mean a bug upstream rather than a node that
+    # genuinely has no CPI, and a made-up default would hide it.
+    cpi_s: Mapped[float] = mapped_column(Float)
+    delay_tolerance_us: Mapped[float] = mapped_column(Float)
+    doppler_tolerance_hz: Mapped[float] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

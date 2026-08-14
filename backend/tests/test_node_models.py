@@ -17,6 +17,9 @@ CONFIG_DEFAULTS = {
     "beam_width_deg": 60.0,
     "beam_azimuth_deg": 45.0,
     "max_range_km": 150.0,
+    "cpi_s": 0.5,
+    "delay_tolerance_us": 2.0,
+    "doppler_tolerance_hz": 5.0,
 }
 
 
@@ -81,6 +84,29 @@ async def test_a_zero_beam_azimuth_is_kept_as_zero(node_session):
 
     found = (await node_session.execute(select(NodeConfig).where(NodeConfig.node_id == "ret9f8e7d6c"))).scalar_one()
     assert found.beam_azimuth_deg == 0.0
+
+
+async def test_the_processing_parameters_round_trip(node_session):
+    """cpi_s and the two tolerances arrive on the wire at contract 1.1.0 and are
+    what the solver needs to interpret a detection's delay and Doppler."""
+    await _seed(node_session, "ret9f8e7d6c")
+    node_session.add(_config("ret9f8e7d6c", 1, cpi_s=0.25, delay_tolerance_us=1.5, doppler_tolerance_hz=3.25))
+    await node_session.commit()
+
+    found = (await node_session.execute(select(NodeConfig).where(NodeConfig.node_id == "ret9f8e7d6c"))).scalar_one()
+    assert found.cpi_s == 0.25
+    assert found.delay_tolerance_us == 1.5
+    assert found.doppler_tolerance_hz == 3.25
+
+
+@pytest.mark.parametrize("field", ["cpi_s", "delay_tolerance_us", "doppler_tolerance_hz"])
+async def test_a_config_missing_a_processing_parameter_is_rejected(node_session, field):
+    """All three are required on the wire, so a row without one is a bug upstream
+    rather than a node that legitimately has no CPI. The column says so."""
+    await _seed(node_session, "ret9f8e7d6c")
+    node_session.add(_config("ret9f8e7d6c", 1, **{field: None}))
+    with pytest.raises(IntegrityError):
+        await node_session.commit()
 
 
 async def test_a_token_hash_is_unique(node_session):
