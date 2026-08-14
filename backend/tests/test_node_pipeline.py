@@ -14,7 +14,7 @@ import logging
 from datetime import UTC, datetime
 
 import pytest
-from retina_analytics.constants import resolve_beam_azimuth_deg
+from retina_analytics.constants import YAGI_BEAM_WIDTH_DEG, resolve_beam_azimuth_deg
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -128,6 +128,28 @@ async def test_a_node_with_no_azimuth_is_registered_broadside_not_due_north(node
     azimuth = state.node_associator.node_geometries[NODE_ID].beam_azimuth_deg
     assert azimuth != 0.0
     assert azimuth == pytest.approx(broadside)
+
+
+async def test_nodes_with_no_beam_width_are_registered_at_the_nominal_yagi_width(node_session):
+    """Two nodes, and it has to stay two.
+
+    _WIRE_FIELDS builds the pipeline config field by field, so a null width
+    arrives at the registries present and None rather than absent, past any
+    dict.get default. The division that chokes on it is in the pairwise
+    overlap-zone precompute, which no lone node reaches: registering the first
+    null-width node succeeds even against a library that cannot handle the null,
+    and only the second raises. Cut this down to one node and it passes against
+    the very bug it exists to catch.
+    """
+    first = await _seed(node_session, NODE_ID, beam_width_deg=None)
+    second = await _seed(node_session, "ret6n7u8l9l", beam_width_deg=None)
+
+    for node in (first, second):
+        await register_with_pipeline(node_session, node)
+
+    for node_id in (first.node_id, second.node_id):
+        assert state.node_analytics.detection_areas[node_id].beam_width_deg == pytest.approx(YAGI_BEAM_WIDTH_DEG)
+        assert state.node_associator.node_geometries[node_id].beam_width_deg == pytest.approx(YAGI_BEAM_WIDTH_DEG)
 
 
 async def test_re_registering_picks_up_the_new_active_configuration(node_session, node):
