@@ -62,8 +62,12 @@ class NodeConfig(Base):
     tx_callsign: Mapped[str] = mapped_column(String(32))
     fc_hz: Mapped[float] = mapped_column(Float)
     fs_hz: Mapped[float] = mapped_column(Float)
-    beam_width_deg: Mapped[float] = mapped_column(Float)
-    # Nullable, and it matters: null is broadside, 0.0 is aimed due north.
+    # Both nullable, and neither null may be filled in. A null width means the
+    # antenna is not characterised, which is every node in the fleet: retina-gui
+    # does not collect the geometry from owners, and an invented width would be
+    # wrong data indistinguishable from a measurement. A null azimuth means
+    # broadside or, equally, not characterised, and 0.0 is aimed due north.
+    beam_width_deg: Mapped[float | None] = mapped_column(Float, nullable=True)
     beam_azimuth_deg: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_range_km: Mapped[float] = mapped_column(Float)
     # Processing parameters, required on the wire since contract 1.1.0. Not null
