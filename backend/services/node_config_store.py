@@ -9,10 +9,10 @@ Nothing commits. `mint_token`, `revoke_tokens` and this all flush and leave the
 transaction to the route, so registration can write a node, an agreement set, a
 config version, a revocation and a token as one unit.
 
-Registration is the only caller today, and PUT /v1/nodes/config is the other one
-this exists for: a node that re-registers unchanged must be told the version the
-server already holds rather than a fresh one, and the two endpoints cannot be
-allowed to answer that differently.
+Registration and PUT /v1/nodes/config both answer from here: a node that resends
+an unchanged configuration must be told the version the server already holds
+rather than a fresh one, and the two endpoints cannot be allowed to answer that
+differently.
 """
 
 from datetime import UTC, datetime
@@ -23,6 +23,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.nodes import NodeConfig
 
+# The fifteen columns a configuration version consists of: everything on
+# node_configs bar the surrogate key, the node it belongs to, the version number
+# and the two timestamps. Exactly validate_config's output keys, and
+# test_node_config_store.py pins the three lists against each other, so a column
+# added later cannot be silently left out of the comparison below.
+_CONFIG_FIELDS = (
+    "rx_lat",
+    "rx_lon",
+    "rx_alt_ft",
+    "tx_lat",
+    "tx_lon",
+    "tx_alt_ft",
+    "tx_callsign",
+    "fc_hz",
+    "fs_hz",
+    "beam_width_deg",
+    "beam_azimuth_deg",
+    "max_range_km",
+    "cpi_s",
+    "delay_tolerance_us",
+    "doppler_tolerance_hz",
+)
+
 
 async def upsert_config(session: AsyncSession, node_id: str, config: dict[str, Any]) -> int:
     """Return the node's active configuration version, minting one if it moved.
@@ -32,9 +55,11 @@ async def upsert_config(session: AsyncSession, node_id: str, config: dict[str, A
     would write whatever keys it happened to carry.
 
     The comparison is field by field in Python rather than in SQL, because
-    `NULL = NULL` is never true and `beam_azimuth_deg` is null for every node
-    that is not aimed, which is all of them: comparing in the database would
-    mint a version per resend for the whole fleet.
+    `NULL = NULL` is never true and both antenna fields are nullable:
+    `beam_azimuth_deg` on every node that is not aimed, `beam_width_deg` on every
+    node in the fleet, since retina-gui does not collect the geometry. Comparing
+    in the database would mint a version per resend for the whole fleet, tell each
+    node `config_stale` in perpetuity, and have each one resend in response.
     """
     active = (
         (
@@ -48,7 +73,7 @@ async def upsert_config(session: AsyncSession, node_id: str, config: dict[str, A
         .first()
     )
 
-    if active is not None and all(getattr(active, field) == value for field, value in config.items()):
+    if active is not None and all(getattr(active, field) == config[field] for field in _CONFIG_FIELDS):
         return active.version
 
     now = datetime.now(UTC)
