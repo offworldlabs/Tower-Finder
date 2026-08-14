@@ -134,7 +134,7 @@ class TestBuildNode:
     def test_optional_fields_get_defaults(self):
         cfg = _build_node(MINIMAL).config
         assert cfg["fs_hz"] == 2_000_000
-        assert cfg["beam_width_deg"] == 120
+        assert cfg["beam_width_deg"] == 42.0
         assert cfg["max_range_km"] == 140
 
     def test_fc_and_fs_aliases_track_each_other(self):

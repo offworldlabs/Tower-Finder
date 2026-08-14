@@ -10,6 +10,9 @@ the memoised single-node ambiguity arc.
 import math
 
 from config.constants import (
+    ARC_MIN_DIFFERENTIAL_KM,
+    ARC_ONLY_ANOMALY_ALLOWLIST,
+    CAL_DETECTION_FRESH_S,
     DISPLAY_STALE_TRACK_S,
     GATE_MAX_HOLD_S,
 )
@@ -27,6 +30,7 @@ from services.geo import (
     bearing_deg,
     enu_km,
     haversine_km,
+    node_beam_params,
     offset_latlon,
     offset_latlon_m,
 )
@@ -56,22 +60,44 @@ def _enu_to_lla(rx_lat: float, rx_lon: float, east_km: float, north_km: float) -
 def _build_single_node_arc(
     track_or_delay,
     node_cfg: dict,
-    *,
-    target_lat: float | None = None,
-    target_lon: float | None = None,
 ) -> list[list[float]] | None:
     """Build the bistatic-ambiguity arc for one detection.
 
-    When `target_lat`/`target_lon` are provided (i.e. we know roughly where
-    the aircraft actually is, via ADS-B or a prior solve), the arc is
-    trimmed to a short segment around the known position. This makes the
-    frontend trail of successive arcs readable as a chain of distinct
-    blips tracing the target's path through the beam, instead of one fat
-    smudge of overlapping full-beam loci.
+    The measured delay constrains the target to a bistatic ellipse (foci at
+    TX and RX); the aircraft can be anywhere on it that the node could
+    actually detect.  The arc is therefore the full ellipse clipped to the
+    node's *detection area* — the same region the coverage layer draws and
+    ``point_in_beam`` gates on (``node_beam_params`` semantics):
 
-    Without a known position (true unknowns like raw radar-only detections)
-    the full beam-spanning locus is returned so the operator can see the
-    full ambiguity.
+    * the differential-range limit when the node declares
+      ``max_bistatic_range_km`` (every point of the ellipse shares the
+      measured differential, so this is a single yes/no for the whole
+      locus), else the monostatic ``max_range_km`` circle per bearing;
+    * the beam wedge when the node genuinely has one — an explicit
+      ``beam_azimuth_deg`` or the broadside-of-baseline default, clipped to
+      ``beam_width_deg``.  A declared width >= 360° means omnidirectional
+      and yields the full closed ellipse.
+
+    Earlier revisions additionally trimmed the arc to a ~25 km blip around
+    the track's own position.  That made the drawn segment unrepresentative
+    of the actual ambiguity — the aircraft could equally be anywhere else
+    on the in-area locus — so the trim is gone: the emitted arc always
+    spans the entire detection-area-constrained ellipse.
+
+    Ground-projected, altitude-agnostic by design (2026-08 direction): the
+    arc is the raw-measurement locus — a pure function of the node-reported
+    delay and its detection-area geometry, nothing else.  A prior revision
+    solved a 3-D ellipsoid at the track's known altitude to correct a
+    systematic bias against ground truth (median 3.6 km, worst case
+    14.9 km); that correction was a target-position estimate stitched onto
+    what is supposed to be a raw-measurement display primitive, so it is
+    gone — high-altitude targets now sit a few km outside the drawn arc,
+    on purpose, and the 2-D ground-plane differential below is the only
+    locus this builder ever solves.
+
+    Differentials below ARC_MIN_DIFFERENTIAL_KM yield no arc at all: a
+    near-baseline sliver conveys no positional information and renders as
+    a misleading blob (see the constant's comment for the measurement).
     """
     if isinstance(track_or_delay, (int, float)):
         delay_us = track_or_delay
@@ -87,16 +113,25 @@ def _build_single_node_arc(
     if None in (rx_lat, rx_lon, tx_lat, tx_lon):
         return None
 
-    beam_width_deg = float(node_cfg.get("beam_width_deg", 41.0) or 41.0)
-    max_range_km = float(node_cfg.get("max_range_km", 50.0) or 50.0)
-    beam_azimuth_deg = node_cfg.get("beam_azimuth_deg")
-    if beam_azimuth_deg is None:
-        beam_azimuth_deg = (_bearing_deg(rx_lat, rx_lon, tx_lat, tx_lon) + 90.0) % 360.0
+    # One source of truth for what the node can see — the same resolution
+    # rules (broadside default, zero-width means missing, bistatic limit)
+    # that point_in_beam and the coverage layer use.
+    beam = node_beam_params(node_cfg)
+    beam_width_deg = beam["beam_width_deg"]
+    max_range_km = beam["max_range_km"]
+    beam_azimuth_deg = beam["beam_azimuth_deg"]
 
     tx_east_km, tx_north_km = enu_km(rx_lat, rx_lon, tx_lat, tx_lon)
     baseline_km = math.hypot(tx_east_km, tx_north_km)
     differential_range_km = delay_us * C_KM_US
+    if differential_range_km < ARC_MIN_DIFFERENTIAL_KM:
+        # Near-baseline sliver — no positional information, renders as a
+        # misleading blob.  The caller still emits the track itself (see
+        # the floor exemption in track_entry).
+        return None
 
+    # Ground-plane (2-D) per-bearing solve — the only locus this builder
+    # solves (see the docstring).
     def _differential_at(range_km: float, bearing_deg: float) -> float:
         bearing_rad = math.radians(bearing_deg)
         east_km = math.sin(bearing_rad) * range_km
@@ -112,7 +147,7 @@ def _build_single_node_arc(
     # bearing, the triangle inequality gives D(r) >= 2r - 2*baseline, so the
     # range satisfying a measured differential D is at most D/2 + baseline.
     # That is a tight ceiling that provably never clips the locus.
-    max_bistatic_km = node_cfg.get("max_bistatic_range_km")
+    max_bistatic_km = beam["max_bistatic_range_km"]
     if max_bistatic_km is not None:
         max_bistatic_km = float(max_bistatic_km)
         if differential_range_km > max_bistatic_km:
@@ -123,20 +158,16 @@ def _build_single_node_arc(
     else:
         search_max_km = max_range_km
 
-    # When we have a known target position, centre the sweep on the bearing
-    # from RX to that position and aim for an arc whose ground length is
-    # roughly the same regardless of range — short enough to look like a
-    # radar blip near the aircraft, long enough to remain visible at
-    # continental zoom. Pure angular trimming (e.g. fixed 6°) collapses
-    # below 1 pixel at low zooms; targeting an arc length in km solves it.
-    if target_lat is not None and target_lon is not None:
-        centre_bearing = _bearing_deg(rx_lat, rx_lon, target_lat, target_lon)
-        target_range_km = max(haversine_km(rx_lat, rx_lon, target_lat, target_lon), 5.0)
-        # ~25 km arc length keeps the blip visible at zoom ≥4 and short
-        # enough to read as a chain at zoom ≥7 — verified on staging.
-        BLIP_ARC_LENGTH_KM = 25.0
-        sweep_width_deg = min(beam_width_deg, math.degrees(BLIP_ARC_LENGTH_KM / target_range_km))
-        steps = 18
+    # Sweep exactly the in-area bearing interval.  Centre on the boresight
+    # even when omnidirectional, so the midpoint (which becomes the track's
+    # displayed lat/lon) is deterministic and sits on the boresight crossing.
+    # Point budget: 37 points for a wedge (same as the historical full-beam
+    # arc), 73 for a closed full-circle locus — the arc is cached and shipped
+    # every feed tick, so this stays within ~2x of the previous payload.
+    if beam_azimuth_deg is None or beam_width_deg >= 360.0:
+        centre_bearing = beam_azimuth_deg if beam_azimuth_deg is not None else 0.0
+        sweep_width_deg = 360.0
+        steps = 72
     else:
         centre_bearing = beam_azimuth_deg
         sweep_width_deg = beam_width_deg
@@ -146,14 +177,13 @@ def _build_single_node_arc(
     points: list[list[float]] = []
     for step in range(steps + 1):
         bearing_deg = centre_bearing - half_sweep + sweep_width_deg * (step / steps)
-        # Stay within the antenna beam — drop bearings that fall outside.
-        delta_from_axis = abs(((bearing_deg - beam_azimuth_deg + 180.0) % 360.0) - 180.0)
-        if delta_from_axis > beam_width_deg / 2.0:
-            continue
         lo = 0.0
         hi = search_max_km
         if _differential_at(hi, bearing_deg) < differential_range_km:
             continue
+        # differential_at(0, ·) is exactly 0 in the 2-D solve, so RX's own
+        # ground point is always inside the locus and lo=0 already brackets
+        # the crossing — no bracket restart needed.
         for _ in range(32):
             mid = (lo + hi) / 2.0
             if _differential_at(mid, bearing_deg) < differential_range_km:
@@ -176,48 +206,42 @@ def _build_single_node_arc(
 
 
 # Per-track single-node arc memo.  _build_single_node_arc is a pure function
-# of (delay_us, target position, node geometry); the flush loop rebuilds it
-# every cycle even when the detection is unchanged, which is the compute the
-# ~4s map pulse traces back to.  Key by (ac_hex, node_id) -- the identity the
-# rest of the pipeline and the frontend already use -- with a fingerprint of
-# the non-static inputs, so a miss happens exactly when a new detection changes
+# of (delay_us, node geometry); the flush loop rebuilds it every cycle even
+# when the detection is unchanged, which is the compute the ~4s map pulse
+# traces back to.  Key by (ac_hex, node_id) -- the identity the rest of the
+# pipeline and the frontend already use -- with a fingerprint of the
+# non-static inputs, so a miss happens exactly when a new detection changes
 # them (invalidate on arrival, no timer).  node_cfg is treated as static per
 # node_id.  The fingerprint is None-safe: latest_delay_us is None for ADS-B-only
-# tracks and rounding None would raise.
+# tracks and rounding None would raise.  Delay-only (2026-08): the builder is
+# altitude-agnostic now, so a track's altitude changing is not a cache miss —
+# only its delay is.
 _single_node_arc_cache: dict[tuple[str, str | None], tuple[tuple, list | None]] = {}
 
 
 def _cached_single_node_arc(ac_hex, track, node_cfg, touched_keys):
     """Memoised _build_single_node_arc for the per-geolocated-track arc.
 
-    Returns exactly what
-        _build_single_node_arc(track, node_cfg,
-                               target_lat=track.lat, target_lon=track.lon)
-    returns, but recomputes only when the detection's inputs change.  The arc is
-    a pure function of those inputs, so this is transparent to callers and the
-    wire format.  ``touched_keys`` accumulates the keys visited this build so the
-    caller can evict everything else, bounding the cache to the live fleet.
+    Returns exactly what ``_build_single_node_arc(track, node_cfg)`` returns,
+    but recomputes only when the detection's delay changes.  The arc is the
+    detection-area-constrained delay locus — a pure function of the delay and
+    the (static) node geometry, independent of where on the locus the track
+    estimate currently sits (and, since 2026-08, independent of the track's
+    altitude too) — so this is transparent to callers and the wire format.
+    ``touched_keys`` accumulates the keys visited this build so the caller
+    can evict everything else, bounding the cache to the live fleet.
     """
     node_id = node_cfg.get("node_id")
     key = (ac_hex, node_id)
     touched_keys.add(key)
 
     delay_us = getattr(track, "latest_delay_us", None)
-    fingerprint = (
-        None if delay_us is None else round(delay_us, 3),
-        round(track.lat, 6),
-        round(track.lon, 6),
-    )
+    fingerprint = None if delay_us is None else round(delay_us, 3)
     cached = _single_node_arc_cache.get(key)
     if cached is not None and cached[0] == fingerprint:
         return cached[1]
 
-    arc = _build_single_node_arc(
-        track,
-        node_cfg,
-        target_lat=track.lat,
-        target_lon=track.lon,
-    )
+    arc = _build_single_node_arc(track, node_cfg)
     _single_node_arc_cache[key] = (fingerprint, arc)
     return arc
 
@@ -324,13 +348,10 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
     # arcs fade independently. Without arcs for ADS-B aircraft, the
     # synthetic fleet (where almost every target has ADS-B) gives the
     # impression that nodes are idle, which they're not.
-    # Always centre on the bistatic-solved position (track.lat/lon), not
-    # on the raw ADS-B GPS fix.  When the ADS-B fix is stale or sits
-    # outside the beam (e.g. an aircraft near the TX tower), centering on
-    # adsb.lat/lon sweeps the wrong beam sector, yields few or no valid
-    # arc points, and the position falls back to an unstable raw solver
-    # output that jumps tens of km between frames.  track.lat/lon is
-    # always the bistatic-constrained estimate — correct sector, stable arc.
+    # The arc is the full detection-area-constrained delay locus — it does
+    # not depend on the track's own position estimate, only on the measured
+    # delay and the node geometry, so it is honest for stale-ADS-B and
+    # raw-solver tracks alike.
     ambiguity_arc = _cached_single_node_arc(
         ac_hex,
         track,
@@ -344,6 +365,11 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
     raw_midpoint_lat = None
     raw_midpoint_lon = None
     if ambiguity_arc and position_source in ("solver_single_node", "solver_adsb_seed"):
+        # The arc spans the whole detection area, so its midpoint is the
+        # locus's boresight crossing — a canonical point on the ambiguity
+        # curve, not an estimate of where on the curve the aircraft sits.
+        # It moves radially as the measured delay changes and is stable
+        # between detections.
         midpoint = ambiguity_arc[len(ambiguity_arc) // 2]
         lat = round(midpoint[0], 6)
         lon = round(midpoint[1], 6)
@@ -396,9 +422,20 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
 
         # RMS gate: persistently high rms_delay means the Kalman filter
         # cannot fit the current measurement — the track is in a
-        # mis-association state and the icon's midpoint is unreliable.
-        # Revert the icon to the last emitted position; keep the arc as
-        # the honest "radar saw a detection along this curve" signal.
+        # mis-association state, and *both* geometries derived from this
+        # frame are unreliable: the icon's midpoint AND the arc, which is
+        # drawn from the very delay the filter is rejecting.  Revert the
+        # icon to the last emitted position and suppress this frame's arc.
+        # (Staging diagnosis: mis-associated delays carried rms_delay
+        # 11–21 µs against this 7 µs gate, and 42% of ground-truth checks
+        # failed the on-ellipse test — the position was being reverted but
+        # the wrong-target arc still drew.)
+        # Deliberately narrower than the speed gate above, which KEEPS its
+        # arc: a speed-gate revert distrusts the midpoint-to-track
+        # association, not the measurement itself, so "radar saw something
+        # along this curve" stays honest there — and nulling it left the
+        # testmap looking like every node was idle.  Here the pipeline has
+        # flagged the measurement, so no geometry from it should draw.
         # Threshold 7 µs: median rms is ~2 µs for clean tracks; bad
         # actors observed at 8–11 µs over dozens of consecutive frames.
         # Inside the outer `if ambiguity_arc and position_source in (...)`
@@ -410,6 +447,7 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
             if not _hold_expired:
                 lat = _last_emit[0]
                 lon = _last_emit[1]
+                ambiguity_arc = None
 
         # Maintain the hold window, and dead-reckon while held.  A held
         # position is otherwise *stationary* while the aircraft flies, which
@@ -451,8 +489,12 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
         # the solver position is outside the antenna beam and is unreliable.
         # If delay is 0/None the track has no bistatic measurement data and
         # should pass through rather than disappearing due to a missing arc.
+        # Exemption: a differential below ARC_MIN_DIFFERENTIAL_KM has its
+        # arc withheld by design (near-baseline sliver renders as a
+        # misleading blob) — the measurement itself is fine, so the track
+        # still emits: position, no arc.
         _arc_delay = getattr(track, "latest_delay_us", None)
-        if _arc_delay and _arc_delay > 0:
+        if _arc_delay and _arc_delay > 0 and _arc_delay * C_KM_US >= ARC_MIN_DIFFERENTIAL_KM:
             return None
 
     # Dead-reckon non-arc tracks (multinode, solver_adsb_seed) from the
@@ -549,19 +591,71 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
         # Age matters as much as provenance, and this path used to have no
         # age gate at all: _fresh_adsb admits a 60 s fix, which is 15 km of
         # travel.  services.calibration holds the one rule now.
-        if nid:
-            record_adsb_calibration(
+        #
+        # Coverage recording additionally requires a FRESH DETECTION, not
+        # just a live ADS-B fix: the emit path keeps a track alive for
+        # DISPLAY_STALE_TRACK_S (15 s) after its last detection while
+        # has_adsb keeps matching the live fix, so ungated recording stamped
+        # positives along every departure path outside coverage, every emit
+        # cycle, for as long as the stale track kept rendering.  The polygon
+        # is a map of where the node DETECTS, and only a fresh detection
+        # event proves that — n_detections>=3 additionally keeps a one-frame
+        # mis-matched-hex association from characterizing coverage, the same
+        # maturity bar the tracker's own M-of-N confirmation demands.
+        # ...and the fresh detection must be ADS-B-tagged with THIS hex.
+        # The tracker's adsb_hex goes stale on identity swaps onto untagged
+        # (dark) targets — the swap debounce only advances on tagged
+        # mismatches — and a swapped track then records the departed
+        # aircraft's live position, anywhere in the metro, for as long as it
+        # keeps associating (measured on staging 2026-08-09 as contiguous
+        # ~100°+ out-of-wedge fans).  An untagged newest detection is not
+        # neutral, it is the signature of exactly that state, so None
+        # abstains: only a detection the node itself ADS-B-correlated to
+        # this hex may characterize coverage.
+        #
+        # Freshness alone is still not enough, though: CAL_DETECTION_FRESH_S
+        # and the fix's own age gate above are both measured against `now`,
+        # the moment this emit cycle happens to run — neither is measured
+        # against the OTHER one.  So for up to CAL_DETECTION_FRESH_S after
+        # the last real detection, the live ADS-B fix kept being recorded
+        # while the aircraft flew on past what the node actually saw (the
+        # exit-smear mechanism; staging 2026-08-10, 32/32 directional nodes
+        # showed learned-FOV lobes from it, some out to 160 km).
+        # services.calibration.record_adsb_calibration holds the
+        # fix-vs-detection skew rule that closes this — this call just
+        # supplies both timestamps and trusts the one rule to enforce it.
+        _det_tag = getattr(track, "last_detection_adsb_hex", None)
+        _det_ts = getattr(track, "last_detection_wall_ts", 0.0)
+        _fix_ts = (adsb.get("last_seen_ms", 0) or 0) / 1000.0
+        _detection_fresh = (
+            now - _det_ts <= CAL_DETECTION_FRESH_S
+            and getattr(track, "n_detections", 0) >= 3
+            and isinstance(_det_tag, str)
+            and _det_tag.strip().lower() == (ac_hex or "").strip().lower()
+        )
+        if nid and _detection_fresh:
+            _n_recorded = record_adsb_calibration(
                 [nid],
                 adsb_lat,
                 adsb_lon,
-                age_s=now - (adsb.get("last_seen_ms", 0) or 0) / 1000.0,
+                age_s=now - _fix_ts,
+                fix_ts=_fix_ts,
+                detection_ts=_det_ts,
             )
-        if nid:
-            # Track furthest verified detections per node (for detection range)
-            area = state.node_analytics.detection_areas.get(nid)
-            if area:
-                area.record_verified_detection(adsb_lat, adsb_lon, ac_hex)
-        # Track accuracy: haversine(solver, adsb) per aircraft per update
+            if _n_recorded > 0:
+                # Track furthest verified detections per node (for detection
+                # range).  Gated on the recorder's verdict, not just
+                # _detection_fresh: the detection-range record was fed by the
+                # same exit smear, and gating it here — rather than
+                # duplicating the skew check — keeps calibration.py the one
+                # place that rule lives.
+                area = state.node_analytics.detection_areas.get(nid)
+                if area:
+                    area.record_verified_detection(adsb_lat, adsb_lon, ac_hex)
+        # Track accuracy: haversine(solver, adsb) per aircraft per update.
+        # NOT gated on _detection_fresh — accuracy of what's painted is
+        # honest even while coasting on ADS-B enrichment; only coverage
+        # characterisation needs a fresh detection to be honest.
         if adsb_lat and adsb_lon:
             err_km = position_distance_km(solver_lat, solver_lon, adsb_lat, adsb_lon)
             _record_accuracy_sample(ac_hex, err_km, position_source, now)
@@ -570,21 +664,31 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
     rms_doppler = round(getattr(track, "rms_doppler", 0.0) or 0.0, 2)
 
     # Anomaly propagation: GeolocatedTrack → state.anomaly_hexes.
-    # Fold in the position-jump flag computed above so a teleporting
-    # track is marked anomalous even when the tracker itself saw nothing
-    # wrong (no ADS-B to contradict, doppler within Mach 1).
-    _anom_types = set(getattr(track, "anomaly_types", set()))
+    # position_jump is observability only — teleports are solver
+    # mis-association noise, not target behaviour, so a jump never marks
+    # the track anomalous.  The per-entry debug field and the
+    # position_jump_events counter keep it visible.
     if _position_jump:
-        _anom_types.add("position_jump")
+        state.bump_counter("position_jump_events")
+    _anom_types = set(getattr(track, "anomaly_types", set()))
     # No velocity-plausibility flag here: supersonic targets are in scope,
     # so a high ground speed is reported as-is rather than marked anomalous.
-    _is_anom = bool(getattr(track, "is_anomalous", False)) or _position_jump
+    _is_anom = bool(getattr(track, "is_anomalous", False)) or bool(_anom_types)
+    if position_source == "single_node_ellipse_arc" and not has_adsb:
+        # A lone delay measurement constrains almost nothing about
+        # behaviour — only physically loud signals may flag an arc-only
+        # track (supersonic Doppler, extreme acceleration).
+        _anom_types &= ARC_ONLY_ANOMALY_ALLOWLIST
+        _is_anom = bool(_anom_types)
     _max_vel = getattr(track, "max_velocity_ms", 0.0)
     _flag_hex = ac_hex
     with state.anomaly_lock:
         if _is_anom:
             state.anomaly_hexes.add(_flag_hex)
-        else:
+        elif not state.ground_truth_meta.get(_flag_hex, {}).get("is_anomalous"):
+            # sim_ingest owns hexes the simulator marked anomalous in ground
+            # truth; discarding them here made the 1 Hz feed silently wipe
+            # the GT flag for every aircraft that also had a clean track.
             state.anomaly_hexes.discard(_flag_hex)
 
     return {
@@ -621,4 +725,7 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
         "is_anomalous": _is_anom,
         "anomaly_types": sorted(_anom_types) if _anom_types else [],
         "max_velocity_ms": round(_max_vel, 1),
+        # Debug only, never an anomaly: a teleporting emit means the solver
+        # mis-associated, not that the target did anything.
+        "position_jump": _position_jump,
     }

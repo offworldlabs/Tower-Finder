@@ -16,6 +16,7 @@ from core.users import require_admin
 from services.frame_processor import resolve_ground_truth_hex
 from services.geo import haversine_km
 from services.id_utils import normalize_hex_key
+from services.tasks import solver as solver_mod
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -171,12 +172,79 @@ def _build_dashboard_data() -> bytes:
                 # Only observable here — the per-solve reason is logged at DEBUG,
                 # which staging does not emit.
                 "n2_unconfirmed": state.n2_unconfirmed,
+                # Per-reason breakdown of solver_failures (same aggregate as
+                # above): which gate is eating the solves.
+                "failures_by_reason": {
+                    "exception": state.solver_fail_exception,
+                    "unconverged": state.solver_fail_unconverged,
+                    "rms_delay": state.solver_fail_rms_delay,
+                    "rms_doppler": state.solver_fail_rms_doppler,
+                    "beam": state.solver_fail_beam,
+                    "displacement": state.solver_fail_displacement,
+                },
                 # Overlap grids rebuilt because a node's observed coverage
                 # tightened, and how many nodes triggered it.  Zero against
                 # populated polygons means the prior is not reaching the grids.
                 "coverage_rebuilds": state.coverage_rebuilds,
                 "coverage_rebuild_nodes": state.coverage_rebuild_nodes,
                 "queue_drops": state.solver_queue_drops,
+                # Items discarded unsolved after aging out in the queue.  The
+                # queue-full and too-slow failure modes are distinct: drops
+                # here with queue_drops at 0 means the drain rate collapsed,
+                # not the queue size.
+                "stale_drops": state.solver_stale_drops,
+                # Multinode entries replaced because a later solve consumed
+                # the same source tracks under a new key (fragmented re-solve).
+                "mn_superseded": state.mn_superseded,
+                # Solves published after node-trimming recovered them from
+                # the rms_delay gate at n>=4.  See solver.py's
+                # _trim_and_resolve.
+                "solver_trimmed": state.solver_trimmed,
+                # Consensus hypothesis stage (solver.py's _consensus_select).
+                # mode is off/shadow/active (SOLVER_CONSENSUS_MODE); the
+                # counters are cumulative since boot regardless of mode —
+                # shadow/selected/filtered only move once mode isn't "off".
+                "consensus": {
+                    "mode": solver_mod._CONSENSUS_MODE,
+                    "selected": state.solver_consensus_selected,
+                    "filtered": state.solver_consensus_filtered,
+                    "fallback": state.solver_consensus_fallback,
+                    "shadow": state.solver_consensus_shadow,
+                },
+                # Top-down claiming (ASSOC_CLAIM_MODE), since boot.  See
+                # /api/test/solver-stats' "claiming"/"fragmentation" blocks
+                # for the fuller windowed picture.
+                "claiming": {
+                    "mode": state.node_associator.claim_mode,
+                    "matched": state.node_associator.claims_matched,
+                    "conflicts": state.node_associator.claim_conflicts,
+                    "anchor_hits": state.solver_anchor_hits,
+                    "anchor_fallbacks": state.solver_anchor_fallbacks,
+                },
+                # ADS-B seeding (ADSB_SEED_MODE) — see
+                # /api/radar/association/status' fuller "adsb_seed" block.
+                "adsb_seed": {
+                    "mode": state.node_associator.adsb_seed_mode,
+                    "tagged": state.node_associator.adsb_tracklets_tagged,
+                    "excluded": state.node_associator.adsb_tracklets_excluded,
+                    "inputs": state.node_associator.adsb_inputs_emitted,
+                },
+                # Empirical FOV beam gate (FOV_MODE).  Since-boot counters,
+                # passthrough only — mode is off/shadow/active; shadow_*
+                # only move once mode isn't "off" (see solver.py's beam
+                # gate); neg_events is the disappearance detector's accepted
+                # record_negative_event count (analytics_refresh.py), shadow
+                # AND active.
+                "fov": {
+                    "mode": state.FOV_MODE,
+                    "shadow_agree": state.fov_shadow_agree,
+                    "would_pass": state.fov_shadow_would_pass,
+                    "would_reject": state.fov_shadow_would_reject,
+                    "neg_events": state.fov_neg_events,
+                },
+                # Teleporting emits (mis-association noise).  Debug counter
+                # only — jumps no longer mark tracks anomalous.
+                "position_jump_events": state.position_jump_events,
                 "last_latency_s": round(state.solver_last_latency_s, 3),
                 "avg_latency_s": round(state.solver_total_latency_s / max(state.solver_total_solved, 1), 3),
             },
@@ -354,13 +422,17 @@ async def get_anomaly_log():
 @router.get("/api/simulation/config")
 async def get_simulation_config():
     """Return current simulation physics configuration plus live object-type counts."""
-    counts: dict[str, int] = {"anomalous": 0, "drone": 0, "aircraft": 0, "total": 0}
+    counts: dict[str, int] = {"anomalous": 0, "drone": 0, "aircraft": 0, "dark": 0, "total": 0}
     for meta in list(state.ground_truth_meta.values()):
         counts["total"] += 1
         if meta.get("is_anomalous"):
             counts["anomalous"] += 1
         elif meta.get("object_type") == "drone":
             counts["drone"] += 1
+        elif not meta.get("has_adsb"):
+            # Dark: an aircraft flying without a transponder.  Counted apart
+            # from "aircraft" so the frac_dark knob is verifiable in one call.
+            counts["dark"] += 1
         else:
             counts["aircraft"] += 1
     return Response(
@@ -375,9 +447,25 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
 
     Accepted keys: frac_anomalous, frac_drone, frac_dark (0.0–1.0 each).
     Sum of the three must not exceed 1.0 — the remainder is commercial aircraft.
-    Optional: max_range_km (10–400), min_aircraft (1–500), max_aircraft (1–500).
+    Optional: max_range_km (0 = auto, or 10–400), min_aircraft (1–500),
+    max_aircraft (1–500).
+
+    Also accepted — fleet scene keys, deliberately NO defaults (state.py's
+    only-if-set pattern: a fresh backend never ships these, so the fleet
+    container falls back to its own env; applying one is an orchestrator
+    self-restart, see fleet-entrypoint.sh / retina_simulation.orchestrator):
+    n_nodes (int, 4–100), dual_fraction (0.0–1.0).
     """
-    allowed = {"frac_anomalous", "frac_drone", "frac_dark", "max_range_km", "min_aircraft", "max_aircraft"}
+    allowed = {
+        "frac_anomalous",
+        "frac_drone",
+        "frac_dark",
+        "max_range_km",
+        "min_aircraft",
+        "max_aircraft",
+        "n_nodes",
+        "dual_fraction",
+    }
     updated = {}
     for k in allowed:
         if k in body:
@@ -386,11 +474,22 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
                 if not isinstance(v, (int, float)) or not (0.0 <= v <= 1.0):
                     raise HTTPException(400, detail=f"{k} must be 0.0–1.0")
             elif k in ("max_range_km",):
-                if not isinstance(v, (int, float)) or not (10 <= v <= 400):
-                    raise HTTPException(400, detail=f"{k} must be 10–400")
+                # 0 = no uniform override; every node keeps its generated
+                # per-node range — matches FLEET_MAX_RANGE_KM=0 deployment
+                # semantics.
+                if not isinstance(v, (int, float)) or not (v == 0 or 10 <= v <= 400):
+                    raise HTTPException(400, detail=f"{k} must be 0 or 10–400")
             elif k in ("min_aircraft", "max_aircraft"):
                 if not isinstance(v, int) or not (1 <= v <= 500):
                     raise HTTPException(400, detail=f"{k} must be int 1–500")
+            elif k == "n_nodes":
+                # bool is an int subclass in Python — True/False must not
+                # sneak through as 1/0.
+                if not isinstance(v, int) or isinstance(v, bool) or not (4 <= v <= 100):
+                    raise HTTPException(400, detail=f"{k} must be int 4–100")
+            elif k == "dual_fraction":
+                if not isinstance(v, (int, float)) or isinstance(v, bool) or not (0.0 <= v <= 1.0):
+                    raise HTTPException(400, detail=f"{k} must be 0.0–1.0")
             updated[k] = v
 
     total_frac = (
@@ -551,6 +650,275 @@ async def mlat_verification():
         content=state.latest_mlat_verification_bytes,
         media_type="application/json",
     )
+
+
+@router.get("/api/test/mlat-history")
+async def mlat_history(
+    hex: str | None = None,
+    all: int = 0,
+    minutes: float = 30.0,
+):
+    """Per-solve MLAT history from the last ~30 minutes.
+
+    ``?hex=mn...`` returns the published solves behind one map marker
+    (matched on the solver-minted mn<sha256[:10]> hex), newest first, plus
+    ``rejects_nearby``: gate-rejected solves within 10 km of the marker's
+    newest published position — the signal for "the gates starved this track
+    and the display held a stale point".  ``?all=1`` dumps the whole window
+    for scripted debugging.  Records are written by the solver worker
+    (services.tasks.solver._record_solve_history).
+    """
+    minutes = max(0.0, min(minutes, 35.0))
+    cutoff_ms = int((time.time() - minutes * 60.0) * 1000)
+    records = [r for r in list(state.mlat_solve_history) if r["ts_ms"] >= cutoff_ms]
+    records.reverse()  # newest first
+
+    if all:
+        payload = {
+            "window_minutes": minutes,
+            "n_records": len(records),
+            "records": records[:1000],
+        }
+        return Response(content=orjson.dumps(payload), media_type="application/json")
+
+    norm = (hex or "").strip().lower()
+    if not norm:
+        return Response(
+            content=orjson.dumps({"error": "pass ?hex=mn... or ?all=1"}),
+            media_type="application/json",
+            status_code=400,
+        )
+    solves = [r for r in records if r.get("solver_hex") == norm]
+    rejects_nearby: list[dict] = []
+    if solves:
+        ref = solves[0]
+        ref_lat, ref_lon = ref.get("raw_lat"), ref.get("raw_lon")
+        if ref_lat is not None and ref_lon is not None:
+            rejects_nearby = [
+                r
+                for r in records
+                if r.get("outcome") != "published"
+                and r.get("raw_lat") is not None
+                and haversine_km(ref_lat, ref_lon, r["raw_lat"], r["raw_lon"]) <= 10.0
+            ]
+    payload = {
+        "hex": norm,
+        "window_minutes": minutes,
+        "n_solves": len(solves),
+        "solves": solves[:500],
+        "rejects_nearby": {
+            "n": len(rejects_nearby),
+            "by_outcome": {
+                o: sum(1 for r in rejects_nearby if r["outcome"] == o)
+                for o in sorted({r["outcome"] for r in rejects_nearby})
+            },
+            "records": rejects_nearby[:200],
+        },
+    }
+    return Response(content=orjson.dumps(payload), media_type="application/json")
+
+
+# ── Solver Report (full funnel/error/ghost/consensus picture) ─────────────────
+
+# Both tunable from staging observation, not derived from anything physical.
+_GHOST_GATE_KM = 5.0
+_ERR_GT_GATE_KM = 15.0
+# How stale a ground-truth trail point (or ADS-B fix) may be and still count
+# as "the aircraft was there" for ghost detection.
+_GHOST_GT_MAX_AGE_S = 90.0
+_ADSB_FRESH_S = 60.0
+
+
+def _solver_window_stats(minutes: float) -> dict:
+    """Full solver picture: publication funnel, position error, ghost/false-track
+    precision, consensus counters — the data behind the Solver Report panel.
+
+    Funnel, reject-reason, and position-error stats are windowed over the
+    last ``minutes`` of ``state.mlat_solve_history`` (idiom shared with
+    mlat-history). Ghost detection and consensus/counters read *current* live
+    state (multinode_tracks / ground_truth_trails / adsb_aircraft) rather
+    than the window — a live track is either a ghost right now or it isn't.
+
+    Ghost definition: a currently-live state.multinode_tracks entry that is
+    (1) not ADS-B-associated (no adsb_hex on the result and its key doesn't
+    start with mn-adsb-, solver.py:615), (2) more than _GHOST_GATE_KM from
+    the time-nearest (<= _GHOST_GT_MAX_AGE_S old) point of every ground-truth
+    trail, AND (3) more than _GHOST_GATE_KM from every adsb_aircraft entry
+    fresh within _ADSB_FRESH_S. Both distance gates are required because
+    staging injects real adsb.lol traffic alongside the simulated fleet — "no
+    GT match" alone would mislabel every real-traffic track as a ghost.
+    """
+    cutoff_ms = int((time.time() - minutes * 60.0) * 1000)
+    records = [r for r in list(state.mlat_solve_history) if r["ts_ms"] >= cutoff_ms]
+
+    attempts = len(records)
+    n2 = n3plus = 0
+    reject_total = 0
+    by_reason: dict[str, int] = {}
+    pos_errors: list[float] = []
+    for r in records:
+        outcome = r.get("outcome")
+        if outcome == "published":
+            n_nodes = r.get("n_nodes") or 0
+            if n_nodes == 2:
+                n2 += 1
+            elif n_nodes >= 3:
+                n3plus += 1
+            err = r.get("gt_error_km")
+            if err is not None and err <= _ERR_GT_GATE_KM:
+                pos_errors.append(err)
+        else:
+            reject_total += 1
+            reason = outcome[len("rejected_") :] if outcome.startswith("rejected_") else outcome
+            by_reason[reason] = by_reason.get(reason, 0) + 1
+
+    pos_errors.sort()
+    n_err = len(pos_errors)
+    median_err = pos_errors[n_err // 2] if n_err else None
+    p90_err = pos_errors[int(0.9 * (n_err - 1))] if n_err else None
+
+    # ── fragmentation ───────────────────────────────────────────────────────
+    # Windowed, from the same published records the funnel above counts —
+    # distinct published keys is the acceptance metric top-down claiming
+    # exists to move: O(targets) instead of O(solves).  anchored_pct reads
+    # anchor_key rather than an outcome filter so it reflects every attempt
+    # this window, not just successful ones — solver.py stamps anchor_key on
+    # rejects too (see _record_solve_history).
+    published_records = [r for r in records if r.get("outcome") == "published"]
+    key_counts: dict[str, int] = {}
+    anchored_published = 0
+    for r in published_records:
+        k = r.get("solve_key")
+        if k is not None:
+            key_counts[k] = key_counts.get(k, 0) + 1
+        if r.get("anchor_key"):
+            anchored_published += 1
+    counts_sorted = sorted(key_counts.values())
+    n_keys = len(counts_sorted)
+    spk_median = counts_sorted[n_keys // 2] if n_keys else None
+    spk_p90 = counts_sorted[int(0.9 * (n_keys - 1))] if n_keys else None
+    anchored_pct = round(100.0 * anchored_published / len(published_records), 1) if published_records else 0.0
+
+    # ── ghosts ──────────────────────────────────────────────────────────────
+    now = time.time()
+    now_ms = now * 1000.0
+    gt_trails = [(hx, list(trail)) for hx, trail in state.ground_truth_trails.items()]
+    fresh_adsb = [
+        a
+        for a in state.adsb_aircraft.values()
+        if a.get("last_seen_ms") is not None and now_ms - a["last_seen_ms"] <= _ADSB_FRESH_S * 1000.0
+    ]
+
+    live_tracks = 0
+    adsb_associated = 0
+    gt_matched = 0
+    ghost_tracks = 0
+    for key, rec in state.multinode_tracks.items():
+        live_tracks += 1
+        if rec.get("adsb_hex") or key.startswith("mn-adsb-"):
+            adsb_associated += 1
+            continue
+        lat, lon = rec.get("lat"), rec.get("lon")
+        if lat is None or lon is None:
+            continue
+
+        matched = False
+        for _hx, trail in gt_trails:
+            if not trail:
+                continue
+            pt = min(trail, key=lambda p: abs(p[3] - now))
+            if abs(pt[3] - now) > _GHOST_GT_MAX_AGE_S:
+                continue
+            if haversine_km(lat, lon, pt[0], pt[1]) <= _GHOST_GATE_KM:
+                matched = True
+                break
+        if matched:
+            gt_matched += 1
+            continue
+
+        near_adsb = any(haversine_km(lat, lon, a["lat"], a["lon"]) <= _GHOST_GATE_KM for a in fresh_adsb)
+        if not near_adsb:
+            ghost_tracks += 1
+
+    precision_pct = round((live_tracks - ghost_tracks) / live_tracks * 100, 1) if live_tracks else 0.0
+
+    return {
+        "window_minutes": minutes,
+        "attempts": attempts,
+        "published": {"total": n2 + n3plus, "n2": n2, "n3plus": n3plus},
+        "rejects": {"total": reject_total, "by_reason": by_reason},
+        "position_error_km": {"median": median_err, "p90": p90_err, "n": n_err},
+        "ghosts": {
+            "live_tracks": live_tracks,
+            "adsb_associated": adsb_associated,
+            "gt_matched": gt_matched,
+            "ghost_tracks": ghost_tracks,
+            "precision_pct": precision_pct,
+        },
+        "consensus": {
+            "mode": solver_mod._CONSENSUS_MODE,
+            "selected": state.solver_consensus_selected,
+            "filtered": state.solver_consensus_filtered,
+            "fallback": state.solver_consensus_fallback,
+            "shadow": state.solver_consensus_shadow,
+        },
+        # Top-down claiming, since boot — same "cumulative regardless of
+        # mode" convention as consensus above.  rounds/matched/conflicts/
+        # anchored_inputs/tracklets_excluded come off the library associator
+        # (the claiming stage itself); anchor_hits/anchor_fallbacks/
+        # anchored_published are the solver-side honoring outcome.
+        "claiming": {
+            "mode": state.node_associator.claim_mode,
+            "rounds": state.node_associator.claim_rounds,
+            "matched": state.node_associator.claims_matched,
+            "conflicts": state.node_associator.claim_conflicts,
+            "anchored_inputs": state.node_associator.anchored_inputs_emitted,
+            "tracklets_excluded": state.node_associator.tracklets_excluded,
+            "anchor_hits": state.solver_anchor_hits,
+            "anchor_fallbacks": state.solver_anchor_fallbacks,
+            "anchored_published": state.solver_anchored_published,
+        },
+        # Empirical FOV beam gate (FOV_MODE) — since-boot counters, same
+        # "cumulative regardless of mode" convention as claiming/consensus
+        # above.  See routes/test.py's dashboard "fov" block / solver.py's
+        # beam gate for what agree/would_pass/would_reject mean.
+        "fov": {
+            "mode": state.FOV_MODE,
+            "shadow_agree": state.fov_shadow_agree,
+            "would_pass": state.fov_shadow_would_pass,
+            "would_reject": state.fov_shadow_would_reject,
+            "neg_events": state.fov_neg_events,
+        },
+        "fragmentation": {
+            "distinct_keys": len(key_counts),
+            "published": len(published_records),
+            "solves_per_key": {"median": spk_median, "p90": spk_p90},
+            "anchored_pct": anchored_pct,
+        },
+        "counters": {
+            "successes": state.solver_successes,
+            "failures": state.solver_failures,
+            "n2_unconfirmed": state.n2_unconfirmed,
+            "solver_trimmed": state.solver_trimmed,
+            "stale_drops": state.solver_stale_drops,
+            "queue_drops": state.solver_queue_drops,
+            "worker_errors": state.solver_worker_errors,
+            "vel_untrusted_published": state.solver_vel_untrusted_published,
+        },
+    }
+
+
+@router.get("/api/test/solver-stats")
+async def solver_stats(minutes: float = 10.0):
+    """Full solver picture for the Solver Report panel: publication funnel
+    (n=2 vs n>=3), reject-reason breakdown, position-error percentiles,
+    ghost/false-track precision, and consensus/since-boot counters.
+
+    See ``_solver_window_stats`` for the ghost definition and gate constants.
+    """
+    minutes = max(1.0, min(minutes, 35.0))
+    payload = _solver_window_stats(minutes)
+    return Response(content=orjson.dumps(payload), media_type="application/json")
 
 
 @router.get("/api/test/mlat-accuracy")

@@ -55,3 +55,6 @@ backend/data/runtime/
 
 # uv regenerates this on every `uv run`; the pins live in requirements.txt
 backend/uv.lock
+
+# Claude working notes (machine-local)
+CLAUDE.md

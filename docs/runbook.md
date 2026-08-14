@@ -498,4 +498,34 @@ curl -sk https://localhost/api/test/dashboard | python3 -c \
   print(f\"nodes={n['active']}/200  queue={h['frame_queue_utilization_pct']}%  drops={h['frames_dropped']}  on_map={p['aircraft_on_map']}\")"
 ```
 
+### Feature-gate flips (consensus / claiming / FOV / smoother)
+
+The multi-node stages are env-gated in the gitignored `backend/.env` — see
+the Feature gates table in [`architecture.md`](architecture.md). To flip one:
+edit `backend/.env`, then `docker compose up -d` (env-only, no `--build`).
+Standard rollout is `shadow` first: shadow counters accumulate in
+`/api/test/solver-stats` (`fov`, `claiming`, `consensus` blocks) without the
+stage binding; flip to `active` only after the shadow soak looks sane.
+Instant rollbacks: any mode flag back to `shadow`/`off`, and
+`TRACK_SMOOTHER=ewma` for display smoothing.
+
+### Empirical coverage / learned FOV health
+
+Per-node learned FOV state persists on the `coverage_data` volume and is
+summarized per node in `/api/radar/analytics` (`empirical_coverage.fov`:
+`n_pos`, `bins_observed/prior/closed`, `max_limit_km`). Sanity rule for
+**synthetic** nodes: open bins must fit the 42° wedge — `bins_observed`
+persistently above ~12 means a calibration leak, not real coverage (the
+simulator only generates detections in-wedge). Real nodes (radar3/radar3a)
+legitimately learn near-omni.
+
+To force a fleet-wide relearn (e.g. after a calibration-semantics change):
+bump `CALIBRATION_SCHEMA` in
+`libs/retina-analytics/src/retina_analytics/empirical_coverage.py` with a
+ledger entry (the pin test in `tests/test_coverage_binning.py` forces the
+rationale to be written down). Persisted state with an older schema is
+discarded at node registration on the next deploy — staging and prod both,
+no manual volume surgery. Do NOT hand-delete files on the volume; the
+running server re-persists its in-memory copy over them.
+
 ---

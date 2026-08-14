@@ -47,8 +47,15 @@ export function applyGroundTruthFixes(fixes, snapshot, meta, now) {
       alt_baro: Math.round(mToFt(last[2])),
       gs: Math.round(msToKnots(m.speed_ms || 0) * 10) / 10,
       track: m.heading || 0,
+      speed_ms: m.speed_ms,
+      heading: m.heading,
       object_type: m.object_type,
       is_anomalous: m.is_anomalous,
+      // Simulated parameters for the debug detail panel.  "Dark" objects are
+      // object_type "aircraft" with has_adsb false.
+      has_adsb: m.has_adsb,
+      adsb_callsign: m.adsb_callsign,
+      anomaly_event: m.anomaly_event,
       points: positions.length,
       _isTruth: true,
       _fixLat: lat,
@@ -68,11 +75,21 @@ export function applyGroundTruthFixes(fixes, snapshot, meta, now) {
  * Takes the trackStores bundle rather than varargs companions: the varargs
  * form made a forgotten store silent, which is the exact bug class the
  * bundle exists to close.
+ *
+ * A key missing from ONE snapshot is not evidence the object despawned: the
+ * backend rebuilds the GT snapshot only every 5 s while its trail GC runs on
+ * a 10 s rule, so a push hiccup drops a hex for a few snapshots and brings it
+ * back.  Forgetting on first absence made the dot blink out and reappear.
+ * Instead the entry is kept (dead-reckoning carries it) until it has gone
+ * unvouched for `graceMs` — `_updatedAt` is only refreshed for vouched keys,
+ * so it ages naturally while the key is absent.
  */
-export function pruneGroundTruthFixes(stores, activeKeys) {
+export function pruneGroundTruthFixes(stores, activeKeys, now, graceMs) {
   for (const key of Object.keys(stores.fixes)) {
-    if (!stores.fixes[key]._isTruth) continue;
+    const f = stores.fixes[key];
+    if (!f._isTruth) continue;
     if (activeKeys.has(key)) continue;
+    if (now - (f._updatedAt ?? 0) <= graceMs) continue;
     forgetTrack(key, stores);
   }
 }

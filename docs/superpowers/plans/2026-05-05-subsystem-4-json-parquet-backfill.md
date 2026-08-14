@@ -44,17 +44,28 @@ def _legacy_payload(node_id: str = "node-A") -> dict:
         "node_id": node_id,
         "timestamp": "2025-06-21T14:30:22.123456+00:00",
         "count": 1,
-        "detections": [{
-            "timestamp": 1700000000000,
-            "delay": [12.34, 56.78],
-            "doppler": [-100.5, 33.3],
-            "snr": [15.0, 22.0],
-            "adsb": [None, {"hex": "abcd12", "lat": 40.0, "lon": -74.0,
-                            "alt_baro": 35000, "gs": 480, "track": 270,
-                            "flight": "DLH123"}],
-            "_signing_mode": "unknown",
-            "_signature_valid": False,
-        }],
+        "detections": [
+            {
+                "timestamp": 1700000000000,
+                "delay": [12.34, 56.78],
+                "doppler": [-100.5, 33.3],
+                "snr": [15.0, 22.0],
+                "adsb": [
+                    None,
+                    {
+                        "hex": "abcd12",
+                        "lat": 40.0,
+                        "lon": -74.0,
+                        "alt_baro": 35000,
+                        "gs": 480,
+                        "track": 270,
+                        "flight": "DLH123",
+                    },
+                ],
+                "_signing_mode": "unknown",
+                "_signature_valid": False,
+            }
+        ],
     }
 
 
@@ -187,10 +198,7 @@ def target_key_for(payload: dict) -> str:
     """Compute the Hive-partitioned R2 key for a given legacy payload."""
     node_id = _resolve_node_id(payload)
     ts = _resolve_write_ts(payload)
-    return (
-        f"archive/year={ts:%Y}/month={ts:%m}/day={ts:%d}/"
-        f"node_id={node_id}/part-{ts:%H%M%S}.parquet"
-    )
+    return f"archive/year={ts:%Y}/month={ts:%m}/day={ts:%d}/node_id={node_id}/part-{ts:%H%M%S}.parquet"
 
 
 def _build_table(payload: dict, ingest_ts_ms: int) -> pa.Table:
@@ -278,8 +286,7 @@ def _target_exists(key: str) -> bool:
     return r2_client.download_bytes(key) is not None
 
 
-def run(prefix: str = "archive/", limit: int | None = None,
-        dry_run: bool = False, force: bool = False) -> dict:
+def run(prefix: str = "archive/", limit: int | None = None, dry_run: bool = False, force: bool = False) -> dict:
     if not r2_client.is_enabled():
         logger.error("R2 is not configured; aborting.")
         return {"error": "r2_disabled"}
@@ -306,7 +313,8 @@ def run(prefix: str = "archive/", limit: int | None = None,
                 logger.info("DRY: %s -> %s (%d bytes)", src_key, target_key, len(parquet_bytes))
             else:
                 ok = r2_client.upload_bytes(
-                    target_key, parquet_bytes,
+                    target_key,
+                    parquet_bytes,
                     content_type="application/octet-stream",
                 )
                 if not ok:
@@ -332,8 +340,7 @@ def main():
     p.add_argument("--force", action="store_true")
     args = p.parse_args()
 
-    stats = run(prefix=args.prefix, limit=args.limit,
-                dry_run=args.dry_run, force=args.force)
+    stats = run(prefix=args.prefix, limit=args.limit, dry_run=args.dry_run, force=args.force)
     if stats.get("error"):
         sys.exit(2)
 

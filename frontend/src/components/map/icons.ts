@@ -1,5 +1,4 @@
 import L from "leaflet";
-import { POSITION_SOURCE_ARC_ONLY } from "./constants";
 
 // Top-down airplane SVG path (nose pointing up/north at 0°)
 export const PLANE_PATH =
@@ -55,29 +54,19 @@ export function makeAircraftIcon(ac, showLabel, isSelected, colorByAlt = false) 
   // Nullish: FL0 (on the ground) is a value, not an absence.
   const alt = ac.alt_baro != null ? `FL${Math.round(ac.alt_baro / 100)}` : "";
 
-  // Arc-only tracks: lat/lon is the arc-midpoint estimate — the aircraft is
-  // actually somewhere along the arc, not exactly at this point.  Render the
-  // icon smaller, semi-transparent, with a dashed outline to signal the
-  // approximate position.
-  const isApproximate = ac.position_source === POSITION_SOURCE_ARC_ONLY;
-
   const altFt = ac.alt_baro ?? 0;
-  let size = altFt > 35000 ? 30 : altFt > 20000 ? 26 : altFt > 5000 ? 22 : 18;
-  if (isApproximate) size = Math.round(size * 0.78);
+  const size = altFt > 35000 ? 30 : altFt > 20000 ? 26 : altFt > 5000 ? 22 : 18;
 
   const glow = isSelected
     ? "filter:drop-shadow(0 0 7px #fbbf24) drop-shadow(0 0 3px #fbbf24);"
     : "filter:drop-shadow(0 2px 5px rgba(0,0,0,0.85));";
 
-  const iconOpacity = isApproximate ? 0.65 : 1.0;
-  const strokeDash = isApproximate ? 'stroke-dasharray="2 1.5"' : "";
-
   // pointer-events: only the visible SVG + label are clickable.  The outer
   // 90×44 container would otherwise grab clicks in its empty 90% area —
-  // particularly bad when icons are smaller (approximate / low-altitude).
+  // particularly bad when icons are smaller (low-altitude).
   const svgHtml = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 32 32"
-    style="display:block;pointer-events:auto;transform:rotate(${track}deg);${glow}opacity:${iconOpacity};">
-    <path fill="${color}" stroke="rgba(255,255,255,0.7)" stroke-width="1.2" stroke-linejoin="round" ${strokeDash}
+    style="display:block;pointer-events:auto;transform:rotate(${track}deg);${glow}">
+    <path fill="${color}" stroke="rgba(255,255,255,0.7)" stroke-width="1.2" stroke-linejoin="round"
       d="${PLANE_PATH}"/>
   </svg>`;
 

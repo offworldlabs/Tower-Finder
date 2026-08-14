@@ -7,6 +7,8 @@ SOLVER_WORKERS, etc.) — this file is for compile-time constants only.
 retina_tracker YAML config stays separate (loaded at runtime via config.yaml).
 """
 
+import os
+
 # ── Physics ──────────────────────────────────────────────────────────────────
 C_KM_US = 0.299792458  # Speed of light (km/µs)
 R_EARTH_KM = 6371.0  # Mean Earth radius (km)
@@ -54,6 +56,24 @@ N2_CONFIRM_MIN_SPAN_S = 12.0  # Observation span before a pairing is fitted
 N2_CONFIRM_MIN_EPOCHS = 4  # Floor on samples; span is the real gate
 N2_TRACK_HISTORY_MAX = 20  # Per-node track samples fed to the fit
 
+# A 2-node track needs this many solves before it renders a plane; 1
+# disables the gate.  One-shot n=2 solves were the dominant ghost source.
+MN_N2_MIN_SOLVES = int(os.getenv("MN_N2_MIN_SOLVES", "2"))
+# One-shot display lifetime for n>=3 solves, seconds.  A track confirmed by
+# a second solve gets the normal 60 s entry expiry / 30 s DR cap.
+MN_ONESHOT_TTL_S = float(os.getenv("MN_ONESHOT_TTL_S", "5.0"))
+
+# Quality gate for adopting the constant-velocity fit's velocity into a
+# published solve, in place of the single-epoch Doppler solution (see
+# solver.py's _resolve_cv_fit / velocity adoption in _process_solver_item).
+# Velocity is Doppler-determined — one projection per node — so n=2 is
+# underdetermined and n=3 exactly determined, and single-epoch noise maps
+# straight into the vector; the CV fit ties the whole observation window to
+# one constant-velocity trajectory instead.  Distinct from N2_CONFIRM_CHI2_MAX,
+# which gates whether an n=2 *track* publishes at all — that stays unaffected;
+# this only decides which velocity a solve that is already publishing shows.
+CV_VEL_ADOPT_CHI2_MAX = float(os.getenv("CV_VEL_ADOPT_CHI2_MAX", "5.0"))
+
 # Oldest ADS-B fix still usable as a coverage calibration point.  At 250 m/s a
 # 10 s fix is 2.5 km stale, which is already coarse against a 5°/72-bin polar
 # grid; beyond that the point stops describing where the target was when the
@@ -62,9 +82,71 @@ N2_TRACK_HISTORY_MAX = 20  # Per-node track samples fed to the fit
 # services/calibration.py, which both recording sites now go through.
 CAL_MAX_ADSB_AGE_S = 10.0
 
+# Oldest last-detection stamp still allowed to characterize node coverage.
+# Detection events arrive at the ~1 Hz frame cadence, so 5 s tolerates a
+# couple of dropped frames while bounding a 250 m/s target to ~1.25 km past
+# its last actual detection — the same staleness budget CAL_MAX_ADSB_AGE_S
+# applies to the fix itself. The emit path stays alive DISPLAY_STALE_TRACK_S
+# (15 s) past the last detection for display; calibration must not inherit
+# that window, or the coverage polygon paints an aircraft's exit path as
+# detected ground.  See services/track_gates.py.
+CAL_DETECTION_FRESH_S = 5.0
+
+# Tightest bound between a calibration point's ADS-B fix and the detection
+# event it is supposed to describe.  A calibration point must describe where
+# the target WAS WHEN THE NODE DETECTED IT — but CAL_DETECTION_FRESH_S and
+# CAL_MAX_ADSB_AGE_S above are both gates measured against `now`, the moment
+# the emit loop happens to run, not against each other.  So for up to
+# CAL_DETECTION_FRESH_S after the last real detection, the emit loop kept
+# recording the LIVE fix while the aircraft flew on: past the wedge edge at
+# medium range, or — near the RX, where 1 km of travel is on the order of 60°
+# of bearing — at an arbitrary bearing entirely.  Bounding
+# |fix_ts - detection_ts| pins the recorded position to the detection event
+# itself, independent of how fresh either one is relative to now: 2 s at
+# 250 m/s is <= 0.5 km of skew, well inside the 5°-bin quantisation at the
+# ranges where this matters.  See services/calibration.py, the one place
+# that enforces it, and services/track_gates.py, which supplies both
+# timestamps.
+CAL_FIX_DETECTION_SKEW_S = 2.0
+
+# ── ADS-B seeding (ADSB_SEED_MODE) ────────────────────────────────────────────
+# A track view exports its ADS-B tag only if one of the newest N history
+# detections carries it.  A swapped track's newest detections go untagged
+# while track.adsb_hex stays stale — see the identity-swap note in
+# services/track_gates.py — so one untagged newest frame is a receiver
+# hiccup (still export the tag), but N consecutive untagged is the swap
+# signature (withhold it).
+ADSB_VIEW_TAG_FRESH_N = 3
+
 # ── Default antenna parameters ───────────────────────────────────────────────
-YAGI_BEAM_WIDTH_DEG = 41.0  # Default half-power beamwidth (°)
+YAGI_BEAM_WIDTH_DEG = 42.0  # Half-power beamwidth (°) of the fleet Yagis
 YAGI_MAX_RANGE_KM = 50.0  # Default Yagi max range (km)
+
+# ── Single-node ambiguity arcs ───────────────────────────────────────────────
+# Floor on the measured differential range (delay_us * C_KM_US) below which no
+# ambiguity arc is emitted.  A near-zero differential means the delay ellipse
+# collapses onto the TX–RX baseline, so the "arc" renders as a tiny sliver
+# hugging the baseline — a misleading blob that conveys no positional
+# information.  Staging arc-UX diagnosis (2026-08): 36 of 415 emitted arcs
+# were such <5 km blob stubs, median differential 2.6 km, many traced to
+# clutter returns.  3.0 km clears that measured stub population.  The track
+# itself still emits below the floor (position only, no arc) — see the
+# floor exemption in services/track_gates.py's track_entry.
+ARC_MIN_DIFFERENTIAL_KM = 3.0
+
+# Anomaly types an arc-only (no fresh ADS-B) track may carry.  A single-node
+# delay measurement constrains almost nothing about behaviour, so most anomaly
+# streams are meaningless noise there — only physically loud signals survive:
+# supersonic Doppler and extreme acceleration.  Everything else (orbits,
+# identity swaps, position mismatches) needs either ADS-B truth or a
+# multi-node solve to mean anything.
+ARC_ONLY_ANOMALY_ALLOWLIST = frozenset(
+    {
+        "supersonic",
+        "instant_acceleration",
+        "anomalous_acceleration",
+    }
+)
 
 # ── Track & history limits ───────────────────────────────────────────────────
 TRACK_HISTORY_MAX = 60  # Rolling position buffer per aircraft

@@ -45,11 +45,10 @@ def _frame(timestamp_ms: int, n_dets: int = 3, with_adsb: bool = False) -> dict:
         "doppler": [-50.0 + i for i in range(n_dets)],
         "snr": [12.0 + i for i in range(n_dets)],
         "adsb": (
-            [
-                {"hex": "abcdef", "lat": 40.0, "lon": -74.0,
-                 "alt_baro": 35000, "gs": 480, "track": 270, "flight": "UAL1"}
-            ] + [None] * (n_dets - 1)
-            if with_adsb else [None] * n_dets
+            [{"hex": "abcdef", "lat": 40.0, "lon": -74.0, "alt_baro": 35000, "gs": 480, "track": 270, "flight": "UAL1"}]
+            + [None] * (n_dets - 1)
+            if with_adsb
+            else [None] * n_dets
         ),
         "_signing_mode": "unknown",
         "_signature_valid": False,
@@ -61,7 +60,10 @@ def test_writes_hive_partitioned_path(tmp_path: Path):
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
 
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
+        node_id="node-A",
+        frames=frames,
+        base_dir=tmp_path,
+        write_ts=ts,
     )
 
     expected = "year=2025/month=01/day=15/node_id=node-A/part-143022.parquet"
@@ -74,18 +76,31 @@ def test_schema_is_per_detection_with_required_columns(tmp_path: Path):
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
 
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
+        node_id="node-A",
+        frames=frames,
+        base_dir=tmp_path,
+        write_ts=ts,
     )
 
     table = pq.read_table(tmp_path / key)
     assert table.num_rows == 4  # one row per detection in the single frame
     cols = set(table.column_names)
     expected = {
-        "frame_ts_ms", "node_id", "detection_index",
-        "delay_us", "doppler_hz", "snr_db",
-        "adsb_hex", "adsb_lat", "adsb_lon", "adsb_alt_baro",
-        "adsb_gs", "adsb_track", "adsb_flight",
-        "signing_mode", "signature_valid",
+        "frame_ts_ms",
+        "node_id",
+        "detection_index",
+        "delay_us",
+        "doppler_hz",
+        "snr_db",
+        "adsb_hex",
+        "adsb_lat",
+        "adsb_lon",
+        "adsb_alt_baro",
+        "adsb_gs",
+        "adsb_track",
+        "adsb_flight",
+        "signing_mode",
+        "signature_valid",
     }
     missing = expected - cols
     assert not missing, f"missing columns: {missing}"
@@ -96,7 +111,10 @@ def test_adsb_match_populated_when_present(tmp_path: Path):
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
 
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
+        node_id="node-A",
+        frames=frames,
+        base_dir=tmp_path,
+        write_ts=ts,
     )
 
     table = pq.read_table(tmp_path / key)
@@ -116,7 +134,10 @@ def test_multiple_frames_concatenate(tmp_path: Path):
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
 
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
+        node_id="node-A",
+        frames=frames,
+        base_dir=tmp_path,
+        write_ts=ts,
     )
     table = pq.read_table(tmp_path / key)
     assert table.num_rows == 5  # 3 + 2
@@ -130,7 +151,10 @@ def test_multiple_frames_concatenate(tmp_path: Path):
 def test_empty_frames_returns_none(tmp_path: Path):
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=[], base_dir=tmp_path, write_ts=ts,
+        node_id="node-A",
+        frames=[],
+        base_dir=tmp_path,
+        write_ts=ts,
     )
     assert key is None
     assert not list(tmp_path.rglob("*.parquet"))
@@ -141,7 +165,10 @@ def test_uses_zstd_compression(tmp_path: Path):
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
 
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
+        node_id="node-A",
+        frames=frames,
+        base_dir=tmp_path,
+        write_ts=ts,
     )
     meta = pq.read_metadata(tmp_path / key)
     # Verify at least one column uses zstd
@@ -187,23 +214,25 @@ logger = logging.getLogger(__name__)
 
 # Stable schema — adding new columns is fine (Parquet is schema-on-read for
 # missing cols), but never rename or reorder.
-SCHEMA = pa.schema([
-    ("frame_ts_ms", pa.int64()),
-    ("node_id", pa.string()),
-    ("detection_index", pa.int32()),
-    ("delay_us", pa.float64()),
-    ("doppler_hz", pa.float64()),
-    ("snr_db", pa.float64()),
-    ("adsb_hex", pa.string()),
-    ("adsb_lat", pa.float64()),
-    ("adsb_lon", pa.float64()),
-    ("adsb_alt_baro", pa.int32()),
-    ("adsb_gs", pa.float64()),
-    ("adsb_track", pa.float64()),
-    ("adsb_flight", pa.string()),
-    ("signing_mode", pa.string()),
-    ("signature_valid", pa.bool_()),
-])
+SCHEMA = pa.schema(
+    [
+        ("frame_ts_ms", pa.int64()),
+        ("node_id", pa.string()),
+        ("detection_index", pa.int32()),
+        ("delay_us", pa.float64()),
+        ("doppler_hz", pa.float64()),
+        ("snr_db", pa.float64()),
+        ("adsb_hex", pa.string()),
+        ("adsb_lat", pa.float64()),
+        ("adsb_lon", pa.float64()),
+        ("adsb_alt_baro", pa.int32()),
+        ("adsb_gs", pa.float64()),
+        ("adsb_track", pa.float64()),
+        ("adsb_flight", pa.string()),
+        ("signing_mode", pa.string()),
+        ("signature_valid", pa.bool_()),
+    ]
+)
 
 
 def _flatten(node_id: str, frames: list[dict]) -> dict[str, list]:
@@ -293,10 +322,7 @@ def write_detections_parquet(
 
     table = pa.table(cols, schema=SCHEMA)
 
-    key = (
-        f"year={write_ts:%Y}/month={write_ts:%m}/day={write_ts:%d}/"
-        f"node_id={node_id}/part-{write_ts:%H%M%S}.parquet"
-    )
+    key = f"year={write_ts:%Y}/month={write_ts:%m}/day={write_ts:%d}/node_id={node_id}/part-{write_ts:%H%M%S}.parquet"
     out_path = Path(base_dir) / key
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -439,6 +465,7 @@ def read_archived_file(key: str) -> dict | None:
 def _read_parquet_as_legacy_json(path: str) -> dict:
     """Read a per-detection Parquet archive and reconstruct the per-frame JSON."""
     import pyarrow.parquet as pq
+
     table = pq.read_table(path)
     rows = table.to_pylist()
     if not rows:
@@ -448,25 +475,33 @@ def _read_parquet_as_legacy_json(path: str) -> dict:
     by_frame: dict[int, dict] = {}
     for r in rows:
         ts = r["frame_ts_ms"]
-        fr = by_frame.setdefault(ts, {
-            "timestamp": ts,
-            "delay": [], "doppler": [], "snr": [], "adsb": [],
-            "_signing_mode": r.get("signing_mode"),
-            "_signature_valid": r.get("signature_valid"),
-        })
+        fr = by_frame.setdefault(
+            ts,
+            {
+                "timestamp": ts,
+                "delay": [],
+                "doppler": [],
+                "snr": [],
+                "adsb": [],
+                "_signing_mode": r.get("signing_mode"),
+                "_signature_valid": r.get("signature_valid"),
+            },
+        )
         fr["delay"].append(r["delay_us"])
         fr["doppler"].append(r["doppler_hz"])
         fr["snr"].append(r["snr_db"])
         if r.get("adsb_hex"):
-            fr["adsb"].append({
-                "hex": r["adsb_hex"],
-                "lat": r["adsb_lat"],
-                "lon": r["adsb_lon"],
-                "alt_baro": r["adsb_alt_baro"],
-                "gs": r["adsb_gs"],
-                "track": r["adsb_track"],
-                "flight": r["adsb_flight"],
-            })
+            fr["adsb"].append(
+                {
+                    "hex": r["adsb_hex"],
+                    "lat": r["adsb_lat"],
+                    "lon": r["adsb_lon"],
+                    "alt_baro": r["adsb_alt_baro"],
+                    "gs": r["adsb_gs"],
+                    "track": r["adsb_track"],
+                    "flight": r["adsb_flight"],
+                }
+            )
         else:
             fr["adsb"].append(None)
 
@@ -606,6 +641,7 @@ def main():
     base.mkdir()
 
     import services.storage as st
+
     st._LOCAL_ARCHIVE_DIR = str(base)
 
     frame = {
@@ -614,8 +650,7 @@ def main():
         "doppler": [-100.5, 33.3],
         "snr": [15.0, 22.0],
         "adsb": [
-            {"hex": "abcdef", "lat": 40.71, "lon": -74.0,
-             "alt_baro": 35000, "gs": 480, "track": 270, "flight": "UAL1"},
+            {"hex": "abcdef", "lat": 40.71, "lon": -74.0, "alt_baro": 35000, "gs": 480, "track": 270, "flight": "UAL1"},
             None,
         ],
         "_signing_mode": "unknown",

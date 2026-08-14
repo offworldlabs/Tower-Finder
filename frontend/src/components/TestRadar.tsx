@@ -83,9 +83,10 @@ export default function TestRadar() {
   // "pending"  mimics data.detection_arcs → hex=null pending detections.
   // "gated"    mimics the production case where backend nulls the arc but
   //            still emits the aircraft with position_source =
-  //            single_node_ellipse_arc — so only the approximate plane icon
-  //            is rendered and no arc is in the buffer.  This is the state
-  //            users complained looked like "no detection" on testmap.
+  //            single_node_ellipse_arc — no arc is in the buffer.  On the
+  //            live map arc-only tracks render no plane marker either, so
+  //            this state shows nothing there; this test page keeps its own
+  //            marker so the state is still observable.
   const [arcMode, setArcMode] = useState("bucketed");
   const [stats, setStats] = useState({ polys: 0, buffered: 0 });
   const [nodeStyle, setNodeStyle] = useState("divicon"); // "circle" | "divicon" | "both" — default to the production-real-node visual
@@ -215,8 +216,8 @@ export default function TestRadar() {
         };
       }
       // "gated": no buffer write — emulates the production state where the
-      // backend suppressed the arc.  Lets us verify the approximate-icon
-      // rendering on its own.
+      // backend suppressed the arc.  Lets us verify what renders when the
+      // arc buffer stays empty.
       // Mirror hooks.ts: prune past full lifetime.
       for (const k of Object.keys(buf)) {
         if (now - buf[k].ts > ARC_TOTAL_LIFE_MS) delete buf[k];

@@ -155,6 +155,18 @@ test.describe("Live Map — toolbar toggles", () => {
     expect(afterActive).toBe(!initialActive);
   });
 
+  test("Arcs toggle adds/removes active class", async ({ page }) => {
+    await page.goto(BASE);
+    await expect(page.locator(".live-map-toolbar")).toBeVisible({ timeout: 10_000 });
+
+    const btn = page.getByRole("button", { name: /Arcs/i });
+    const initialActive = await btn.evaluate((el) => el.classList.contains("active"));
+
+    await btn.click();
+    const afterActive = await btn.evaluate((el) => el.classList.contains("active"));
+    expect(afterActive).toBe(!initialActive);
+  });
+
   test("Labels toggle adds/removes active class", async ({ page }) => {
     await page.goto(BASE);
     await expect(page.locator(".live-map-toolbar")).toBeVisible({ timeout: 10_000 });

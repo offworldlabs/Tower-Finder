@@ -3,7 +3,7 @@ import { memo, useEffect, useRef } from "react";
 import { useMap } from "react-leaflet";
 import L from "leaflet";
 import { ARC_HOLD_MS, ARC_FADE_MS, ARC_TOTAL_LIFE_MS, dopplerColor } from "./constants";
-import { buildBistaticArc, computeBistaticDelayUs } from "./bistaticArc";
+import { buildBistaticArc } from "./bistaticArc";
 
 /* ── DetectionArcs: imperative Leaflet polylines with timer-driven opacity fade.
 
@@ -12,7 +12,7 @@ import { buildBistaticArc, computeBistaticDelayUs } from "./bistaticArc";
       target. Each polyline fades linearly to zero over ARC_FADE_MS.  Tick
       interval is 250 ms which is enough resolution for visibly smooth decay
       without React re-render cost. ── */
-const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, onSelect, onSelectNode, smoothRef, nodesByIdRef }) {
+const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, onSelect, onSelectNode, nodesByIdRef }) {
   const map = useMap();
   const polyMapRef = useRef(new Map()); // key → { line: L.polyline, ts, hex, node_id, ... }
   const onSelectRef = useRef(onSelect);
@@ -79,22 +79,26 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
           // band mid-flight, and the selected arc switches to amber).
           existing.line.setStyle({ opacity, color, weight });
         } else {
-          // First creation: compute the effective bistatic delay from the
-          // current dead-reckoned icon position (sm) so the arc passes
-          // through the icon.  Falls back to the backend arc when we don't
-          // have node geometry yet (useNodes still loading).
+          // First creation: rebuild the locus from the MEASURED delay_us
+          // stored in the buffer entry — never from the dead-reckoned icon
+          // position.  (The old icon-delay rebuild replaced a fixed
+          // measurement with a moving icon-implied delay: staging measured
+          // 180/190 consecutive ticks where delay_us was unchanged while the
+          // icon-implied delay drifted p90 0.51 km/tick, painting five
+          // offset parallel strokes for one measurement — and collapsed a
+          // ~30 km arc to a ~1 µs blob when the icon sat near the TX–RX
+          // baseline.)  The rebuilt locus spans the node's whole detection
+          // area (same semantics as the backend arc) and is altitude-agnostic
+          // (2026-08 direction) — entry.alt_baro is display data only here,
+          // it does not shape the geometry.  Falls back to the backend arc
+          // when node geometry (useNodes still loading) or delay_us is
+          // missing.
           let arcPoints = entry.ambiguity_arc;
-          if (entry.hex && entry.node_id) {
+          if (entry.node_id && entry.delay_us != null && entry.delay_us > 0) {
             const node = nodesByIdRef?.current?.[entry.node_id];
-            const sm = smoothRef?.current?.[entry.hex];
-            if (node && sm) {
-              const rxLat = node.rx_lat_real ?? node.rx_lat;
-              const rxLon = node.rx_lon_real ?? node.rx_lon;
-              const effectiveDelay = computeBistaticDelayUs(sm.lat, sm.lon, rxLat, rxLon, node.tx_lat, node.tx_lon);
-              if (effectiveDelay > 0) {
-                const rebuilt = buildBistaticArc(effectiveDelay, node, sm.lat, sm.lon);
-                if (rebuilt && rebuilt.length >= 2) arcPoints = rebuilt;
-              }
+            if (node) {
+              const rebuilt = buildBistaticArc(entry.delay_us, node);
+              if (rebuilt && rebuilt.length >= 2) arcPoints = rebuilt;
             }
           }
           const line = L.polyline(arcPoints, {
@@ -131,7 +135,7 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
       for (const info of polyMap.values()) info.line.remove();
       polyMap.clear();
     };
-  }, [map, arcsBufferRef, smoothRef, nodesByIdRef]);
+  }, [map, arcsBufferRef, nodesByIdRef]);
 
   return null;
 });

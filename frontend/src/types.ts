@@ -2,6 +2,8 @@
 /*  Shared API response types — Tower Finder frontend                 */
 /* ------------------------------------------------------------------ */
 
+import type { ArcBufferEntry } from "./components/map/arcBuffer";
+
 /** Single tower returned by /api/towers */
 export interface Tower {
   callsign: string | null;
@@ -50,6 +52,9 @@ export interface Aircraft {
   is_anomalous?: boolean;
   anomaly_types?: string[];
   max_velocity_ms?: number;
+  /** Debug: emitted position teleported (solver mis-association noise). */
+  position_jump?: boolean;
+  contributing_node_ids?: string[];
   ground_truth_hex?: string;
   ambiguity_arc?: [number, number][];
   recent_positions?: [number, number, number, number][];
@@ -63,14 +68,19 @@ export interface Aircraft {
 /** Trail / recent-position tuple: [lat, lon, alt, ts] */
 export type TrailPoint = [number, number, number, number];
 
-/** Arc detection buffer entry */
-export interface ArcEntry {
-  hex: string;
-  node_id: string;
-  ambiguity_arc: [number, number][];
-  doppler_hz: number;
-  target_class?: string;
-  ts: number;
+/** Arc detection buffer entry — canonical shape lives in map/arcBuffer.ts. */
+export type ArcEntry = ArcBufferEntry;
+
+/** Per-object simulation ground-truth metadata (testmap debug feed). */
+export interface GroundTruthMeta {
+  object_type?: string;
+  is_anomalous?: boolean;
+  speed_ms?: number;
+  heading?: number;
+  /** False for "dark" simulated objects flying without a transponder. */
+  has_adsb?: boolean;
+  adsb_callsign?: string | null;
+  anomaly_event?: string | null;
 }
 
 /** Data returned by useAircraftFeed() */
@@ -101,6 +111,13 @@ export interface RadarNode {
   rx_lon_real: number;
   tx_lat: number;
   tx_lon: number;
+  /**
+   * RX/TX altitudes (m ASL) for the altitude-corrected arc rebuild.  Null
+   * when the analytics feed doesn't carry them (it currently emits rx/tx as
+   * {lat, lon} only); consumers then fall back to 0 m.
+   */
+  rx_alt_m: number | null;
+  tx_alt_m: number | null;
   beam_azimuth_deg: number;
   beam_width_deg: number;
   max_range_km: number;

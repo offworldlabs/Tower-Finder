@@ -4,6 +4,7 @@ import {
   bearingDeg,
   isInBeam,
   bistaticRangeLimitKm,
+  nearestPointOnPolyline,
   yagiSectorPositions,
 } from "./geo";
 
@@ -160,5 +161,50 @@ describe("yagiSectorPositions", () => {
     const pts = yagiSectorPositions(RX_LAT, RX_LON, TX_LAT, TX_LON, 0, 41, 60, 60);
     expect(pts[0]).toEqual([RX_LAT, RX_LON]);
     expect(pts[pts.length - 1]).toEqual([RX_LAT, RX_LON]);
+  });
+});
+
+describe("nearestPointOnPolyline", () => {
+  const LAT = 34.85, LON = -82.4;
+
+  it("returns null for an empty or missing polyline", () => {
+    expect(nearestPointOnPolyline(LAT, LON, [])).toBeNull();
+    expect(nearestPointOnPolyline(LAT, LON, null)).toBeNull();
+  });
+
+  it("handles a single-point polyline", () => {
+    const r = nearestPointOnPolyline(LAT, LON, [[LAT + 0.1, LON]] as [number, number][]);
+    expect(r.lat).toBeCloseTo(LAT + 0.1, 10);
+    expect(r.lon).toBeCloseTo(LON, 10);
+    expect(r.distKm).toBeCloseTo(haversineDistanceKm(LAT, LON, LAT + 0.1, LON), 3);
+  });
+
+  it("projects onto the interior of a segment, not just vertices", () => {
+    // Horizontal segment 0.1° north of the query point: the nearest point is
+    // directly above the query, mid-segment — not either endpoint.
+    const pts: [number, number][] = [[LAT + 0.1, LON - 0.5], [LAT + 0.1, LON + 0.5]];
+    const r = nearestPointOnPolyline(LAT, LON, pts);
+    expect(r.lat).toBeCloseTo(LAT + 0.1, 6);
+    expect(r.lon).toBeCloseTo(LON, 6);
+    expect(r.distKm).toBeCloseTo(haversineDistanceKm(LAT, LON, LAT + 0.1, LON), 2);
+  });
+
+  it("clamps to the nearest endpoint when the projection falls outside", () => {
+    const pts: [number, number][] = [[LAT, LON + 0.2], [LAT, LON + 0.6]];
+    const r = nearestPointOnPolyline(LAT, LON, pts);
+    expect(r.lat).toBeCloseTo(LAT, 10);
+    expect(r.lon).toBeCloseTo(LON + 0.2, 10);
+  });
+
+  it("is never farther than the nearest vertex", () => {
+    const pts: [number, number][] = [
+      [LAT + 0.3, LON - 0.4], [LAT + 0.25, LON - 0.1],
+      [LAT + 0.2, LON + 0.2], [LAT + 0.35, LON + 0.5],
+    ];
+    const r = nearestPointOnPolyline(LAT, LON, pts);
+    const vertexMin = Math.min(
+      ...pts.map(([a, b]) => haversineDistanceKm(LAT, LON, a, b)),
+    );
+    expect(r.distKm).toBeLessThanOrEqual(vertexMin + 1e-9);
   });
 });

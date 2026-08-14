@@ -45,6 +45,7 @@ from config.constants import (
     GEO_INTERVAL_S,
     PRUNE_INTERVAL_S,
 )
+from services.id_utils import passive_track_hex
 
 # ─── Node Configuration ─────────────────────────────────────────────
 DEFAULT_NODE_CONFIG = {
@@ -197,7 +198,7 @@ class GeolocatedTrack:
         max_velocity_ms=0.0,
     ):
         self.track_id = track_id
-        self.hex_id = f"pr{abs(hash(track_id)) % 0xFFFF:04x}"
+        self.hex_id = passive_track_hex(track_id)
         self.lat = lat
         self.lon = lon
         self.alt_m = alt_m
@@ -210,6 +211,16 @@ class GeolocatedTrack:
         self.last_update_ms = timestamp_ms
         self.wall_clock_ts = time.time()  # wall-clock for staleness checks
         self.pos_fix_ts = self.wall_clock_ts  # when lat/lon actually changed
+        # A GeolocatedTrack is only ever constructed while processing a
+        # tracker event, and tracker events are written only on detection
+        # association or promotion (retina_tracker/tracker.py:75-145) — so
+        # construction time is a real detection, same as wall_clock_ts.
+        self.last_detection_wall_ts = self.wall_clock_ts
+        # ADS-B tag carried by the newest associated detection, stamped by
+        # the event loop.  None until the first event stamps it — the
+        # calibration gate treats None as "no identity evidence" and
+        # abstains, so a fresh object never inherits a stale claim.
+        self.last_detection_adsb_hex = None
         self.adsb_hex = adsb_hex
         self.latest_delay_us = latest_delay_us
         self.latest_doppler_hz = latest_doppler_hz
@@ -471,8 +482,12 @@ class PassiveRadarPipeline:
             n_detections=len(geo_detections),
             timestamp_ms=event["timestamp"],
             adsb_hex=event.get("adsb_hex"),
-            latest_delay_us=geo_detections[-1].delay if geo_detections else None,
-            latest_doppler_hz=geo_detections[-1].doppler if geo_detections else None,
+            # get_recent_detections() is newest-first, so the freshest
+            # measurement is [0] — [-1] was the OLDEST in the window, which
+            # published an ambiguity arc up to a full track-history behind
+            # the target.
+            latest_delay_us=geo_detections[0].delay if geo_detections else None,
+            latest_doppler_hz=geo_detections[0].doppler if geo_detections else None,
             target_class=target_class,
             is_anomalous=is_anomalous,
             anomaly_types=anomaly_types,
@@ -521,6 +536,45 @@ class PassiveRadarPipeline:
             adsb_hex = event.get("adsb_hex")
             existing = self.geolocated_tracks.get(track_id)
 
+            # Newest measurement carried by this event (detections are stored
+            # newest-first).  Used to keep the published delay fresh below and
+            # to seed the ADS-B bootstrap path so a first-encounter entry
+            # never publishes delay_us=0.
+            _dets = event.get("detections")
+            if _dets:
+                _newest = _dets[0]  # newest-first
+            else:
+                _ref = event.get("_track_ref")
+                _recent = _ref.get_recent_detections(n=1) if _ref is not None else []
+                _newest = _recent[0] if _recent else None
+            # Identity evidence: the ADS-B tag on the newest associated
+            # detection, read before the delay-validity null below (whether
+            # the delay is publishable has no bearing on whose detection it
+            # was).  The tracker's own adsb_hex can go stale: a track that
+            # re-associates onto an untagged (dark) target keeps its old hex
+            # indefinitely (the swap debounce only advances on TAGGED
+            # mismatches), so track identity alone must never authorize a
+            # calibration point.
+            _det_adsb_hex = ((_newest or {}).get("adsb") or {}).get("hex")
+            if _newest is not None and (_newest.get("delay") or 0) <= 0:
+                _newest = None
+
+            if existing is not None:
+                # An event exists only because the tracker associated a real
+                # detection this frame; this stamp is what lets the emit path
+                # tell a detecting track from one coasting on ADS-B enrichment.
+                existing.last_detection_wall_ts = _time_geo.time()
+                existing.last_detection_adsb_hex = _det_adsb_hex
+
+            # Keep the published measurement fresh on EVERY event, for every
+            # track type.  latest_delay_us is what the ambiguity arc is
+            # rebuilt from; refreshing it only on the (rate-limited, and
+            # sometimes failing) solver cadence froze the published locus for
+            # tens of seconds while the target's true delay slid ~1 µs/s.
+            if existing is not None and _newest is not None:
+                existing.latest_delay_us = _newest["delay"]
+                existing.latest_doppler_hz = _newest.get("doppler")
+
             # Between solver runs: keep ADS-B kinematic data fresh so the
             # frontend dead-reckoning has current velocity and altitude even
             # when the radar position hasn't been re-solved yet.
@@ -550,6 +604,10 @@ class PassiveRadarPipeline:
                     _pos_changed = abs(existing.lat - result.lat) > 1e-6 or abs(existing.lon - result.lon) > 1e-6
                     if not _pos_changed:
                         result.pos_fix_ts = existing.pos_fix_ts
+                # The result object replaces `existing`, so the identity
+                # stamp must ride along or every successful solve would
+                # reset it to None and starve the calibration gate.
+                result.last_detection_adsb_hex = _det_adsb_hex
                 self.geolocated_tracks[track_id] = result
                 _hex_key = result.adsb_hex or result.hex_id
                 with _state.geo_aircraft_lock:
@@ -589,8 +647,8 @@ class PassiveRadarPipeline:
                             n_detections=event.get("length", 1),
                             timestamp_ms=event["timestamp"],
                             adsb_hex=adsb_hex,
-                            latest_delay_us=None,
-                            latest_doppler_hz=None,
+                            latest_delay_us=_newest["delay"] if _newest is not None else None,
+                            latest_doppler_hz=_newest.get("doppler") if _newest is not None else None,
                             target_class="aircraft",
                             is_anomalous=bool(_fb_anomaly_types),
                             anomaly_types=_fb_anomaly_types,

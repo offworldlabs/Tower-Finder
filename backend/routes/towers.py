@@ -85,6 +85,7 @@ async def find_towers(
     limit: int = Query(0, ge=0, le=200),
     source: str = Query("auto"),
     frequencies: str = Query(""),
+    coverage: int = Query(1, ge=0, le=1),
 ):
     source = source.lower()
     if source == "auto":
@@ -133,8 +134,29 @@ async def find_towers(
         if elev is not None:
             resolved_altitude = elev
 
-    towers = process_and_rank(
-        raw, lat, lon, limit=effective_limit, user_frequencies=user_freqs, radius_km=effective_radius
+    # Lazy imports: avoid import cycles (core.state pulls in the pipeline/solver
+    # stack) and keep this endpoint's cost paid only when it actually runs.
+    from fastapi.concurrency import run_in_threadpool
+
+    from core import state
+    from services.tower_coverage import annotate_coverage_added
+
+    try:
+        geoms = dict(state.node_associator.node_geometries)
+    except Exception:
+        geoms = {}
+
+    scorer = (lambda ts: annotate_coverage_added(ts, lat, lon, geoms)) if coverage and geoms else None
+
+    towers = await run_in_threadpool(
+        process_and_rank,
+        raw,
+        lat,
+        lon,
+        limit=effective_limit,
+        user_frequencies=user_freqs,
+        radius_km=effective_radius,
+        coverage_scorer=scorer,
     )
 
     tower_coords = [(t["latitude"], t["longitude"]) for t in towers]

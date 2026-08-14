@@ -21,10 +21,10 @@ Replace the existing block in `backend/config/constants.py`:
 
 ```python
 # ── Archive lifecycle (R2 offload + local disk cleanup) ──────────────────────
-ARCHIVE_OFFLOAD_AGE_DAYS = 1          # Offload local files to R2 after this age
+ARCHIVE_OFFLOAD_AGE_DAYS = 1  # Offload local files to R2 after this age
 # Set to 0 (or any value <= 0) to disable local-disk deletion entirely.
 # R2 retains everything indefinitely, so this controls only the local cache.
-ARCHIVE_RETENTION_DAYS = 0            # 0 = never delete locally
+ARCHIVE_RETENTION_DAYS = 0  # 0 = never delete locally
 ```
 
 - [ ] **Step 2: Commit**

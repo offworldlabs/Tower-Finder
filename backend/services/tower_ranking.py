@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import re
 
@@ -48,6 +49,7 @@ def reload_config():
     SORT_ORDER = ranking.get(
         "sort_order",
         [
+            {"field": "coverage_area_added_km2", "ascending": False},
             {"field": "band_priority", "ascending": True},
             {"field": "distance_priority", "ascending": True},
             {"field": "received_power_dbm", "ascending": False},
@@ -240,6 +242,8 @@ def process_and_rank(
     limit: int = 0,
     user_frequencies: list[float] | None = None,
     radius_km: float = 0,
+    *,
+    coverage_scorer=None,
 ) -> list:
     """
     Takes raw system records from Maprad, filters and ranks them
@@ -249,6 +253,10 @@ def process_and_rank(
         limit: Max towers to return. 0 means use DEFAULT_LIMIT from config.
         radius_km: Search radius in km. Towers beyond this are excluded.
                    0 means use DEFAULT_RADIUS_KM.
+        coverage_scorer: Optional callable(deduped tower list) -> None,
+                         annotating coverage_area_added_km2 (and friends) on
+                         each tower in place. Run in a try/except: scoring must
+                         never break the towers endpoint.
     """
     effective_radius = radius_km if radius_km > 0 else DEFAULT_RADIUS_KM
     effective_limit = limit if limit > 0 else DEFAULT_LIMIT
@@ -326,6 +334,12 @@ def process_and_rank(
         if key not in seen or t["received_power_dbm"] > seen[key]["received_power_dbm"]:
             seen[key] = t
     towers = list(seen.values())
+
+    if coverage_scorer is not None:
+        try:
+            coverage_scorer(towers)
+        except Exception as exc:
+            logging.warning("Coverage scoring failed: %s", exc)
 
     # Sort using configurable sort order
     # If user frequencies provided, frequency-matched towers sort first

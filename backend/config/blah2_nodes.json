@@ -32,7 +32,7 @@
       "doppler_min": -300,
       "doppler_max": 300,
       "min_doppler": 15,
-      "beam_width_deg": 120,
+      "beam_width_deg": 42.0,
       "max_range_km": 140
     },
     {
@@ -50,7 +50,7 @@
       "doppler_min": -300,
       "doppler_max": 300,
       "min_doppler": 15,
-      "beam_width_deg": 120,
+      "beam_width_deg": 42.0,
       "max_range_km": 140
     }
   ]

@@ -28,21 +28,26 @@ Append to `backend/tests/test_parquet_writer.py`:
 ```python
 def test_schema_includes_custody_and_ingest_columns(tmp_path: Path):
     """Schema must include payload_hash, signature, ingest_ts_ms."""
-    frames = [{
-        "timestamp": 1700000000000,
-        "delay": [10.0, 11.0],
-        "doppler": [-50.0, -49.0],
-        "snr": [12.0, 13.0],
-        "adsb": [None, None],
-        "payload_hash": "deadbeef",
-        "signature": "abcd1234",
-        "_signing_mode": "ed25519",
-        "_signature_valid": True,
-    }]
+    frames = [
+        {
+            "timestamp": 1700000000000,
+            "delay": [10.0, 11.0],
+            "doppler": [-50.0, -49.0],
+            "snr": [12.0, 13.0],
+            "adsb": [None, None],
+            "payload_hash": "deadbeef",
+            "signature": "abcd1234",
+            "_signing_mode": "ed25519",
+            "_signature_valid": True,
+        }
+    ]
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
 
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
+        node_id="node-A",
+        frames=frames,
+        base_dir=tmp_path,
+        write_ts=ts,
     )
     table = pq.read_table(tmp_path / key)
     cols = set(table.column_names)
@@ -62,7 +67,10 @@ def test_custody_columns_default_null_when_absent(tmp_path: Path):
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
 
     key = pw.write_detections_parquet(
-        node_id="node-A", frames=frames, base_dir=tmp_path, write_ts=ts,
+        node_id="node-A",
+        frames=frames,
+        base_dir=tmp_path,
+        write_ts=ts,
     )
     rows = pq.read_table(tmp_path / key).to_pylist()
     assert all(r["payload_hash"] is None for r in rows)
@@ -80,26 +88,28 @@ Expected: FAIL — column missing.
 In `backend/services/parquet_writer.py`, replace the `SCHEMA` definition:
 
 ```python
-SCHEMA = pa.schema([
-    ("frame_ts_ms", pa.int64()),
-    ("ingest_ts_ms", pa.int64()),
-    ("node_id", pa.string()),
-    ("detection_index", pa.int32()),
-    ("delay_us", pa.float64()),
-    ("doppler_hz", pa.float64()),
-    ("snr_db", pa.float64()),
-    ("adsb_hex", pa.string()),
-    ("adsb_lat", pa.float64()),
-    ("adsb_lon", pa.float64()),
-    ("adsb_alt_baro", pa.int32()),
-    ("adsb_gs", pa.float64()),
-    ("adsb_track", pa.float64()),
-    ("adsb_flight", pa.string()),
-    ("signing_mode", pa.string()),
-    ("signature_valid", pa.bool_()),
-    ("payload_hash", pa.string()),
-    ("signature", pa.string()),
-])
+SCHEMA = pa.schema(
+    [
+        ("frame_ts_ms", pa.int64()),
+        ("ingest_ts_ms", pa.int64()),
+        ("node_id", pa.string()),
+        ("detection_index", pa.int32()),
+        ("delay_us", pa.float64()),
+        ("doppler_hz", pa.float64()),
+        ("snr_db", pa.float64()),
+        ("adsb_hex", pa.string()),
+        ("adsb_lat", pa.float64()),
+        ("adsb_lon", pa.float64()),
+        ("adsb_alt_baro", pa.int32()),
+        ("adsb_gs", pa.float64()),
+        ("adsb_track", pa.float64()),
+        ("adsb_flight", pa.string()),
+        ("signing_mode", pa.string()),
+        ("signature_valid", pa.bool_()),
+        ("payload_hash", pa.string()),
+        ("signature", pa.string()),
+    ]
+)
 ```
 
 Update `_flatten` to accept an `ingest_ts_ms` argument and populate the new columns:

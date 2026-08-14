@@ -16,6 +16,7 @@ os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
 from core import state  # noqa: E402
+from services.geo import in_node_beam  # noqa: E402
 from services.tasks import solver as solver_mod  # noqa: E402
 
 # An n=2 solver input whose track pairing has already passed the
@@ -35,6 +36,7 @@ def _reset_state():
     state.solver_total_latency_s = 0.0
     state.solver_last_latency_s = 0.0
     state.n2_unconfirmed = 0
+    state.solver_stale_drops = 0
     state.multinode_tracks.clear()
     state.task_last_success.clear()
 
@@ -100,7 +102,10 @@ class TestProcessSolverItem:
 
         assert state.solver_successes == 0
         assert not state.multinode_tracks
-        assert state.solver_failures == 0  # not counted as failure
+        # Unconverged solves used to vanish uncounted — staging showed
+        # hundreds with no observable reason.  They are failures.
+        assert state.solver_failures == 1
+        assert state.solver_fail_unconverged == 1
 
     def test_high_latency_triggers_alert(self, monkeypatch):
         _reset_state()
@@ -291,6 +296,10 @@ class TestStaleItemSkip:
         assert not solve_called, "solver must not be invoked for stale items"
         assert state.solver_successes == 0
         assert state.solver_failures == 0
+        # Observable as its own counter, not a failure: the queue-full and
+        # drain-too-slow modes are distinct and this is the only trace of the
+        # latter (the per-item reason is DEBUG, which staging does not emit).
+        assert state.solver_stale_drops == 1
         assert not state.multinode_tracks
 
     def test_fresh_item_is_solved(self, monkeypatch):
@@ -486,32 +495,40 @@ class TestBeamCoverageFilter:
 
 
 class TestInNodeBeam:
-    """Test uncovered branches of _in_node_beam: TX-derived azimuth and no-beam fallback."""
+    """Test uncovered branches of in_node_beam: TX-derived azimuth and no-beam
+    fallback.
+
+    in_node_beam lives in services.geo, not this module — the solver's own
+    beam gate stopped calling it when the gate was split into separately
+    n=2/every-N range and bearing rules (see _process_solver_item), but the
+    function itself is still used elsewhere (e.g. track_gates.py), so these
+    branches are exercised directly against services.geo here.
+    """
 
     def test_tx_lat_lon_derives_beam_azimuth_aircraft_outside(self):
         """TX-lat/lon branch: beam_az = bearing(RX→TX)+90; aircraft clearly outside."""
         # RX=(0,0), TX=(1,1) NE → bearing≈45° → beam_az≈135° (SE)
         # Aircraft at (0.1,-0.1) NW (~15 km, in range) → bearing≈315° → 180° off boresight
         cfg = {"rx_lat": 0.0, "rx_lon": 0.0, "tx_lat": 1.0, "tx_lon": 1.0, "max_range_km": 100}
-        assert solver_mod._in_node_beam(0.1, -0.1, cfg) is False
+        assert in_node_beam(0.1, -0.1, cfg) is False
 
     def test_tx_lat_lon_derives_beam_azimuth_aircraft_inside(self):
         """TX-lat/lon branch: aircraft in the derived beam direction."""
         # RX=(0,0), TX=(1,1) NE → beam_az≈135° (SE)
         # Aircraft at (-0.1,0.1) SE (~15 km, in range) → bearing≈135° → 0° off boresight
         cfg = {"rx_lat": 0.0, "rx_lon": 0.0, "tx_lat": 1.0, "tx_lon": 1.0, "max_range_km": 100}
-        assert solver_mod._in_node_beam(-0.1, 0.1, cfg) is True
+        assert in_node_beam(-0.1, 0.1, cfg) is True
 
     def test_no_beam_direction_returns_true_within_range(self):
         """No beam_azimuth_deg and no tx_lat/tx_lon → beam_az=None → always True."""
         cfg = {"rx_lat": 0.0, "rx_lon": 0.0}
-        assert solver_mod._in_node_beam(0.1, 0.0, cfg) is True
+        assert in_node_beam(0.1, 0.0, cfg) is True
 
     def test_out_of_range_returns_false_regardless_of_beam(self):
         """Haversine check fires before beam check; beyond max_range → False."""
         cfg = {"rx_lat": 0.0, "rx_lon": 0.0, "max_range_km": 10.0}
         # ~111 km away, well outside 10 km range
-        assert solver_mod._in_node_beam(1.0, 0.0, cfg) is False
+        assert in_node_beam(1.0, 0.0, cfg) is False
 
 
 # ── _sweep_altitudes ──────────────────────────────────────────────────────────
@@ -684,12 +701,17 @@ class TestN2ConfirmationGate:
 
 
 class TestCoverageCalibration:
-    """Empirical coverage is fed only from independently-known positions.
+    """Publish-path calibration is banned — regression coverage.
 
-    The polygon characterises where a node can see, and it is on its way to
-    constraining association — so feeding it the solver's own output would let a
-    phantom widen the very region that produced it.  Measured blind, 55-85% of
-    n=2 tracks are ghosts a median 20+ km from any aircraft.
+    Attribution here rides on the very association the coverage polygon is
+    used to judge: under an active FOV gate a ghost publish (wrong tracklet
+    pairing tagged with a real hex) recorded positives for BOTH contributing
+    nodes at another aircraft's real position, opening bins, widening the
+    gate, and producing more ghosts.  Staging 2026-08-09: ghost precision
+    25%, 15/29 synthetic nodes with out-of-wedge bins within ~25 min of the
+    active flip.  A published multinode solve must now record NOTHING here
+    — the frame path (services/track_gates.py) is the only calibration
+    writer, gated on an actual fresh detection.
     """
 
     @staticmethod
@@ -716,7 +738,9 @@ class TestCoverageCalibration:
         solver_mod._process_solver_item((s_in, {}, time.time()), self._solve_fn)
         return stub
 
-    def test_records_the_adsb_position_not_the_solve(self, monkeypatch):
+    def test_published_solve_with_a_fresh_adsb_match_records_no_calibration(self, monkeypatch):
+        """The regression: this used to record one point per contributing
+        node at the ADS-B position.  It must now record none."""
         stub = self._run(
             monkeypatch,
             {
@@ -725,16 +749,12 @@ class TestCoverageCalibration:
                 "last_seen_ms": time.time() * 1000,
             },
         )
-        assert len(stub.calibration_calls) == 2  # one per contributing node
-        assert {c[0] for c in stub.calibration_calls} == {"n1", "n2"}
-        for _nid, lat, lon in stub.calibration_calls:
-            assert (lat, lon) == (34.88, -82.35)  # not (37.5, -122.1)
+        assert stub.calibration_calls == []
 
     def test_dark_solve_records_nothing(self, monkeypatch):
         assert self._run(monkeypatch, None).calibration_calls == []
 
-    def test_stale_adsb_fix_is_refused(self, monkeypatch):
-        """At 250 m/s a stale fix no longer says where the target was."""
+    def test_stale_adsb_fix_still_records_nothing(self, monkeypatch):
         stub = self._run(
             monkeypatch,
             {
@@ -745,7 +765,7 @@ class TestCoverageCalibration:
         )
         assert stub.calibration_calls == []
 
-    def test_missing_position_is_refused(self, monkeypatch):
+    def test_null_island_adsb_still_records_nothing(self, monkeypatch):
         stub = self._run(
             monkeypatch,
             {
@@ -909,3 +929,307 @@ class TestTrackPairExclusivity:
     def test_detection_level_input_is_unaffected(self):
         """No track ids means nothing to arbitrate."""
         assert solver_mod._claim_track_pair({"n_nodes": 2}, 9.9) is True
+
+
+class TestCollectTrackAnomalies:
+    """Contributing-track anomaly flags must be stamped onto multinode results
+    (and latched across solves at the write site) — before this, multinode
+    entries hardcoded is_anomalous False and a dark anomalous target went
+    quiet the moment it was solved."""
+
+    def _pipeline(self, node_id, tracks):
+        import types
+
+        return types.SimpleNamespace(
+            config={"node_id": node_id},
+            tracker=types.SimpleNamespace(tracks=tracks),
+        )
+
+    def _track(self, track_id, anomaly_types=(), is_anomalous=False, max_vel=0.0):
+        import types
+
+        return types.SimpleNamespace(
+            track_id=track_id,
+            anomaly_types=set(anomaly_types),
+            is_anomalous=is_anomalous,
+            max_velocity_ms=max_vel,
+        )
+
+    def test_dark_solve_allowlisted(self):
+        state.node_pipelines["na"] = self._pipeline(
+            "na",
+            [
+                self._track("t1", {"supersonic", "sustained_orbit"}, True, 420.0),
+            ],
+        )
+        try:
+            result = {"contributing_node_ids": ["na"]}
+            s_in = {"track_ids": ["t1", "t2"]}
+            solver_mod._collect_track_anomalies(s_in, result)
+            # No adsb_hex → dark: only the physically loud types survive.
+            assert result["anomaly_types"] == ["supersonic"]
+            assert result["is_anomalous"] is True
+        finally:
+            state.node_pipelines.pop("na", None)
+
+    def test_dark_solve_disallowed_types_unflag(self):
+        state.node_pipelines["na"] = self._pipeline(
+            "na",
+            [
+                self._track("t1", {"sustained_orbit"}, True),
+            ],
+        )
+        try:
+            result = {"contributing_node_ids": ["na"]}
+            solver_mod._collect_track_anomalies({"track_ids": ["t1"]}, result)
+            assert result["anomaly_types"] == []
+            assert result["is_anomalous"] is False
+        finally:
+            state.node_pipelines.pop("na", None)
+
+    def test_adsb_solve_keeps_all_types(self):
+        state.node_pipelines["na"] = self._pipeline(
+            "na",
+            [
+                self._track("t1", {"identity_swap"}, True),
+            ],
+        )
+        try:
+            result = {"contributing_node_ids": ["na"], "adsb_hex": "abc123"}
+            solver_mod._collect_track_anomalies({"track_ids": ["t1"]}, result)
+            assert result["anomaly_types"] == ["identity_swap"]
+            assert result["is_anomalous"] is True
+        finally:
+            state.node_pipelines.pop("na", None)
+
+    def test_unrelated_tracks_ignored(self):
+        state.node_pipelines["na"] = self._pipeline(
+            "na",
+            [
+                self._track("other", {"supersonic"}, True),
+            ],
+        )
+        try:
+            result = {"contributing_node_ids": ["na"]}
+            solver_mod._collect_track_anomalies({"track_ids": ["t1"]}, result)
+            assert result["is_anomalous"] is False
+        finally:
+            state.node_pipelines.pop("na", None)
+
+    def test_flag_latches_across_solves(self, monkeypatch):
+        """The write site ORs with the previous entry: a tracker flag raised
+        on one solve holds for the multinode track's lifetime even after the
+        contributing track goes quiet."""
+        _reset_state()
+        monkeypatch.setattr(state, "node_analytics", _StubAnalytics())
+        state.node_pipelines["na"] = self._pipeline(
+            "na",
+            [
+                self._track("t1", {"supersonic"}, True, 400.0),
+            ],
+        )
+
+        def solve_fn(s_in, cfgs):
+            return {
+                "success": True,
+                "lat": 37.5,
+                "lon": -122.1,
+                "timestamp_ms": 1000,
+                "contributing_node_ids": ["na"],
+            }
+
+        try:
+            item = ({**_CONFIRMED_N2, "track_ids": ["t1"]}, {}, time.time())
+            solver_mod._process_solver_item(item, solve_fn)
+            key = next(iter(state.multinode_tracks))
+            assert state.multinode_tracks[key]["is_anomalous"] is True
+
+            # Second solve: the contributing track is now clean, but the
+            # multinode track keeps its flag.
+            state.node_pipelines["na"] = self._pipeline(
+                "na",
+                [
+                    self._track("t1", set(), False),
+                ],
+            )
+            solver_mod._process_solver_item(item, solve_fn)
+            assert state.multinode_tracks[key]["is_anomalous"] is True
+            assert "supersonic" in state.multinode_tracks[key]["anomaly_types"]
+        finally:
+            state.node_pipelines.pop("na", None)
+            _reset_state()
+
+
+def _marker_fn(x):
+    return {"marker": x}
+
+
+class TestSolverProcessPool:
+    """The pure LM compute ships to child processes; everything else stays put.
+
+    The pool exists only after start_solver_workers, so tests and the offline
+    bench run the same helpers inline.  A broken pool must degrade to inline
+    solving, not to dropped items.
+    """
+
+    def test_pool_call_is_inline_without_a_pool(self, monkeypatch):
+        monkeypatch.setattr(solver_mod, "_solver_pool", None)
+        assert solver_mod._pool_call(_marker_fn, 7) == {"marker": 7}
+
+    def test_round_trip_through_a_real_spawn_pool(self, monkeypatch):
+        """Spawn a real pool once: proves the child can import the lib and the
+        submitted functions/arguments survive pickling in this image."""
+        from retina_geolocator.multinode_solver import solve_multinode
+
+        pool = solver_mod._make_solver_pool()
+        try:
+            monkeypatch.setattr(solver_mod, "_solver_pool", pool)
+            # <2 measurements short-circuits to None inside the child — the
+            # assertion is about transport, not solving.
+            noop = {"initial_guess": {"lat": 0.0, "lon": 0.0}, "measurements": []}
+            assert solver_mod._pool_call(solve_multinode, noop, {}) is None
+        finally:
+            pool.shutdown(wait=True)
+
+    def test_broken_pool_falls_back_inline_and_recreates(self, monkeypatch):
+        from concurrent.futures.process import BrokenProcessPool
+
+        events = []
+
+        class _BrokenPool:
+            def submit(self, fn, *args):
+                raise BrokenProcessPool("child died")
+
+            def shutdown(self, wait=False):
+                events.append("shutdown")
+
+        replacement = object()
+        broken = _BrokenPool()
+        monkeypatch.setattr(solver_mod, "_solver_pool", broken)
+        monkeypatch.setattr(solver_mod, "_make_solver_pool", lambda: replacement)
+
+        assert solver_mod._pool_call(_marker_fn, 9) == {"marker": 9}
+        assert events == ["shutdown"]
+        assert solver_mod._solver_pool is replacement
+        monkeypatch.setattr(solver_mod, "_solver_pool", None)
+
+
+class TestDarkSolveSmoothing:
+    """Dark solves accumulate EWMA history under their track key.
+
+    The smoother used to require an ADS-B hex AND a live ADS-B entry — dark
+    targets, the one population whose only position source is MLAT, got raw
+    single-frame solves.  History is now keyed by the multinode track key and
+    dead-reckoned with the solved velocity when there is no ADS-B.
+
+    This class documents the legacy EWMA path (TRACK_SMOOTHER=ewma); the
+    default KF smoother is covered in test_track_filter.py.
+    """
+
+    # A moving dark target: 100 m/s due north, solves 20 s apart.  20 s of
+    # motion is ~0.017965° of latitude.
+    LAT1, LON = 35.0, -82.0
+    _D20S_DEG = 2000.0 / 111_320.0
+
+    def setup_method(self):
+        _reset_state()
+        solver_mod._reset_for_tests()
+        state.adsb_aircraft.clear()
+        os.environ["TRACK_SMOOTHER"] = "ewma"
+
+    def teardown_method(self):
+        solver_mod._reset_for_tests()
+        state.adsb_aircraft.clear()
+        os.environ.pop("TRACK_SMOOTHER", None)
+
+    def _solve_fn(self, lat, lon, ts_ms, vel_east=0.0, vel_north=0.0):
+        def fn(s_in, cfgs):
+            return {
+                "success": True,
+                "lat": lat,
+                "lon": lon,
+                "timestamp_ms": ts_ms,
+                "vel_east": vel_east,
+                "vel_north": vel_north,
+                "contributing_node_ids": ["n1", "n2"],
+            }
+
+        return fn
+
+    def _stored(self):
+        assert len(state.multinode_tracks) == 1, f"expected one associated track, got {list(state.multinode_tracks)}"
+        return next(iter(state.multinode_tracks.values()))
+
+    def test_moving_dark_target_is_dead_reckoned_not_lagged(self):
+        """With the solved velocity matching the motion, the DR'd history
+        lands on the current position — the average tracks the target instead
+        of trailing at the midpoint."""
+        lat2 = self.LAT1 + self._D20S_DEG
+        item = (dict(_CONFIRMED_N2), {}, time.time())
+        solver_mod._process_solver_item(item, self._solve_fn(self.LAT1, self.LON, 1_000, vel_north=100.0))
+        solver_mod._process_solver_item(item, self._solve_fn(lat2, self.LON, 21_000, vel_north=100.0))
+
+        stored = self._stored()
+        assert stored["lat"] == pytest.approx(lat2, abs=2e-4)
+        # And decisively NOT the un-reckoned midpoint ~0.009° behind.
+        assert abs(stored["lat"] - (self.LAT1 + lat2) / 2) > 5e-3
+
+    def test_stationary_noise_is_averaged(self):
+        """Zero velocity: two noisy solves of a stationary target average to
+        the midpoint — the √K reduction dark targets used to be denied."""
+        item = (dict(_CONFIRMED_N2), {}, time.time())
+        solver_mod._process_solver_item(item, self._solve_fn(self.LAT1, self.LON, 1_000))
+        solver_mod._process_solver_item(item, self._solve_fn(self.LAT1 + 0.01, self.LON, 21_000))
+
+        stored = self._stored()
+        assert stored["lat"] == pytest.approx(self.LAT1 + 0.005, abs=1e-6)
+
+    def test_adsb_velocity_is_preferred_over_solved(self):
+        """Tagged solve with a live ADS-B entry: DR follows ADS-B ground
+        speed/track even when the solved velocity is junk."""
+        state.adsb_aircraft["abc123"] = {
+            # 100 m/s = 194.384 kt, due north.
+            "gs": 194.384,
+            "track": 0.0,
+            "lat": self.LAT1,
+            "lon": self.LON,
+            "last_seen_ms": int(time.time() * 1000),
+        }
+        lat2 = self.LAT1 + self._D20S_DEG
+        s_in = {"n_nodes": 3, "adsb_hex": "abc123"}
+        # Solved velocity claims 200 m/s due EAST — junk that would drag the
+        # average ~0.02° of longitude if it were used for DR.
+        solver_mod._process_solver_item(
+            (dict(s_in), {}, time.time()), self._solve_fn(self.LAT1, self.LON, 1_000, vel_east=200.0)
+        )
+        solver_mod._process_solver_item(
+            (dict(s_in), {}, time.time()), self._solve_fn(lat2, self.LON, 21_000, vel_east=200.0)
+        )
+
+        stored = self._stored()
+        assert stored["lat"] == pytest.approx(lat2, abs=2e-4)
+        assert stored["lon"] == pytest.approx(self.LON, abs=1e-3)
+
+
+class TestWorkerLoopResilience:
+    """The worker loop must survive any single bad item (2026-08-08 outage:
+    an unhandled exception killed both worker threads and publishing stopped
+    silently until the queue overflowed)."""
+
+    def test_poison_item_is_swallowed_counted_and_loop_continues(self):
+        import queue as _queue
+
+        _reset_state()
+        before = state.solver_worker_errors
+        # A private queue: a worker daemon leaked by an earlier test polls
+        # state.solver_queue and would race these items away.  Malformed
+        # items: item[0] on None raises TypeError inside
+        # _process_solver_item, past every gate's own handling.
+        q = _queue.Queue()
+        q.put_nowait(None)
+        q.put_nowait(None)
+        assert solver_mod._solver_worker_iteration(timeout=0.1, q=q) is True
+        assert solver_mod._solver_worker_iteration(timeout=0.1, q=q) is True
+        assert state.solver_worker_errors == before + 2
+        # Queue drained, no exception escaped either iteration.
+        assert solver_mod._solver_worker_iteration(timeout=0.05, q=q) is False
