@@ -23,6 +23,11 @@ os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 # explicit opt-in and no longer follows from RETINA_ENV=test, so ask for it here.
 # Set before core.users is imported: AUTH_BYPASS is derived once, at import.
 os.environ.setdefault("AUTH_ALLOW_ANONYMOUS_ADMIN", "1")
+# The arc-ux sim-ingest tests exercise routes main.py now mounts only behind
+# this flag (the compose overlays all set it); the mount-gate test itself spawns
+# child interpreters with an explicit env, so this parent-process default does
+# not reach it.
+os.environ.setdefault("SYNTHETIC_FLEET_ENABLED", "1")
 # The suite truncates tables and creates schema, so it must never be pointed at
 # a real database. A hard assignment, not setdefault: the README tells readers
 # to export RETINA_DB_PATH to try a migration against a scratch file, and a
