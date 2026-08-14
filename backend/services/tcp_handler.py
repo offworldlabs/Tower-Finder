@@ -9,13 +9,13 @@ import json
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from retina_custody.hash_chain import HashChainEntry, HashChainVerifier
 
 from config.constants import CHAIN_ENTRIES_MAX_PER_NODE, IQ_COMMITMENTS_MAX_PER_NODE
 from core import state
+from services import node_registration
 from services.geo import valid_latlon
 from services.id_utils import normalize_hex_key
 
@@ -34,12 +34,6 @@ _MAX_TCP_CONNECTIONS = int(os.getenv("MAX_TCP_CONNECTIONS", "500"))
 _MAX_BUF_SIZE = 1_048_576  # 1 MB max buffer before newline — prevents memory exhaustion
 _active_tcp_connections = 0
 _tcp_connections_lock = asyncio.Lock()
-
-# Dedicated single-thread executor for node registration.
-# Registration is serialized by an internal lock anyway (O(n²) overlap zones),
-# so one thread is sufficient. Keeping it separate prevents registration from
-# starving the default executor used by frame processor workers.
-_registration_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="node-reg")
 
 
 # Lazy import to avoid circular dependency — routes.admin must be importable first
@@ -294,17 +288,7 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                             "server_capabilities": SERVER_CAPABILITIES,
                         },
                     )
-                    # Run registration in the dedicated single-thread executor so
-                    # it never starves the default executor used by frame workers.
-                    loop = asyncio.get_event_loop()
-                    _nid, _cfg = node_id, config_payload
-                    await loop.run_in_executor(
-                        _registration_executor,
-                        lambda _nid=_nid, _cfg=_cfg: (
-                            state.node_analytics.register_node(_nid, _cfg),
-                            state.node_associator.register_node(_nid, _cfg),
-                        ),
-                    )
+                    await node_registration.register_node(node_id, config_payload)
                     continue
 
                 # ── REGISTER_KEY (chain of custody) ────────────────
