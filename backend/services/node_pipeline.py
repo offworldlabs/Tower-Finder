@@ -1,8 +1,9 @@
 """Make a v1 node indistinguishable from a blah2_bridge node to the pipeline.
 
-The bridge is the working reference: services/blah2_bridge.py registers a node
-with three calls and pushes frames onto one queue. This does the same, so a v1
-node reaches the map without anything downstream knowing the difference.
+The bridge is the working reference: services/blah2_bridge.py puts a node into
+connected_nodes, hands it to services/node_registration, and pushes frames onto
+one queue. This does the same, so a v1 node reaches the map without anything
+downstream knowing the difference.
 """
 
 import hashlib
@@ -14,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import state
 from core.nodes import Node, NodeConfig
+from services import node_registration
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +72,7 @@ async def register_with_pipeline(session: AsyncSession, node: Node) -> None:
             "is_synthetic": False,
             "capabilities": {"adsb_report": True},
         }
-    state.node_analytics.register_node(node.node_id, config)
-    state.node_associator.register_node(node.node_id, config)
+    await node_registration.register_node(node.node_id, config)
     logger.info("node_api: registered %s with the pipeline", node.node_id)
 
 
