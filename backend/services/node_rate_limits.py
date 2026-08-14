@@ -210,6 +210,11 @@ class TokenRateLimiter:
 # a second instance is a second allowance. The module-level singleton belongs here,
 # next to the class, and the branch that first imports one adds it: an instance with
 # no caller is dead code, and the dead-code gate is right to say so.
+#
+# routes/node_stream.py is the first caller: detection and heartbeat are the two
+# token-authenticated paths that exist. PUT /nodes/config shares this instance
+# rather than building its own, since the allowance is per (node_id, endpoint).
+token_rate_limiter = TokenRateLimiter()
 
 
 # (requests admitted, window in seconds), from the ADR's table. The escalating
