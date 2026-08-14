@@ -14,6 +14,7 @@ from config.constants import RATE_BUCKETS_MAX_IPS
 from core import state
 from core.users import require_admin
 from pipeline.passive_radar import PassiveRadarPipeline
+from services import node_registration
 from services.tcp_handler import is_synthetic_node
 
 router = APIRouter()
@@ -135,8 +136,7 @@ async def ingest_detections(
                 "is_synthetic": is_synthetic_node(node_id),
                 "capabilities": {},
             }
-        state.node_analytics.register_node(node_id, {"node_id": node_id})
-        state.node_associator.register_node(node_id, {"node_id": node_id})
+        await node_registration.register_node(node_id, {"node_id": node_id})
     else:
         with state.connected_nodes_lock:
             state.connected_nodes[node_id]["status"] = "active"
@@ -187,8 +187,7 @@ async def ingest_detections_bulk(
                     "is_synthetic": is_synthetic_node(node_id),
                     "capabilities": {},
                 }
-            state.node_analytics.register_node(node_id, entry_config)
-            state.node_associator.register_node(node_id, entry_config)
+            await node_registration.register_node(node_id, entry_config)
             registered += 1
         else:
             with state.connected_nodes_lock:
