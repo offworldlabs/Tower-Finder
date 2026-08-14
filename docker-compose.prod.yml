@@ -3,7 +3,8 @@
 # inherently per-environment lives in the base; this file carries only the
 # production values for the things that legitimately differ:
 #   hostnames/CORS · droplet capacity · fleet scale · the external edge network
-#   · the two build-out flags on the environment block below
+#   · the two build-out flags on the environment block below · the name this
+#     droplet gives itself in alerts
 #
 # Usage (the host's ./.env sets COMPOSE_FILE, so this is normally implicit):
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
@@ -15,6 +16,10 @@
 services:
   tower-finder:
     container_name: retina-prod-server
+    # Consumed by services/alerting.py, which otherwise sees the container id or
+    # the service name (varies by Compose version), neither of which says which
+    # droplet raised an alert.
+    hostname: retina-prod
     environment:
       # This box ran `RETINA_ENV=test` for one reason, keeping the anonymous
       # admin bypass open, and paid for it with four unrelated guards: the
@@ -35,6 +40,12 @@ services:
       # stack, and that fleet POSTs through the ingest path. Every environment
       # now sets it, so main.py gates the mount on the flag alone.
       - SYNTHETIC_FLEET_ENABLED=1
+      # Labels alerts, and deliberately not RETINA_ENV even though the two read
+      # the same here. Staging and test both still run `test` while the build-out
+      # lasts, so RETINA_ENV cannot say which box an alert came from, and a label
+      # sourced from it would change meaning the day a guard decision does. See
+      # services/alerting.py.
+      - ALERT_ENVIRONMENT=production
       - CORS_ORIGINS=https://towers.retina.fm,https://api.retina.fm,https://map.retina.fm,https://dash.retina.fm,https://admin.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
       # at boot to render deploy/nginx/nginx.conf.template. One template serves

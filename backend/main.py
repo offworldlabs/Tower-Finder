@@ -51,6 +51,7 @@ from routes.stats import router as stats_router
 from routes.streaming import router as streaming_router
 from routes.test import router as test_router
 from routes.towers import router as towers_router
+from services.alerting import log_destination
 from services.background import (
     adsb_truth_fetcher,
     aircraft_flush_task,
@@ -76,6 +77,8 @@ from services.tcp_handler import handle_tcp_client
 
 load_dotenv()
 logging.basicConfig(level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO))
+
+log_destination()
 
 TCP_PORT = int(os.getenv("RADAR_TCP_PORT", "3012"))
 

@@ -18,6 +18,10 @@
 services:
   tower-finder:
     container_name: retina-staging-server
+    # Consumed by services/alerting.py, which otherwise sees the container id or
+    # the service name (varies by Compose version), neither of which says which
+    # droplet raised an alert.
+    hostname: retina-staging
     # No TCP ingest on staging. The base publishes 3012 for real receiver nodes;
     # staging has none, and its own fleet reaches the server as tower-finder:3012
     # over the compose network, never via the host port. Verified with `ss`: zero
@@ -44,6 +48,10 @@ services:
       # fleet that POSTs through the ingest write path, and main.py mounts that
       # path only for a stack that sets this flag.
       - SYNTHETIC_FLEET_ENABLED=1
+      # Labels alerts, and a variable of its own rather than a reading of
+      # RETINA_ENV above: this box names itself `staging` in an alert while still
+      # running the `test` guards. See services/alerting.py.
+      - ALERT_ENVIRONMENT=staging
       - CORS_ORIGINS=https://staging-towers.retina.fm,https://staging-api.retina.fm,https://staging-map.retina.fm,https://staging-dash.retina.fm,https://staging-admin.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
       # at boot to render deploy/nginx/nginx.conf.template. One template serves
