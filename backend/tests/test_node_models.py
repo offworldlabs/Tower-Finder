@@ -62,6 +62,19 @@ async def test_the_same_version_under_two_nodes_is_fine(node_session):
     assert len(rows) == 2
 
 
+async def test_beam_width_null_survives_a_round_trip(node_session):
+    """Nullable since contract 1.1.1, and the column has to hold it: no owner is
+    asked for their antenna's geometry, so a NOT NULL here failed every real
+    node's registration on an IntegrityError behind a 500.
+    """
+    await _seed(node_session, "ret9f8e7d6c")
+    node_session.add(_config("ret9f8e7d6c", 1, beam_width_deg=None))
+    await node_session.commit()
+
+    found = (await node_session.execute(select(NodeConfig).where(NodeConfig.node_id == "ret9f8e7d6c"))).scalar_one()
+    assert found.beam_width_deg is None
+
+
 async def test_beam_azimuth_null_survives_a_round_trip(node_session):
     """null is broadside, 0.0 is aimed due north.
 
