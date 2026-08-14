@@ -69,14 +69,20 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
 pip install -e ../libs/retina-geolocator -e ../libs/retina-tracker
 cp .env.example .env          # fill in what you need (see below)
-RETINA_ENV=dev uvicorn main:app --reload
+RETINA_ENV=dev AUTH_ALLOW_ANONYMOUS_ADMIN=1 SYNTHETIC_FLEET_ENABLED=1 uvicorn main:app --reload
 ```
 
 API at `http://localhost:8000`, interactive docs at `/docs`.
 
-`RETINA_ENV=dev` (or `test`) enables an auth bypass so you don't need OAuth keys
-locally — you're treated as an anonymous admin. In production a real
-`JWT_SECRET` and OAuth credentials are required.
+`AUTH_ALLOW_ANONYMOUS_ADMIN=1` grants the anonymous-admin bypass, so you don't
+need OAuth keys locally: with no OAuth client configured, you're treated as an
+admin. `SYNTHETIC_FLEET_ENABLED=1` mounts the simulation ingest routes the
+fleet pushes through, without which `/api/sim/adsb/push` answers 404.
+`RETINA_ENV=dev` (or `test`) separately relaxes the boot-time secret checks, so a
+local run needs no real `JWT_SECRET`; a deployed environment requires one.
+
+All three go on the command line rather than in `.env`, because `main.py` loads
+the dotenv file after the modules that read them. `just up` passes them for you.
 
 ### Frontend / dashboard
 

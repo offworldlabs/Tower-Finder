@@ -2,13 +2,14 @@
 
 Split out of routes/test.py: these two POSTs are primary DATA-INGEST paths
 (they write state.adsb_aircraft and state.ground_truth_trails directly), not
-diagnostics.  main.py mounts this router only when RETINA_ENV != production
-or SIM_INGEST_ENABLED=1 — production previously carried an
-API-key-but-otherwise-open ingest surface it never uses.
+diagnostics.  main.py mounts this router only under SYNTHETIC_FLEET_ENABLED=1,
+so a deployment that runs no fleet carries no API-key-but-otherwise-open ingest
+surface it never uses.
 """
 
 import time
 from collections import deque
+from collections.abc import Mapping
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -22,6 +23,21 @@ from services.geo import valid_latlon
 from services.id_utils import normalize_hex_key
 
 router = APIRouter()
+
+
+def synthetic_fleet_enabled(env: Mapping[str, str]) -> bool:
+    """Whether this deployment asked for the simulation subsystem.
+
+    The gate on mounting the router below, and the whole of it. It used to be
+    that any environment not named `production` got these routes, so a
+    deployment carried a write path because of what it was called rather than
+    because anyone chose it. Naming the behaviour lets a fleetless deployment
+    close the path by dropping one line, whatever its name.
+
+    Parameterised on `env` rather than reading os.environ so the rule is
+    testable without importing main, which decides the mount once at import.
+    """
+    return env.get("SYNTHETIC_FLEET_ENABLED", "") == "1"
 
 
 @router.post("/api/test/ground-truth/push")

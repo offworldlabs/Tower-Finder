@@ -33,16 +33,24 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      # Deliberately `test`, not `production`/`staging`, while admin access stays
-      # open during the build-out. This leaves four backend auth/secret guards
-      # inactive — JWT_SECRET stops being required, AUTH_BYPASS applies when no
-      # OAuth is configured, and the missing-key warnings in radar.py and
-      # tcp_handler.py downgrade. Tracked in ClickUp 86cb1emcx; revert to the
-      # real environment name there, not here.
+      # Still `test` rather than `staging` during the build-out, which relaxes
+      # three backend guards: JWT_SECRET stops being required, and the
+      # missing-key warnings in radar.py and tcp_handler.py downgrade. Tracked
+      # in ClickUp 86cb1emcx; revert to the real environment name there, not
+      # here.
       - RETINA_ENV=test
-      # Unrelated to RETINA_ENV above: this labels alerts only, so it carries the
-      # real environment name even while RETINA_ENV is pinned to `test`. See
-      # services/alerting.py for why the two must not be the same variable.
+      # Anonymous admin, asked for explicitly since ClickUp 86cb49d29 took it
+      # off RETINA_ENV. Staging has no OAuth configured, so without this line
+      # the dashboard and every admin route start answering 401.
+      - AUTH_ALLOW_ANONYMOUS_ADMIN=1
+      # The simulation subsystem, likewise asked for by name rather than
+      # inherited from what this environment is called. Staging runs a synthetic
+      # fleet that POSTs through the ingest write path, and main.py mounts that
+      # path only for a stack that sets this flag.
+      - SYNTHETIC_FLEET_ENABLED=1
+      # Labels alerts, and a variable of its own rather than a reading of
+      # RETINA_ENV above: this box names itself `staging` in an alert while still
+      # running the `test` guards. See services/alerting.py.
       - ALERT_ENVIRONMENT=staging
       - CORS_ORIGINS=https://staging-towers.retina.fm,https://staging-api.retina.fm,https://staging-map.retina.fm,https://staging-dash.retina.fm,https://staging-admin.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs

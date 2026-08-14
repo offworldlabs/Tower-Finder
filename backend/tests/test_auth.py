@@ -2,11 +2,14 @@
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from tests.probe_helpers import run_probe
 
 # ── SQLite durability pragmas ─────────────────────────────────────────────────
 
@@ -152,6 +155,136 @@ class TestJWT:
         strategy = get_jwt_strategy()
         for bad in ("", "not.a.jwt", "abc"):
             assert asyncio.run(strategy.read_token(bad, None)) is None
+
+
+# ── AUTH_ENABLED / AUTH_BYPASS derivation ─────────────────────────────────────
+
+
+class TestAuthFlagDerivation:
+    """The anonymous-admin bypass must be opt-in, never implied by RETINA_ENV.
+
+    Production ran RETINA_ENV=test purely to keep this bypass, losing five
+    unrelated guards with it. These tests pin the flag as the only way in.
+
+    `_derive_auth_flags` is exercised directly rather than by reloading
+    core.users: routes/auth.py and routes/streaming.py import AUTH_BYPASS by
+    value, so a reload would leave those copies pointing at the old bool and
+    poison every later test in the session.
+    """
+
+    def test_test_env_alone_does_not_enable_bypass(self):
+        """The regression guard: no flag, no bypass, whatever the env is called."""
+        from core.users import _derive_auth_flags
+
+        auth_enabled, bypass = _derive_auth_flags({"RETINA_ENV": "test"})
+        assert auth_enabled is False
+        assert bypass is False
+
+    @pytest.mark.parametrize("env_name", ["dev", "test", "staging", "production"])
+    def test_no_environment_name_enables_bypass(self, env_name):
+        from core.users import _derive_auth_flags
+
+        assert _derive_auth_flags({"RETINA_ENV": env_name})[1] is False
+
+    def test_flag_enables_bypass_in_production(self):
+        """The point of the change: prod can name itself honestly and still opt in."""
+        from core.users import _derive_auth_flags
+
+        auth_enabled, bypass = _derive_auth_flags({"RETINA_ENV": "production", "AUTH_ALLOW_ANONYMOUS_ADMIN": "1"})
+        assert auth_enabled is False
+        assert bypass is True
+
+    def test_flag_alone_enables_bypass_with_no_environment_set(self):
+        from core.users import _derive_auth_flags
+
+        assert _derive_auth_flags({"AUTH_ALLOW_ANONYMOUS_ADMIN": "1"})[1] is True
+
+    @pytest.mark.parametrize("provider_key", ["GOOGLE_CLIENT_ID", "GITHUB_CLIENT_ID"])
+    def test_configured_oauth_beats_the_flag(self, provider_key):
+        """Real providers must never be shadowed by an anonymous admin."""
+        from core.users import _derive_auth_flags
+
+        auth_enabled, bypass = _derive_auth_flags({provider_key: "client-id-123", "AUTH_ALLOW_ANONYMOUS_ADMIN": "1"})
+        assert auth_enabled is True
+        assert bypass is False
+
+    @pytest.mark.parametrize("value", ["", "0", "true", "True", "yes", "on", " 1", "1 "])
+    def test_only_the_literal_one_enables_bypass(self, value):
+        """Matches SYNTHETIC_FLEET_ENABLED / COVERAGE_ENABLED: exactly "1", nothing else."""
+        from core.users import _derive_auth_flags
+
+        assert _derive_auth_flags({"AUTH_ALLOW_ANONYMOUS_ADMIN": value})[1] is False
+
+    def test_module_flags_come_from_the_derivation(self):
+        """Guards the wiring: the helper is what the module actually uses."""
+        import os
+
+        import core.users as _users
+
+        assert _users._derive_auth_flags(os.environ) == (_users.AUTH_ENABLED, _users.AUTH_BYPASS)
+
+
+# ── The admin boundary, at the route layer ────────────────────────────────────
+
+# Run in a child interpreter (see tests/probe_helpers.py for why), printing one
+# machine-readable line for the parent to assert on. The TestClient is
+# deliberately not entered as a context manager: __enter__ runs main's lifespan,
+# which binds the radar TCP port and starts every background task.
+# /api/admin/events reads an in-memory deque, so the request path under test
+# needs neither, and nothing here can collide with the suites other worktrees
+# run concurrently.
+_ROUTE_PROBE = """
+import json
+
+from fastapi.testclient import TestClient
+
+import main
+from core.users import AUTH_BYPASS
+
+client = TestClient(main.app, raise_server_exceptions=False)
+response = client.get("/api/admin/events")
+print("PROBE:" + json.dumps({"bypass": AUTH_BYPASS, "status": response.status_code}))
+"""
+
+
+def _probe_admin_route(*, with_flag: bool, db_path) -> dict:
+    """Boot the app in a subprocess and report what an anonymous caller gets."""
+    env = os.environ | {"RETINA_ENV": "test", "RETINA_DB_PATH": str(db_path)}
+    # The flag must be the only difference between the two runs, and absent has
+    # to mean absent rather than empty. Configured OAuth keys would suppress the
+    # bypass on their own (see _derive_auth_flags), which would make a 401 prove
+    # nothing about the flag, so they are cleared from both.
+    for key in ("GOOGLE_CLIENT_ID", "GITHUB_CLIENT_ID", "AUTH_ALLOW_ANONYMOUS_ADMIN"):
+        env.pop(key, None)
+    if with_flag:
+        env["AUTH_ALLOW_ANONYMOUS_ADMIN"] = "1"
+
+    return run_probe(_ROUTE_PROBE, env)
+
+
+def test_admin_route_refuses_anonymous_callers_without_the_flag(tmp_path):
+    """A deployment that never sets AUTH_ALLOW_ANONYMOUS_ADMIN must return 401.
+
+    TestAuthFlagDerivation above pins the derivation; this pins what the routes
+    then do with it, which is the part the deployment actually depends on.
+
+    It has to be a subprocess. routes/auth.py and routes/streaming.py import
+    AUTH_BYPASS by value at import time, and conftest.py sets the flag before
+    anything imports core.users, so in this interpreter the bypass is on and
+    cannot be turned off: patching core.users.AUTH_BYPASS leaves those two
+    copies untouched, and reloading core.users leaves them stale. A child
+    interpreter with its own environment is the only way to see the flag off.
+
+    RETINA_ENV=test in both runs is the regression guard: the env name used to
+    grant the bypass by itself, and now buys nothing.
+    """
+    denied = _probe_admin_route(with_flag=False, db_path=tmp_path / "no_flag.db")
+    assert denied == {"bypass": False, "status": 401}
+
+    # Positive control: same harness, same environment bar the flag. Without it
+    # a 401 could just as well mean the probe never reached the route.
+    allowed = _probe_admin_route(with_flag=True, db_path=tmp_path / "with_flag.db")
+    assert allowed == {"bypass": True, "status": 200}
 
 
 # ── get_current_user / require_admin dependencies ─────────────────────────────

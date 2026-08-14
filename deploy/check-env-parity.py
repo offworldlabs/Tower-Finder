@@ -71,13 +71,20 @@ ALLOWED_DIVERGENCE = (
     r"^services\.[^.]+\.deploy\.resources\.limits\.(cpus|memory)$",
     # Which environment this is, and the hostnames that follow from it.
     r"^services\.tower-finder\.environment\.RETINA_ENV$",
-    # Deliberately a different variable from RETINA_ENV above: it labels alerts
-    # with the real environment name while RETINA_ENV stays pinned to `test`
-    # for the auth-guard workaround (ClickUp 86cb1emcx). See services/alerting.py.
+    # The name a droplet gives itself in an alert, which is a different question
+    # from RETINA_ENV above and so a different variable. RETINA_ENV picks which
+    # backend guards apply, and staging and test both answer `test` to that
+    # during the build-out (ClickUp 86cb1emcx), so it cannot tell an alert's
+    # origin apart. See services/alerting.py.
     r"^services\.tower-finder\.environment\.ALERT_ENVIRONMENT$",
     r"^services\.tower-finder\.environment\.CORS_ORIGINS$",
     r"^services\.tower-finder\.environment\.CSP_CONNECT_SRC$",
     r"^services\.tower-finder\.environment\.HOST_[A-Z_]+$",
+    # AUTH_ALLOW_ANONYMOUS_ADMIN and SYNTHETIC_FLEET_ENABLED are deliberately
+    # absent from this list: each is set to the same value in every environment,
+    # so a difference is drift rather than a decision, and CI should fail if one
+    # environment closes the bypass, or drops the simulation subsystem, without
+    # the others.
     # Published ports. Production exposes 3012 for real receiver nodes; staging
     # has none and closes it, so the two legitimately differ here. Recorded rather
     # than silently allowed: if staging ever needs node ingest, it should be

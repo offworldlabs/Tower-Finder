@@ -85,8 +85,9 @@ The math lives in separate repos under `libs/` so it can be versioned and reused
 ## Auth model
 
 Cookie-based JWT issued via OAuth (Google/GitHub), shared across surfaces on the
-same origin. `RETINA_ENV` in {`dev`,`test`,`staging`} with no OAuth configured
-enables an anonymous-admin bypass for local work. Node ownership maps
+same origin. `AUTH_ALLOW_ANONYMOUS_ADMIN=1` with no OAuth configured grants the
+anonymous-admin bypass, independent of `RETINA_ENV`; every environment currently
+sets it while OAuth is unconfigured. Node ownership maps
 `node_id → user_id`; the `/ws/aircraft/owner` feed and dashboard use it to scope
 data to a user's own nodes.
 

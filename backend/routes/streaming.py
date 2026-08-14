@@ -96,8 +96,8 @@ async def websocket_aircraft_owner(ws: WebSocket):
     if not await _authenticate_ws(ws):
         return
     if AUTH_BYPASS:
-        # Dev/staging with no OAuth: the anonymous admin owns whatever rows
-        # are assigned to the all-zero uuid (usually nothing).
+        # The anonymous-admin bypass is opted into: that admin owns whatever
+        # rows are assigned to the all-zero uuid (usually nothing).
         owned = set(await get_user_nodes("00000000-0000-0000-0000-000000000000"))
     else:
         user = await read_user_from_token(ws.cookies.get("auth_token"))

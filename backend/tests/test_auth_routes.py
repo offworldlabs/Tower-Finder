@@ -29,7 +29,7 @@ def client():
 
 class TestMeEndpoint:
     def test_me_returns_anonymous_admin_in_test_mode(self, client):
-        """AUTH_BYPASS=True (test env) → /me returns anonymous admin."""
+        """AUTH_BYPASS=True (conftest opts in via AUTH_ALLOW_ANONYMOUS_ADMIN) → /me returns anonymous admin."""
         r = client.get("/api/auth/me")
         assert r.status_code == 200
         body = r.json()

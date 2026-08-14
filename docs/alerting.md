@@ -31,9 +31,10 @@ Three layers, in order of what they catch:
    configuration, and a misrouted URL would otherwise put an alert in the
    wrong channel with nothing in the payload to reveal that.
    `ALERT_ENVIRONMENT` is deliberately its own setting rather than `RETINA_ENV`:
-   every deployed overlay pins `RETINA_ENV=test` for the build-out's auth-guard
-   workaround (ClickUp 86cb1emcx), so a field sourced from it would read `test`
-   everywhere and say nothing. The ClickUp branch exists because ClickUp has no inbound
+   that variable selects which backend guards apply, and staging and test both
+   hold it at `test` for the build-out's auth-guard workaround (ClickUp
+   86cb1emcx), so a field sourced from it could not tell those two apart, and
+   would move whenever a guard decision did. The ClickUp branch exists because ClickUp has no inbound
    webhook of its own (its webhooks are outbound only), so reaching a
    ClickUp chat channel needs a shaped body and an `Authorization` header
    rather than a plain POST URL. `ALERT_WEBHOOK_AUTH`, when set, is sent

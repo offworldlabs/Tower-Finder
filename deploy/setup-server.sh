@@ -187,11 +187,19 @@ cp deploy/env."${RETINA_TARGET_ENV}".example .env
 #
 # This writes only the minimum to boot the app + fleet. A live box carries more
 # that this script does not know about: R2_* archive storage, TOWER_API_URL,
-# JWT_SECRET, COVERAGE_ENABLED — and production's RETINA_ENV, which exists ONLY
-# in its backend/.env. So refuse to clobber an existing file: on a fresh droplet
-# there is nothing to lose, and on an existing one a blind overwrite would
-# silently drop values that change how the backend gates auth. The operator
-# should merge by hand, knowing what is already there.
+# COVERAGE_ENABLED. (RETINA_ENV and the auth flags beside it are not among them
+# any more: they are set in the overlay, which overrides this file.)
+# So refuse to clobber an existing file: on a fresh droplet there is nothing to
+# lose, and on an existing one a blind overwrite would silently drop values that
+# change how the backend gates auth. The operator should merge by hand, knowing
+# what is already there.
+#
+# JWT_SECRET is generated here rather than left to the operator. Since production
+# names itself `production`, core/users.py refuses to import without it, so a box
+# provisioned without one crash-loops with no rollback (the deploy job's failure
+# skips the jobs the rollback steps hang off). Generating beats prompting: the
+# value is never needed by a human, and the alternative an operator reaches for
+# is the placeholder in backend/.env.example, which is published in this repo.
 if [ -f backend/.env ]; then
     echo "  backend/.env already exists — leaving it untouched."
     echo "  If this box needs the keys passed to this script, merge them yourself."
@@ -199,6 +207,7 @@ else
     {
         echo "MAPRAD_API_KEY=${MAPRAD_API_KEY}"
         echo "RADAR_API_KEY=${RADAR_API_KEY}"
+        echo "JWT_SECRET=$(openssl rand -hex 32)"
     } > backend/.env
 fi
 

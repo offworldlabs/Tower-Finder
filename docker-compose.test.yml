@@ -34,13 +34,22 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      # Same value prod and staging run while admin access stays open during the
-      # build-out. Tracked in ClickUp 86cb1emcx; revert to the real environment
-      # name there, not here.
+      # Matches staging, which is the point of this droplet. Relaxes the
+      # JWT_SECRET boot check and the missing-key warnings in radar.py and
+      # tcp_handler.py while the build-out continues (ClickUp 86cb1emcx);
+      # production now names itself honestly, see docker-compose.prod.yml.
       - RETINA_ENV=test
-      # Unrelated to RETINA_ENV above: this labels alerts only, so it carries the
-      # real environment name even while RETINA_ENV is pinned to `test`. See
-      # services/alerting.py for why the two must not be the same variable.
+      # Anonymous admin, asked for explicitly since ClickUp 86cb49d29 took it
+      # off RETINA_ENV. No OAuth is configured here either.
+      - AUTH_ALLOW_ANONYMOUS_ADMIN=1
+      # The simulation subsystem, likewise asked for by name rather than
+      # inherited from what this environment is called. This droplet is a
+      # synthetic fleet and nothing else, so the ingest write path main.py gates
+      # on this flag is the whole of its data in.
+      - SYNTHETIC_FLEET_ENABLED=1
+      # Labels alerts. It matches RETINA_ENV above only because this droplet is
+      # named for what it is; the two answer different questions, and staging
+      # sets them to different values. See services/alerting.py.
       - ALERT_ENVIRONMENT=test
       - CORS_ORIGINS=https://test-towers.retina.fm,https://test-api.retina.fm,https://test-map.retina.fm,https://test-dash.retina.fm,https://test-admin.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs

@@ -73,8 +73,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Fetch tar1090 static assets
-        run: git clone --depth 1 https://github.com/wiedehopf/tar1090.git tar1090
       - run: docker build -t tower-finder:ci .
 
   env-parity:
@@ -249,8 +247,6 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
             git submodule update --init --recursive
-            # Ensure tar1090 static assets are present
-            [ -d tar1090/html ] || git clone --depth 1 https://github.com/wiedehopf/tar1090.git tar1090
             # The host's ./.env sets COMPOSE_FILE (base + staging overlay), so
             # every command below is character-identical to the production deploy
             # block. Written from the tree we just checked out rather than assumed
@@ -388,6 +384,39 @@ jobs:
             # The file is then written from the checked-out tree, below.
             if [ -f .env ] && ! grep -q '^COMPOSE_FILE=.*docker-compose\.prod\.yml' .env; then
               echo "::error::/opt/tower-finder/.env exists but does not select the production overlay — it names another environment. Inspect it; do not deploy."
+              exit 1
+            fi
+
+            # Third pre-flight: the two secrets that production cannot boot
+            # without, again before anything mutates the box.
+            # docker-compose.prod.yml names this environment `production`, and
+            # under that name backend/core/users.py and backend/routes/test.py
+            # each raise at import time when their secret is unset. The failure
+            # would be a crash-looping container, and the rollback steps hang off
+            # the smoke and E2E jobs, which are skipped when this job fails — so
+            # an unset secret leaves production down until a human SSHes in. A
+            # refused deploy is the better outcome.
+            #
+            # Both are checked, because both fail the same way: RADAR_API_KEY is
+            # set on the box today, so only JWT_SECRET was at risk on the deploy
+            # that introduced this, but a guard that covers one of a matched pair
+            # invites the other to rot.
+            #
+            # JWT_SECRET carries a length bound as well, to reject the
+            # placeholder in backend/.env.example, which is published in this
+            # repo and would otherwise satisfy a mere presence check.
+            # Both read the LAST matching line rather than any of them, because
+            # that is the one that reaches the container: compose's env_file
+            # takes last-occurrence-wins on a repeated key. The remediation
+            # below tells an operator to append, so a duplicate is the likely
+            # shape of a botched rotation, and checking any line would pass on
+            # the old value while the app booted with the new one.
+            if ! grep -E '^JWT_SECRET=' backend/.env 2>/dev/null | tail -1 | grep -qE '^JWT_SECRET=.{32,}$'; then
+              echo "::error::backend/.env has no effective JWT_SECRET of at least 32 characters, and production refuses to boot without one (backend/core/users.py). On the droplet, replacing any existing line: printf 'JWT_SECRET=%s\n' \"\$(openssl rand -hex 32)\" >> /opt/tower-finder/backend/.env"
+              exit 1
+            fi
+            if ! grep -E '^RADAR_API_KEY=' backend/.env 2>/dev/null | tail -1 | grep -qE '^RADAR_API_KEY=.+$'; then
+              echo "::error::backend/.env has no effective RADAR_API_KEY, and production refuses to boot without one (backend/routes/test.py), which would also take /api/test/dashboard with it."
               exit 1
             fi
 

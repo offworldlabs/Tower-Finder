@@ -1,8 +1,10 @@
 # ── Production overlay ───────────────────────────────────────────────────────
 # Combined with docker-compose.yml (the shared base). Everything that is not
 # inherently per-environment lives in the base; this file carries only the
-# production values for the four things that legitimately differ:
+# production values for the things that legitimately differ:
 #   hostnames/CORS · droplet capacity · fleet scale · the external edge network
+#   · the two build-out flags on the environment block below · the name this
+#     droplet gives itself in alerts
 #
 # Usage (the host's ./.env sets COMPOSE_FILE, so this is normally implicit):
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
@@ -19,16 +21,30 @@ services:
     # droplet raised an alert.
     hostname: retina-prod
     environment:
-      # Deliberately `test`, not `production`/`staging`, while admin access stays
-      # open during the build-out. This leaves four backend auth/secret guards
-      # inactive — JWT_SECRET stops being required, AUTH_BYPASS applies when no
-      # OAuth is configured, and the missing-key warnings in radar.py and
-      # tcp_handler.py downgrade. Tracked in ClickUp 86cb1emcx; revert to the
-      # real environment name there, not here.
-      - RETINA_ENV=test
-      # Unrelated to RETINA_ENV above: this labels alerts only, so it carries the
-      # real environment name even while RETINA_ENV is pinned to `test`. See
-      # services/alerting.py for why the two must not be the same variable.
+      # This box ran `RETINA_ENV=test` for one reason, keeping the anonymous
+      # admin bypass open, and paid for it with four unrelated guards: the
+      # JWT_SECRET boot check, the RADAR_API_KEY fail-fast, and the missing-key
+      # warnings in radar.py and tcp_handler.py. ClickUp 86cb49d29 split the
+      # bypass onto its own flag, so production can name itself honestly and
+      # keep all four.
+      - RETINA_ENV=production
+      # The bypass itself, now explicit: no OAuth is configured yet, so every
+      # caller is treated as an anonymous admin. This is the open door, and the
+      # only thing here that should worry a reader. Closing it (OAuth keys in
+      # backend/.env, then drop this line) is tracked in ClickUp 86cb1emcx.
+      - AUTH_ALLOW_ANONYMOUS_ADMIN=1
+      # The simulation subsystem, likewise asked for by name: for now the ingest
+      # write path, in time the fleet container as well, which is why the flag is
+      # named for the subsystem rather than for that one route. Prod needs it
+      # because testmap.retina.fm is served from a synthetic fleet in this same
+      # stack, and that fleet POSTs through the ingest path. Every environment
+      # now sets it, so main.py gates the mount on the flag alone.
+      - SYNTHETIC_FLEET_ENABLED=1
+      # Labels alerts, and deliberately not RETINA_ENV even though the two read
+      # the same here. Staging and test both still run `test` while the build-out
+      # lasts, so RETINA_ENV cannot say which box an alert came from, and a label
+      # sourced from it would change meaning the day a guard decision does. See
+      # services/alerting.py.
       - ALERT_ENVIRONMENT=production
       - CORS_ORIGINS=https://towers.retina.fm,https://api.retina.fm,https://map.retina.fm,https://dash.retina.fm,https://admin.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs

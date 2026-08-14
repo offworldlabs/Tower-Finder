@@ -152,7 +152,12 @@ up profile="local":
     just --justfile "{{justfile()}}" migrate
 
     echo "→ backend (uvicorn — http :8000, detection TCP ingest :3012)"
-    ( cd "{{be}}" && RETINA_ENV=dev "{{venv}}/bin/uvicorn" main:app --reload ) \
+    # Both flags have to be granted by name since ClickUp 86cb49d29; RETINA_ENV=dev
+    # alone no longer implies either. Without the bypass a laptop would need real
+    # OAuth credentials to load the dashboard, and without SYNTHETIC_FLEET_ENABLED
+    # main.py leaves the simulation ingest router unmounted, which the fleet
+    # started below POSTs through.
+    ( cd "{{be}}" && RETINA_ENV=dev AUTH_ALLOW_ANONYMOUS_ADMIN=1 SYNTHETIC_FLEET_ENABLED=1 "{{venv}}/bin/uvicorn" main:app --reload ) \
         > "{{run}}/backend.log" 2>&1 &
 
     echo "→ waiting for backend TCP ingest on :3012 (max 30s) ..."
@@ -269,7 +274,6 @@ deploy-test:
     #    notion of "tracked anyway", which git does: a tracked file still ships
     #    even when a pattern matches it. Without these the gitignore filter below
     #    silently drops them and --delete removes them from the droplet.
-    #      tar1090/          — gitignored, but the Dockerfile COPYs it
     #      metro_tower_cache — tracked in retina-simulation, whose own .gitignore
     #                          says *.json; it is what spares fleet generation the
     #                          Tower API round-trips
@@ -286,8 +290,6 @@ deploy-test:
         --exclude 'backend/.env'
         --exclude 'backend/data'
         --exclude 'backend/coverage_data'
-        --include 'tar1090/'
-        --include 'tar1090/**'
         --include '**/metro_tower_cache.json'
         --include '**/.gitkeep'
         --filter=':- .gitignore'

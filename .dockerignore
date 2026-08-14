@@ -8,8 +8,6 @@ __pycache__
 .gitignore
 *.md
 deploy/DEPLOY.md
-tar1090/.git
-tar1090/.gitignore
 other/
 
 # Local runtime state (database, snapshots, node config, coverage/track

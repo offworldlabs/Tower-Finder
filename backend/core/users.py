@@ -8,7 +8,7 @@ import hashlib
 import os
 import secrets
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from datetime import datetime
 from pathlib import Path
 
@@ -36,11 +36,32 @@ JWT_LIFETIME_SECONDS = 86400 * 7  # 7 days
 
 ADMIN_EMAILS: set[str] = {e.strip().lower() for e in os.getenv("AUTH_ADMIN_EMAILS", "").split(",") if e.strip()}
 
-AUTH_ENABLED = bool(os.getenv("GOOGLE_CLIENT_ID") or os.getenv("GITHUB_CLIENT_ID"))
 
-# Anonymous admin bypass is available in dev/test/staging when no OAuth is configured.
-# In production, missing OAuth keys must yield 401 — not open admin access.
-AUTH_BYPASS = not AUTH_ENABLED and _RETINA_ENV in ("dev", "test", "staging")
+def _derive_auth_flags(env: Mapping[str, str]) -> tuple[bool, bool]:
+    """Return (auth_enabled, auth_bypass) for an environment.
+
+    The anonymous-admin bypass is an explicit opt-in, AUTH_ALLOW_ANONYMOUS_ADMIN=1,
+    rather than a consequence of the environment's name. RETINA_ENV gated six
+    unrelated behaviours at once, so a deployment that wanted only this one had to
+    call itself `test` and silently gave up the other five guards to get it. Naming
+    the behaviour directly lets production be RETINA_ENV=production and still choose;
+    the flag's own name grants a named permission rather than announcing a mode, so
+    what is being handed out is legible at the point it is switched on.
+
+    Configured OAuth keys still win: a deployment with real providers must never
+    serve an anonymous admin, whatever the flag says. Missing keys with the flag
+    unset yield 401 rather than open access, which is the default worth having.
+
+    Parameterised on `env` rather than reading os.environ so the derivation is
+    testable on its own. The two module-level flags below are computed once at
+    import and read as values elsewhere (routes/auth.py, routes/streaming.py), so
+    reloading this module to vary the environment would leave those copies stale.
+    """
+    auth_enabled = bool(env.get("GOOGLE_CLIENT_ID") or env.get("GITHUB_CLIENT_ID"))
+    return auth_enabled, not auth_enabled and env.get("AUTH_ALLOW_ANONYMOUS_ADMIN", "") == "1"
+
+
+AUTH_ENABLED, AUTH_BYPASS = _derive_auth_flags(os.environ)
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -290,7 +311,7 @@ async def _read_user_from_request(request: Request) -> User | None:
 
 
 async def get_current_user(request: Request) -> dict:
-    """Return user dict or raise 401. In dev/test with no OAuth configured, returns anonymous admin."""
+    """Return user dict or raise 401. Returns anonymous admin where AUTH_BYPASS is opted into."""
     if AUTH_BYPASS:
         return dict(ANONYMOUS_USER)
     user = await _read_user_from_request(request)
