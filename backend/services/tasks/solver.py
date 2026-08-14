@@ -57,7 +57,11 @@ _solver_pool_lock = threading.Lock()
 # — and any later test that monkeypatches the compute functions would ship an
 # unpicklable closure to a child.  Pool transport has its own tests, which
 # build the pool explicitly.
-_POOL_ENABLED = os.getenv("RETINA_ENV", "").lower() != "test"
+#
+# Gated on SOLVER_POOL (conftest.py sets 0), not RETINA_ENV: every deploy tier
+# currently runs RETINA_ENV=test (see docker-compose.*.yml / ClickUp 86cb1emcx),
+# and keying off it silently reverted deployments to inline GIL-bound solving.
+_POOL_ENABLED = os.getenv("SOLVER_POOL", "1").strip().lower() not in ("0", "false", "off")
 
 
 def _make_solver_pool() -> concurrent.futures.ProcessPoolExecutor:

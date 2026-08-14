@@ -12,6 +12,10 @@ from tests.migration_helpers import _alembic
 
 # Must be set before any backend module imports auth.py or routes/radar.py
 os.environ.setdefault("RETINA_ENV", "test")
+# No solver process pool under pytest: tests monkeypatch the compute functions,
+# and an unpicklable closure cannot be shipped to a pool child.  See the
+# _POOL_ENABLED comment in services/tasks/solver.py.
+os.environ.setdefault("SOLVER_POOL", "0")
 # Needed so the /api/radar/detections auth guard is active in tests.
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 # The suite has no OAuth provider to log in against, so the route tests reach the

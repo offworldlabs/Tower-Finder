@@ -63,23 +63,21 @@ services:
       - HOST_TESTMAP=test-testmap.retina.fm
       - HOST_LEGACY_REDIRECT=test-tower-finder.retina.fm
       - CSP_CONNECT_SRC=https://test-api.retina.fm https://test-admin.retina.fm wss://*.retina.fm
-    # Matched to staging deliberately, so a measurement here transfers. Same
-    # droplet size (3915 MB, 2 cores); this one also has 2 GB of swap, which is
-    # slack rather than something the limits are sized to use.
+    # This droplet was resized 2026-08-14 to 4 cores / 8 GB (from staging's
+    # 2-core size) because the solver could not keep up with this fleet: at
+    # ~0.7 candidates/s and ~2.5 s of CPU per solve, solving alone needs
+    # ~2 cores, which a 1.5-CPU cap on a 2-core box cannot give.  Measurements
+    # here no longer transfer to staging until staging is resized to match.
     #
-    # Measured under a fleet four times heavier than the one below, the app sat at
-    # 152 MiB and the fleet at 25 MiB, with swap untouched. Memory is not what
-    # constrains these boxes — CPU is, and the solver holds the GIL — so these are
-    # ceilings with an order of magnitude of headroom, not a calculated fit.
-    #
-    # CPU is deliberately overcommitted (1.5 + 1.0 on 2 cores). Limits are
-    # ceilings, so this lets the solver take what it needs while the fleet is
-    # between sends rather than reserving a core that then idles.
+    # cpus 3.0 = the main process plus SOLVER_WORKERS=2 solver pool children
+    # (services/tasks/solver.py), leaving a core for the fleet and the host.
+    # memory 3G = measured ~1.3 GiB in the app plus ~200 MiB per spawn child,
+    # with ceiling-not-fit headroom.
     deploy:
       resources:
         limits:
-          cpus: "1.5"
-          memory: 1600M
+          cpus: "3.0"
+          memory: 3G
 
   fleet:
     container_name: retina-test-fleet
