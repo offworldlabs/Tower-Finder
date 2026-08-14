@@ -46,6 +46,7 @@ from routes.custody import router as custody_router
 from routes.output import router as output_router
 from routes.radar import router as radar_router
 from routes.sim_ingest import router as sim_ingest_router
+from routes.sim_ingest import synthetic_fleet_enabled
 from routes.stats import router as stats_router
 from routes.streaming import router as streaming_router
 from routes.test import router as test_router
@@ -250,11 +251,11 @@ for router in (
     app.include_router(router)
 
 # Simulation ingest is a WRITE path (state.adsb_aircraft /
-# ground_truth_trails) that only the fleet orchestrator uses.  Production has
-# no orchestrator, so mounting it there was pure attack surface; staging/test
-# keep it, and SIM_INGEST_ENABLED=1 can force it on anywhere.
-_SIM_INGEST_ENABLED = os.getenv("RETINA_ENV", "").lower() != "production" or os.getenv("SIM_INGEST_ENABLED", "") == "1"
-if _SIM_INGEST_ENABLED:
+# ground_truth_trails) that only the synthetic fleet uses, so a deployment that
+# runs no fleet should not carry it. The rule lives beside the router it gates;
+# every compose overlay sets the flag today, and a fleetless deployment closes
+# the path by dropping the line.
+if synthetic_fleet_enabled(os.environ):
     app.include_router(sim_ingest_router)
 else:
-    logging.info("Simulation ingest endpoints not mounted (RETINA_ENV=production)")
+    logging.info("Simulation ingest endpoints not mounted (SYNTHETIC_FLEET_ENABLED is not 1)")

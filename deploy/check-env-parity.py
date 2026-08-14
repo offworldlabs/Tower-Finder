@@ -70,6 +70,11 @@ ALLOWED_DIVERGENCE = (
     r"^services\.tower-finder\.environment\.CORS_ORIGINS$",
     r"^services\.tower-finder\.environment\.CSP_CONNECT_SRC$",
     r"^services\.tower-finder\.environment\.HOST_[A-Z_]+$",
+    # AUTH_ALLOW_ANONYMOUS_ADMIN and SYNTHETIC_FLEET_ENABLED are deliberately
+    # absent from this list: each is set to the same value in every environment,
+    # so a difference is drift rather than a decision, and CI should fail if one
+    # environment closes the bypass, or drops the simulation subsystem, without
+    # the others.
     # Published ports. Production exposes 3012 for real receiver nodes; staging
     # has none and closes it, so the two legitimately differ here. Recorded rather
     # than silently allowed: if staging ever needs node ingest, it should be

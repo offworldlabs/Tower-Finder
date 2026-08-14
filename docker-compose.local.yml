@@ -31,9 +31,18 @@ services:
     # on, and gets Compose's implicit per-project name instead.
     image: !reset null
     environment:
-      # Same value the droplets run; keeps the backend inside the dev/test auth
-      # allowlist rather than demanding a JWT secret for a throwaway stack.
+      # Keeps the backend inside the dev/test allowlist rather than demanding a
+      # JWT secret for a throwaway stack.
       - RETINA_ENV=test
+      # Anonymous admin, asked for explicitly since ClickUp 86cb49d29 took it
+      # off RETINA_ENV. A laptop has no OAuth credentials, so without this the
+      # admin surfaces answer 401.
+      - AUTH_ALLOW_ANONYMOUS_ADMIN=1
+      # The simulation subsystem, likewise asked for by name rather than
+      # inherited from what this environment is called. A laptop stack has no
+      # real nodes, so the fleet POSTing through the ingest write path is all
+      # there is to look at, and main.py mounts that path only under this flag.
+      - SYNTHETIC_FLEET_ENABLED=1
       # The one thing a laptop cannot do. Renders the template's plain-HTTP
       # branch: no 443 listeners, no cert paths, no HSTS, no HTTP→HTTPS redirect.
       # Never set this on a deployed host; check-env-parity.py asserts prod and

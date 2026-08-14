@@ -17,10 +17,10 @@ const API = hosts.api;
 test.describe("Dashboard — unauthenticated access", () => {
   test("unauthenticated request to / renders the login page", async ({ page }) => {
     await page.goto(DASH);
-    // On staging, RETINA_ENV=test disables OAuth → AUTH_ENABLED=False → backend
-    // returns a mock admin user for every /api/auth/me request. In that case the
-    // dashboard renders directly (no redirect). On production with OAuth keys set,
-    // this would redirect to /login.
+    // No OAuth client is configured on staging, so AUTH_ENABLED=False, and
+    // AUTH_ALLOW_ANONYMOUS_ADMIN=1 turns that into a mock admin user for every
+    // /api/auth/me request. In that case the dashboard renders directly (no
+    // redirect). With OAuth keys set, this would redirect to /login.
     // We assert that exactly one of the two states is rendered correctly.
     const isRedirected = await page.waitForURL(/\/login/, { timeout: 8_000 }).then(() => true).catch(() => false);
     if (isRedirected) {

@@ -361,8 +361,9 @@ class TestGoldenPath_Layer3_HttpApi:
     def test_unauthenticated_config_write_rejected(self, client):
         """PUT /api/config without admin JWT is rejected when auth is enabled.
 
-        In the test suite AUTH_BYPASS=True (dev/test env, no OAuth keys), so auth
-        is intentionally bypassed.  We simulate a production-like environment by
+        In the test suite AUTH_BYPASS=True, because conftest sets
+        AUTH_ALLOW_ANONYMOUS_ADMIN=1 and no OAuth keys are configured, so auth is
+        intentionally bypassed.  We simulate a production-like environment by
         patching AUTH_BYPASS to False and verify the guard rejects the request.
         """
         from pathlib import Path
