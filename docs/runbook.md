@@ -93,20 +93,59 @@ stop gracefully at the newest revision the older image recognises: it fails
 with `Can't locate revision identified by '<rev>'`, because that revision's
 file is not in this image's `migrations/versions/`. `start.sh` treats
 specifically that failure as tolerable and continues the boot rather than
-crash-looping the container: an additive revision the older code doesn't know
-about is harmless to leave in place, since the old code simply never touches
-the new column or table. Any other migration failure still aborts the boot as
-before.
+crash-looping the container, which would defeat the point of rolling back. Any
+other migration failure still aborts the boot as before.
 
-That tolerance only covers additive revisions. A destructive one (a dropped or
-renamed column, a changed constraint) is wrong to leave in place under older
-code, and boot succeeding is not a signal that it is safe. To roll back past a
-destructive revision, downgrade first and then redeploy:
+That tolerance is not a judgement that the gap is harmless, and `start.sh`
+cannot make that judgement: the revisions the database is ahead by are
+precisely the ones missing from that image's `migrations/versions/`, so all it
+holds is a revision id it cannot resolve. The grading happens at rollback time
+instead, on the host, where both trees are reachable.
+
+`deploy/rollback.sh` prints a `── Database` block once it reaches the health
+check, on both of that check's outcomes. An abort before then (a failed `git
+fetch`, checkout, submodule update or `docker compose` step) exits without one.
+Where the gap can be computed the block names the revision the database is left
+at and grades each revision in it:
+
+- All additive: the restored code never reads what they added, so it is safe to
+  serve, and the rollback exits `0`.
+- Any destructive or undeclared revision: the rollback still completes, because
+  restoring service comes first, then exits `2` naming the revision to
+  downgrade to, or, if the tree being restored predates the migration history,
+  saying that no safe target can be named.
+- The gap could not be graded at all, either because no `deploy-*` tag records
+  the commit the restored image was built from or because git failed: the
+  rollback completes and exits `2` saying so, with no revision to name.
+  Ungradable is treated as unsafe throughout.
+
+Exit `1` keeps its existing meaning of a failed health check and says nothing
+about the database.
+
+To roll back past a destructive revision, downgrade and then redeploy:
 
 ```bash
 ssh retina-prod 'cd /opt/tower-finder && docker compose exec tower-finder \
     sh -c "cd /app/backend && python3 -m alembic downgrade <revision>"'
 ```
+
+#### Declaring a revision's rollback safety
+
+Every revision carries a module global beside `revision` and `down_revision`:
+
+```python
+rollback_safety = "additive"    # or "destructive"
+```
+
+`additive` means the schema after this revision is still valid for code written
+against the schema before it: a new table, column or index, a column widened to
+nullable, a relaxed constraint. `destructive` is everything else: a dropped or
+renamed table or column, a narrowed type, a `NOT NULL` added without a default,
+a tightened constraint. The test is whether the previous revision's code can run
+its queries unchanged against this schema.
+
+`backend/tests/test_migrations.py` fails if a revision does not declare one, and
+a revision that reaches a droplet undeclared is graded destructive.
 
 ---
 

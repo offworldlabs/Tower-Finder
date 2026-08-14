@@ -12,6 +12,14 @@ down_revision = "0002"
 branch_labels = None
 depends_on = None
 
+# Destructive despite only adding columns: all three are NOT NULL with no
+# server_default, so an insert from code predating them supplies no value and
+# the constraint rejects the row. Nothing writes node_configs today, which is
+# what makes the upgrade safe to run unattended (see the comment below), but
+# the grading describes the schema contract rather than the current traffic,
+# and phase 1's config routes are what will write it.
+rollback_safety = "destructive"
+
 # Required on the wire since contract 1.1.0, so not null like the other twelve.
 # There is deliberately no server_default, and it is what makes this revision safe
 # to run unattended: SQLite accepts ADD COLUMN ... NOT NULL only while the table is

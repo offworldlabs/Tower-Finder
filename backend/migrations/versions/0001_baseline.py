@@ -25,6 +25,12 @@ down_revision = None
 branch_labels = None
 depends_on = None
 
+# The four tables here already exist on all three droplets, built by create_all
+# before Alembic existed, and the upgrade records the revision rather than
+# recreating them. Rolling back across this leaves code that predates Alembic
+# reading exactly the schema it already had.
+rollback_safety = "additive"
+
 _BASELINE_TABLES = ("user", "invites", "node_owners", "claim_codes")
 
 

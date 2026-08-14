@@ -170,14 +170,17 @@ last_used_at
 # module-level names and the two functions reflectively (revision identity,
 # chain order, upgrade/downgrade direction); nothing in the tree references
 # them statically. Vulture whitelists match by name rather than by file, so
-# these six entries also cover every revision added in future, and the
-# alternative is a whitelist entry per migration file, forever.
+# these entries also cover every revision added in future, and the alternative
+# is a whitelist entry per migration file, forever.
 revision
 down_revision
 branch_labels
 depends_on
 upgrade
 downgrade
+# rollback_safety is read by deploy/classify-migration-gap.py via regex to
+# determine whether a rollback across this revision is safe to serve.
+rollback_safety
 
 
 # ── Framework attributes (previously CI --ignore-names) ───────────────────────
