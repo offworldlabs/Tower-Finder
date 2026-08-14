@@ -252,3 +252,9 @@ class RegistrationRateLimiter:
         if self._counters.admit(specs) is None:
             return None
         return Refusal(403, dict(REFUSAL_BODY), refusal_retry_after())
+
+
+# The one instance, per the note above: routes/node_register.py is the caller
+# that made it worth having. Only registration is limited by node_id, so this is
+# process-wide state a second uvicorn worker would double; phase 1 runs one.
+registration_limiter = RegistrationRateLimiter()
