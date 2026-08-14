@@ -15,6 +15,37 @@ from pathlib import Path
 from tests.migration_helpers import BACKEND, ROLLBACK_AHEAD_SENTINEL, _alembic
 
 
+def test_migrations_have_exactly_one_head(tmp_path):
+    """Two branches that each add a revision off the same parent will merge
+    without a textual conflict: different files, nothing overlapping, nothing a
+    review would show. What they leave behind is an Alembic tree with two
+    heads, and `alembic upgrade head` refusing to choose between them.
+
+    That refusal reads "Multiple head revisions are present", which is not the
+    wording the `elif` in deploy/start.sh tolerates, so it falls through to the
+    refuse-to-boot `else` below and no environment starts until the heads are
+    reconciled. The rest of this file goes red too, along with conftest.py's
+    node schema template and every test behind it, but those all fail on
+    `returncode == 0` with Alembic's reason left on the subprocess's stdout,
+    where the assertion message does not carry it. This test sits first so it
+    is the first failure of the run, and it prints the colliding revisions. The
+    fix is to renumber the later one onto the other's head, or `alembic merge`.
+    """
+    # `heads` is answered from migrations/versions/ through the ScriptDirectory
+    # alone and never imports env.py, so nothing is created at this path.
+    # _alembic requires one all the same.
+    result = _alembic("heads", db_path=tmp_path / "unused.db")
+    # Both streams: Alembic's `util.err` puts a clean failure, a missing
+    # alembic.ini say, on stdout behind a "FAILED:" prefix, and only an
+    # uncaught traceback such as a dangling down_revision reaches stderr.
+    # Reporting one of the two is how the failures described above lose their
+    # reason.
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    heads = [line for line in result.stdout.splitlines() if line.strip()]
+    assert len(heads) == 1, result.stdout
+
+
 def test_upgrade_downgrade_upgrade_round_trips(tmp_path):
     """The downgrade is run rather than assumed.
 
