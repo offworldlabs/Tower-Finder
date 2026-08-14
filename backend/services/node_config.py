@@ -1,6 +1,6 @@
 """The one configuration validator, shared by registration and PUT /nodes/config.
 
-Bounds are the wire contract's, at version 1.1.0. Three checks are here and not
+Bounds are the wire contract's, at version 1.1.1. Three checks are here and not
 there because a JSON schema cannot express them: a receiver and illuminator at
 the same point give the solver a degenerate baseline; bool is a subclass of int
 in Python, so a plain range check accepts True as a latitude of 1; and NaN
@@ -26,8 +26,8 @@ class ConfigInvalid(Exception):
         self.reason = reason
 
 
-# field -> (low, high, low_inclusive, high_inclusive). beam_azimuth_deg is absent
-# because it is nullable and handled separately.
+# field -> (low, high, low_inclusive, high_inclusive). beam_width_deg and
+# beam_azimuth_deg are absent because both are nullable and handled separately.
 _NUMERIC_BOUNDS: dict[str, tuple[float, float, bool, bool]] = {
     "rx_lat": (-90, 90, True, True),
     "rx_lon": (-180, 180, True, True),
@@ -37,7 +37,6 @@ _NUMERIC_BOUNDS: dict[str, tuple[float, float, bool, bool]] = {
     "tx_alt_ft": (-1500, 30000, True, True),
     "fc_hz": (1_000_000, 6_000_000_000, True, True),
     "fs_hz": (100_000, 20_000_000, True, True),
-    "beam_width_deg": (0, 360, False, True),
     "max_range_km": (0, 1000, False, True),
     "cpi_s": (0, 10, False, True),
     # The contract sets no maximum on either tolerance, so the bound is math.inf
@@ -49,7 +48,7 @@ _NUMERIC_BOUNDS: dict[str, tuple[float, float, bool, bool]] = {
     "doppler_tolerance_hz": (0, math.inf, False, True),
 }
 
-_REQUIRED = set(_NUMERIC_BOUNDS) | {"tx_callsign", "beam_azimuth_deg"}
+_REQUIRED = set(_NUMERIC_BOUNDS) | {"tx_callsign", "beam_width_deg", "beam_azimuth_deg"}
 
 
 def _number(field: str, value: Any) -> float:
@@ -98,6 +97,20 @@ def validate_config(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(callsign, str) or not 1 <= len(callsign) <= 32:
         raise ConfigInvalid("tx_callsign")
     out["tx_callsign"] = callsign
+
+    # Required and nullable since 1.1.1: no node has its antenna characterised,
+    # because retina-gui does not collect the geometry from owners, so null is what
+    # the whole fleet sends. Substituting a width would be wrong data the server
+    # could not later tell apart from a measurement, and rejecting it left no node
+    # able to register at all. The interval is (0, 360], not the azimuth's below.
+    width = payload["beam_width_deg"]
+    if width is None:
+        out["beam_width_deg"] = None
+    else:
+        width = _number("beam_width_deg", width)
+        if not 0 < width <= 360:
+            raise ConfigInvalid("beam_width_deg")
+        out["beam_width_deg"] = width
 
     # null is meaningful: the node is broadside or omnidirectional. Coercing it to 0.0
     # would silently aim every unaimed node in the fleet due north.

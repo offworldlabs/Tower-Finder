@@ -44,6 +44,30 @@ def test_a_valid_config_passes_through_unchanged():
     assert validate_config(dict(VALID)) == VALID
 
 
+def test_null_beam_width_is_preserved_not_defaulted():
+    """Nullable since contract 1.1.1, and null is what the whole fleet sends."""
+    assert validate_config(dict(VALID, beam_width_deg=None))["beam_width_deg"] is None
+
+
+def test_a_missing_beam_width_is_still_rejected():
+    """Required and nullable are different things: an explicit null is a node
+    saying its antenna is not characterised, an absent key is a node that has not
+    been told what to send."""
+    payload = dict(VALID)
+    del payload["beam_width_deg"]
+    with pytest.raises(ConfigInvalid) as excinfo:
+        validate_config(payload)
+    assert excinfo.value.field == "beam_width_deg"
+
+
+@pytest.mark.parametrize("value", [0.1, 360])
+def test_a_present_beam_width_keeps_the_contract_interval(value):
+    """(0, 360], which is not beam_azimuth_deg's [0, 360). Nullability moved the
+    check out of _NUMERIC_BOUNDS and next to the azimuth's, where the two
+    intervals are easy to conflate."""
+    assert validate_config(dict(VALID, beam_width_deg=value))["beam_width_deg"] == value
+
+
 def test_null_beam_azimuth_is_preserved_not_defaulted():
     assert validate_config(dict(VALID))["beam_azimuth_deg"] is None
 
@@ -73,6 +97,7 @@ def test_zero_beam_azimuth_is_not_null():
         ("fs_hz", 99_999),
         ("fs_hz", 20_000_001),
         ("beam_width_deg", 0),
+        ("beam_width_deg", 360.1),
         ("beam_width_deg", 361),
         ("beam_azimuth_deg", 360),
         ("beam_azimuth_deg", -1),
