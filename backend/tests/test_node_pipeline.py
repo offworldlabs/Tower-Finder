@@ -31,9 +31,11 @@ from services.node_pipeline import (
 
 NODE_ID = "ret1a2b3c4d"
 
-# Geometry shared by the fixtures. beam_azimuth_deg is absent deliberately:
-# null means broadside, and each fixture that cares supplies its own.
-_GEOMETRY = {
+# The column values shared by the fixtures. beam_azimuth_deg is absent
+# deliberately: null means broadside, and each fixture that cares supplies its
+# own. The processing parameters are here because the columns are not null, not
+# because the pipeline reads them; _WIRE_FIELDS deliberately omits them.
+_CONFIG_DEFAULTS = {
     "rx_lat": 51.42,
     "rx_lon": -0.91,
     "rx_alt_ft": 120.0,
@@ -45,6 +47,9 @@ _GEOMETRY = {
     "fs_hz": 2_000_000.0,
     "beam_width_deg": 41.0,
     "max_range_km": 50.0,
+    "cpi_s": 0.5,
+    "delay_tolerance_us": 6.67,
+    "doppler_tolerance_hz": 5.0,
 }
 
 
@@ -59,7 +64,7 @@ async def _seed(session, node_id, *, version=1, status="active", with_config=Tru
     )
     session.add(node)
     if with_config:
-        session.add(NodeConfig(node_id=node_id, version=version, **{**_GEOMETRY, **overrides}))
+        session.add(NodeConfig(node_id=node_id, version=version, **{**_CONFIG_DEFAULTS, **overrides}))
     await session.flush()
     return node
 
@@ -114,7 +119,11 @@ async def test_a_node_with_no_azimuth_is_registered_broadside_not_due_north(node
     await register_with_pipeline(node_session, node)
 
     broadside = resolve_beam_azimuth_deg(
-        {}, _GEOMETRY["rx_lat"], _GEOMETRY["rx_lon"], _GEOMETRY["tx_lat"], _GEOMETRY["tx_lon"]
+        {},
+        _CONFIG_DEFAULTS["rx_lat"],
+        _CONFIG_DEFAULTS["rx_lon"],
+        _CONFIG_DEFAULTS["tx_lat"],
+        _CONFIG_DEFAULTS["tx_lon"],
     )
     azimuth = state.node_associator.node_geometries[NODE_ID].beam_azimuth_deg
     assert azimuth != 0.0
@@ -126,7 +135,7 @@ async def test_re_registering_picks_up_the_new_active_configuration(node_session
 
     first = (await node_session.execute(select(NodeConfig).where(NodeConfig.node_id == NODE_ID))).scalars().one()
     first.superseded_at = datetime.now(UTC)
-    node_session.add(NodeConfig(node_id=NODE_ID, version=2, **{**_GEOMETRY, "rx_lat": 52.5}))
+    node_session.add(NodeConfig(node_id=NODE_ID, version=2, **{**_CONFIG_DEFAULTS, "rx_lat": 52.5}))
     await node_session.flush()
 
     await register_with_pipeline(node_session, node)
