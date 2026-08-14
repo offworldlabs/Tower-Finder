@@ -12,6 +12,12 @@ down_revision = "0003"
 branch_labels = None
 depends_on = None
 
+# Widening only: code predating this revision still supplies a width on every
+# insert and still reads the column it always read. The downgrade below is the
+# part that can fail, and that is a separate question from whether the older
+# code can serve against this schema.
+rollback_safety = "additive"
+
 
 def upgrade() -> None:
     # batch_alter_table rather than a plain alter_column: SQLite has no ALTER
