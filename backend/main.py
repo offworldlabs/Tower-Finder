@@ -127,6 +127,16 @@ async def lifespan(app: FastAPI):
 
     await migrate_json_to_db()
 
+    # Load the v1 fleet into the in-process registries. All three start empty in
+    # a fresh process and only registration writes to them, so without this a
+    # deploy drops every node out of the pipeline and nothing puts it back: the
+    # node client follows the spec and does not re-register unprompted. Must
+    # precede the frame workers below, or the first frames after a restart
+    # arrive for a node the associator has never seen.
+    from services.node_pipeline import prime_pipeline_at_startup
+
+    await prime_pipeline_at_startup()
+
     # Restore persisted state before accepting connections
     restored = restore_snapshot()
 
