@@ -189,3 +189,235 @@ async def seeded_node(node_session):
     node_session.add(node)
     await node_session.flush()
     return node
+
+
+# ── v1 node API fixtures ─────────────────────────────────────────────────────
+#
+# Shared by the registration, config, detection and heartbeat suites, which are
+# written against these signatures in parallel, so a name or an arity here is a
+# contract rather than a local choice. tests/test_node_fixtures.py exercises
+# each one, so a drift fails there rather than across four suites at once.
+#
+# Everything below imports backend modules inside the function body, per the
+# module preamble: those environment variables have to be in place before the
+# first backend import happens.
+
+_NODE_ID = "ret1a2b3c4d"
+
+# The column values a seeded configuration carries, transcribed from
+# tests/test_node_pipeline.py so both agree on the geometry the pipeline
+# assertions read. beam_azimuth_deg is present and null: null is broadside,
+# and validate_config requires the key rather than defaulting it.
+_NODE_CONFIG_VALUES = {
+    "rx_lat": 51.42,
+    "rx_lon": -0.91,
+    "rx_alt_ft": 120.0,
+    "tx_lat": 51.37,
+    "tx_lon": -0.88,
+    "tx_alt_ft": 900.0,
+    "tx_callsign": "Crystal Palace",
+    "fc_hz": 570_000_000.0,
+    "fs_hz": 2_000_000.0,
+    "beam_width_deg": 41.0,
+    "beam_azimuth_deg": None,
+    "max_range_km": 50.0,
+    "cpi_s": 0.5,
+    "delay_tolerance_us": 6.67,
+    "doppler_tolerance_hz": 5.0,
+}
+
+# Enough of a PEM for lookup_device to carry through to auth_set_pubkey. The
+# fingerprint it derives is incidental here; tests/test_mender_lookup.py owns
+# pinning that against a real key.
+_MENDER_PUBKEY = "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n"
+
+
+def _mender_device(node_id: str, status: str, auth_sets: list) -> dict:
+    """One entry of the management API's device list.
+
+    Same shape as tests/test_mender_lookup.py's `_device`, which is where the
+    wire format is pinned.
+    """
+    return {"id": "b7e2", "identity_data": {"node_id": node_id}, "status": status, "auth_sets": auth_sets}
+
+
+def _serve_mender_devices(monkeypatch, devices: list) -> None:
+    """Answer every Mender request with `devices`.
+
+    A list rather than a single device because lookup_device fetches the whole
+    device list and filters client side on identity_data.node_id, which is also
+    why the fixtures below need the node_id they are meant to describe.
+    """
+    import httpx
+
+    from services import mender
+
+    async def _handler(_request: "httpx.Request") -> "httpx.Response":
+        return httpx.Response(200, json=devices)
+
+    monkeypatch.setattr(mender, "_transport", httpx.MockTransport(_handler))
+
+
+@pytest.fixture
+def node_client(node_session):
+    """A TestClient whose requests read and write the per-test node database.
+
+    Constructed bare rather than as `with TestClient(...)`. The context-manager
+    form runs the app lifespan, which starts the frame processor workers that
+    drain state.frame_queue; those would race any detection test asserting on
+    what a handler queued.
+
+    The get_async_session override is the point of the fixture: without it a
+    request would reach core.users' own session maker and the main database,
+    while the test seeds and asserts against node_session's migrated one.
+
+    One constraint that constrains the handlers too: a bare TestClient runs each
+    request on its own portal, thread and event loop, so node_session is driven
+    from a different loop than the test body. That holds on the pinned aiosqlite
+    and SQLAlchemy, and a test that awaits the same session from both sides is
+    resting on it rather than on anything guaranteed. Assert through a fresh
+    query after the request rather than on objects the handler left attached.
+    """
+    from fastapi.testclient import TestClient
+
+    import main
+    from core.users import get_async_session
+
+    async def _override_session():
+        yield node_session
+
+    saved = dict(main.app.dependency_overrides)
+    main.app.dependency_overrides[get_async_session] = _override_session
+    client = TestClient(main.app, raise_server_exceptions=False)
+    try:
+        yield client
+    finally:
+        client.close()
+        # Mutated in place rather than rebound: the app is a module-level
+        # singleton shared with every other suite, so what matters is that the
+        # dict it holds ends the test as it started.
+        main.app.dependency_overrides.clear()
+        main.app.dependency_overrides.update(saved)
+
+
+@pytest.fixture
+def accepted_in_mender(monkeypatch):
+    """accepted_in_mender(node_id): Mender knows the node and has accepted it."""
+
+    def _accept(node_id: str) -> None:
+        auth_set = {"id": "as-1", "status": "accepted", "pubkey": _MENDER_PUBKEY}
+        _serve_mender_devices(monkeypatch, [_mender_device(node_id, "accepted", [auth_set])])
+
+    return _accept
+
+
+@pytest.fixture
+def pending_in_mender(monkeypatch):
+    """pending_in_mender(node_id): the node has enrolled but nothing has accepted it.
+
+    Distinct from unknown_in_mender by design: the two are the same 403 on the
+    wire but different operator actions, and during bring-up most of the fleet
+    sits here.
+    """
+
+    def _pend(node_id: str) -> None:
+        _serve_mender_devices(monkeypatch, [_mender_device(node_id, "pending", [])])
+
+    return _pend
+
+
+@pytest.fixture
+def unknown_in_mender(monkeypatch):
+    """unknown_in_mender(node_id): Mender answers, and has never heard of the node.
+
+    A device with another identity rather than an empty list, so the fixture
+    also stands on the client-side identity filter rather than on there being
+    nothing to filter. The decoy identity is derived from the requested one so
+    that no caller can collide with it by choosing a particular node_id.
+    """
+
+    def _unknown(node_id: str) -> None:
+        decoy = "retffffffff" if node_id != "retffffffff" else "ret00000000"
+        _serve_mender_devices(monkeypatch, [_mender_device(decoy, "accepted", [])])
+
+    return _unknown
+
+
+@pytest.fixture
+def mender_down(monkeypatch):
+    """mender_down(): Mender cannot be asked at all, so lookup_device raises.
+
+    No node_id argument, unlike the three above: nothing gets as far as the
+    identity filter.
+    """
+
+    def _down() -> None:
+        import httpx
+
+        from services import mender
+
+        async def _handler(_request: "httpx.Request") -> "httpx.Response":
+            raise httpx.ConnectTimeout("no route")
+
+        monkeypatch.setattr(mender, "_transport", httpx.MockTransport(_handler))
+
+    return _down
+
+
+@pytest.fixture
+def alerts(monkeypatch):
+    """Every send_alert call, as (alert_type, message, meta) tuples in order.
+
+    Only a handler that resolves send_alert at call time is captured, which
+    means a function-local `from services.alerting import send_alert` the way
+    services/node_pipeline.py does it. A module-level import in a handler binds
+    the real function before this patch lands, so the call would fire for real
+    and the list would stay silently empty.
+    """
+    from services import alerting
+
+    captured: list[tuple[str, str, dict | None]] = []
+
+    def _capture(alert_type: str, message: str, meta: dict | None = None) -> None:
+        captured.append((alert_type, message, meta))
+
+    monkeypatch.setattr(alerting, "send_alert", _capture)
+    return captured
+
+
+@pytest.fixture
+async def registered_node(node_session):
+    """(token, node_id) for one active node at config version 1, seeded directly.
+
+    Deliberately does not go through POST /v1/nodes/register. The config,
+    detection and heartbeat suites are written before the registration handler
+    exists, and a bug in registration should fail the registration tests rather
+    than all four suites at once.
+
+    The configuration is passed through services.node_config.validate_config so
+    the fixture cannot drift into a config the real validator would reject.
+    register_with_pipeline puts the node into state.connected_nodes, without
+    which the heartbeat handler raises KeyError; see prime_pipeline's docstring
+    for why nothing else would put it back.
+
+    Committed rather than flushed, unlike seeded_node above: a handler that
+    rolls back its own transaction would otherwise take the seed with it.
+    """
+    from core.nodes import Node, NodeConfig
+    from services import node_auth, node_config, node_pipeline
+
+    config = node_config.validate_config(dict(_NODE_CONFIG_VALUES))
+    node = Node(
+        node_id=_NODE_ID,
+        node_ref=node_auth.mint_node_ref(),
+        board_model="raspberrypi5-4gb",
+        status="active",
+        active_config_version=1,
+    )
+    node_session.add(node)
+    node_session.add(NodeConfig(node_id=_NODE_ID, version=1, **config))
+    await node_session.flush()
+    token = await node_auth.mint_token(node_session, _NODE_ID)
+    await node_pipeline.register_with_pipeline(node_session, node)
+    await node_session.commit()
+    return token, _NODE_ID
