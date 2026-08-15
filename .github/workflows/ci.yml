@@ -90,7 +90,7 @@ jobs:
       - name: Stub backend/.env for compose resolution
         run: touch backend/.env
       # Staging only protects production while the two stay the same everywhere
-      # that isn't hostnames or fleet size. This fails the build on any other
+      # that isn't hostnames or the simulator. This fails the build on any other
       # difference — in the compose merge or in the rendered nginx config —
       # naming the exact key so it can't be added by accident.
       - name: Check compose + nginx parity
@@ -496,7 +496,9 @@ jobs:
             docker builder prune -f --keep-storage 10GB
             # Deploy the app FIRST, on its own. Building only `tower-finder`
             # here means a broken Dockerfile.fleet can't abort the production
-            # app deploy (the fleet is a separate step below, after health).
+            # app deploy. Production runs no fleet simulator (see the `sim`
+            # profile in docker-compose.prod.yml), so `tower-finder` is the
+            # whole of the production deploy; staging still builds both.
             docker compose up -d --build tower-finder
 
             # Wait for backend to become healthy (up to 90s — matches staging
@@ -515,64 +517,26 @@ jobs:
               fi
             done
 
-            # Now bring up the fleet simulator (Compose `fleet` service). This
-            # is a SEPARATE step so a fleet build/start failure surfaces loudly
-            # here — with the real error — but only AFTER the app above is
-            # already deployed and healthy, so it can't take the app down with
-            # it. --no-deps: the app is up already; don't let --build touch it.
-            # The fleet has restart: unless-stopped, so unlike the old transient
-            # systemd-run unit it also survives reboots. (RADAR_API_KEY reaches
-            # it via backend/.env, the same file the app loads.)
-            docker compose up -d --build --no-deps fleet
-
   production-smoke-tests:
     name: Production smoke tests
     runs-on: ubuntu-latest
     needs: [deploy-production]
     steps:
       - uses: actions/checkout@v4
-      - name: Wait for fleet to stabilize
+      - name: Let production settle
         run: |
-          # Require the active-node count to be ≥ MIN_NODES AND non-decreasing
-          # for STABLE_TARGET consecutive checks before declaring the deploy
-          # healthy. The previous version broke out on the first hit, which
-          # let "flapping" deploys (nodes reconnect, then drop again) pass
-          # smoke tests with a half-broken fleet.
-          MIN_NODES=10
-          STABLE_TARGET=3
-          echo "Waiting 60s for fleet nodes to reconnect..."
+          # This step used to hold the deploy until the simulated fleet had
+          # reconnected at ≥10 active nodes. Production no longer runs one, and
+          # the only nodes left are real boards, so that assertion would now
+          # gate every production deploy — and, via the rollback step below, an
+          # automatic revert of a good build — on third-party hardware being
+          # online. Node health is a fleet-monitoring concern, not a deploy gate.
+          #
+          # The wait itself is kept: the app was restarted moments ago and the
+          # smoke tests should not race its warmup. The deploy job has already
+          # confirmed /api/health.
+          echo "Waiting 60s for the app to settle before smoke tests..."
           sleep 60
-          stable=0
-          last=0
-          # Through the edge, not at the droplet's address: the origin now
-          # requires Cloudflare's client certificate (ssl_verify_client in
-          # deploy/nginx/snippets/tls.conf) and the DOCKER-USER boundary drops
-          # anything on 443 that is not from a Cloudflare range, so a
-          # direct-to-IP request can only ever time out or 400 — and this loop
-          # ends in `exit 1`, so it would fail every production deploy. `-k`
-          # does not help: that flag governs verification of the SERVER's
-          # certificate, not presentation of a client one. api.retina.fm is the
-          # same host this job's own smoke tests hit for this endpoint (BASE_URL
-          # below).
-          for i in $(seq 1 18); do
-            COUNT=$(curl -s https://api.retina.fm/api/test/dashboard \
-              | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['active'])" 2>/dev/null) || COUNT=0
-            if [ "${COUNT:-0}" -ge "$MIN_NODES" ] && [ "${COUNT:-0}" -ge "$last" ]; then
-              stable=$((stable + 1))
-              echo "Attempt $i/18: ${COUNT} nodes — stable ${stable}/${STABLE_TARGET}"
-              if [ "$stable" -ge "$STABLE_TARGET" ]; then
-                echo "Fleet stable at ${COUNT} nodes (≥${STABLE_TARGET} consecutive checks)"
-                exit 0
-              fi
-            else
-              echo "Attempt $i/18: ${COUNT} nodes (was ${last}) — resetting stability counter"
-              stable=0
-            fi
-            last="${COUNT:-0}"
-            sleep 10
-          done
-          echo "::error::Fleet did not stabilize at ≥${MIN_NODES} nodes after 60s + 18×10s"
-          exit 1
       - name: Run production smoke tests
         id: smoke
         env:
@@ -584,7 +548,8 @@ jobs:
           check_status() {
             local name="$1" url="$2" expected="$3"
             printf "  %-40s " "$name"
-            # Retry once on connection error (transient load spikes during fleet reconnect)
+            # Retry once on connection error (transient load spikes just after
+            # the app restarts)
             CODE=$($CURL -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) \
               || CODE=$($CURL -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) \
               || { echo "FAIL (connection)"; FAIL=$((FAIL+1)); return; }
@@ -615,13 +580,17 @@ jobs:
           AIRCRAFT=$(curl -sk "${BASE_URL}/api/test/dashboard" \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['pipeline']['aircraft_on_map'])" 2>/dev/null) || AIRCRAFT=0
           printf "  %-40s " "Aircraft on map > 0"
-          if [ "${AIRCRAFT:-0}" -gt 0 ]; then echo "OK ($AIRCRAFT)"; PASS=$((PASS+1)); else echo "WARN ($AIRCRAFT — fleet may still be connecting)"; fi
+          if [ "${AIRCRAFT:-0}" -gt 0 ]; then echo "OK ($AIRCRAFT)"; PASS=$((PASS+1)); else echo "WARN ($AIRCRAFT — real nodes may be quiet or still connecting)"; fi
 
-          # Guard: active node count must not exceed 220 (multiple simultaneous fleets = 400+)
+          # Guard against a runaway population. Production runs no simulator now,
+          # so anything near this ceiling means either a `--profile sim` fleet was
+          # left running or the analytics manager is not evicting (ClickUp
+          # 86caxcbc3). Kept at 220 rather than retightened to the real headcount
+          # so a node cutover cannot fail a deploy.
           NODES=$(curl -sk "${BASE_URL}/api/test/dashboard" \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['active'])" 2>/dev/null) || NODES=0
-          printf "  %-40s " "Active nodes ≤ 220 (single fleet)"
-          if [ "${NODES:-0}" -le 220 ]; then echo "OK ($NODES)"; PASS=$((PASS+1)); else echo "FAIL ($NODES > 220 — multiple fleet simulators may be running)"; FAIL=$((FAIL+1)); fi
+          printf "  %-40s " "Active nodes ≤ 220"
+          if [ "${NODES:-0}" -le 220 ]; then echo "OK ($NODES)"; PASS=$((PASS+1)); else echo "FAIL ($NODES > 220 — a simulator fleet may be running, or nodes are not being evicted)"; FAIL=$((FAIL+1)); fi
 
           echo ""
           echo "Results: $PASS passed, $FAIL failed"
@@ -629,10 +598,9 @@ jobs:
       # Auto-rollback on smoke failure, mirroring the prod E2E job. A failed
       # smoke test means a bad build is live serving prod; revert to
       # last-known-good rather than leaving it up for a human to catch. The
-      # stabilise loop above (3 consecutive stable checks) guards against a
-      # transient fleet-reconnect flap tripping this. The condition is scoped to
-      # the smoke step's own outcome, so a stabilise-loop timeout fails the job
-      # for a human to inspect without triggering an automatic rollback.
+      # condition is scoped to the smoke step's own outcome, so a failure in the
+      # settle step above fails the job for a human to inspect without
+      # triggering an automatic rollback.
       - name: Rollback production on smoke-test failure
         if: failure() && steps.smoke.outcome == 'failure'
         uses: appleboy/ssh-action@v1
