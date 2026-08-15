@@ -1,17 +1,33 @@
 /**
- * Live Aircraft Map (staging-testmap / testmap domain) E2E tests.
+ * Live Aircraft Map (testmap domain) E2E tests.
  *
- * This suite visits staging-testmap.retina.fm (synthetic fleet, not filtered)
- * and verifies the map page loads, WebSocket connects, aircraft appear,
- * and key interactive elements work correctly.
+ * This suite visits whichever host `hosts.testmap` names — in CI that is
+ * staging-map.retina.fm, not the public testmap.retina.fm, so the suite does not
+ * depend on where the demo is currently served from. Both are the same surface:
+ * the synthetic fleet, unfiltered. It verifies the map page loads, WebSocket
+ * connects, aircraft appear, and key interactive elements work correctly.
  *
  * NOTE: These tests require the synthetic fleet to be running on the target
  * environment. They use generous timeouts to account for warm-up time.
+ *
+ * Production has no synthetic map surface — it runs no simulator, and
+ * testmap.retina.fm is served by staging — so the whole file skips there rather
+ * than reaching across environments. See the note in playwright.config.ts: a
+ * failed production E2E auto-rolls-back production, so a suite that silently
+ * tested staging could revert a good production build.
  */
 import { test, expect, Page } from "@playwright/test";
 import { hosts } from "../playwright.config";
 
-const BASE = hosts.testmap;
+const TESTMAP = hosts.testmap;
+
+test.skip(
+  TESTMAP === null,
+  "no synthetic map surface in this environment (production runs no fleet)",
+);
+
+// Safe past the skip above, which aborts every test in the file when null.
+const BASE = TESTMAP as string;
 
 // Helper: wait for the connection badge to show "LIVE"
 async function waitForLive(page: Page, timeoutMs = 15_000) {
