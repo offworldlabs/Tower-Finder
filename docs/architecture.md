@@ -8,7 +8,8 @@ for the detection internals see [`pipeline.md`](pipeline.md).
 A single FastAPI app (`backend/`) serves every user-facing surface. They differ
 only by subdomain, resolved client-side in `frontend/src/utils/domains.ts`:
 
-- **testmap** — live map fed by the synthetic simulation fleet (dev/demo).
+- **testmap** — live map fed by the synthetic simulation fleet (dev/demo). Only
+  staging and local stacks run a fleet, so the production host is empty.
 - **map** (`map.retina.fm`) — production live map, real radar nodes only.
 - **Tower Finder** — `/api/towers` illuminator search (the original feature).
 - **dashboard** (`dashboard/`, separate SPA) — admin: node ownership, claim

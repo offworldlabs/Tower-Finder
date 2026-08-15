@@ -23,13 +23,14 @@ once: `cp deploy/env.test.example .env`.
 | **Deployed by** | CI, on push to `main` | CI, on push to `main` | `just deploy-test` (rsync from a working tree) |
 | **Hostnames** | `*.retina.fm` | `staging-*.retina.fm` | `test-*.retina.fm` |
 | **RAM / swap** | 7941 MB / 4 GB | 3915 MB / none | 3915 MB / 2 GB |
-| **Fleet** | 25 nodes @ 2.0s (12.5 fps) | 50 @ 1.0s (50 fps) | 50 @ 1.0s (50 fps) |
+| **Fleet** | none (see below) | 50 @ 1.0s (50 fps) | 50 @ 1.0s (50 fps) |
 | **TCP 3012** | published (real nodes) | closed | closed |
 
 prod is the reference environment: `deploy/check-env-parity.py` compares the other
 two against it in CI and fails on any difference not listed in its
-`ALLOWED_DIVERGENCE`. staging and test differ from prod deliberately on fleet
-scale, hostnames, container names and resource limits, and on nothing else.
+`ALLOWED_DIVERGENCE`. staging and test differ from prod deliberately on the
+simulator (prod runs none at all), hostnames, container names and resource
+limits, and on nothing else.
 
 staging and test run the fleet 4x faster than production, on **half the cores** —
 production has 4, they have 2 — so per core it is 8x. The frame path copes (41 of
@@ -510,13 +511,23 @@ df -h /opt/tower-finder/backend/coverage_data
 
 ### Start / bounce the fleet simulator
 The fleet is a Compose service (`fleet` in `/opt/tower-finder/docker-compose.yml`,
-`restart: unless-stopped`). It starts automatically on deploy (CI `docker compose
-up -d --build`) and on reboot (docker is enabled) — you normally do NOT start it by
-hand. To manually bounce just the fleet (it loses its TCP connections and
-regenerates its nodes — 25 on production — taking up to a minute):
+`restart: unless-stopped`). On staging and test it starts automatically on deploy
+(CI `docker compose up -d --build`) and on reboot (docker is enabled) — you
+normally do NOT start it by hand. To manually bounce just the fleet (it loses its
+TCP connections and regenerates its nodes, taking up to a minute):
 ```bash
 cd /opt/tower-finder && docker compose up -d --build --force-recreate --no-deps fleet
 ```
+
+⚠️ **Not on production.** Production runs no simulator: `docker-compose.prod.yml`
+puts the service behind a `sim` profile that nothing enables, because 25 synthetic
+nodes cost the solver about as much as the real fleet does and the box was already
+at 107% CPU reporting `solver_latency_high` at rest. Naming `fleet` on the command
+line *auto-enables its profile*, so the bounce command above is not inert on the
+prod droplet — it would silently put all 25 back. Do not run it there unless you
+intend exactly that, and if you do, undo it with `docker compose stop fleet`
+followed by `docker compose restart tower-finder` (stopping the container does not
+deregister the geometry it already registered).
 `--no-deps` is the important flag: `fleet` declares `depends_on: tower-finder`, so
 without it Compose would also rebuild and recreate the running app, turning a fleet
 bounce into a full redeploy and an outage. The host's `./.env` sets `COMPOSE_FILE`,

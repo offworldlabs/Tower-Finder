@@ -165,8 +165,12 @@ else
         fi
         docker compose down --timeout 30
         docker tag "${IMAGE_NAME}:rollback" "${IMAGE_NAME}:latest"
-        # Symmetric fleet rollback: retag the saved fleet image too, so the single
-        # `up -d` below brings the fleet back on its good build alongside the app.
+        # Symmetric fleet rollback: retag the saved fleet image too, so on the
+        # environments that run a simulator the single `up -d` below brings the
+        # fleet back on its good build alongside the app. On production the
+        # service sits behind an unenabled `sim` profile, so nothing starts and
+        # the retag is a harmless no-op — as is the "no rollback image" branch,
+        # since pre-deploy.sh finds no fleet image to save there either.
         # Guarded because a box predating this change (or one where pre-deploy.sh
         # found no running fleet) never captured tower-finder-fleet:rollback — in
         # that case roll the app back cleanly and leave the fleet image as-is.

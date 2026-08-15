@@ -90,8 +90,15 @@ ALLOWED_DIVERGENCE = (
     # than silently allowed: if staging ever needs node ingest, it should be
     # opened deliberately and this entry revisited.
     r"^services\.tower-finder\.ports(\..*)?$",
-    # Simulation scale — the one thing staging is *meant* to differ on.
-    r"^services\.fleet\.environment\.FLEET_[A-Z_]+$",
+    # The whole fleet service, not just its FLEET_* scale knobs. Production runs
+    # no simulator at all (docker-compose.prod.yml puts it behind an unenabled
+    # `sim` profile), so it drops out of the merged prod config entirely and
+    # every fleet key reads as absent here. Since production is the REFERENCE,
+    # that also means fleet settings are no longer compared anywhere — staging
+    # and test can drift from each other on them unnoticed. Accepted: the
+    # simulator feeds nothing anyone depends on. If production ever runs a fleet
+    # again, narrow this back to `\.environment\.FLEET_[A-Z_]+$`.
+    r"^services\.fleet(\..*)?$",
     # Production alone joins the external edge network that fronts
     # tower-finder-service; staging has no such stack.
     r"^services\.tower-finder\.networks(\..*)?$",
