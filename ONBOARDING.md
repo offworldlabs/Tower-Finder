@@ -18,7 +18,7 @@ One FastAPI backend serves several React front-ends, distinguished by subdomain:
 
 | Surface | What it is |
 | --- | --- |
-| **testmap** | Live aircraft map fed by the simulation fleet (synthetic nodes) — the main dev/demo surface. Empty on production, which no longer runs a fleet; use staging or a local stack. |
+| **testmap** | Live aircraft map fed by the simulation fleet (synthetic nodes) — the main dev/demo surface. `testmap.retina.fm` is served by the **staging** droplet, the only environment still running a fleet. |
 | **map** | Production live map showing only real radar nodes. |
 | **dashboard** | Admin app (auth required): node ownership, claim codes, MLAT verification, metrics. |
 | **Tower Finder** | The original `/api/towers` illuminator search. |
@@ -102,9 +102,11 @@ one ellipse) for working on map rendering without the pipeline.
 
 ### See real data without running the pipeline
 
-The simulation fleet (`retina-simulation`) feeds testmap on staging and locally;
-production runs no fleet, so `testmap.retina.fm` is empty. To drive a local
-backend with synthetic frames, see [`docs/simulation.md`](docs/simulation.md).
+The simulation fleet (`retina-simulation`) feeds testmap. Production runs no
+fleet, so `testmap.retina.fm` is served by the staging droplet;
+`staging-map.retina.fm` shows the same data under a staging-prefixed name. To
+drive a local backend with synthetic frames, see
+[`docs/simulation.md`](docs/simulation.md).
 
 ## Running tests
 

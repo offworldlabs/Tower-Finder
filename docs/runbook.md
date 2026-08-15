@@ -21,7 +21,7 @@ once: `cp deploy/env.test.example .env`.
 |---|---|---|---|
 | **Overlay** | `docker-compose.prod.yml` | `docker-compose.staging.yml` | `docker-compose.test.yml` |
 | **Deployed by** | CI, on push to `main` | CI, on push to `main` | `just deploy-test` (rsync from a working tree) |
-| **Hostnames** | `*.retina.fm` | `staging-*.retina.fm` | `test-*.retina.fm` |
+| **Hostnames** | `*.retina.fm`, except `testmap` | `staging-*.retina.fm`, plus `testmap.retina.fm` | `test-*.retina.fm` |
 | **RAM / swap** | 7941 MB / 4 GB | 3915 MB / none | 3915 MB / 2 GB |
 | **Fleet** | none (see below) | 50 @ 1.0s (50 fps) | 50 @ 1.0s (50 fps) |
 | **TCP 3012** | published (real nodes) | closed | closed |
@@ -535,6 +535,13 @@ so the bare `docker compose` above resolves to base + the production overlay.
 
 Params (nodes/interval/mode/aircraft) live in the `fleet` service block in
 `docker-compose.yml` — edit them there, not on the command line.
+
+**Staging's fleet is public.** `testmap.retina.fm` is served by the staging
+droplet and fed by this fleet, so bouncing it, or a staging deploy, blanks the
+demo people are shown for a minute or so. `staging-map.retina.fm` is the same
+surface under a staging-prefixed name. Note the tuning is deliberate: staging
+runs 50 nodes @ 1.0s on 2 cores, which saturates the solver (45–52 s per solve),
+so the public map is denser but laggier than production's used to be.
 
 ⚠️ Do NOT start the fleet as a host process (`systemd-run`, a systemd unit, or a
 bare `python3 -m retina_simulation.orchestrator`) while the Compose `fleet` service
