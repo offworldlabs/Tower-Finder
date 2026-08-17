@@ -13,7 +13,7 @@ resend is the one POST /v1/nodes/register would return.
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -54,7 +54,9 @@ def _error(status_code: int, error: str, detail: str | None = None) -> JSONRespo
     responses={400: {"model": ErrorBody}, 401: {"model": ErrorBody}},
 )
 async def put_config(
-    request: Request, session: AsyncSession = Depends(get_async_session)
+    request: Request,
+    node_id: str = Depends(bearer_node),
+    session: AsyncSession = Depends(get_async_session),
 ) -> ConfigResponse | JSONResponse:
     """Store the configuration if it differs from the active one, and return the active version.
 
@@ -62,18 +64,12 @@ async def put_config(
     resolved before it is touched. A body declared on the signature is parsed and
     validated by FastAPI ahead of the handler, which would put a body-shaped
     refusal in front of identity resolution and make the difference between it and
-    a 401 an oracle for which tokens are live. It is also why the payload stays an
-    untyped dict here, as `RegisterRequest.config` does: `services/node_config.py`
-    owns configuration validation, and it is called once identity has resolved.
+    a 401 an oracle for which tokens are live. Resolving the bearer as a dependency
+    keeps that ordering — dependencies run first, and nothing here declares a body
+    for FastAPI to parse. It is also why the payload stays an untyped dict, as
+    `RegisterRequest.config` does: `services/node_config.py` owns configuration
+    validation, and it is called once identity has resolved.
     """
-    try:
-        node_id = await bearer_node(request, session)
-    except HTTPException as exc:
-        # bearer_node raises rather than returns, and FastAPI would render that as
-        # the framework's `{"detail": ...}`. The node client parses the contract's
-        # `Error`, so the shape is restored here.
-        return _error(exc.status_code, "unauthorized")
-
     try:
         payload = await request.json()
     except ValueError:

@@ -230,7 +230,7 @@ async def test_a_private_choice_is_recorded_as_private(node_client, accepted_in_
 
 
 def test_agreements_missing_publication_is_rejected(node_client, accepted_in_mender):
-    """A 422 from the model, not a server-side default.
+    """A refusal from the model, not a server-side default.
 
     The ADR's "a registration with no recorded choice resolves to public" is
     about a node with no stored choice, not about a body that omits the field,
@@ -239,7 +239,10 @@ def test_agreements_missing_publication_is_rejected(node_client, accepted_in_men
     accepted_in_mender(NODE_ID)
     agreements = {k: v for k, v in AGREEMENTS.items() if k != "publication"}
 
-    assert _register(node_client, agreements=agreements).status_code == 422
+    response = _register(node_client, agreements=agreements)
+
+    assert response.status_code == 400
+    assert response.json() == {"error": "invalid_body", "detail": "agreements.publication"}
 
 
 async def test_the_node_reaches_the_pipeline(node_client, accepted_in_mender, node_session):
@@ -414,8 +417,8 @@ def test_a_malformed_node_id_never_reaches_mender(node_client, mender_down, aler
     body that fails it must be refused before the lookup rather than by it."""
     mender_down()
 
-    assert node_client.post("/v1/nodes/register", json=_body() | {"node_id": ""}).status_code == 422
-    assert node_client.post("/v1/nodes/register", json=_body() | {"node_id": "retZZZZZZZZ"}).status_code == 422
+    assert node_client.post("/v1/nodes/register", json=_body() | {"node_id": ""}).status_code == 400
+    assert node_client.post("/v1/nodes/register", json=_body() | {"node_id": "retZZZZZZZZ"}).status_code == 400
     assert alerts == []
 
 

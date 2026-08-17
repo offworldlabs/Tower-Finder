@@ -43,7 +43,7 @@ from routes.analytics import router as analytics_router
 from routes.archive import router as archive_router
 from routes.auth import router as auth_router
 from routes.custody import router as custody_router
-from routes.nodes import NODE_BODY_LIMITS
+from routes.nodes import NODE_BODY_LIMITS, install_error_handlers
 from routes.nodes import router as nodes_router
 from routes.output import router as output_router
 from routes.radar import router as radar_router
@@ -298,6 +298,11 @@ for router in (
     nodes_router,
 ):
     app.include_router(router)
+
+# Scoped to /v1/nodes, and delegating to FastAPI's own handlers everywhere else:
+# the node API answers in its own error taxonomy, and the rest of this API's
+# callers parse the framework's shape. See routes/nodes.py.
+install_error_handlers(app)
 
 # Simulation ingest is a WRITE path (state.adsb_aircraft /
 # ground_truth_trails) that only the synthetic fleet uses, so a deployment that

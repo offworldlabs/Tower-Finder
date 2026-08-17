@@ -218,7 +218,10 @@ async def test_parallel_arrays_of_different_lengths_are_rejected(registered_node
 
     response = node_client.post(DETECTION, headers=_auth(token), json=_frame(**mismatch))
 
-    assert response.status_code == 422
+    # 400 in the node error taxonomy, not the framework's 422: the contract
+    # declares neither that status nor its body. See test_node_error_taxonomy.py.
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_body"
     assert _queued() == []
 
 
@@ -252,13 +255,14 @@ async def test_a_superseded_config_version_is_accepted_and_reported_stale(regist
 
 
 async def test_the_frame_carries_no_node_identifier(registered_node, node_client):
-    """Attribution comes from the token, so a body that names a node is a 422
-    rather than a question about which of the two to believe."""
+    """Attribution comes from the token, so a body that names a node is refused
+    rather than raising a question about which of the two to believe."""
     token, _ = registered_node
 
     response = node_client.post(DETECTION, headers=_auth(token), json=_frame(node_ref="nde000000000000"))
 
-    assert response.status_code == 422
+    assert response.status_code == 400
+    assert response.json() == {"error": "invalid_body", "detail": "node_ref"}
 
 
 async def test_the_detection_path_writes_nothing_to_the_database(registered_node, node_client, node_session):
