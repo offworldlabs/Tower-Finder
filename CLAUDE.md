@@ -14,7 +14,8 @@ FastAPI backend and React front-ends for the RETINA passive-radar network.
 - **Verify with the gate, not by hand.** `backend/.venv/bin/pre-commit run --all-files`
   before pushing, and `git add` new files first so the hooks can see them. See
   ONBOARDING, "Before you push", for what it runs and where it lies to you.
-- **Check what CI actually ran.** A PR that does not target `main` runs no jobs.
+- **Every PR runs the full matrix**, whatever it is based on. Branches opened
+  before #187 predate that and ran nothing unless they targeted `main`.
 - **This repo is public.** Refer to hosts by SSH alias, never by address, as
   `justfile` already does. No credentials, no droplet addresses, no personal
   accounts in anything committed here.

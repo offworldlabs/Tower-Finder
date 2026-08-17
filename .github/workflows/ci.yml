@@ -3,12 +3,43 @@ name: CI
 on:
   push:
     branches: [main]
+  # No base-branch filter. `branches:` on pull_request matches the PR's BASE, so
+  # a PR stacked on a feature branch ran none of the jobs below while still
+  # showing a green claude-review tick, which reads as a pass. What wants testing
+  # is the head; where it is aimed is irrelevant.
+  # `edited` is not in the default set (`opened`, `synchronize`, `reopened`) and
+  # is the action a base-branch change arrives as. Without it, a PR retargeted
+  # when its parent merges keeps the tick it earned against the old base and is
+  # never validated against the new one, which is the second half of the trap
+  # the base filter opened. The jobs below discard the title and body edits that
+  # come with it.
   pull_request:
-    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+  # So a branch can be run on demand, which was otherwise impossible.
+  workflow_dispatch:
+
+# Testing every PR regardless of base would otherwise multiply CI minutes: this
+# cancels superseded runs on the same PR ref. Push-to-main runs (and manual
+# workflow_dispatch runs) get a group unique to their own run_id instead, since
+# the deploy jobs below hang off them and a half-run deploy is worse than a slow
+# one: they are never cancelled, and (unlike a group shared with other runs on
+# the same ref) they never queue behind an earlier run either. The deploy jobs'
+# own job-level concurrency groups are what serialise deploys.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('ci-{0}-pull_request-{1}', github.workflow, github.ref) || format('ci-{0}-{1}-{2}', github.workflow, github.event_name, github.run_id) }}
+  # Same condition the jobs carry, and for a sharper reason. Cancellation happens
+  # when the new run is created, before any job-level `if:` is evaluated, so a
+  # title edit would otherwise cancel a real run mid-flight and then skip every
+  # job in the run that replaced it, leaving the PR with no signal at all. A
+  # no-op edit queues instead, and skips quickly once it starts.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base != null) }}
 
 jobs:
   backend-tests:
     runs-on: ubuntu-latest
+    # `edited` covers title and body edits as well as the base change we want,
+    # and `changes.base` is populated only for the latter.
+    if: github.event.action != 'edited' || github.event.changes.base
     defaults:
       run:
         working-directory: backend
@@ -33,6 +64,9 @@ jobs:
 
   frontend-build:
     runs-on: ubuntu-latest
+    # `edited` covers title and body edits as well as the base change we want,
+    # and `changes.base` is populated only for the latter.
+    if: github.event.action != 'edited' || github.event.changes.base
     defaults:
       run:
         working-directory: frontend
@@ -51,6 +85,9 @@ jobs:
 
   dashboard-build:
     runs-on: ubuntu-latest
+    # `edited` covers title and body edits as well as the base change we want,
+    # and `changes.base` is populated only for the latter.
+    if: github.event.action != 'edited' || github.event.changes.base
     defaults:
       run:
         working-directory: dashboard
@@ -69,6 +106,9 @@ jobs:
 
   docker-build:
     runs-on: ubuntu-latest
+    # `edited` covers title and body edits as well as the base change we want,
+    # and `changes.base` is populated only for the latter.
+    if: github.event.action != 'edited' || github.event.changes.base
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,6 +118,9 @@ jobs:
   env-parity:
     name: Staging/production parity
     runs-on: ubuntu-latest
+    # `edited` covers title and body edits as well as the base change we want,
+    # and `changes.base` is populated only for the latter.
+    if: github.event.action != 'edited' || github.event.changes.base
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
