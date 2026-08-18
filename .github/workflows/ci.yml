@@ -159,7 +159,7 @@ jobs:
   e2e-staging:
     name: Playwright E2E (staging)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     needs: [staging-smoke-tests]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     defaults:
@@ -173,8 +173,9 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci --legacy-peer-deps
+      # See the production job below for why this is 15 and not 5.
       - name: Install Playwright browsers
-        timeout-minutes: 5
+        timeout-minutes: 15
         run: npx playwright install --with-deps chromium
       - name: Run E2E tests (staging)
         timeout-minutes: 15
@@ -186,7 +187,7 @@ jobs:
   e2e-prod:
     name: Playwright E2E (production)
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     needs: [production-smoke-tests]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     defaults:
@@ -200,11 +201,18 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci --legacy-peer-deps
-      # Bounded so a CDN stall fails the step in minutes instead of holding a
-      # runner for the job's full cap. This one deliberately gets no rollback:
-      # it fails before the tests run, so `steps.e2e.outcome` stays `skipped`.
+      # Bounded so a stall fails the step in minutes instead of holding a runner
+      # for the job's full cap. This one deliberately gets no rollback: it fails
+      # before the tests run, so `steps.e2e.outcome` stays `skipped`.
+      #
+      # 15 rather than something nearer the ~60s a healthy run takes, because
+      # `--with-deps` does an apt update and pulls the browser's shared-library
+      # dependencies before a single byte of Chromium is fetched, and that phase
+      # is the slow and variable one. On 2026-08-18 it ran 4m50s against a
+      # normal few seconds, and a 5-minute cap killed the step moments after the
+      # browsers had in fact finished downloading.
       - name: Install Playwright browsers
-        timeout-minutes: 5
+        timeout-minutes: 15
         run: npx playwright install --with-deps chromium
       # Bounded at the step rather than relying on the job cap: a step timeout
       # marks the step failed, which still trips the rollback below, whereas a
