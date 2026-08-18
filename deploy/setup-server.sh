@@ -122,7 +122,7 @@ systemctl enable --now docker
 echo ""
 echo "→ Deploying Tower Finder..."
 
-APP_DIR="/opt/tower-finder"
+APP_DIR="${APP_DIR:-/opt/tower-finder}"
 
 if [ -d "$APP_DIR/.git" ]; then
     echo "  Repo exists, pulling latest..."
@@ -152,7 +152,12 @@ fi
 echo ""
 echo "→ Applying the Cloudflare origin boundary (DOCKER-USER)..."
 chmod +x "${APP_DIR}/deploy/docker-user-firewall.sh"
-cp "${APP_DIR}/deploy/retina-firewall.service" /etc/systemd/system/retina-firewall.service
+# Rendered, not copied: the unit's ExecStart has to carry the real deploy
+# directory, and a literal path in the repo would silently keep pointing at the
+# old location after the directory moves. The boundary failing is quiet, so it
+# must not depend on someone remembering to edit the unit.
+sed "s|@APP_DIR@|${APP_DIR}|g" "${APP_DIR}/deploy/retina-firewall.service" \
+    > /etc/systemd/system/retina-firewall.service
 systemctl daemon-reload
 systemctl enable retina-firewall.service
 # Fail-closed but not silently: under `set -euo pipefail` a bare `systemctl

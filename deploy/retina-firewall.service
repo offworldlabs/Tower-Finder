@@ -10,7 +10,7 @@ PartOf=docker.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/opt/tower-finder/deploy/docker-user-firewall.sh
+ExecStart=@APP_DIR@/deploy/docker-user-firewall.sh
 # No Restart=. With RemainAfterExit=yes the unit is "active" the moment the
 # script succeeds and is never re-run, so a restart policy could only ever act
 # on the failure path — and every way this script fails is a refusal to install
