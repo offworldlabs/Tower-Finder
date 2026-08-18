@@ -1,13 +1,18 @@
 """Request and response models for the v1 node API.
 
-The wire contract is `nodes_api_v1.yml` at the workspace root and it is frozen:
-the node client and the conformance harness are independent implementations of
-the same file, so a bound that looks wrong is raised there rather than adjusted
-here. Every bound below is transcribed from it.
+These models are the wire contract rather than a transcription of one. It used
+to be the other way round: the contract was a hand-written `nodes_api_v1.yml`
+outside the repo and every bound here was copied from it. That file is retired,
+and `contracts/nodes-v1.openapi.yaml` is generated from what is below, so a
+bound changed here changes the published contract in the same commit.
 
-Request models forbid unknown keys, because the spec sets
-`additionalProperties: false` on all of them. Response models do not, since this
-end emits them.
+Which raises the stakes rather than lowering them. The node client and the
+conformance harness are independent implementations built against a pinned
+version, so a bound is a promise to them: tightening one is a breaking change
+and wants `NODE_API_VERSION` raised, not a quiet edit.
+
+Request models forbid unknown keys, so the published schemas carry
+`additionalProperties: false`. Response models do not, since this end emits them.
 """
 
 from datetime import UTC, datetime
@@ -22,6 +27,7 @@ from pydantic import (
     GetJsonSchemaHandler,
     PlainSerializer,
     SerializerFunctionWrapHandler,
+    WithJsonSchema,
     model_serializer,
     model_validator,
 )
@@ -64,11 +70,31 @@ Count = Annotated[int, BeforeValidator(_reject_non_number)]
 # silently emit a `server_time` an hour wrong under BST instead of raising. This is
 # the one field a node uses to detect clock skew, so a silent shift is the worst
 # failure mode available.
-ServerTime = Annotated[AwareDatetime, PlainSerializer(_rfc3339_z, return_type=str)]
+#
+# `WithJsonSchema` because the serialiser above replaces the serialization schema
+# with a plain string, and serialization is the mode FastAPI documents responses
+# in: without it the published contract types this field as a bare string and a
+# generated client stops parsing it as a datetime.
+ServerTime = Annotated[
+    AwareDatetime,
+    PlainSerializer(_rfc3339_z, return_type=str),
+    WithJsonSchema({"type": "string", "format": "date-time"}, mode="serialization"),
+]
 NodeId = Annotated[str, Field(pattern=r"^ret[0-9a-f]{8}$")]
 NodeRef = Annotated[str, Field(pattern=r"^(nde|sim)[0-9a-z]{12}$")]
 BootId = Annotated[str, Field(pattern=r"^[0-9a-z]{8,32}$")]
-ConfigVersion = Annotated[int, BeforeValidator(_reject_non_number), Field(ge=1)]
+
+# Every bound below is declared ahead of its validator, and the ordering is the
+# only reason these are named types rather than a `Field(...)` on each field. A
+# constraint stacked on top of something that already carries a validator lands
+# on the validator, and pydantic then publishes it as `ge`, which is not a JSON
+# Schema keyword: a consumer of the generated contract drops the bound without
+# saying so. Enforcement is identical either way — both orderings reject an
+# out-of-range value — so this changes nothing but what reaches the schema.
+ConfigVersion = Annotated[int, Field(ge=1), BeforeValidator(_reject_non_number)]
+CpuPercent = Annotated[float, Field(ge=0, le=100, allow_inf_nan=False), BeforeValidator(_reject_non_number)]
+Celsius = Annotated[float, Field(ge=-50, le=150, allow_inf_nan=False), BeforeValidator(_reject_non_number)]
+DiskFreeMb = Annotated[int, Field(ge=0), BeforeValidator(_reject_non_number)]
 
 # A body guard rather than a statement about how many detections a CPI produces,
 # which is single figures in practice.
@@ -98,15 +124,15 @@ class AcceptanceRecord(_RequestModel):
 
 
 class PublicationChoice(_RequestModel):
-    """Whether the owner chose to publish this node's detections.
-
-    `choice` is required and carries no model default. The spec's `default: public`
-    describes what the onboarding flow preselects; a default here would accept a
-    body the spec rejects.
+    """Whether the owner chose to publish this node's detections. `choice` is
+    required, with no default: a node must send an explicit value.
     """
 
     version: str = Field(max_length=32)
     accepted_at: AwareDatetime
+    # The onboarding flow's own design preselects `public`; a default here
+    # would let a body that never named the choice pass regardless, which is a
+    # weaker check than that flow asks for.
     choice: Literal["public", "private"]
 
 
@@ -138,12 +164,13 @@ class RegisterResponse(BaseModel):
 
 
 class DetectionFrame(_RequestModel):
-    """One CPI's worth of detections.
-
-    The frame carries no node identifier: the token resolves to a node and the
-    frame is stamped server side, so `extra="forbid"` on the base class is load
-    bearing rather than tidiness.
+    """One CPI's worth of detections. Carries no node identifier: the bearer
+    token resolves to a node, and the frame is stamped server side.
     """
+
+    # `extra="forbid"`, inherited from `_RequestModel`, is load bearing here
+    # rather than tidiness: a frame that smuggled a node identifier would
+    # otherwise be accepted silently instead of refused.
 
     # Unix epoch seconds, node clock, the end of the capture window. The samples
     # behind a frame span [t - cpi_s, t], and cpi_s lives in the node's
@@ -185,9 +212,9 @@ class NodeHealth(_RequestModel):
     the first beat after a start has no percentage to report.
     """
 
-    cpu_pct: Number | None = Field(ge=0, le=100)
-    disk_free_mb: Count | None = Field(ge=0)
-    temp_c: Number | None = Field(ge=-50, le=150)
+    cpu_pct: CpuPercent | None
+    disk_free_mb: DiskFreeMb | None
+    temp_c: Celsius | None
     blah2: ServiceState | None
     # Omitted entirely when ADS-B is disabled in node configuration, so absence
     # means disabled rather than unknown. An explicit null reads the same way.
@@ -229,12 +256,10 @@ class ConfigResponse(BaseModel):
 
 
 class ErrorBody(BaseModel):
-    """The spec's `Error`. Registration errors carry no detail by design.
-
-    The contract types `detail` as a string with no null member, so the key is
-    dropped rather than serialised as `"detail": null`. Doing it here rather
-    than asking every call site for `exclude_none=True` means a handler cannot
-    emit a body the frozen schema rejects by forgetting the flag.
+    """The shape every node-API refusal wears. `error` is a stable slug;
+    `detail`, present only when it applies, names the offending field or value
+    rather than describing it. Registration's own refusals never carry
+    `detail`, by design.
     """
 
     error: str = Field(max_length=64)
@@ -245,6 +270,14 @@ class ErrorBody(BaseModel):
         # Wrap rather than plain, so `exclude`, `include` and `by_alias` still do
         # what a caller expects. A plain serialiser builds the dict itself and
         # silently ignores all three.
+        #
+        # `detail` is typed nullable in the schema (`anyOf: [string, "null"]`)
+        # because its Python type allows `None`, but the server never sends the
+        # null half: this drops the key entirely rather than serialising it as
+        # `"detail": null`, so an absent `detail` reads as absent rather than as
+        # an explicit null a parser also has to handle. Doing it here rather
+        # than asking every call site for `exclude_none=True` means a handler
+        # cannot forget the flag.
         body = handler(self)
         if body.get("detail") is None:
             body.pop("detail", None)

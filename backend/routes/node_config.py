@@ -13,21 +13,23 @@ resend is the one POST /v1/nodes/register would return.
 
 import logging
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Security
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.nodes import Node
 from core.users import get_async_session
+from routes.node_responses import INVALID_CONFIG, NODE_BODY_LIMITS, SERVER_ERROR, TOO_LARGE, UNAUTHORIZED
 from routes.node_schemas import ConfigResponse, ErrorBody
-from services.node_auth import bearer_node
+from services.node_auth import bearer_node, node_bearer_scheme
 from services.node_config import ConfigInvalid, validate_config
 from services.node_config_store import upsert_config
 from services.node_pipeline import register_with_pipeline
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+# Tag and security scheme as in routes/node_stream.py, and for the same reasons.
+router = APIRouter(tags=["configuration"], dependencies=[Security(node_bearer_scheme)])
 
 
 # `Error.detail`'s bound, from the contract and from ErrorBody in routes/node_schemas.py.
@@ -48,10 +50,52 @@ def _error(status_code: int, error: str, detail: str | None = None) -> JSONRespo
     return JSONResponse(ErrorBody(error=error, detail=detail).model_dump(), status_code=status_code)
 
 
+# The published description, written for whoever implements a node against this
+# document. Given explicitly rather than left to the handler's docstring, which
+# FastAPI would otherwise publish: that docstring is for whoever changes this
+# module and talks about oracles and parse ordering, which is not the client's
+# half of the story and not one this end should be broadcasting.
+_DESCRIPTION = """\
+The full configuration, in the same shape as the `config` object of a registration. Sent
+when the node's configuration changes locally, and whenever a response carries
+`config_stale: true` or a detection POST answers `409`.
+
+The server creates a new version if the configuration differs from the active one, and
+returns the active `config_version` either way. The node adopts whatever comes back and
+stamps subsequent frames with it.
+
+One thing to know: a configuration that moves the receiver a significant distance may
+rotate the node's public `node_ref`, which the node learns from its next heartbeat. This
+response does not mention it, and nothing about streaming depends on the node noticing.
+"""
+
+
 @router.put(
     "/config",
     response_model=ConfigResponse,
-    responses={400: {"model": ErrorBody}, 401: {"model": ErrorBody}},
+    responses={400: INVALID_CONFIG, 401: UNAUTHORIZED, 413: TOO_LARGE, "5XX": SERVER_ERROR},
+    summary="Resend the full configuration.",
+    description=_DESCRIPTION,
+    response_description="The active configuration version, whether or not this call created it.",
+    operation_id="putConfig",
+    openapi_extra={
+        "x-cadence": "on local configuration change, on `config_stale`, and on a 409 from a frame",
+        "x-max-body-bytes": NODE_BODY_LIMITS["/v1/nodes/config"],
+        # The body is read inside the handler rather than declared, so FastAPI has
+        # nothing to describe it with and the published operation would otherwise
+        # take no body at all. This says only what registration's `config` already
+        # says — a free-form object — so it is not a second statement of the
+        # bounds, which stay in services/node_config.py. Publishing the closed
+        # schema from that module's own table is 86cb6d7he.
+        "requestBody": {
+            "required": True,
+            "description": (
+                "The full configuration, in the same shape as `config` on `POST /v1/nodes/register`. "
+                "Free-form here for the reason given on that endpoint."
+            ),
+            "content": {"application/json": {"schema": {"type": "object", "additionalProperties": True}}},
+        },
+    },
 )
 async def put_config(
     request: Request,

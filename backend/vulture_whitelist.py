@@ -111,9 +111,9 @@ resolve_n2_chi2
 
 # Pydantic model fields, read by Pydantic's own validation and serialisation
 # rather than by any attribute access vulture can trace. These are the wire
-# contract at nodes_api_v1.yml expressed in Python: a field deleted because it
-# looks unreferenced is a field the node sends and the server then rejects. The
-# handlers that read them land with 86cb2cy3v.
+# contract at contracts/nodes-v1.openapi.yaml expressed in Python: a field
+# deleted because it looks unreferenced is a field the node sends and the
+# server then rejects. The handlers that read them land with 86cb2cy3v.
 #
 # Only the names not already listed above appear here, and only those the four
 # endpoints' request and response bodies actually carry.
