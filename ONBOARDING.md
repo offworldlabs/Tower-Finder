@@ -175,11 +175,11 @@ Two traps in that command:
 
 ## How code ships
 
-CI runs on push to `main` and on PRs **targeting `main`**
-(`.github/workflows/ci.yml`):
+CI runs on every PR, on push to `main`, and on demand through
+`workflow_dispatch` (`.github/workflows/ci.yml`):
 
-1. PR into `main`: `backend-tests`, `frontend-build`, `dashboard-build`,
-   `docker-build`, `env-parity`, plus an automated review.
+1. Any PR, whatever its base: `backend-tests`, `frontend-build`,
+   `dashboard-build`, `docker-build`, `env-parity`, plus an automated review.
 2. Merge to `main` → deploy to **staging** → staging smoke + Playwright E2E → deploy to **production** → prod smoke + Playwright E2E.
 
 So merging to `main` deploys to production automatically. Work on a feature
@@ -197,10 +197,11 @@ branch, open a PR, get it green, then merge.
 - **Config vs runtime config.** `backend/config/` is image-only (baked into the
   Docker image); runtime-editable overrides live under `data/runtime/`. See the
   runbook for the volume-shadowing gotcha.
-- **A PR stacked on another branch runs no CI at all.** The workflow triggers on
-  `branches: [main]`, so a PR based on a feature branch gets no tests, no lint and
-  no build, and the lone green automated-review tick is not CI passing. Run the
-  gate locally before merging such a branch, or retarget the PR at `main`.
+- **A branch opened before #187 runs no CI at all.** The workflow used to trigger
+  on `branches: [main]`, which matches a PR's *base*, so a PR stacked on a feature
+  branch got no tests, no lint and no build while the lone green automated-review
+  tick made the page read as passing. Stacked PRs opened since run the full matrix,
+  but an older branch keeps the old workflow until it is rebased.
 - **The compose service is `tower-finder`, not `server`.** `docker compose logs
   server` returns nothing and reads as an all-clear when the app is down. Check
   `docker compose ps --services` first.
