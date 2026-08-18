@@ -462,6 +462,14 @@ jobs:
               exit 1
             fi
 
+            # Clear any marker left behind by an earlier run, now that identity
+            # is confirmed and before any pre-flight below can exit. A marker
+            # that outlived its run — a failed deploy whose rollback job also
+            # failed — would otherwise make the NEXT deploy's failed pre-flight
+            # look like a half-finished deploy, and trigger the one rollback
+            # that must never happen. See rollback-production-on-deploy-failure.
+            rm -f /opt/tower-finder/.deploy-in-progress
+
             # Second pre-flight, before anything below mutates the box: a .env
             # naming the WRONG environment is the one remaining error that has to
             # be caught before pre-deploy.sh runs. That script
@@ -553,6 +561,14 @@ jobs:
             # silently restored the wrong build.
             bash deploy/pre-deploy.sh
 
+            # From here on the box is mid-deploy: a rollback point now exists,
+            # and everything below moves the tree or the running containers.
+            # The marker is what lets the rollback job tell "died in a
+            # pre-flight, stack untouched" from "died with production half
+            # deployed" — the two need opposite responses.
+            echo "run ${{ github.run_id }} started $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              > /opt/tower-finder/.deploy-in-progress
+
             # Pre-flight: refuse to deploy when the disk is near full. Without
             # this, git fetch silently writes a partial pack ("No space left on
             # device"), the working tree never advances, and the subsequent
@@ -617,6 +633,90 @@ jobs:
                 exit 1
               fi
             done
+
+            # Reached only by the loop's `break`, i.e. the app answered
+            # /api/health. The box is no longer mid-deploy, so drop the marker;
+            # any failure after this point is a smoke/E2E failure, which the
+            # rollback steps on those jobs already cover.
+            rm -f /opt/tower-finder/.deploy-in-progress
+
+  rollback-production-on-deploy-failure:
+    name: Roll back production if the deploy failed after it began
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [deploy-production]
+    # `always() && ...result == 'failure'` rather than a bare `failure()`.
+    # failure() is true when ANY ancestor job failed, and deploy-production has
+    # ancestors: an e2e-staging failure skips the deploy entirely, and this job
+    # would then SSH into production to consider rolling back a deploy that
+    # never ran. Keyed to the deploy job's own result, it cannot.
+    #
+    # This is the gap the two existing rollbacks do not cover. Both hang off
+    # jobs DOWNSTREAM of the deploy (production-smoke-tests, e2e-prod), and a
+    # failed deploy skips those jobs and their rollback steps with them.
+    if: always() && needs.deploy-production.result == 'failure'
+    steps:
+      - name: Roll back, but only if the deploy actually mutated the box
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: root
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          command_timeout: 15m
+          script: |
+            set -e
+            # The same identity assertion the deploy and the other two rollback
+            # paths carry, inline for the same reason: rollback.sh resets the
+            # tree and retags images over :latest, so a SERVER_HOST pointed at
+            # the wrong droplet does more damage here than a deploy would.
+            [ "$(hostname)" = "retina-prod" ] || { echo "::error::Refusing to roll back on '$(hostname)' — expected retina-prod."; exit 1; }
+            cd /opt/tower-finder
+
+            # deploy-production writes this marker immediately after
+            # pre-deploy.sh captures the rollback point, and clears it once the
+            # app answers /api/health. Its absence means the deploy died in its
+            # pre-flights with the running stack untouched.
+            #
+            # Rolling back in that case would be actively harmful rather than
+            # merely pointless: tower-finder:rollback and the newest deploy-*
+            # tag still describe the PREVIOUS deploy's snapshot, so rollback.sh
+            # would drag production back past a deploy that succeeded in order
+            # to recover from one that never started.
+            if [ ! -f .deploy-in-progress ]; then
+              echo "No .deploy-in-progress marker — the deploy failed before mutating anything, so what is running is already the last-known-good build. Nothing to roll back."
+              exit 0
+            fi
+
+            echo "Deploy failed after it began mutating the box ($(cat .deploy-in-progress)). Rolling back..."
+
+            # rollback.sh distinguishes three outcomes and `set -e` would
+            # collapse the last two, so take its status explicitly.
+            set +e
+            bash deploy/rollback.sh
+            rc=$?
+            set -e
+
+            case "$rc" in
+              0)
+                rm -f .deploy-in-progress
+                echo "Rollback complete — production is back on the previous build."
+                ;;
+              2)
+                # Service restored, but the database is left ahead of the code
+                # now running against it. The box is no longer mid-deploy, so
+                # the marker goes; the run stays red so a human sees the report.
+                rm -f .deploy-in-progress
+                echo "::error::Production is back up, but a database downgrade is outstanding — see the report above before trusting this rollback."
+                exit 2
+                ;;
+              *)
+                # Marker deliberately left in place: the box is still
+                # mid-deploy, and that is exactly what the next run must know.
+                echo "::error::Rollback FAILED (exit ${rc}). Production may still be down — SSH to retina-prod and recover by hand."
+                exit "$rc"
+                ;;
+            esac
+
 
   production-smoke-tests:
     name: Production smoke tests
