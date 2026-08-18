@@ -13,7 +13,7 @@ Usage:
     python retnode_poller.py
 
     # Against production server
-    python retnode_poller.py --server 157.245.214.30 --port 3012
+    python retnode_poller.py --server <prod-host> --port 3012
 
     # Custom node URL / ID
     python retnode_poller.py \\
