@@ -155,9 +155,13 @@ chmod +x "${APP_DIR}/deploy/docker-user-firewall.sh"
 # Rendered, not copied: the unit's ExecStart has to carry the real deploy
 # directory, and a literal path in the repo would silently keep pointing at the
 # old location after the directory moves. The boundary failing is quiet, so it
-# must not depend on someone remembering to edit the unit.
+# must not depend on someone remembering to edit the unit. Staged through a
+# temporary file to keep the write atomic: if rendering fails, the existing unit
+# stays intact rather than being left empty or partial.
 sed "s|@APP_DIR@|${APP_DIR}|g" "${APP_DIR}/deploy/retina-firewall.service" \
-    > /etc/systemd/system/retina-firewall.service
+    > /etc/systemd/system/retina-firewall.service.tmp
+mv /etc/systemd/system/retina-firewall.service.tmp \
+   /etc/systemd/system/retina-firewall.service
 systemctl daemon-reload
 systemctl enable retina-firewall.service
 # Fail-closed but not silently: under `set -euo pipefail` a bare `systemctl
