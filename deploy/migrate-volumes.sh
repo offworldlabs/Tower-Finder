@@ -65,6 +65,16 @@ manifest() {
                 target="$(readlink "$p")"
                 printf "L %s %s  L:%s\n" "$meta" "$p" "$target"
             done
+            # Includes "." itself, the mount root, on purpose. busybox cp -a
+            # applies -p semantics to the target directory node as well as its
+            # contents, so a source root chowned to appuser (which is what the
+            # Dockerfile does to /app/backend/data and friends) is reproduced on
+            # the destination and the two agree. GNU cp does not do this, so if
+            # the base image ever leaves busybox the manifests will stop matching.
+            # That is a loud verification failure rather than a silent bad copy,
+            # which is the direction this script should fail in. The happy path in
+            # backend/tests/test_migrate_volumes.sh chowns the volume root for
+            # exactly this reason, so the behaviour stays pinned.
             find . -type d | while IFS= read -r p; do
                 meta="$(stat -c "%u %g %a" "$p")"
                 printf "D %s %s\n" "$meta" "$p"
