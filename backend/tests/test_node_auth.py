@@ -115,9 +115,10 @@ async def test_an_unknown_token_is_401(node_session):
 
 
 def test_a_minted_node_ref_matches_the_wire_pattern():
-    # The contract's own regex, from nodes_api_v1.yml NodeRef, rather than a
-    # hand-rolled restatement of it: where the plan and the spec disagree the
-    # spec wins, so the test asserts the thing the spec actually says.
+    # The wire pattern, rather than a hand-rolled restatement of it: the
+    # contract is generated from routes/node_schemas.py's NodeRef, so this and
+    # the published `(nde|sim)[0-9a-z]{12}` are the same statement made twice,
+    # and minting has to satisfy it.
     assert re.fullmatch(r"(nde|sim)[0-9a-z]{12}", mint_node_ref())
 
 

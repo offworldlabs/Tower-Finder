@@ -16,6 +16,9 @@ FastAPI backend and React front-ends for the RETINA passive-radar network.
   ONBOARDING, "Before you push", for what it runs and where it lies to you.
 - **Every PR runs the full matrix**, whatever it is based on. Branches opened
   before #187 predate that and ran nothing unless they targeted `main`.
+- **The node API contract is generated.** Change a route under `/v1/nodes` or one
+  of its models and `contracts/nodes-v1.openapi.yaml` moves with it; regenerate it
+  in the same commit or CI fails. See ONBOARDING, "Before you push".
 - **This repo is public.** Refer to hosts by SSH alias, never by address, as
   `justfile` already does. No credentials, no droplet addresses, no personal
   accounts in anything committed here.

@@ -1,0 +1,866 @@
+openapi: 3.1.0
+info:
+  title: RETINA node ingest
+  version: 1.1.2
+  description: |
+    Tower Finder's HTTP API. The paths under `/v1/nodes` are the RETINA node ingest
+    contract, generated from the server and versioned as a unit; everything else is
+    internal to the map, the dashboard and the admin surfaces.
+
+    ## Error taxonomy
+
+    Every refusal under `/v1/nodes` carries `Error`, whose required key is `error`
+    and whose optional `detail` names a field rather than describing it. The rest of
+    this API answers in FastAPI's `{"detail": ...}`, which its own callers parse.
+
+    | Status | Means |
+    |---|---|
+    | `400` | The body was refused. `invalid_config` for a configuration that failed validation, `invalid_body` for one that failed the schema |
+    | `401` | The bearer token is bad, revoked or expired |
+    | `403` | Registration refused, without saying why |
+    | `409` | The frame names a `config_version` this server never issued |
+    | `413` | The body exceeded the cap for its path |
+    | `429` | Rate limited |
+
+    `403` is deliberately opaque: unknown device, not yet accepted by Mender,
+    already holding a valid token and in cooldown are one response, at one latency,
+    with one `Retry-After`. Registration is limited per `node_id` and answers that
+    same `403` rather than a `429`, since a distinct status would confirm to an
+    unauthenticated caller that the identity it named is one the server tracks.
+
+    A path under the prefix this server does not route, or a routed one called with
+    the wrong method, answers in this same taxonomy too, as `{"error": "not_found"}`
+    or `{"error": "method_not_allowed"}` respectively. Neither is a per-operation
+    response, so neither is declared on any individual operation below.
+
+    ## Retry semantics: `x-retry` and `x-terminal`
+
+    OpenAPI has no vocabulary for either, so these two extensions are invented here
+    and carried on the response object. A node acts on a field rather than on
+    someone's reading of a paragraph.
+
+    `x-retry` says what may be done with the identical request:
+
+    | Value | Meaning |
+    |---|---|
+    | `never` | Resending it unchanged cannot succeed. Something has to change first, and the response's description says what |
+    | `retry-after` | Honour the `Retry-After` header, then retry, backing off with jitter |
+    | `backoff` | Retry with exponential backoff and jitter |
+
+    `x-terminal: true` says the condition will not clear by anything the node can do:
+    it needs an operator. Only a refused credential is terminal, and the response
+    that carries it is the one case where continuing to retry makes things worse.
+
+    ## Body cap: `x-max-body-bytes`
+
+    Each operation carries `x-max-body-bytes`: the `Content-Length` ceiling checked
+    ahead of parsing, past which the request answers `413`. Declared on the
+    operation rather than the response, since it describes what the operation
+    accepts rather than how to react to a refusal.
+servers:
+- url: https://api.retina.fm
+  description: Production ingest.
+- url: https://staging-api.retina.fm
+  description: Staging ingest.
+tags:
+- name: registration
+  description: One-off handshake that mints the node's bearer token.
+- name: streaming
+  description: The hot path, plus the liveness signal that runs alongside it.
+- name: configuration
+  description: Receiver and transmitter geometry, versioned by the server.
+paths:
+  /v1/nodes/register:
+    post:
+      tags:
+      - registration
+      summary: Register a node and obtain its bearer token.
+      description: |-
+        Unauthenticated. Called once, when the node has a `node_id` but no token.
+
+        ## Preconditions
+
+        The node must be enrolled with and accepted by Mender before it registers. The server asks
+        Mender directly, while the request is open, so a node registering in the gap between
+        enrolling and being accepted is refused and must retry.
+
+        ## Failure handling
+
+        Registration failures are deliberately opaque: unknown device, device not yet accepted by
+        Mender, node already registered and holding a valid token, and an identity in cooldown all
+        answer the same `403`, at the same latency, with the same `Retry-After`. Rate limiting
+        answers it too. Each response carries `x-retry`, which is the field to act on.
+
+        Registration is limited per `node_id` at 5 an hour and 20 a day. An ordinary node uses a
+        handful of attempts in its lifetime, so this only bites a retry loop with no backoff, and
+        the backoff is worth making real and jittered: a CGNAT pool rebooting together is a case
+        the server is sized for, but a hot loop is not.
+
+        ## Recovering a node that has lost its token
+
+        A reflashed board comes back with the same `node_id`, a new Mender keypair and no token. On
+        the wire that is indistinguishable from somebody enrolling a keypair of their own under that
+        identity, so registering again revokes the previous token and is alerted on. There is
+        nothing to build for it, but it is worth knowing when a reflashed board sits in a retry loop
+        and the logs say nothing useful: the reason is on the server side.
+      operationId: registerNode
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+        required: true
+      responses:
+        '200':
+          description: Registered. Store the token, cache `node_ref`, and move on to heartbeat and detections.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+        '400':
+          description: 'The configuration or the agreement records failed validation: `invalid_config`
+            for a configuration value out of range, `invalid_body` for anything that failed the schema.
+            `detail` names the offending field and nothing else, so retina-gui can put the message next
+            to the input it belongs to. Retrying unchanged will not help.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: false
+        '403':
+          description: Refused, without saying why. Unknown device, not yet accepted by Mender, already
+            holding a valid token, and an identity in cooldown are one response, at one latency, with
+            one `Retry-After`. It is also the normal answer while Mender acceptance is pending, and the
+            answer to a node registering too often, so a node that has just been flashed should expect
+            it and keep retrying.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. Honour it, then back off with jitter.
+              required: true
+              schema:
+                type: integer
+                maximum: 86400.0
+                minimum: 0.0
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: retry-after
+          x-terminal: false
+        '413':
+          description: 'The body exceeded this path''s cap, which is checked from `Content-Length` before
+            parsing. Per-field bounds in the schemas do not make this unreachable: `HeartbeatRequest.errors`
+            alone permits 16 KiB of strings, `RegisterRequest.config` carries no bound at all, and JSON
+            puts no length limit on a number''s text, so a schema-valid body can still exceed it.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: false
+        5XX:
+          description: 'Server side, though a 502 or 504 is the edge''s own response rather than the origin''s,
+            and carries whatever body that gateway sends instead of this `Error`. Abandon the request
+            and retry, backing off with jitter if it persists: on detection and heartbeat that retry is
+            the node''s next frame or beat rather than a resend of this one, while registration and configuration
+            retry the identical body.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: backoff
+          x-terminal: false
+      x-cadence: once per node lifetime, plus operator reactivation
+      x-max-body-bytes: 8192
+  /v1/nodes/config:
+    put:
+      tags:
+      - configuration
+      summary: Resend the full configuration.
+      description: |-
+        The full configuration, in the same shape as the `config` object of a registration. Sent
+        when the node's configuration changes locally, and whenever a response carries
+        `config_stale: true` or a detection POST answers `409`.
+
+        The server creates a new version if the configuration differs from the active one, and
+        returns the active `config_version` either way. The node adopts whatever comes back and
+        stamps subsequent frames with it.
+
+        One thing to know: a configuration that moves the receiver a significant distance may
+        rotate the node's public `node_ref`, which the node learns from its next heartbeat. This
+        response does not mention it, and nothing about streaming depends on the node noticing.
+      operationId: putConfig
+      requestBody:
+        description: The full configuration, in the same shape as `config` on `POST /v1/nodes/register`.
+          Free-form here for the reason given on that endpoint.
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              type: object
+        required: true
+      responses:
+        '200':
+          description: The active configuration version, whether or not this call created it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigResponse'
+        '400':
+          description: The configuration failed validation, as `invalid_config`. A body that is not JSON
+            at all lands here too, since the remedy is the same. `detail` names the offending field and
+            nothing else, so retina-gui can put the message next to the input it belongs to. Retrying
+            unchanged will not help.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: false
+        '401':
+          description: 'Token bad, revoked or expired. Stop streaming, surface it locally, and keep heartbeating.
+            Do not re-register: recovering a token needs an operator to reactivate the node, and treating
+            a 401 as the trigger turns a deliberate revocation into a registration storm.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: true
+        '413':
+          description: 'The body exceeded this path''s cap, which is checked from `Content-Length` before
+            parsing. Per-field bounds in the schemas do not make this unreachable: `HeartbeatRequest.errors`
+            alone permits 16 KiB of strings, `RegisterRequest.config` carries no bound at all, and JSON
+            puts no length limit on a number''s text, so a schema-valid body can still exceed it.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: false
+        5XX:
+          description: 'Server side, though a 502 or 504 is the edge''s own response rather than the origin''s,
+            and carries whatever body that gateway sends instead of this `Error`. Abandon the request
+            and retry, backing off with jitter if it persists: on detection and heartbeat that retry is
+            the node''s next frame or beat rather than a resend of this one, while registration and configuration
+            retry the identical body.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: backoff
+          x-terminal: false
+      security:
+      - bearerAuth: []
+      x-cadence: on local configuration change, on `config_stale`, and on a 409 from a frame
+      x-max-body-bytes: 8192
+  /v1/nodes/detection:
+    post:
+      tags:
+      - streaming
+      summary: Send one detection frame.
+      description: |-
+        One frame per request. `delay`, `doppler`, `snr` and `adsb_hex` are parallel and must be the
+        same length. An empty frame is valid and worth sending.
+
+        ## Sending behaviour
+
+        **One POST per frame blah2 produces, and never otherwise.** There is no timer and no
+        batching, so the arrival rate at the server is the radar's frame rate, which is set by how
+        long processing takes rather than by the configured CPI. One frame per CPI is the ceiling;
+        what is measured today is roughly half that, and it moves with load, clutter and the board.
+
+        **Latest wins.** At most one request in flight and no queue: while a POST is slow, a newer
+        frame replaces the pending one rather than joining a queue behind it, and a request past its
+        timeout is abandoned so the next frame goes in a fresh one. Gaps are therefore permanent by
+        design, which is the right trade for live tracking and is why `seq` and `boot_id` exist. The
+        server counts what was lost rather than pretending nothing was.
+
+        Backfilling on reconnect buys nothing. Multi-node association gates on the difference
+        between two frames' capture timestamps rather than on arrival, so a frame delivered late
+        carries an old `t` and is rejected by that gate instead of being paired against whatever is
+        current.
+
+        **One kept-alive TLS connection per node**, since the alternative is a handshake per frame.
+
+        ## The response, and acting on it
+
+        Every response carries the derived state in full, restated each time rather than sent on
+        change, so anything the server needs to tell the node is repeated until the node notices.
+
+        Revocation is a `401` rather than a control field, because it has to work whether or not the
+        node is cooperating. The one thing to avoid is treating a `401` as a trigger to re-register:
+        that turns a deliberate revocation into a registration storm. It is the only response here
+        carrying `x-terminal: true`.
+      operationId: postDetection
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DetectionFrame'
+        required: true
+      responses:
+        '202':
+          description: Accepted. Every ack restates the derived state in full rather than on change, so
+            it is worth reading on every response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DetectionAck'
+        '400':
+          description: The frame failed the schema, as `invalid_body`. `detail` names the offending field
+            and nothing else, so retina-gui can put the message next to the input it belongs to. Retrying
+            unchanged will not help.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: false
+        '401':
+          description: 'Token bad, revoked or expired. Stop streaming, surface it locally, and keep heartbeating.
+            Do not re-register: recovering a token needs an operator to reactivate the node, and treating
+            a 401 as the trigger turns a deliberate revocation into a registration storm.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: true
+        '409':
+          description: 'Unknown `config_version`: this server never issued it, so the frame cannot be
+            interpreted. `PUT /v1/nodes/config`, adopt the version that comes back, then resume. A version
+            the server issued and has since replaced is not this, and those frames are accepted with `config_stale`
+            set instead.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: false
+        '413':
+          description: 'The body exceeded this path''s cap, which is checked from `Content-Length` before
+            parsing. Per-field bounds in the schemas do not make this unreachable: `HeartbeatRequest.errors`
+            alone permits 16 KiB of strings, `RegisterRequest.config` carries no bound at all, and JSON
+            puts no length limit on a number''s text, so a schema-valid body can still exceed it.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: false
+        '429':
+          description: 'Rate limited, per token and per endpoint. The skipped frames are best dropped
+            rather than accumulated: a frame delivered late carries an old timestamp and is rejected by
+            the association gate rather than paired against whatever is current.'
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. Honour it, then back off with jitter.
+              required: true
+              schema:
+                type: integer
+                maximum: 86400.0
+                minimum: 0.0
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: retry-after
+          x-terminal: false
+        5XX:
+          description: 'Server side, though a 502 or 504 is the edge''s own response rather than the origin''s,
+            and carries whatever body that gateway sends instead of this `Error`. Abandon the request
+            and retry, backing off with jitter if it persists: on detection and heartbeat that retry is
+            the node''s next frame or beat rather than a resend of this one, while registration and configuration
+            retry the identical body.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: backoff
+          x-terminal: false
+      security:
+      - bearerAuth: []
+      x-cadence: one request per CPI, no timer
+      x-max-body-bytes: 65536
+  /v1/nodes/heartbeat:
+    post:
+      tags:
+      - streaming
+      summary: Report liveness and health.
+      description: |-
+        Sent every 60 s from process start until shutdown, unconditionally: whether or not
+        detections are flowing, whether or not the last frame was empty, whether or not
+        `streaming_allowed` is false, and whether or not the node yet holds a `config_version`. The
+        last of those is why that field is nullable here. A node that cannot build a configuration
+        is the one most worth hearing from, and requiring a version would make it the one that goes
+        silent.
+
+        Apply a uniform random phase offset within the interval, so a fleet restarting together does
+        not settle into one bucket and post simultaneously every minute.
+
+        `node_ref` on the response is the only place the node learns its public identifier has
+        rotated. `config_stale` and `streaming_allowed` mean what they do on the detection ack, and
+        are repeated here so that a paused node still learns when it may resume.
+
+        `health`, `versions` and `errors` are accepted and diagnostic. The server does not decide
+        whether a node is working from them: `blah2: "up"` reads identically on a wedged node and a
+        working one, and what settles the question is the server's own record of frame arrivals.
+      operationId: postHeartbeat
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HeartbeatRequest'
+        required: true
+      responses:
+        '200':
+          description: Acknowledged. The `errors` list can be cleared.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeartbeatResponse'
+        '400':
+          description: The heartbeat failed the schema, as `invalid_body`. `detail` names the offending
+            field and nothing else, so retina-gui can put the message next to the input it belongs to.
+            Retrying unchanged will not help.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: false
+        '401':
+          description: 'Token bad, revoked or expired. Stop streaming, surface it locally, and keep heartbeating.
+            Do not re-register: recovering a token needs an operator to reactivate the node, and treating
+            a 401 as the trigger turns a deliberate revocation into a registration storm.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: true
+        '413':
+          description: 'The body exceeded this path''s cap, which is checked from `Content-Length` before
+            parsing. Per-field bounds in the schemas do not make this unreachable: `HeartbeatRequest.errors`
+            alone permits 16 KiB of strings, `RegisterRequest.config` carries no bound at all, and JSON
+            puts no length limit on a number''s text, so a schema-valid body can still exceed it.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: false
+        '429':
+          description: 'Rate limited, per token and per endpoint. The skipped frames are best dropped
+            rather than accumulated: a frame delivered late carries an old timestamp and is rejected by
+            the association gate rather than paired against whatever is current.'
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. Honour it, then back off with jitter.
+              required: true
+              schema:
+                type: integer
+                maximum: 86400.0
+                minimum: 0.0
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: retry-after
+          x-terminal: false
+        5XX:
+          description: 'Server side, though a 502 or 504 is the edge''s own response rather than the origin''s,
+            and carries whatever body that gateway sends instead of this `Error`. Abandon the request
+            and retry, backing off with jitter if it persists: on detection and heartbeat that retry is
+            the node''s next frame or beat rather than a resend of this one, while registration and configuration
+            retry the identical body.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: backoff
+          x-terminal: false
+      security:
+      - bearerAuth: []
+      x-cadence: every 60 s, phase-offset at random within the interval
+      x-max-body-bytes: 8192
+components:
+  schemas:
+    AcceptanceRecord:
+      properties:
+        version:
+          type: string
+          maxLength: 32
+          title: Version
+        accepted_at:
+          type: string
+          format: date-time
+          title: Accepted At
+      additionalProperties: false
+      type: object
+      required:
+      - version
+      - accepted_at
+      title: AcceptanceRecord
+      description: One versioned thing the owner accepted, and when.
+    Agreements:
+      properties:
+        licence:
+          $ref: '#/components/schemas/AcceptanceRecord'
+        remote_management:
+          $ref: '#/components/schemas/AcceptanceRecord'
+        publication:
+          $ref: '#/components/schemas/PublicationChoice'
+      additionalProperties: false
+      type: object
+      required:
+      - licence
+      - remote_management
+      - publication
+      title: Agreements
+      description: Three separately versioned records, because they are withdrawn separately.
+    ConfigResponse:
+      properties:
+        config_version:
+          type: integer
+          minimum: 1.0
+          title: Config Version
+      type: object
+      required:
+      - config_version
+      title: ConfigResponse
+    DetectionAck:
+      properties:
+        accepted:
+          type: integer
+          minimum: 0.0
+          title: Accepted
+        config_stale:
+          type: boolean
+          title: Config Stale
+        streaming_allowed:
+          type: boolean
+          title: Streaming Allowed
+      type: object
+      required:
+      - accepted
+      - config_stale
+      - streaming_allowed
+      title: DetectionAck
+    DetectionFrame:
+      properties:
+        t:
+          type: number
+          minimum: 0.0
+          title: T
+        seq:
+          type: integer
+          minimum: 0.0
+          title: Seq
+        boot_id:
+          type: string
+          pattern: ^[0-9a-z]{8,32}$
+          title: Boot Id
+        config_version:
+          type: integer
+          minimum: 1.0
+          title: Config Version
+        delay:
+          items:
+            type: number
+          type: array
+          maxItems: 512
+          title: Delay
+        doppler:
+          items:
+            type: number
+          type: array
+          maxItems: 512
+          title: Doppler
+        snr:
+          items:
+            type: number
+          type: array
+          maxItems: 512
+          title: Snr
+        adsb_hex:
+          items:
+            anyOf:
+            - type: string
+              pattern: ^[0-9a-f]{6}$
+            - type: 'null'
+          type: array
+          maxItems: 512
+          title: Adsb Hex
+      additionalProperties: false
+      type: object
+      required:
+      - t
+      - seq
+      - boot_id
+      - config_version
+      - delay
+      - doppler
+      - snr
+      - adsb_hex
+      title: DetectionFrame
+      description: |-
+        One CPI's worth of detections. Carries no node identifier: the bearer
+        token resolves to a node, and the frame is stamped server side.
+    ErrorBody:
+      properties:
+        error:
+          type: string
+          maxLength: 64
+          title: Error
+        detail:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Detail
+      type: object
+      required:
+      - error
+      title: ErrorBody
+      description: |-
+        The shape every node-API refusal wears. `error` is a stable slug;
+        `detail`, present only when it applies, names the offending field or value
+        rather than describing it. Registration's own refusals never carry
+        `detail`, by design.
+    HeartbeatRequest:
+      properties:
+        state:
+          type: string
+          enum:
+          - starting
+          - streaming
+          - stalled
+          - paused
+          - error
+          - stopping
+          title: State
+        uptime_s:
+          type: integer
+          minimum: 0.0
+          title: Uptime S
+        boot_id:
+          type: string
+          pattern: ^[0-9a-z]{8,32}$
+          title: Boot Id
+        config_version:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Config Version
+        health:
+          anyOf:
+          - $ref: '#/components/schemas/NodeHealth'
+          - type: 'null'
+        versions:
+          anyOf:
+          - $ref: '#/components/schemas/NodeVersions'
+          - type: 'null'
+        errors:
+          items:
+            type: string
+            maxLength: 512
+          type: array
+          maxItems: 32
+          title: Errors
+      additionalProperties: false
+      type: object
+      required:
+      - state
+      - uptime_s
+      - boot_id
+      - config_version
+      title: HeartbeatRequest
+    HeartbeatResponse:
+      properties:
+        server_time:
+          type: string
+          format: date-time
+          title: Server Time
+        config_stale:
+          type: boolean
+          title: Config Stale
+        streaming_allowed:
+          type: boolean
+          title: Streaming Allowed
+        node_ref:
+          type: string
+          pattern: ^(nde|sim)[0-9a-z]{12}$
+          title: Node Ref
+      type: object
+      required:
+      - server_time
+      - config_stale
+      - streaming_allowed
+      - node_ref
+      title: HeartbeatResponse
+    NodeHealth:
+      properties:
+        cpu_pct:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Cpu Pct
+        disk_free_mb:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Disk Free Mb
+        temp_c:
+          anyOf:
+          - type: number
+            maximum: 150.0
+            minimum: -50.0
+          - type: 'null'
+          title: Temp C
+        blah2:
+          anyOf:
+          - type: string
+            enum:
+            - up
+            - down
+            - unknown
+          - type: 'null'
+          title: Blah2
+        adsb:
+          anyOf:
+          - type: string
+            enum:
+            - up
+            - down
+            - unknown
+          - type: 'null'
+          title: Adsb
+      additionalProperties: false
+      type: object
+      required:
+      - cpu_pct
+      - disk_free_mb
+      - temp_c
+      - blah2
+      title: NodeHealth
+      description: |-
+        Diagnostic only. The server decides whether a node is working from its own
+        record of frame arrivals, not from this.
+
+        The four values a node can always attempt to read are required and nullable,
+        so a value it could not obtain arrives as an explicit null rather than as an
+        absent key. `cpu_pct` is the motivating case: /proc/stat is cumulative, so
+        the first beat after a start has no percentage to report.
+    NodeVersions:
+      properties:
+        owl_os:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Owl Os
+        retina_node:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Retina Node
+        blah2_image:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Blah2 Image
+      additionalProperties: false
+      type: object
+      title: NodeVersions
+    PublicationChoice:
+      properties:
+        version:
+          type: string
+          maxLength: 32
+          title: Version
+        accepted_at:
+          type: string
+          format: date-time
+          title: Accepted At
+        choice:
+          type: string
+          enum:
+          - public
+          - private
+          title: Choice
+      additionalProperties: false
+      type: object
+      required:
+      - version
+      - accepted_at
+      - choice
+      title: PublicationChoice
+      description: |-
+        Whether the owner chose to publish this node's detections. `choice` is
+        required, with no default: a node must send an explicit value.
+    RegisterRequest:
+      properties:
+        node_id:
+          type: string
+          pattern: ^ret[0-9a-f]{8}$
+          title: Node Id
+        board_model:
+          type: string
+          maxLength: 64
+          title: Board Model
+        agreements:
+          $ref: '#/components/schemas/Agreements'
+        config:
+          additionalProperties: true
+          type: object
+          title: Config
+      additionalProperties: false
+      type: object
+      required:
+      - node_id
+      - board_model
+      - agreements
+      - config
+      title: RegisterRequest
+    RegisterResponse:
+      properties:
+        token:
+          type: string
+          maxLength: 128
+          minLength: 32
+          title: Token
+        node_ref:
+          type: string
+          pattern: ^(nde|sim)[0-9a-z]{12}$
+          title: Node Ref
+        config_version:
+          type: integer
+          minimum: 1.0
+          title: Config Version
+        server_time:
+          type: string
+          format: date-time
+          title: Server Time
+      type: object
+      required:
+      - token
+      - node_ref
+      - config_version
+      - server_time
+      title: RegisterResponse
+  securitySchemes:
+    bearerAuth:
+      type: http
+      description: 'The token minted by `POST /v1/nodes/register`, persisted at mode 0600 under `/data`.
+        Sent as `Authorization: Bearer <token>`. There is no expiry: a token dies by being revoked and
+        by nothing else.'
+      scheme: bearer

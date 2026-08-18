@@ -31,6 +31,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.nodes import Node
 from core.users import get_async_session
+from routes.node_responses import (
+    INVALID_REGISTRATION,
+    NODE_BODY_LIMITS,
+    REGISTRATION_REFUSED,
+    SERVER_ERROR,
+    TOO_LARGE,
+)
 from routes.node_schemas import Agreements, ErrorBody, RegisterRequest, RegisterResponse
 from services.mender import MenderUnreachable, lookup_device
 from services.node_auth import mint_node_ref, mint_token, revoke_tokens
@@ -40,7 +47,9 @@ from services.node_pipeline import register_with_pipeline
 from services.node_rate_limits import Refusal, registration_limiter
 from services.node_refusals import REFUSAL_BODY, refusal_retry_after
 
-router = APIRouter()
+# No security dependency, so the generated operation carries no `security` and
+# says for itself that it is unauthenticated. Tag as in the sibling modules.
+router = APIRouter(tags=["registration"])
 
 # The contract's bound on Error.detail, which ErrorBody enforces.
 ERROR_DETAIL_MAX = 512
@@ -94,10 +103,69 @@ def _apply_agreements(node: Node, agreements: Agreements) -> None:
     node.publication_chosen_at = _utc(agreements.publication.accepted_at)
 
 
+# The published description, written for whoever implements a node against this
+# document. Given explicitly rather than left to the handler's docstring, which
+# FastAPI would otherwise publish: that docstring is for whoever changes this
+# module and talks about oracles and transaction boundaries, which is the wrong
+# half of the story for a client and not one this end should be broadcasting.
+_DESCRIPTION = """\
+Unauthenticated. Called once, when the node has a `node_id` but no token.
+
+## Preconditions
+
+The node must be enrolled with and accepted by Mender before it registers. The server asks
+Mender directly, while the request is open, so a node registering in the gap between
+enrolling and being accepted is refused and must retry.
+
+## Failure handling
+
+Registration failures are deliberately opaque: unknown device, device not yet accepted by
+Mender, node already registered and holding a valid token, and an identity in cooldown all
+answer the same `403`, at the same latency, with the same `Retry-After`. Rate limiting
+answers it too. Each response carries `x-retry`, which is the field to act on.
+
+Registration is limited per `node_id` at 5 an hour and 20 a day. An ordinary node uses a
+handful of attempts in its lifetime, so this only bites a retry loop with no backoff, and
+the backoff is worth making real and jittered: a CGNAT pool rebooting together is a case
+the server is sized for, but a hot loop is not.
+
+## Recovering a node that has lost its token
+
+A reflashed board comes back with the same `node_id`, a new Mender keypair and no token. On
+the wire that is indistinguishable from somebody enrolling a keypair of their own under that
+identity, so registering again revokes the previous token and is alerted on. There is
+nothing to build for it, but it is worth knowing when a reflashed board sits in a retry loop
+and the logs say nothing useful: the reason is on the server side.
+"""
+
+
 # response_model rather than inference from the return annotation: FastAPI
 # cannot build a response field from a union with a Response in it, and the
 # refusals are rendered as JSONResponse so they carry a Retry-After header.
-@router.post("/register", response_model=RegisterResponse)
+#
+# No 429 is published, and that is not an omission. The contract used to declare
+# one, but registration is limited per node_id and answers the shared 403 when it
+# refuses, precisely so the status cannot confirm to an unauthenticated caller
+# that the identity it named is one the server is tracking. A generated contract
+# says what the server does, so a 429 no code path can reach does not appear.
+@router.post(
+    "/register",
+    response_model=RegisterResponse,
+    responses={
+        400: INVALID_REGISTRATION,
+        403: REGISTRATION_REFUSED,
+        413: TOO_LARGE,
+        "5XX": SERVER_ERROR,
+    },
+    summary="Register a node and obtain its bearer token.",
+    description=_DESCRIPTION,
+    response_description="Registered. Store the token, cache `node_ref`, and move on to heartbeat and detections.",
+    operation_id="registerNode",
+    openapi_extra={
+        "x-cadence": "once per node lifetime, plus operator reactivation",
+        "x-max-body-bytes": NODE_BODY_LIMITS["/v1/nodes/register"],
+    },
+)
 async def register_node(
     request: RegisterRequest,
     session: AsyncSession = Depends(get_async_session),

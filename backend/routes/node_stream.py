@@ -19,7 +19,7 @@ import logging
 import time
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Security
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +27,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core import state
 from core.nodes import Node, NodeConfig
 from core.users import get_async_session
+from routes.node_responses import (
+    INVALID_BEAT,
+    INVALID_FRAME,
+    NODE_BODY_LIMITS,
+    RATE_LIMITED,
+    SERVER_ERROR,
+    TOO_LARGE,
+    UNAUTHORIZED,
+    UNKNOWN_CONFIG_VERSION,
+)
 from routes.node_schemas import (
     DetectionAck,
     DetectionFrame,
@@ -34,21 +44,19 @@ from routes.node_schemas import (
     HeartbeatRequest,
     HeartbeatResponse,
 )
-from services.node_auth import bearer_node
+from services.node_auth import bearer_node, node_bearer_scheme
 from services.node_pipeline import register_with_pipeline, submit_frame
 from services.node_rate_limits import Refusal, token_rate_limiter
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
-
-# What FastAPI publishes for the failures both handlers can return. The 401 is
-# raised by the `bearer_node` dependency rather than here, so it is documented
-# rather than emitted below.
-_ERROR_RESPONSES: dict[int | str, dict] = {
-    401: {"model": ErrorBody, "description": "Token bad, revoked or expired."},
-    429: {"model": ErrorBody, "description": "Rate limited. Honour `Retry-After`."},
-}
+# The tag is the contract's, not the module's: registration, streaming and
+# configuration are the three groupings a generated client is built around.
+#
+# The security scheme is declared on the router rather than per route, since
+# everything here is bearer-authenticated and a route added later should not
+# have to remember. It documents the credential; `bearer_node` still resolves it.
+router = APIRouter(tags=["streaming"], dependencies=[Security(node_bearer_scheme)])
 
 
 def _refused(refusal: Refusal) -> JSONResponse:
@@ -178,15 +186,101 @@ def _file_frame(node_id: str, frame: DetectionFrame) -> int:
     return len(frame.delay)
 
 
+# The published descriptions, written for whoever implements a node against this
+# document. Given explicitly rather than left to the handlers' docstrings, which
+# FastAPI would otherwise publish: those are for whoever changes this module and
+# talk about queue registries and hot paths, which says nothing a client can act
+# on.
+_DETECTION_DESCRIPTION = """\
+One frame per request. `delay`, `doppler`, `snr` and `adsb_hex` are parallel and must be the
+same length. An empty frame is valid and worth sending.
+
+## Sending behaviour
+
+**One POST per frame blah2 produces, and never otherwise.** There is no timer and no
+batching, so the arrival rate at the server is the radar's frame rate, which is set by how
+long processing takes rather than by the configured CPI. One frame per CPI is the ceiling;
+what is measured today is roughly half that, and it moves with load, clutter and the board.
+
+**Latest wins.** At most one request in flight and no queue: while a POST is slow, a newer
+frame replaces the pending one rather than joining a queue behind it, and a request past its
+timeout is abandoned so the next frame goes in a fresh one. Gaps are therefore permanent by
+design, which is the right trade for live tracking and is why `seq` and `boot_id` exist. The
+server counts what was lost rather than pretending nothing was.
+
+Backfilling on reconnect buys nothing. Multi-node association gates on the difference
+between two frames' capture timestamps rather than on arrival, so a frame delivered late
+carries an old `t` and is rejected by that gate instead of being paired against whatever is
+current.
+
+**One kept-alive TLS connection per node**, since the alternative is a handshake per frame.
+
+## The response, and acting on it
+
+Every response carries the derived state in full, restated each time rather than sent on
+change, so anything the server needs to tell the node is repeated until the node notices.
+
+Revocation is a `401` rather than a control field, because it has to work whether or not the
+node is cooperating. The one thing to avoid is treating a `401` as a trigger to re-register:
+that turns a deliberate revocation into a registration storm. It is the only response here
+carrying `x-terminal: true`.
+"""
+
+_HEARTBEAT_DESCRIPTION = """\
+Sent every 60 s from process start until shutdown, unconditionally: whether or not
+detections are flowing, whether or not the last frame was empty, whether or not
+`streaming_allowed` is false, and whether or not the node yet holds a `config_version`. The
+last of those is why that field is nullable here. A node that cannot build a configuration
+is the one most worth hearing from, and requiring a version would make it the one that goes
+silent.
+
+Apply a uniform random phase offset within the interval, so a fleet restarting together does
+not settle into one bucket and post simultaneously every minute.
+
+`node_ref` on the response is the only place the node learns its public identifier has
+rotated. `config_stale` and `streaming_allowed` mean what they do on the detection ack, and
+are repeated here so that a paused node still learns when it may resume.
+
+`health`, `versions` and `errors` are accepted and diagnostic. The server does not decide
+whether a node is working from them: `blah2: "up"` reads identically on a wedged node and a
+working one, and what settles the question is the server's own record of frame arrivals.
+"""
+
+
 @router.post(
     "/detection",
     status_code=202,
     response_model=DetectionAck,
+    # None of these is raised in the handler below: the 401 comes from the
+    # `bearer_node` dependency, the 400 from the taxonomy's validation handler,
+    # the 413 from the body-cap middleware and the 429 from the rate limiter's
+    # admit() call, all of which sit outside the handler and would otherwise go
+    # undocumented. Ordered ascending by status, which render() preserves.
     responses={
-        **_ERROR_RESPONSES,
-        409: {"model": ErrorBody, "description": "Unknown `config_version`. `PUT /nodes/config`, then resume."},
+        400: INVALID_FRAME,
+        401: UNAUTHORIZED,
+        409: UNKNOWN_CONFIG_VERSION,
+        413: TOO_LARGE,
+        429: RATE_LIMITED,
+        "5XX": SERVER_ERROR,
     },
     summary="Send one detection frame.",
+    description=_DETECTION_DESCRIPTION,
+    response_description=(
+        "Accepted. Every ack restates the derived state in full rather than on change, so it is "
+        "worth reading on every response."
+    ),
+    # The contract's operationId, kept rather than left to FastAPI's derived
+    # name: it is the method name in every generated client, and the node client
+    # was built against these four.
+    operation_id="postDetection",
+    openapi_extra={
+        # Not a setting the server can change, and the number a reader most often
+        # gets wrong: the node has no send timer, so the arrival rate is the
+        # radar's frame rate. See the endpoint description.
+        "x-cadence": "one request per CPI, no timer",
+        "x-max-body-bytes": NODE_BODY_LIMITS["/v1/nodes/detection"],
+    },
 )
 async def post_detection(
     frame: DetectionFrame,
@@ -197,7 +291,7 @@ async def post_detection(
 
     The frame holds no node identifier at all: attribution comes from the bearer,
     which is the whole reason the token exists, and `extra="forbid"` on the model
-    means a body that tries to name a node is a 422 rather than a question about
+    means a body that tries to name a node is a 400 rather than a question about
     which of the two to believe.
 
     A node missing from `state.connected_nodes` is neither recovered here nor
@@ -226,8 +320,23 @@ async def post_detection(
 @router.post(
     "/heartbeat",
     response_model=HeartbeatResponse,
-    responses=_ERROR_RESPONSES,
+    # Ordered ascending by status, which render() preserves. See the comment
+    # above post_detection for why none of these is raised in the handler.
+    responses={
+        400: INVALID_BEAT,
+        401: UNAUTHORIZED,
+        413: TOO_LARGE,
+        429: RATE_LIMITED,
+        "5XX": SERVER_ERROR,
+    },
     summary="Report liveness and health.",
+    description=_HEARTBEAT_DESCRIPTION,
+    response_description="Acknowledged. The `errors` list can be cleared.",
+    operation_id="postHeartbeat",
+    openapi_extra={
+        "x-cadence": "every 60 s, phase-offset at random within the interval",
+        "x-max-body-bytes": NODE_BODY_LIMITS["/v1/nodes/heartbeat"],
+    },
 )
 async def post_heartbeat(
     beat: HeartbeatRequest,

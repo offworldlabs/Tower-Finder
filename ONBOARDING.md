@@ -163,6 +163,18 @@ It runs `ruff-check`, `ruff-format`, a dead-code check (vulture) and `ruff-confi
 twice, once per copy of the shared standard in this repo. A change can pass
 `ruff check` and `ruff format` by hand and still fail CI on dead code.
 
+Touching a node route or one of its models also moves the node API's wire
+contract, which is generated rather than written. Regenerate it in the same
+commit, or CI fails on a file you never edited:
+
+```bash
+cd backend && RETINA_ENV=dev .venv/bin/python -m scripts.generate_openapi
+```
+
+That gate is what makes the generated contract trustworthy: the committed file
+cannot be edited by hand to match a change, because the next run regenerates it
+and notices.
+
 Two traps in that command:
 
 - **`--all-files` does not mean all files.** pre-commit enumerates through

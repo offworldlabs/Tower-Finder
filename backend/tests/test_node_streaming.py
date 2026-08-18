@@ -4,9 +4,9 @@ The two hot-path handlers, tested through the app rather than by calling them:
 the bearer dependency, the per-token limiter and the body caps are all part of
 what these endpoints are, and none of them is exercised by a direct call.
 
-Bodies here are transcribed from the examples in `nodes_api_v1.yml` rather than
-minimised, so a bound tightening in the contract fails a test instead of passing
-one that never sent a realistic frame.
+Bodies here are transcribed from the wire contract's examples rather than
+minimised, so a bound tightening fails a test instead of passing one that never
+sent a realistic frame.
 """
 
 from datetime import UTC, datetime

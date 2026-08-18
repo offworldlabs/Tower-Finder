@@ -43,7 +43,8 @@ from routes.analytics import router as analytics_router
 from routes.archive import router as archive_router
 from routes.auth import router as auth_router
 from routes.custody import router as custody_router
-from routes.nodes import NODE_BODY_LIMITS, install_error_handlers
+from routes.node_responses import API_DESCRIPTION
+from routes.nodes import NODE_API_TAGS, NODE_BODY_LIMITS, install_error_handlers
 from routes.nodes import router as nodes_router
 from routes.output import router as output_router
 from routes.radar import router as radar_router
@@ -259,7 +260,17 @@ class LimitUploadSize(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-app = FastAPI(title="Tower Finder API", lifespan=lifespan)
+# The description is where the node API's cross-cutting policy lives — the error
+# taxonomy, and the `x-retry` / `x-terminal` vocabulary the per-response
+# annotations use. It is carried into the published node contract by
+# scripts/generate_openapi.py, so there is one copy of it rather than a document
+# beside the schema that can disagree with the routes. See routes/nodes.py.
+app = FastAPI(
+    title="Tower Finder API",
+    description=API_DESCRIPTION,
+    openapi_tags=NODE_API_TAGS,
+    lifespan=lifespan,
+)
 
 app.add_middleware(LimitUploadSize, limits=NODE_BODY_LIMITS)
 

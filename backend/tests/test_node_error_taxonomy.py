@@ -214,6 +214,39 @@ def test_a_body_that_is_not_json_at_all_is_a_400(node_client, registered_node):
     assert r.json()["error"] == "invalid_body"
 
 
+def test_a_body_that_cannot_even_be_read_is_a_400_in_the_taxonomy(node_client, registered_node, monkeypatch):
+    """FastAPI answers a body-read failure that is not a JSON decode error with
+    a bare `HTTPException(400, detail="There was an error parsing the body")`
+    (fastapi.routing.get_request_handler's catch-all around the body read).
+    That detail has spaces and capitals, so it never matches `_SLUG`, and
+    without the taxonomy's special case it would fall back to `bad_request`,
+    a slug `API_DESCRIPTION` never documents for 400.
+
+    A genuine transport-level read failure (the client disconnecting
+    mid-upload) is what triggers this in production, and TestClient's
+    synchronous ASGI transport gives no way to provoke that from the wire.
+    `Request.body` is patched instead, for this one request only, to raise the
+    same shape of exception FastAPI's own `except Exception` catches: anything
+    that is not a `json.JSONDecodeError` and not an `HTTPException`.
+    """
+    from starlette.requests import Request
+
+    async def _unreadable(self):
+        raise RuntimeError("simulated transport read failure")
+
+    monkeypatch.setattr(Request, "body", _unreadable)
+    token, _node_id = registered_node
+
+    r = node_client.post(
+        "/v1/nodes/detection",
+        json={},
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+
+    assert r.status_code == 400
+    assert r.json() == {"error": "invalid_body"}
+
+
 # ── the refusals that were already right ─────────────────────────────────────
 
 
@@ -258,6 +291,48 @@ def test_an_unrouted_path_under_the_prefix_is_in_the_taxonomy(node_client):
     assert r.json() == {"error": "not_found"}
 
 
+# ── 5XX ──────────────────────────────────────────────────────────────────────
+
+
+def test_an_unhandled_exception_answers_500_in_the_taxonomy(node_client, registered_node, monkeypatch):
+    """The contract publishes `Error` for 5XX; the server has to send it.
+
+    `_file_frame` is the last thing `post_detection` calls before returning, so
+    raising from it stands in for any unhandled exception a node handler could
+    raise: nothing upstream of it is an `HTTPException` or a validation error,
+    so neither of the other two handlers would ever see this.
+    """
+    import routes.node_stream
+
+    def _boom(node_id, frame):
+        raise RuntimeError("pipeline exploded")
+
+    monkeypatch.setattr(routes.node_stream, "_file_frame", _boom)
+    token, _node_id = registered_node
+
+    r = node_client.post("/v1/nodes/detection", json=FRAME, headers={"Authorization": f"Bearer {token}"})
+
+    assert r.status_code == 500
+    assert r.headers["content-type"] == "application/json"
+    assert r.json() == {"error": "internal"}
+
+
+def test_the_500_names_no_detail_and_leaks_no_exception_text(node_client, registered_node, monkeypatch):
+    """An exception's text is server-internal and must not reach a node."""
+    import routes.node_stream
+
+    def _boom(node_id, frame):
+        raise RuntimeError("a message a node must never see")
+
+    monkeypatch.setattr(routes.node_stream, "_file_frame", _boom)
+    token, _node_id = registered_node
+
+    r = node_client.post("/v1/nodes/detection", json=FRAME, headers={"Authorization": f"Bearer {token}"})
+
+    assert "detail" not in r.json()
+    assert "a message a node must never see" not in r.text
+
+
 # ── scoping ──────────────────────────────────────────────────────────────────
 
 
@@ -288,3 +363,22 @@ def test_the_rest_of_the_api_keeps_fastapis_shape(node_client):
     assert r.status_code == 422
     assert "detail" in r.json()
     assert "error" not in r.json()
+
+
+def test_an_unhandled_exception_outside_the_prefix_keeps_the_plain_text_500(node_client, monkeypatch):
+    """The 5XX handler is scoped like the other two: everywhere else is untouched.
+
+    `GET /api/config` reads `_CONFIG_PATH` off disk with no scoping of its own;
+    pointing it at a file that cannot exist raises `FileNotFoundError` before the
+    handler produces anything, which is a genuine unhandled exception rather
+    than one raised on purpose for the test.
+    """
+    import routes.towers
+
+    monkeypatch.setattr(routes.towers, "_CONFIG_PATH", "/nonexistent/does-not-exist.json")
+
+    r = node_client.get("/api/config")
+
+    assert r.status_code == 500
+    assert r.headers["content-type"] == "text/plain; charset=utf-8"
+    assert r.text == "Internal Server Error"

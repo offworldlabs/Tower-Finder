@@ -60,6 +60,18 @@ jobs:
       - name: Lint (pre-commit)
         working-directory: .
         run: pre-commit run --all-files --show-diff-on-failure
+      # The node API's wire contract is generated from the routes, not authored,
+      # so this is what makes it trustworthy: the committed file cannot be
+      # hand-edited to match a change, because the next run regenerates it and
+      # notices. Ahead of pytest, which asserts the same thing, because a
+      # dedicated step names the remediation instead of burying it in a diff.
+      #
+      # RETINA_ENV because importing the app outside a test process otherwise
+      # resolves as production, which refuses to start without its secrets.
+      - name: Node API contract is current
+        env:
+          RETINA_ENV: dev
+        run: python -m scripts.generate_openapi --check
       - run: pytest tests/ -v --tb=short -m "not external"
 
   frontend-build:

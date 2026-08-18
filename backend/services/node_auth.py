@@ -16,6 +16,7 @@ import secrets
 from datetime import UTC, datetime
 
 from fastapi import Depends, HTTPException, Request
+from fastapi.security import HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +24,25 @@ from core.nodes import NodeToken
 from core.users import get_async_session
 
 _ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+# Declared purely so the generated contract carries `bearerAuth`. Without it the
+# schema describes the four endpoints with no credential at all, and a client
+# generated from the published file would not send the header the server
+# requires. The routers that authenticate depend on this; `bearer_node` below
+# still reads the header itself.
+#
+# `auto_error=False` because the refusal is not the framework's to make: its own
+# is a 403 in FastAPI's shape, where the contract wants a 401 in the node error
+# taxonomy, and it would fire ahead of `bearer_node` and hide it.
+node_bearer_scheme = HTTPBearer(
+    scheme_name="bearerAuth",
+    auto_error=False,
+    description=(
+        "The token minted by `POST /v1/nodes/register`, persisted at mode 0600 under `/data`. "
+        "Sent as `Authorization: Bearer <token>`. There is no expiry: a token dies by being "
+        "revoked and by nothing else."
+    ),
+)
 
 
 def mint_node_ref() -> str:
