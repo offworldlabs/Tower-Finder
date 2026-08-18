@@ -462,14 +462,6 @@ jobs:
               exit 1
             fi
 
-            # Clear any marker left behind by an earlier run, now that identity
-            # is confirmed and before any pre-flight below can exit. A marker
-            # that outlived its run — a failed deploy whose rollback job also
-            # failed — would otherwise make the NEXT deploy's failed pre-flight
-            # look like a half-finished deploy, and trigger the one rollback
-            # that must never happen. See rollback-production-on-deploy-failure.
-            rm -f /opt/tower-finder/.deploy-in-progress
-
             # Second pre-flight, before anything below mutates the box: a .env
             # naming the WRONG environment is the one remaining error that has to
             # be caught before pre-deploy.sh runs. That script
@@ -554,21 +546,6 @@ jobs:
             fi
             echo "Origin-pull CA present and parseable: ${CF_CA}"
 
-            # Pre-deploy: save rollback image + git tag. NOT `|| true`: if we
-            # cannot capture a rollback point, abort the deploy rather than ship
-            # with no way back. A swallowed failure here previously let a deploy
-            # proceed with a stale/absent rollback image, so a later rollback
-            # silently restored the wrong build.
-            bash deploy/pre-deploy.sh
-
-            # From here on the box is mid-deploy: a rollback point now exists,
-            # and everything below moves the tree or the running containers.
-            # The marker is what lets the rollback job tell "died in a
-            # pre-flight, stack untouched" from "died with production half
-            # deployed" — the two need opposite responses.
-            echo "run ${{ github.run_id }} started $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-              > /opt/tower-finder/.deploy-in-progress
-
             # Pre-flight: refuse to deploy when the disk is near full. Without
             # this, git fetch silently writes a partial pack ("No space left on
             # device"), the working tree never advances, and the subsequent
@@ -582,6 +559,31 @@ jobs:
               docker system df 2>/dev/null || true
               exit 1
             fi
+
+            # Pre-deploy: save rollback image + git tag. NOT `|| true`: if we
+            # cannot capture a rollback point, abort the deploy rather than ship
+            # with no way back. A swallowed failure here previously let a deploy
+            # proceed with a stale/absent rollback image, so a later rollback
+            # silently restored the wrong build.
+            bash deploy/pre-deploy.sh
+
+            # From here on the box is mid-deploy: a rollback point now exists,
+            # and everything below moves the tree or the running containers.
+            # The marker is what lets the rollback job tell "died in a
+            # pre-flight, stack untouched" from "died with production half
+            # deployed" — the two need opposite responses.
+            #
+            # Every check that can refuse the deploy sits ABOVE this line, which
+            # is the property the rollback job depends on. The disk pre-flight
+            # used to sit below it; it refuses without touching anything, so a
+            # full disk would have been read as a half-finished deploy and cost
+            # production a needless down/up cycle. Keep new pre-flights above.
+            #
+            # The run id is not decoration: the rollback job refuses to act on a
+            # marker written by a different run, because that means an earlier
+            # deploy was left mid-flight and never recovered.
+            echo "run ${{ github.run_id }} started $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              > /opt/tower-finder/.deploy-in-progress
 
             # Hard-reset rather than `git pull`: the latter aborts silently on
             # divergent branches (deploy run 25481699738 — the server had a
@@ -645,6 +647,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [deploy-production]
+    # Same group as deploy-production. The slot frees the moment that job ends,
+    # so without this a following push's deploy can be inside `git reset --hard`
+    # and `docker compose up --build` on /opt/tower-finder while rollback.sh is
+    # running `git reset --hard` and `docker compose down` in the same
+    # directory. Serialising can delay a rollback behind a queued deploy, which
+    # is the lesser problem: that deploy takes its own snapshot and supersedes
+    # the rollback, whereas two writers in one directory corrupts both.
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
     # `always() && ...result == 'failure'` rather than a bare `failure()`.
     # failure() is true when ANY ancestor job failed, and deploy-production has
     # ancestors: an e2e-staging failure skips the deploy entirely, and this job
@@ -654,7 +666,16 @@ jobs:
     # This is the gap the two existing rollbacks do not cover. Both hang off
     # jobs DOWNSTREAM of the deploy (production-smoke-tests, e2e-prod), and a
     # failed deploy skips those jobs and their rollback steps with them.
-    if: always() && needs.deploy-production.result == 'failure'
+    # 'cancelled' as well as 'failure'. Cancelling mid-deploy leaves production
+    # exactly as half-deployed as a crash does, and deploy-production sets
+    # cancel-in-progress: false, so this can only be a human pressing cancel —
+    # never the pipeline cancelling itself. The marker check below still makes
+    # a cancel during the pre-flights a no-op.
+    if: >-
+      always() && (
+        needs.deploy-production.result == 'failure' ||
+        needs.deploy-production.result == 'cancelled'
+      )
     steps:
       - name: Roll back, but only if the deploy actually mutated the box
         uses: appleboy/ssh-action@v1
@@ -687,7 +708,29 @@ jobs:
               exit 0
             fi
 
-            echo "Deploy failed after it began mutating the box ($(cat .deploy-in-progress)). Rolling back..."
+            MARKER=$(cat .deploy-in-progress)
+
+            # The marker records which run wrote it. One from a DIFFERENT run
+            # means an earlier deploy was left mid-flight and never recovered —
+            # its rollback failed, or someone cancelled and walked away — and
+            # this run then died in its own pre-flights without touching
+            # anything.
+            #
+            # Rolling back on that would be a guess. The box could be an
+            # unrecovered outage, or one a human has already fixed forward by
+            # hand and not tidied up after; rollback.sh would undo the second.
+            # Reporting "nothing to roll back" would be worse still — a green
+            # run over a production box that is genuinely broken. So stop, and
+            # say exactly what is ambiguous.
+            case "$MARKER" in
+              "run ${{ github.run_id }} "*) ;;
+              *)
+                echo "::error::/opt/tower-finder/.deploy-in-progress was left behind by a different run (${MARKER}). Production was put mid-deploy earlier and never confirmed healthy since. Refusing to roll back automatically, because this run touched nothing and cannot tell an unrecovered outage from a box already fixed by hand. Inspect retina-prod, recover it, then delete the marker."
+                exit 1
+                ;;
+            esac
+
+            echo "Deploy failed after it began mutating the box (${MARKER}). Rolling back..."
 
             # rollback.sh distinguishes three outcomes and `set -e` would
             # collapse the last two, so take its status explicitly.
@@ -712,7 +755,7 @@ jobs:
               *)
                 # Marker deliberately left in place: the box is still
                 # mid-deploy, and that is exactly what the next run must know.
-                echo "::error::Rollback FAILED (exit ${rc}). Production may still be down — SSH to retina-prod and recover by hand."
+                echo "::error::Rollback FAILED (exit ${rc}). Production may still be down — SSH to retina-prod and recover by hand, then delete /opt/tower-finder/.deploy-in-progress so the next deploy is not blocked by it."
                 exit "$rc"
                 ;;
             esac
