@@ -54,3 +54,6 @@ backend/data/runtime/
 
 # uv regenerates this on every `uv run`; the pins live in requirements.txt
 backend/uv.lock
+
+# Planning scratch: kept locally, never published
+docs/superpowers/
