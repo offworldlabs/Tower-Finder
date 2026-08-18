@@ -164,14 +164,22 @@ mv /etc/systemd/system/retina-firewall.service.tmp \
    /etc/systemd/system/retina-firewall.service
 systemctl daemon-reload
 systemctl enable retina-firewall.service
+# restart, not start: the unit is Type=oneshot with RemainAfterExit=yes, so
+# once it is active a `systemctl start` is a no-op that returns 0 without
+# re-running ExecStart. daemon-reload above picks up a changed unit file but
+# does not re-execute it either, so on a re-run of this script `start` would
+# leave the newly rendered unit installed but never exercised, and the status
+# line below would report whatever the previous activation left behind rather
+# than the result of this run. `restart` always re-runs ExecStart.
+#
 # Fail-closed but not silently: under `set -euo pipefail` a bare `systemctl
-# start` that fails would abort the whole script right here, before .env is
+# restart` that fails would abort the whole script right here, before .env is
 # written and before `docker compose up`, leaving the operator with a raw
 # systemd/iptables error and a half-configured box. Naming the failure and
 # dumping the unit's status and recent logs first turns that into a diagnosis
-# — the script still stops (an origin without this boundary must not proceed
-# to serve traffic), it just says why before it does.
-if ! systemctl start retina-firewall.service; then
+# (the script still stops, an origin without this boundary must not proceed
+# to serve traffic, it just says why before it does).
+if ! systemctl restart retina-firewall.service; then
     echo "✗ retina-firewall.service failed to start — the Cloudflare origin" >&2
     echo "  boundary is not in place. Provisioning stops here rather than" >&2
     echo "  continue with an unprotected origin." >&2

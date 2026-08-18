@@ -9,28 +9,66 @@ set -euo pipefail
 # find plus stat rather than du: busybox du has no -b, and du reports
 # allocated blocks, which differ between volumes for identical content. This
 # is the cheap first gate; it catches a truncated or short copy but is blind
-# to same-size corruption, which manifest() below catches instead.
+# to same-size corruption, and to ownership and permissions entirely, both of
+# which manifest() below catches instead.
+#
+# set -e is load-bearing here, not decorative: pipefail alone only fixes the
+# exit status of a pipeline that is itself the last thing the script runs,
+# and here the count and the byte sum are command substitutions embedded as
+# printf arguments, so their exit status would otherwise never reach printf's
+# own. Assigning each to a variable first gives set -e something to catch: a
+# failing find/stat under a failing $(...) assignment aborts the script
+# immediately, which is what makes docker run's own exit code trustworthy.
 measure() {
-    docker run --rm -v "$1":/v:ro alpine sh -c \
-        'printf "%s %s" "$(find /v -type f | wc -l)" \
-         "$(find /v -type f -exec stat -c %s {} + | awk "{s+=\$1} END {print s+0}")"'
+    docker run --rm -v "$1":/v:ro alpine sh -c '
+        set -eo pipefail
+        n=$(find /v -type f | wc -l)
+        b=$(find /v -type f -exec stat -c %s {} + | awk "{s+=\$1} END {print s+0}")
+        printf "%s %s" "$n" "$b"
+    '
 }
 
 # Hashes every regular file and records every directory and symlink by path,
-# a symlink by its target rather than by following it. find -type f alone
-# never counts a symlink or an empty directory, so without this a dropped
+# a symlink by its target rather than by following it, and every entry's
+# owner, group and mode, so a copy that silently changes ownership (a stray
+# chown or chmod on the destination) shows up here even though it changes
+# no byte and no path. `stat` on a symlink reports the link's own uid/gid/
+# mode rather than the target's (verified: busybox stat does not dereference
+# by default), which is what makes the symlink line describe the link and
+# not whatever it points at. find -type f alone never counts a symlink or an
+# empty directory, so without the second and third find calls a dropped
 # symlink or a dropped empty directory changes nothing on either side of the
 # count/byte check above. The three listings are sorted, to remove find's
 # traversal-order noise, and folded into one digest so only a single line has
 # to cross back out of the container; sort and sha256sum only care about full
 # line content, so the three listings not sharing a column layout is fine.
+#
+# set -e is load-bearing for the same reason as in measure() above: without
+# it, a failing find or readlink partway through one of the three listings
+# below still leaves the group's exit status set by whichever of the three
+# commands happens to run last, so a partial listing would be hashed and the
+# result would still be a valid-looking digest. With set -e, a failing
+# command aborts the group immediately, and pipefail then carries that
+# failure through sort/sha256sum/cut to the exit code docker run reports.
 manifest() {
     docker run --rm -v "$1":/v:ro alpine sh -c '
+        set -eo pipefail
         cd /v
         {
-            find . -type f -exec sha256sum {} +
-            find . -type l | while IFS= read -r p; do printf "%s  L:%s\n" "$p" "$(readlink "$p")"; done
-            find . -type d | while IFS= read -r p; do printf "%s  D\n" "$p"; done
+            find . -type f | while IFS= read -r p; do
+                meta="$(stat -c "%u %g %a" "$p")"
+                line="$(sha256sum "$p")"
+                printf "F %s %s\n" "$meta" "$line"
+            done
+            find . -type l | while IFS= read -r p; do
+                meta="$(stat -c "%u %g %a" "$p")"
+                target="$(readlink "$p")"
+                printf "L %s %s  L:%s\n" "$meta" "$p" "$target"
+            done
+            find . -type d | while IFS= read -r p; do
+                meta="$(stat -c "%u %g %a" "$p")"
+                printf "D %s %s\n" "$meta" "$p"
+            done
         } | sort | sha256sum | cut -d" " -f1
     '
 }

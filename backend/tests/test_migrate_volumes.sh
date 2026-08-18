@@ -7,6 +7,10 @@
 # The negative cases below prove the verification logic itself rejects a bad
 # copy, not just that a good copy happens to pass: a comparison that always
 # reported success would still pass a suite made only of the happy path.
+#
+# Not wired into CI or pre-commit (it needs a working Docker daemon); run it
+# by hand with `bash backend/tests/test_migrate_volumes.sh`, and run it
+# before any real migration to confirm the verification logic on this box.
 set -euo pipefail
 
 SCRIPT="$(cd "$(dirname "$0")/../.." && pwd)/deploy/migrate-volumes.sh"
