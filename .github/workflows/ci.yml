@@ -37,6 +37,7 @@ concurrency:
 jobs:
   backend-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # `edited` covers title and body edits as well as the base change we want,
     # and `changes.base` is populated only for the latter.
     if: github.event.action != 'edited' || github.event.changes.base
@@ -76,6 +77,7 @@ jobs:
 
   frontend-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # `edited` covers title and body edits as well as the base change we want,
     # and `changes.base` is populated only for the latter.
     if: github.event.action != 'edited' || github.event.changes.base
@@ -97,6 +99,7 @@ jobs:
 
   dashboard-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # `edited` covers title and body edits as well as the base change we want,
     # and `changes.base` is populated only for the latter.
     if: github.event.action != 'edited' || github.event.changes.base
@@ -118,6 +121,7 @@ jobs:
 
   docker-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # `edited` covers title and body edits as well as the base change we want,
     # and `changes.base` is populated only for the latter.
     if: github.event.action != 'edited' || github.event.changes.base
@@ -130,6 +134,7 @@ jobs:
   env-parity:
     name: Staging/production parity
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # `edited` covers title and body edits as well as the base change we want,
     # and `changes.base` is populated only for the latter.
     if: github.event.action != 'edited' || github.event.changes.base
@@ -154,6 +159,7 @@ jobs:
   e2e-staging:
     name: Playwright E2E (staging)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [staging-smoke-tests]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     defaults:
@@ -168,8 +174,10 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci --legacy-peer-deps
       - name: Install Playwright browsers
+        timeout-minutes: 5
         run: npx playwright install --with-deps chromium
       - name: Run E2E tests (staging)
+        timeout-minutes: 15
         run: E2E_ENV=staging npx playwright test
         env:
           CI: "true"
@@ -178,6 +186,7 @@ jobs:
   e2e-prod:
     name: Playwright E2E (production)
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     needs: [production-smoke-tests]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     defaults:
@@ -191,15 +200,34 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci --legacy-peer-deps
+      # Bounded so a CDN stall fails the step in minutes instead of holding a
+      # runner for the job's full cap. This one deliberately gets no rollback:
+      # it fails before the tests run, so `steps.e2e.outcome` stays `skipped`.
       - name: Install Playwright browsers
+        timeout-minutes: 5
         run: npx playwright install --with-deps chromium
+      # Bounded at the step rather than relying on the job cap: a step timeout
+      # marks the step failed, which still trips the rollback below, whereas a
+      # job timeout is a cancellation and would skip it. A production wedged
+      # badly enough to hang Playwright is exactly when the rollback is wanted.
       - name: Run E2E tests (production)
+        id: e2e
+        timeout-minutes: 15
         run: E2E_ENV=prod npx playwright test
         env:
           CI: "true"
           RADAR_API_KEY: ${{ secrets.RADAR_API_KEY }}
+      # Scoped to the test step's own outcome, as the production smoke job is.
+      # A bare failure() also fires when checkout, npm ci or the Playwright
+      # browser install fails, none of which say anything about whether
+      # production is healthy. The Playwright CDN was unreliable on 2026-08-18;
+      # those runs happened to stall rather than exit non-zero, so they were
+      # cancelled by hand and no rollback ran, but the same CDN failing outright
+      # would have reverted a healthy production. An infrastructure failure now
+      # leaves the job red for a human to read, and only tests that ran and
+      # failed roll production back.
       - name: Rollback production on E2E failure
-        if: failure()
+        if: failure() && steps.e2e.outcome == 'failure'
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -220,6 +248,7 @@ jobs:
   deploy-staging:
     name: Deploy to staging
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [backend-tests, frontend-build, dashboard-build, docker-build, env-parity]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     concurrency:
@@ -345,10 +374,15 @@ jobs:
   staging-smoke-tests:
     name: Staging smoke tests
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     needs: [deploy-staging]
     steps:
       - uses: actions/checkout@v4
+      # The curls in this loop carry no --max-time, so against a hung origin
+      # the 24 iterations run far past the job cap. Bounded here rather than by
+      # rewriting the loop, which deploy/staging-smoke-test.sh mirrors.
       - name: Wait for fleet to connect
+        timeout-minutes: 10
         run: |
           echo "Waiting for fleet nodes to connect..."
           # Through the edge, not at the droplet's address: the origin now requires
@@ -370,11 +404,15 @@ jobs:
             sleep 5
           done
       - name: Run smoke tests against staging
+        timeout-minutes: 15
         run: bash deploy/staging-smoke-test.sh
 
   deploy-production:
     name: Deploy to production
     runs-on: ubuntu-latest
+    # Above the ssh-action's own command_timeout below, so a stuck deploy
+    # surfaces as that step's error rather than as a bare job timeout.
+    timeout-minutes: 30
     # Gate prod on BOTH the staging smoke tests and the full staging Playwright
     # E2E suite (`e2e-staging`). Previously only staging-smoke-tests gated this,
     # so the ~127-test E2E ran in parallel with the prod deploy and couldn't
@@ -575,6 +613,7 @@ jobs:
   production-smoke-tests:
     name: Production smoke tests
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     needs: [deploy-production]
     steps:
       - uses: actions/checkout@v4
@@ -594,6 +633,7 @@ jobs:
           sleep 60
       - name: Run production smoke tests
         id: smoke
+        timeout-minutes: 15
         env:
           BASE_URL: https://api.retina.fm
         run: |
