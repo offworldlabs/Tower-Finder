@@ -34,6 +34,15 @@ concurrency:
   # no-op edit queues instead, and skips quickly once it starts.
   cancel-in-progress: ${{ github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base != null) }}
 
+env:
+  # Single definition of the deploy directory. The ssh-action script blocks
+  # below interpolate it, so moving the directory is one edit here. It is also
+  # forwarded to the droplet (`envs: APP_DIR`), because deploy/pre-deploy.sh and
+  # deploy/rollback.sh cd to an APP_DIR of their own and would otherwise fall
+  # back to a default still naming the old directory, snapshotting and rolling
+  # back a tree nothing is served from.
+  APP_DIR: /opt/tower-finder
+
 jobs:
   backend-tests:
     runs-on: ubuntu-latest
@@ -307,6 +316,7 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: root
           key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: APP_DIR
           script: |
             # Same identity assertion the deploy carries, and for a stronger
             # reason: rollback.sh resets the tree, retags images over :latest and
@@ -317,7 +327,7 @@ jobs:
             # match is exact.
             [ "$(hostname)" = "retina-prod" ] || { echo "::error::Refusing to roll back on '$(hostname)' — expected retina-prod."; exit 1; }
             echo "E2E tests failed — rolling back production..."
-            cd /opt/tower-finder && bash deploy/rollback.sh
+            cd ${{ env.APP_DIR }} && bash deploy/rollback.sh
 
   deploy-staging:
     name: Deploy to staging
@@ -340,9 +350,10 @@ jobs:
           username: root
           key: ${{ secrets.STAGING_SSH_KEY }}
           command_timeout: 20m
+          envs: APP_DIR
           script: |
             set -e
-            cd /opt/tower-finder
+            cd ${{ env.APP_DIR }}
 
             # Same two wrong-environment checks production runs, first and in the
             # same order, for the same reasons. The hostname is the only signal
@@ -362,7 +373,7 @@ jobs:
             # normal state of a box awaiting its first deploy, and we write it
             # below.
             if [ -f .env ] && ! grep -q '^COMPOSE_FILE=.*docker-compose\.staging\.yml' .env; then
-              echo "::error::/opt/tower-finder/.env exists but does not select the staging overlay — this host is not staging. Inspect it; do not deploy."
+              echo "::error::${{ env.APP_DIR }}/.env exists but does not select the staging overlay — this host is not staging. Inspect it; do not deploy."
               exit 1
             fi
 
@@ -505,9 +516,10 @@ jobs:
           username: root
           key: ${{ secrets.SERVER_SSH_KEY }}
           command_timeout: 20m
+          envs: APP_DIR
           script: |
             set -e
-            cd /opt/tower-finder
+            cd ${{ env.APP_DIR }}
 
             # Identity pre-flight, and deliberately the first thing of all: it is
             # the only check here that does not depend on the state of the box.
@@ -553,7 +565,7 @@ jobs:
             # trade: the box is in an unknown state and its rollback point is
             # the thing at risk.
             if [ -f .deploy-in-progress ]; then
-              echo "::error::/opt/tower-finder/.deploy-in-progress is still present on $(hostname) ($(cat .deploy-in-progress)). An earlier deploy was left mid-flight and never confirmed healthy — its rollback failed, or was cancelled before it ran. Deploying now would snapshot the broken container as the new rollback point and lose the good one. Inspect the box and recover it (bash deploy/rollback.sh, or fix forward), then delete the marker and re-run. Refusing to deploy; the running stack is untouched."
+              echo "::error::${{ env.APP_DIR }}/.deploy-in-progress is still present on $(hostname) ($(cat .deploy-in-progress)). An earlier deploy was left mid-flight and never confirmed healthy — its rollback failed, or was cancelled before it ran. Deploying now would snapshot the broken container as the new rollback point and lose the good one. Inspect the box and recover it (bash deploy/rollback.sh, or fix forward), then delete the marker and re-run. Refusing to deploy; the running stack is untouched."
               exit 1
             fi
 
@@ -579,7 +591,7 @@ jobs:
             #
             # The file is then written from the checked-out tree, below.
             if [ -f .env ] && ! grep -q '^COMPOSE_FILE=.*docker-compose\.prod\.yml' .env; then
-              echo "::error::/opt/tower-finder/.env exists but does not select the production overlay — it names another environment. Inspect it; do not deploy."
+              echo "::error::${{ env.APP_DIR }}/.env exists but does not select the production overlay — it names another environment. Inspect it; do not deploy."
               exit 1
             fi
 
@@ -608,7 +620,7 @@ jobs:
             # shape of a botched rotation, and checking any line would pass on
             # the old value while the app booted with the new one.
             if ! grep -E '^JWT_SECRET=' backend/.env 2>/dev/null | tail -1 | grep -qE '^JWT_SECRET=.{32,}$'; then
-              echo "::error::backend/.env has no effective JWT_SECRET of at least 32 characters, and production refuses to boot without one (backend/core/users.py). On the droplet, replacing any existing line: printf 'JWT_SECRET=%s\n' \"\$(openssl rand -hex 32)\" >> /opt/tower-finder/backend/.env"
+              echo "::error::backend/.env has no effective JWT_SECRET of at least 32 characters, and production refuses to boot without one (backend/core/users.py). On the droplet, replacing any existing line: printf 'JWT_SECRET=%s\n' \"\$(openssl rand -hex 32)\" >> ${{ env.APP_DIR }}/backend/.env"
               exit 1
             fi
             if ! grep -E '^RADAR_API_KEY=' backend/.env 2>/dev/null | tail -1 | grep -qE '^RADAR_API_KEY=.+$'; then
@@ -678,7 +690,7 @@ jobs:
             # marker written by a different run, because that means an earlier
             # deploy was left mid-flight and never recovered.
             echo "run ${{ github.run_id }} started $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-              > /opt/tower-finder/.deploy-in-progress
+              > ${{ env.APP_DIR }}/.deploy-in-progress
 
             # Hard-reset rather than `git pull`: the latter aborts silently on
             # divergent branches (deploy run 25481699738 — the server had a
@@ -735,7 +747,7 @@ jobs:
             # /api/health. The box is no longer mid-deploy, so drop the marker;
             # any failure after this point is a smoke/E2E failure, which the
             # rollback steps on those jobs already cover.
-            rm -f /opt/tower-finder/.deploy-in-progress
+            rm -f ${{ env.APP_DIR }}/.deploy-in-progress
 
   rollback-production-on-deploy-failure:
     name: Roll back production if the deploy failed after it began
@@ -744,8 +756,8 @@ jobs:
     needs: [deploy-production]
     # Same group as deploy-production. The slot frees the moment that job ends,
     # so without this a following push's deploy can be inside `git reset --hard`
-    # and `docker compose up --build` on /opt/tower-finder while rollback.sh is
-    # running `git reset --hard` and `docker compose down` in the same
+    # and `docker compose up --build` in the deploy directory while rollback.sh
+    # is running `git reset --hard` and `docker compose down` in the same
     # directory. Serialising can delay a rollback behind a queued deploy, which
     # is the lesser problem: that deploy takes its own snapshot and supersedes
     # the rollback, whereas two writers in one directory corrupts both.
@@ -779,6 +791,7 @@ jobs:
           username: root
           key: ${{ secrets.SERVER_SSH_KEY }}
           command_timeout: 15m
+          envs: APP_DIR
           script: |
             set -e
             # The same identity assertion the deploy and the other two rollback
@@ -786,7 +799,7 @@ jobs:
             # tree and retags images over :latest, so a SERVER_HOST pointed at
             # the wrong droplet does more damage here than a deploy would.
             [ "$(hostname)" = "retina-prod" ] || { echo "::error::Refusing to roll back on '$(hostname)' — expected retina-prod."; exit 1; }
-            cd /opt/tower-finder
+            cd ${{ env.APP_DIR }}
 
             # deploy-production writes this marker immediately after
             # pre-deploy.sh captures the rollback point, and clears it once the
@@ -820,7 +833,7 @@ jobs:
             case "$MARKER" in
               "run ${{ github.run_id }} "*) ;;
               *)
-                echo "::error::/opt/tower-finder/.deploy-in-progress was left behind by a different run (${MARKER}). Production was put mid-deploy earlier and never confirmed healthy since. Refusing to roll back automatically, because this run touched nothing and cannot tell an unrecovered outage from a box already fixed by hand. Inspect retina-prod, recover it, then delete the marker."
+                echo "::error::${{ env.APP_DIR }}/.deploy-in-progress was left behind by a different run (${MARKER}). Production was put mid-deploy earlier and never confirmed healthy since. Refusing to roll back automatically, because this run touched nothing and cannot tell an unrecovered outage from a box already fixed by hand. Inspect retina-prod, recover it, then delete the marker."
                 exit 1
                 ;;
             esac
@@ -850,7 +863,7 @@ jobs:
               *)
                 # Marker deliberately left in place: the box is still
                 # mid-deploy, and that is exactly what the next run must know.
-                echo "::error::Rollback FAILED (exit ${rc}). Production may still be down — SSH to retina-prod and recover by hand, then delete /opt/tower-finder/.deploy-in-progress so the next deploy is not blocked by it."
+                echo "::error::Rollback FAILED (exit ${rc}). Production may still be down — SSH to retina-prod and recover by hand, then delete ${{ env.APP_DIR }}/.deploy-in-progress so the next deploy is not blocked by it."
                 exit "$rc"
                 ;;
             esac
@@ -949,8 +962,9 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: root
           key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: APP_DIR
           script: |
             # See the identical assertion in e2e-prod's rollback step.
             [ "$(hostname)" = "retina-prod" ] || { echo "::error::Refusing to roll back on '$(hostname)' — expected retina-prod."; exit 1; }
             echo "Production smoke tests failed — rolling back production..."
-            cd /opt/tower-finder && bash deploy/rollback.sh
+            cd ${{ env.APP_DIR }} && bash deploy/rollback.sh

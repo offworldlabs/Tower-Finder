@@ -32,6 +32,15 @@ on:
           - after-marker
           - after-build
 
+env:
+  # Single definition of the deploy directory. The ssh-action script blocks
+  # below interpolate it, so moving the directory is one edit here. It is also
+  # forwarded to the droplet (`envs: APP_DIR`), because deploy/pre-deploy.sh and
+  # deploy/rollback.sh cd to an APP_DIR of their own and would otherwise fall
+  # back to a default still naming the old directory, snapshotting and rolling
+  # back a tree nothing is served from.
+  APP_DIR: /opt/tower-finder
+
 jobs:
   # A separate job rather than a first step of the deploy, so a missing secret
   # produces exactly one legible error. As a step, the deploy would FAIL, which
@@ -80,10 +89,10 @@ jobs:
           # Passed as environment rather than interpolated into the script:
           # `ref` is free text from whoever dispatched, and ${{ }} would splice
           # it straight into a root shell on the droplet.
-          envs: FAIL_AT,DEPLOY_REF,RUN_ID
+          envs: FAIL_AT,DEPLOY_REF,RUN_ID,APP_DIR
           script: |
             set -e
-            cd /opt/tower-finder
+            cd ${{ env.APP_DIR }}
 
             # Identity first, for the reason ci.yml gives: the only check that
             # does not depend on the state of the box. Exact match — retina-test
@@ -97,7 +106,7 @@ jobs:
             # Same marker guard as production, and it matters more here: this
             # workflow's whole job is to leave markers behind.
             if [ -f .deploy-in-progress ]; then
-              echo "::error::/opt/tower-finder/.deploy-in-progress is still present on $(hostname) ($(cat .deploy-in-progress)). An earlier run left this box mid-deploy and it was never recovered. Inspect it, run 'bash deploy/rollback.sh' if needed, then delete the marker."
+              echo "::error::${{ env.APP_DIR }}/.deploy-in-progress is still present on $(hostname) ($(cat .deploy-in-progress)). An earlier run left this box mid-deploy and it was never recovered. Inspect it, run 'bash deploy/rollback.sh' if needed, then delete the marker."
               exit 1
             fi
 
@@ -109,7 +118,7 @@ jobs:
             # Refuse up front with the remedy rather than failing obscurely
             # somewhere in the middle.
             if [ ! -d .git ]; then
-              echo "::error::/opt/tower-finder on $(hostname) has no .git — this droplet was provisioned by 'just deploy-test' rsync. pre-deploy.sh and rollback.sh are both git-based, so the rollback path cannot be exercised here. Re-provision as a clone (see deploy/setup-server.sh) before using this workflow."
+              echo "::error::${{ env.APP_DIR }} on $(hostname) has no .git — this droplet was provisioned by 'just deploy-test' rsync. pre-deploy.sh and rollback.sh are both git-based, so the rollback path cannot be exercised here. Re-provision as a clone (see deploy/setup-server.sh) before using this workflow."
               exit 1
             fi
 
@@ -122,7 +131,7 @@ jobs:
             # tree after the reset below; this only rejects one already on the
             # box that names something else.
             if [ -f .env ] && ! grep -q '^COMPOSE_FILE=.*docker-compose\.test\.yml' .env; then
-              echo "::error::/opt/tower-finder/.env on $(hostname) exists but does not select the test overlay — it names another environment. Inspect it; do not deploy."
+              echo "::error::${{ env.APP_DIR }}/.env on $(hostname) exists but does not select the test overlay — it names another environment. Inspect it; do not deploy."
               exit 1
             fi
 
@@ -146,7 +155,7 @@ jobs:
             bash deploy/pre-deploy.sh
 
             echo "run ${RUN_ID} started $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-              > /opt/tower-finder/.deploy-in-progress
+              > ${{ env.APP_DIR }}/.deploy-in-progress
 
             # ── Injection point 2 ─────────────────────────────────────────────
             # A rollback point now exists and the tree has NOT moved, so a
@@ -196,7 +205,7 @@ jobs:
               fi
             done
 
-            rm -f /opt/tower-finder/.deploy-in-progress
+            rm -f ${{ env.APP_DIR }}/.deploy-in-progress
 
   rollback-test-on-deploy-failure:
     name: Roll back retina-test if the deploy failed after it began
@@ -223,11 +232,11 @@ jobs:
           username: root
           key: ${{ secrets.TEST_SSH_KEY }}
           command_timeout: 15m
-          envs: RUN_ID
+          envs: RUN_ID,APP_DIR
           script: |
             set -e
             [ "$(hostname)" = "retina-test" ] || { echo "::error::Refusing to roll back on '$(hostname)' — expected retina-test."; exit 1; }
-            cd /opt/tower-finder
+            cd ${{ env.APP_DIR }}
 
             if [ ! -f .deploy-in-progress ]; then
               echo "No .deploy-in-progress marker — the deploy failed before mutating anything, so what is running is already the last-known-good build. Nothing to roll back."
@@ -238,7 +247,7 @@ jobs:
             case "$MARKER" in
               "run ${RUN_ID} "*) ;;
               *)
-                echo "::error::/opt/tower-finder/.deploy-in-progress was left behind by a different run (${MARKER}). Refusing to roll back automatically — inspect retina-test, recover it, then delete the marker."
+                echo "::error::${{ env.APP_DIR }}/.deploy-in-progress was left behind by a different run (${MARKER}). Refusing to roll back automatically — inspect retina-test, recover it, then delete the marker."
                 exit 1
                 ;;
             esac
@@ -260,7 +269,7 @@ jobs:
                 exit 2
                 ;;
               *)
-                echo "::error::Rollback FAILED (exit ${rc}). retina-test may still be down — SSH in and recover by hand, then delete /opt/tower-finder/.deploy-in-progress."
+                echo "::error::Rollback FAILED (exit ${rc}). retina-test may still be down — SSH in and recover by hand, then delete ${{ env.APP_DIR }}/.deploy-in-progress."
                 exit "$rc"
                 ;;
             esac
