@@ -4,6 +4,10 @@ build/
 __pycache__/
 *.pyc
 .env
+
+# Written on the deploy target while a production deploy is mid-flight, and
+# read by the rollback job. Host state, never committed.
+.deploy-in-progress
 .venv/
 venv/
 *.egg-info/
