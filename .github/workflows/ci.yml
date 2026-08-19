@@ -156,27 +156,86 @@ jobs:
       - name: Check compose + nginx parity
         run: python3 deploy/check-env-parity.py
 
+  playwright-image:
+    name: Resolve the Playwright image
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # `edited` covers title and body edits as well as the base change we want,
+    # and `changes.base` is populated only for the latter.
+    if: github.event.action != 'edited' || github.event.changes.base
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      # The tag is DERIVED from the lockfile rather than written out here, so
+      # the browsers baked into the container cannot disagree with the client
+      # that drives them. Bumping Playwright is an npm operation and nothing
+      # else; there is deliberately no version string in this file to forget.
+      #
+      # The lockfile, not package.json: the latter carries a range (^1.59.1)
+      # and `npm ci` installs whatever the lock resolved. Only the lock states
+      # what will actually run.
+      #
+      # This job has no `if:` gate on push-to-main, unlike the two E2E jobs
+      # that consume it. That is the point of the verify below — see there.
+      - name: Resolve and verify
+        id: resolve
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./frontend/package-lock.json').packages['node_modules/@playwright/test'].version")
+          IMAGE="mcr.microsoft.com/playwright:v${VERSION}-noble"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          # A derived tag cannot be stale, but it can name an image that was
+          # never published — Microsoft does not necessarily ship one for every
+          # patch release. Checked HERE, on the pull request, because the jobs
+          # that pull it only run on push to main: without this, an unpublished
+          # version surfaces as a container-pull failure after the merge, with
+          # nothing pointing at the lockfile bump that caused it.
+          if ! docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "::error::${IMAGE} does not exist in the registry. frontend/package-lock.json resolves @playwright/test to ${VERSION}, and no Playwright container image was published for it. Pin the lockfile to a release that has one."
+            exit 1
+          fi
+          echo "Resolved and verified ${IMAGE}"
+
   e2e-staging:
     name: Playwright E2E (staging)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    needs: [staging-smoke-tests]
+    # Only the pull and npm ci sit outside the test step's own cap now, and an
+    # image pull is minutes at worst. See the production job for why the job
+    # cap is a backstop rather than the primary bound.
+    timeout-minutes: 30
+    needs: [staging-smoke-tests, playwright-image]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # The browsers and their shared libraries ship in the image, so there is no
+    # install step and neither apt nor Playwright's CDN is in this path. Both
+    # broke repeatedly on 2026-08-18 and 2026-08-19; see the production job.
+    container:
+      image: ${{ needs.playwright-image.outputs.image }}
+    # `npm ci` runs @playwright/test's postinstall, which fetches browsers. The
+    # image sets PLAYWRIGHT_BROWSERS_PATH=/ms-playwright and the tag is derived
+    # to match the lockfile, so it finds the right revision already there and
+    # does nothing. This makes that a guarantee rather than an expectation: if
+    # the browsers were ever NOT found, the postinstall would quietly download
+    # them from the CDN this job exists to avoid, and the only symptom would be
+    # a slow green run. With this set it fails loudly at the browser instead,
+    # pointing at the cause. See microsoft/playwright#4283.
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
     defaults:
       run:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
+      # Kept despite the image shipping its own Node: this pins the version the
+      # tests run under to the same 20 as every other job, rather than letting
+      # it drift with whatever the Playwright image happens to carry, and keeps
+      # the npm cache. Only browser provisioning changes here.
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci --legacy-peer-deps
-      # See the production job below for why this is 15 and not 5.
-      - name: Install Playwright browsers
-        timeout-minutes: 15
-        run: npx playwright install --with-deps chromium
       - name: Run E2E tests (staging)
         timeout-minutes: 15
         run: E2E_ENV=staging npx playwright test
@@ -187,33 +246,40 @@ jobs:
   e2e-prod:
     name: Playwright E2E (production)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    needs: [production-smoke-tests]
+    # A backstop above the test step's own cap, not the primary bound: a job
+    # timeout is a cancellation and would skip the rollback below, whereas the
+    # step cap marks the step failed and keeps it reachable.
+    timeout-minutes: 30
+    needs: [production-smoke-tests, playwright-image]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # The browsers and their shared libraries ship in the image, so there is no
+    # install step at all. That step was the single worst source of red runs
+    # here: `npx playwright install --with-deps` fetches the browsers from
+    # Playwright's CDN, which stalled twice on 2026-08-18, and before that runs
+    # an apt update, which hung for 14m34s against the runner's dead
+    # azure.archive.ubuntu.com mirror on both 2026-08-18 and 2026-08-19.
+    #
+    # It also mattered more here than anywhere else: under the old gating an
+    # install that exited non-zero satisfied `failure()` and rolled a healthy
+    # production back. Removing the step removes that class of event rather
+    # than only declining to act on it.
+    container:
+      image: ${{ needs.playwright-image.outputs.image }}
+    # See the staging job: makes the postinstall's no-op a guarantee.
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
     defaults:
       run:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
+      # See the staging job for why setup-node is kept inside the container.
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci --legacy-peer-deps
-      # Bounded so a stall fails the step in minutes instead of holding a runner
-      # for the job's full cap. This one deliberately gets no rollback: it fails
-      # before the tests run, so `steps.e2e.outcome` stays `skipped`.
-      #
-      # 15 rather than something nearer the ~60s a healthy run takes, because
-      # `--with-deps` does an apt update and pulls the browser's shared-library
-      # dependencies before a single byte of Chromium is fetched, and that phase
-      # is the slow and variable one. On 2026-08-18 it ran 4m50s against a
-      # normal few seconds, and a 5-minute cap killed the step moments after the
-      # browsers had in fact finished downloading.
-      - name: Install Playwright browsers
-        timeout-minutes: 15
-        run: npx playwright install --with-deps chromium
       # Bounded at the step rather than relying on the job cap: a step timeout
       # marks the step failed, which still trips the rollback below, whereas a
       # job timeout is a cancellation and would skip it. A production wedged
@@ -226,13 +292,13 @@ jobs:
           CI: "true"
           RADAR_API_KEY: ${{ secrets.RADAR_API_KEY }}
       # Scoped to the test step's own outcome, as the production smoke job is.
-      # A bare failure() also fires when checkout, npm ci or the Playwright
-      # browser install fails, none of which say anything about whether
-      # production is healthy. The Playwright CDN was unreliable on 2026-08-18;
-      # those runs happened to stall rather than exit non-zero, so they were
-      # cancelled by hand and no rollback ran, but the same CDN failing outright
-      # would have reverted a healthy production. An infrastructure failure now
-      # leaves the job red for a human to read, and only tests that ran and
+      # A bare failure() also fires when the container fails to pull, or when
+      # checkout or npm ci fails, none of which say anything about whether
+      # production is healthy. The browser install that made this urgent is
+      # gone, but the reasoning outlives it: anything that breaks before the
+      # tests run is a statement about the runner, not about production. An
+      # infrastructure failure now leaves the job red for a human to read,
+      # and only tests that ran and
       # failed roll production back.
       - name: Rollback production on E2E failure
         if: failure() && steps.e2e.outcome == 'failure'
