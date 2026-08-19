@@ -174,9 +174,22 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci --legacy-peer-deps
       # See the production job below for why this is 15 and not 5.
+      # No `--with-deps`. That flag runs an apt update and installs the browser's
+      # shared-library dependencies before fetching anything, and it is the part
+      # that breaks: on 2026-08-18 and again on 2026-08-19, the runner's
+      # `azure.archive.ubuntu.com` mirror returned nothing for 25 index fetches,
+      # apt fell back to the public archive and then hung, silent, until the step
+      # cap killed it. Twice, fourteen hours apart, identical. The browsers
+      # themselves download from Playwright's CDN in about four seconds.
+      #
+      # The GitHub-hosted runner image already carries the libraries headless
+      # Chromium needs. If a future image stops doing so, Chromium fails to
+      # launch and the STAGING suite goes red first: `deploy-production` needs
+      # `e2e-staging`, so production is never deployed and `e2e-prod` never runs.
+      # The failure cannot reach the production rollback path.
       - name: Install Playwright browsers
         timeout-minutes: 15
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install chromium
       - name: Run E2E tests (staging)
         timeout-minutes: 15
         run: E2E_ENV=staging npx playwright test
@@ -205,15 +218,12 @@ jobs:
       # for the job's full cap. This one deliberately gets no rollback: it fails
       # before the tests run, so `steps.e2e.outcome` stays `skipped`.
       #
-      # 15 rather than something nearer the ~60s a healthy run takes, because
-      # `--with-deps` does an apt update and pulls the browser's shared-library
-      # dependencies before a single byte of Chromium is fetched, and that phase
-      # is the slow and variable one. On 2026-08-18 it ran 4m50s against a
-      # normal few seconds, and a 5-minute cap killed the step moments after the
-      # browsers had in fact finished downloading.
+      # The cap stays generous rather than tracking the few seconds a download
+      # takes, so a slow CDN day is a slow run and not a red one. See the
+      # staging job above for why apt is no longer in this path at all.
       - name: Install Playwright browsers
         timeout-minutes: 15
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install chromium
       # Bounded at the step rather than relying on the job cap: a step timeout
       # marks the step failed, which still trips the rollback below, whereas a
       # job timeout is a cancellation and would skip it. A production wedged
