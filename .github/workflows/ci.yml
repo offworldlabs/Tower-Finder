@@ -462,6 +462,35 @@ jobs:
               exit 1
             fi
 
+            # Checked immediately after identity, and for a similar reason: if
+            # this box is still mid-deploy from an earlier run, none of the
+            # questions below it are worth asking.
+            #
+            # The marker is written after pre-deploy.sh and cleared when the app
+            # comes back healthy or a rollback succeeds. This run has not written
+            # one yet, so finding one here means an earlier attempt was left half
+            # deployed and never recovered — its rollback failed, or the run was
+            # cancelled before one could.
+            #
+            # Deploying over that would destroy the only way back. pre-deploy.sh
+            # snapshots the CURRENTLY RUNNING container as the new rollback
+            # point, so it would capture the broken build, discard the good one,
+            # and then the marker write would overwrite the evidence too. The
+            # next rollback would faithfully restore the breakage.
+            #
+            # Deliberately ANY marker rather than one from another run: "Re-run
+            # failed jobs" keeps the same run id, and a retry poisons the
+            # snapshot exactly as a fresh run would.
+            #
+            # The cost is that an incident which leaves a marker behind also
+            # blocks deploys until a human clears it. That is the intended
+            # trade: the box is in an unknown state and its rollback point is
+            # the thing at risk.
+            if [ -f .deploy-in-progress ]; then
+              echo "::error::/opt/tower-finder/.deploy-in-progress is still present on $(hostname) ($(cat .deploy-in-progress)). An earlier deploy was left mid-flight and never confirmed healthy — its rollback failed, or was cancelled before it ran. Deploying now would snapshot the broken container as the new rollback point and lose the good one. Inspect the box and recover it (bash deploy/rollback.sh, or fix forward), then delete the marker and re-run. Refusing to deploy; the running stack is untouched."
+              exit 1
+            fi
+
             # Second pre-flight, before anything below mutates the box: a .env
             # naming the WRONG environment is the one remaining error that has to
             # be caught before pre-deploy.sh runs. That script
