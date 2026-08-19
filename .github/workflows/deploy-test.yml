@@ -1,0 +1,266 @@
+name: Deploy to test droplet
+
+# Dispatch-only. This exists so the production auto-rollback path can be
+# exercised end to end without breaking production to do it — CI had no route to
+# retina-test at all before this (no TEST_HOST secret, no job referencing it),
+# and `deploy-production` is gated on `push` to main, so a workflow_dispatch run
+# skips it and the rollback job with it.
+#
+# The deploy and rollback logic below MIRRORS ci.yml's deploy-production and
+# rollback-production-on-deploy-failure. ci.yml is the source of truth; this is
+# a copy, and a copy can drift. If you change the marker lifecycle or the
+# rollback decisions there, change them here, or this stops verifying anything.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to deploy on retina-test"
+        required: true
+        default: main
+      fail_at:
+        description: "Inject a deliberate failure, to verify auto-rollback"
+        required: true
+        type: choice
+        default: none
+        options:
+          # none         — ordinary deploy; marker must end up cleared.
+          # preflight    — fails before anything is touched; rollback must DECLINE.
+          # after-marker — rollback point exists, tree not yet moved; rollback must act.
+          # after-build  — containers already replaced; the case rollback exists for.
+          - none
+          - preflight
+          - after-marker
+          - after-build
+
+jobs:
+  # A separate job rather than a first step of the deploy, so a missing secret
+  # produces exactly one legible error. As a step, the deploy would FAIL, which
+  # would fire the rollback job, which would then SSH to the same empty host and
+  # fail just as obscurely. As a job, the deploy is SKIPPED instead, and the
+  # rollback job's `result == 'failure'` condition is false.
+  check-secrets:
+    name: Check the retina-test secrets exist
+    runs-on: ubuntu-latest
+    steps:
+      - name: Both secrets must be set
+        env:
+          TEST_HOST: ${{ secrets.TEST_HOST }}
+          TEST_SSH_KEY: ${{ secrets.TEST_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${TEST_HOST:-}" ]    || missing="${missing} TEST_HOST"
+          [ -n "${TEST_SSH_KEY:-}" ] || missing="${missing} TEST_SSH_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secret(s):${missing}. This workflow needs SSH access to the retina-test droplet — add them under Settings → Secrets and variables → Actions. TEST_HOST is the droplet's address; TEST_SSH_KEY is a private key whose public half is in root's authorized_keys there."
+            exit 1
+          fi
+          echo "TEST_HOST and TEST_SSH_KEY are both set."
+
+  deploy-test:
+    name: Deploy to retina-test
+    runs-on: ubuntu-latest
+    needs: [check-secrets]
+    timeout-minutes: 30
+    concurrency:
+      group: test-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Deploy to test via SSH
+        uses: appleboy/ssh-action@v1
+        env:
+          FAIL_AT: ${{ inputs.fail_at }}
+          DEPLOY_REF: ${{ inputs.ref }}
+          RUN_ID: ${{ github.run_id }}
+        with:
+          host: ${{ secrets.TEST_HOST }}
+          username: root
+          key: ${{ secrets.TEST_SSH_KEY }}
+          command_timeout: 20m
+          # Passed as environment rather than interpolated into the script:
+          # `ref` is free text from whoever dispatched, and ${{ }} would splice
+          # it straight into a root shell on the droplet.
+          envs: FAIL_AT,DEPLOY_REF,RUN_ID
+          script: |
+            set -e
+            cd /opt/tower-finder
+
+            # Identity first, for the reason ci.yml gives: the only check that
+            # does not depend on the state of the box. Exact match — retina-test
+            # and nothing else, so a mistyped TEST_HOST cannot land a deliberate
+            # failure injection on staging or production.
+            if [ "$(hostname)" != "retina-test" ]; then
+              echo "::error::Refusing to deploy onto '$(hostname)' — expected retina-test. This workflow injects deliberate failures and must never point anywhere else."
+              exit 1
+            fi
+
+            # Same marker guard as production, and it matters more here: this
+            # workflow's whole job is to leave markers behind.
+            if [ -f .deploy-in-progress ]; then
+              echo "::error::/opt/tower-finder/.deploy-in-progress is still present on $(hostname) ($(cat .deploy-in-progress)). An earlier run left this box mid-deploy and it was never recovered. Inspect it, run 'bash deploy/rollback.sh' if needed, then delete the marker."
+              exit 1
+            fi
+
+            # Test-droplet specific. setup-server.sh supports two shapes: a git
+            # clone, and a git-FREE tree rsync'd here by `just deploy-test`.
+            # pre-deploy.sh tags a commit and rollback.sh does `git reset --hard`
+            # to a deploy-* tag, so on a git-free box the rollback path cannot
+            # run at all — and a verification that cannot fail proves nothing.
+            # Refuse up front with the remedy rather than failing obscurely
+            # somewhere in the middle.
+            if [ ! -d .git ]; then
+              echo "::error::/opt/tower-finder on $(hostname) has no .git — this droplet was provisioned by 'just deploy-test' rsync. pre-deploy.sh and rollback.sh are both git-based, so the rollback path cannot be exercised here. Re-provision as a clone (see deploy/setup-server.sh) before using this workflow."
+              exit 1
+            fi
+
+            # Mirrors ci.yml's .env pre-flight, and matters more here than
+            # there. pre-deploy.sh reads the running image via `docker compose
+            # images`, which resolves through whatever ./.env names, so a .env
+            # naming another environment would have it snapshot the wrong
+            # service — and the correctness of that snapshot is precisely what
+            # this workflow exists to verify. The overlay is rewritten from the
+            # tree after the reset below; this only rejects one already on the
+            # box that names something else.
+            if [ -f .env ] && ! grep -q '^COMPOSE_FILE=.*docker-compose\.test\.yml' .env; then
+              echo "::error::/opt/tower-finder/.env on $(hostname) exists but does not select the test overlay — it names another environment. Inspect it; do not deploy."
+              exit 1
+            fi
+
+            AVAIL_MB=$(df -m / | awk 'NR==2 {print $4}')
+            if [ "${AVAIL_MB:-0}" -lt 2048 ]; then
+              echo "::error::Test droplet only ${AVAIL_MB}MB free (< 2GB threshold). Aborting."
+              df -h /
+              exit 1
+            fi
+
+            # ── Injection point 1 ─────────────────────────────────────────────
+            # Everything above is read-only. This is the NEGATIVE case: the
+            # rollback job must decline to act, because the running stack was
+            # never touched and the newest deploy-* tag still belongs to the
+            # previous deploy.
+            if [ "$FAIL_AT" = "preflight" ]; then
+              echo "::error::Injected failure at pre-flight (fail_at=preflight). Nothing on this box has been touched. Expect the rollback job to find no marker and decline."
+              exit 1
+            fi
+
+            bash deploy/pre-deploy.sh
+
+            echo "run ${RUN_ID} started $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              > /opt/tower-finder/.deploy-in-progress
+
+            # ── Injection point 2 ─────────────────────────────────────────────
+            # A rollback point now exists and the tree has NOT moved, so a
+            # rollback should succeed and restore what is already running.
+            if [ "$FAIL_AT" = "after-marker" ]; then
+              echo "::error::Injected failure immediately after the marker write (fail_at=after-marker). Expect the rollback job to act and the marker to be cleared."
+              exit 1
+            fi
+
+            git fetch origin "$DEPLOY_REF"
+            git reset --hard FETCH_HEAD
+            git submodule update --init --recursive
+
+            cp deploy/env.test.example .env
+
+            pip3 install -e libs/retina-custody/ --break-system-packages --ignore-installed -q
+            pip3 install -e libs/retina-simulation/ --break-system-packages -q
+            docker builder prune -f --keep-storage 10GB
+            docker compose up -d --build tower-finder
+
+            # ── Injection point 3 ─────────────────────────────────────────────
+            # The containers have been replaced. This is the case auto-rollback
+            # exists for, and the only one where a rollback changes what is
+            # running rather than restoring it to itself.
+            #
+            # The new build is healthy rather than genuinely broken — this fails
+            # the deploy at the point a broken build would, without needing to
+            # ship one. Every rollback step is exercised (down, retag, up, health
+            # wait, marker clear); what is not simulated is the app itself being
+            # broken, which none of that logic reads.
+            if [ "$FAIL_AT" = "after-build" ]; then
+              echo "::error::Injected failure after the containers were replaced (fail_at=after-build). Expect the rollback job to restore the previous image and the previous commit."
+              exit 1
+            fi
+
+            for i in $(seq 1 18); do
+              if docker compose exec -T tower-finder python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
+                echo "Deploy successful (healthy after ~$((i*5))s)"
+                break
+              fi
+              echo "Waiting for health check... attempt $i/18"
+              sleep 5
+              if [ "$i" = "18" ]; then
+                echo "Health check failed after 90s"
+                docker compose logs --tail=50
+                exit 1
+              fi
+            done
+
+            rm -f /opt/tower-finder/.deploy-in-progress
+
+  rollback-test-on-deploy-failure:
+    name: Roll back retina-test if the deploy failed after it began
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [deploy-test]
+    concurrency:
+      group: test-deploy
+      cancel-in-progress: false
+    # Mirrors ci.yml: keyed to the deploy job's own result, and covering
+    # 'cancelled' as well as 'failure'.
+    if: >-
+      always() && (
+        needs.deploy-test.result == 'failure' ||
+        needs.deploy-test.result == 'cancelled'
+      )
+    steps:
+      - name: Roll back, but only if the deploy actually mutated the box
+        uses: appleboy/ssh-action@v1
+        env:
+          RUN_ID: ${{ github.run_id }}
+        with:
+          host: ${{ secrets.TEST_HOST }}
+          username: root
+          key: ${{ secrets.TEST_SSH_KEY }}
+          command_timeout: 15m
+          envs: RUN_ID
+          script: |
+            set -e
+            [ "$(hostname)" = "retina-test" ] || { echo "::error::Refusing to roll back on '$(hostname)' — expected retina-test."; exit 1; }
+            cd /opt/tower-finder
+
+            if [ ! -f .deploy-in-progress ]; then
+              echo "No .deploy-in-progress marker — the deploy failed before mutating anything, so what is running is already the last-known-good build. Nothing to roll back."
+              exit 0
+            fi
+
+            MARKER=$(cat .deploy-in-progress)
+            case "$MARKER" in
+              "run ${RUN_ID} "*) ;;
+              *)
+                echo "::error::/opt/tower-finder/.deploy-in-progress was left behind by a different run (${MARKER}). Refusing to roll back automatically — inspect retina-test, recover it, then delete the marker."
+                exit 1
+                ;;
+            esac
+
+            echo "Deploy failed after it began mutating the box (${MARKER}). Rolling back..."
+            set +e
+            bash deploy/rollback.sh
+            rc=$?
+            set -e
+
+            case "$rc" in
+              0)
+                rm -f .deploy-in-progress
+                echo "Rollback complete — retina-test is back on the previous build."
+                ;;
+              2)
+                rm -f .deploy-in-progress
+                echo "::error::retina-test is back up, but a database downgrade is outstanding — see the report above."
+                exit 2
+                ;;
+              *)
+                echo "::error::Rollback FAILED (exit ${rc}). retina-test may still be down — SSH in and recover by hand, then delete /opt/tower-finder/.deploy-in-progress."
+                exit "$rc"
+                ;;
+            esac

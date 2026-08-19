@@ -43,6 +43,9 @@ from routes.analytics import router as analytics_router
 from routes.archive import router as archive_router
 from routes.auth import router as auth_router
 from routes.custody import router as custody_router
+from routes.node_responses import API_DESCRIPTION
+from routes.nodes import NODE_API_TAGS, NODE_BODY_LIMITS, install_error_handlers
+from routes.nodes import router as nodes_router
 from routes.output import router as output_router
 from routes.radar import router as radar_router
 from routes.sim_ingest import router as sim_ingest_router
@@ -51,6 +54,7 @@ from routes.stats import router as stats_router
 from routes.streaming import router as streaming_router
 from routes.test import router as test_router
 from routes.towers import router as towers_router
+from services.alerting import log_destination
 from services.background import (
     adsb_truth_fetcher,
     aircraft_flush_task,
@@ -76,6 +80,8 @@ from services.tcp_handler import handle_tcp_client
 
 load_dotenv()
 logging.basicConfig(level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO))
+
+log_destination()
 
 TCP_PORT = int(os.getenv("RADAR_TCP_PORT", "3012"))
 
@@ -126,6 +132,16 @@ async def lifespan(app: FastAPI):
     from core.auth import migrate_json_to_db
 
     await migrate_json_to_db()
+
+    # Load the v1 fleet into the in-process registries. All three start empty in
+    # a fresh process and only registration writes to them, so without this a
+    # deploy drops every node out of the pipeline and nothing puts it back: the
+    # node client follows the spec and does not re-register unprompted. Must
+    # precede the frame workers below, or the first frames after a restart
+    # arrive for a node the associator has never seen.
+    from services.node_pipeline import prime_pipeline_at_startup
+
+    await prime_pipeline_at_startup()
 
     # Restore persisted state before accepting connections
     restored = restore_snapshot()
@@ -203,29 +219,72 @@ _MAX_BODY_BYTES = int(os.getenv("MAX_REQUEST_BODY_BYTES", str(5 * 1024 * 1024)))
 
 
 class LimitUploadSize(BaseHTTPMiddleware):
-    """Reject requests with Content-Length exceeding the configured limit."""
+    """Reject requests with Content-Length exceeding the limit for their path.
+
+    `limits` maps a full request path to its own cap; any path not listed falls
+    back to the global `_MAX_BODY_BYTES`. The node caps are far tighter than that
+    default because registration is unauthenticated, so its cap is the only thing
+    between an anonymous caller and the JSON parser.
+
+    A listed path is also refused in the node API's error taxonomy,
+    `{"error": "too_large"}`, which is what the node client parses. Everything
+    else keeps the `{"detail": ...}` shape its callers already expect. The wire
+    contract declares no 413 for any endpoint, so the code is chosen to match the
+    taxonomy rather than transcribed from the spec.
+
+    Only `Content-Length` is checked, so a chunked request carries no cap here.
+    Cloudflare fronts every deployed environment and caps there too; this is the
+    origin's own copy of that bound rather than the whole of it.
+    """
+
+    def __init__(self, app, limits: dict[str, int] | None = None):
+        super().__init__(app)
+        self._limits = limits or {}
 
     async def dispatch(self, request: Request, call_next):
+        # scope["path"] rather than request.url.path, which rebuilds and reparses
+        # a whole URL object on every request through the app. The trailing slash
+        # is stripped because this runs ahead of routing, so it never sees the
+        # path Starlette would canonicalise: without it, `/v1/nodes/register/`
+        # misses the table and falls back to the 5 MB global cap.
+        path_limit = self._limits.get(request.scope["path"].rstrip("/"))
+        limit = _MAX_BODY_BYTES if path_limit is None else path_limit
         cl = request.headers.get("content-length")
-        if cl and int(cl) > _MAX_BODY_BYTES:
-            return JSONResponse(
-                status_code=413,
-                content={"detail": f"Request body too large (max {_MAX_BODY_BYTES} bytes)"},
+        if cl and int(cl) > limit:
+            body = (
+                {"detail": f"Request body too large (max {limit} bytes)"}
+                if path_limit is None
+                else {"error": "too_large"}
             )
+            return JSONResponse(status_code=413, content=body)
         return await call_next(request)
 
 
-app = FastAPI(title="Tower Finder API", lifespan=lifespan)
+# The description is where the node API's cross-cutting policy lives — the error
+# taxonomy, and the `x-retry` / `x-terminal` vocabulary the per-response
+# annotations use. It is carried into the published node contract by
+# scripts/generate_openapi.py, so there is one copy of it rather than a document
+# beside the schema that can disagree with the routes. See routes/nodes.py.
+app = FastAPI(
+    title="Tower Finder API",
+    description=API_DESCRIPTION,
+    openapi_tags=NODE_API_TAGS,
+    lifespan=lifespan,
+)
 
-app.add_middleware(LimitUploadSize)
+app.add_middleware(LimitUploadSize, limits=NODE_BODY_LIMITS)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv(
         "CORS_ORIGINS",
         "http://localhost:5173,http://localhost:3000,http://localhost:5174,"
+        # testmap.retina.fm is deliberately absent: it is served by staging, so a
+        # production process falling back to this default should not treat it as
+        # a same-trust origin. Every deployed environment sets CORS_ORIGINS
+        # explicitly, so this list is the local-development default only.
         "https://retina.fm,https://api.retina.fm,https://dash.retina.fm,"
-        "https://admin.retina.fm,https://testmap.retina.fm,"
+        "https://admin.retina.fm,"
         "https://towers.retina.fm,https://map.retina.fm",
     ).split(","),
     allow_credentials=True,
@@ -247,8 +306,14 @@ for router in (
     auth_router,
     admin_router,
     output_router,
+    nodes_router,
 ):
     app.include_router(router)
+
+# Scoped to /v1/nodes, and delegating to FastAPI's own handlers everywhere else:
+# the node API answers in its own error taxonomy, and the rest of this API's
+# callers parse the framework's shape. See routes/nodes.py.
+install_error_handlers(app)
 
 # Simulation ingest is a WRITE path (state.adsb_aircraft /
 # ground_truth_trails) that only the synthetic fleet uses, so a deployment that

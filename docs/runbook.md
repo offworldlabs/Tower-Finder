@@ -14,22 +14,45 @@ identical everywhere.
 On prod and staging the deploy writes that file itself each run, so it cannot be
 missing, stale or wrong — if you find one naming the wrong environment, the deploy
 stops before touching anything rather than deploying one environment onto
-another's hostnames. The test droplet has no CI, so its `.env` is placed by hand
-once: `cp deploy/env.test.example .env`.
+another's hostnames. The same is now true of test on a `deploy-test.yml` run;
+after a `just deploy-test` rsync, which excludes `.env`, whatever is on the box
+stays, so place it by hand once on a fresh droplet:
+`cp deploy/env.test.example .env`.
 
 | | prod | staging | test |
 |---|---|---|---|
 | **Overlay** | `docker-compose.prod.yml` | `docker-compose.staging.yml` | `docker-compose.test.yml` |
-| **Deployed by** | CI, on push to `main` | CI, on push to `main` | `just deploy-test` (rsync from a working tree) |
-| **Hostnames** | `*.retina.fm` | `staging-*.retina.fm` | `test-*.retina.fm` |
+| **Deployed by** | CI, on push to `main` | CI, on push to `main` | `just deploy-test` (rsync, pre-review) or `deploy-test.yml` (CI, dispatch-only, git) |
+| **Hostnames** | `*.retina.fm`, except `testmap` | `staging-*.retina.fm`, plus `testmap.retina.fm` | `test-*.retina.fm` |
 | **RAM / swap** | 7941 MB / 4 GB | 3915 MB / none | 3915 MB / 2 GB |
-| **Fleet** | 25 nodes @ 2.0s (12.5 fps) | 50 @ 1.0s (50 fps) | 50 @ 1.0s (50 fps) |
+| **Fleet** | none (see below) | 50 @ 1.0s (50 fps) | 50 @ 1.0s (50 fps) |
 | **TCP 3012** | published (real nodes) | closed | closed |
+
+### The test droplet has two deploy paths
+
+`just deploy-test` rsyncs your working tree, including uncommitted edits, so a
+branch can be run under load before it is reviewed. That remains its primary
+purpose and is unchanged.
+
+`.github/workflows/deploy-test.yml` is a dispatch-only CI path that deploys a
+pushed ref by git, and exists so the production auto-rollback machinery can be
+exercised end to end without breaking production to do it. `pre-deploy.sh` and
+`rollback.sh` are both git-based, so it requires `/opt/tower-finder` there to be
+a **git clone** — which is a change from this droplet's original rsync-only
+design, and worth understanding before you re-provision it.
+
+The two coexist rather than compete. `just deploy-test`'s rsync rules carry
+`--exclude '.git'` and there is no `--delete-excluded`, so a clone survives every
+sync untouched. What an rsync does do is leave the git tree dirty relative to
+`HEAD`, so after one, git's view of "what is deployed" is a label rather than a
+guarantee — the same caveat `just deploy-test-status` already prints. The next
+`deploy-test.yml` run resets the tree, which clears it.
 
 prod is the reference environment: `deploy/check-env-parity.py` compares the other
 two against it in CI and fails on any difference not listed in its
-`ALLOWED_DIVERGENCE`. staging and test differ from prod deliberately on fleet
-scale, hostnames, container names and resource limits, and on nothing else.
+`ALLOWED_DIVERGENCE`. staging and test differ from prod deliberately on the
+simulator (prod runs none at all), hostnames, container names and resource
+limits, and on nothing else.
 
 staging and test run the fleet 4x faster than production, on **half the cores** —
 production has 4, they have 2 — so per core it is 8x. The frame path copes (41 of
@@ -93,20 +116,59 @@ stop gracefully at the newest revision the older image recognises: it fails
 with `Can't locate revision identified by '<rev>'`, because that revision's
 file is not in this image's `migrations/versions/`. `start.sh` treats
 specifically that failure as tolerable and continues the boot rather than
-crash-looping the container: an additive revision the older code doesn't know
-about is harmless to leave in place, since the old code simply never touches
-the new column or table. Any other migration failure still aborts the boot as
-before.
+crash-looping the container, which would defeat the point of rolling back. Any
+other migration failure still aborts the boot as before.
 
-That tolerance only covers additive revisions. A destructive one (a dropped or
-renamed column, a changed constraint) is wrong to leave in place under older
-code, and boot succeeding is not a signal that it is safe. To roll back past a
-destructive revision, downgrade first and then redeploy:
+That tolerance is not a judgement that the gap is harmless, and `start.sh`
+cannot make that judgement: the revisions the database is ahead by are
+precisely the ones missing from that image's `migrations/versions/`, so all it
+holds is a revision id it cannot resolve. The grading happens at rollback time
+instead, on the host, where both trees are reachable.
+
+`deploy/rollback.sh` prints a `── Database` block once it reaches the health
+check, on both of that check's outcomes. An abort before then (a failed `git
+fetch`, checkout, submodule update or `docker compose` step) exits without one.
+Where the gap can be computed the block names the revision the database is left
+at and grades each revision in it:
+
+- All additive: the restored code never reads what they added, so it is safe to
+  serve, and the rollback exits `0`.
+- Any destructive or undeclared revision: the rollback still completes, because
+  restoring service comes first, then exits `2` naming the revision to
+  downgrade to, or, if the tree being restored predates the migration history,
+  saying that no safe target can be named.
+- The gap could not be graded at all, either because no `deploy-*` tag records
+  the commit the restored image was built from or because git failed: the
+  rollback completes and exits `2` saying so, with no revision to name.
+  Ungradable is treated as unsafe throughout.
+
+Exit `1` keeps its existing meaning of a failed health check and says nothing
+about the database.
+
+To roll back past a destructive revision, downgrade and then redeploy:
 
 ```bash
 ssh retina-prod 'cd /opt/tower-finder && docker compose exec tower-finder \
     sh -c "cd /app/backend && python3 -m alembic downgrade <revision>"'
 ```
+
+#### Declaring a revision's rollback safety
+
+Every revision carries a module global beside `revision` and `down_revision`:
+
+```python
+rollback_safety = "additive"    # or "destructive"
+```
+
+`additive` means the schema after this revision is still valid for code written
+against the schema before it: a new table, column or index, a column widened to
+nullable, a relaxed constraint. `destructive` is everything else: a dropped or
+renamed table or column, a narrowed type, a `NOT NULL` added without a default,
+a tightened constraint. The test is whether the previous revision's code can run
+its queries unchanged against this schema.
+
+`backend/tests/test_migrations.py` fails if a revision does not declare one, and
+a revision that reaches a droplet undeclared is graded destructive.
 
 ---
 
@@ -471,13 +533,23 @@ df -h /opt/tower-finder/backend/coverage_data
 
 ### Start / bounce the fleet simulator
 The fleet is a Compose service (`fleet` in `/opt/tower-finder/docker-compose.yml`,
-`restart: unless-stopped`). It starts automatically on deploy (CI `docker compose
-up -d --build`) and on reboot (docker is enabled) — you normally do NOT start it by
-hand. To manually bounce just the fleet (it loses its TCP connections and
-regenerates its nodes — 25 on production — taking up to a minute):
+`restart: unless-stopped`). On staging and test it starts automatically on deploy
+(CI `docker compose up -d --build`) and on reboot (docker is enabled) — you
+normally do NOT start it by hand. To manually bounce just the fleet (it loses its
+TCP connections and regenerates its nodes, taking up to a minute):
 ```bash
 cd /opt/tower-finder && docker compose up -d --build --force-recreate --no-deps fleet
 ```
+
+⚠️ **Not on production.** Production runs no simulator: `docker-compose.prod.yml`
+puts the service behind a `sim` profile that nothing enables, because 25 synthetic
+nodes cost the solver about as much as the real fleet does and the box was already
+at 107% CPU reporting `solver_latency_high` at rest. Naming `fleet` on the command
+line *auto-enables its profile*, so the bounce command above is not inert on the
+prod droplet — it would silently put all 25 back. Do not run it there unless you
+intend exactly that, and if you do, undo it with `docker compose stop fleet`
+followed by `docker compose restart tower-finder` (stopping the container does not
+deregister the geometry it already registered).
 `--no-deps` is the important flag: `fleet` declares `depends_on: tower-finder`, so
 without it Compose would also rebuild and recreate the running app, turning a fleet
 bounce into a full redeploy and an outage. The host's `./.env` sets `COMPOSE_FILE`,
@@ -485,6 +557,13 @@ so the bare `docker compose` above resolves to base + the production overlay.
 
 Params (nodes/interval/mode/aircraft) live in the `fleet` service block in
 `docker-compose.yml` — edit them there, not on the command line.
+
+**Staging's fleet is public.** `testmap.retina.fm` is served by the staging
+droplet and fed by this fleet, so bouncing it, or a staging deploy, blanks the
+demo people are shown for a minute or so. `staging-map.retina.fm` is the same
+surface under a staging-prefixed name. Note the tuning is deliberate: staging
+runs 50 nodes @ 1.0s on 2 cores, which saturates the solver (45–52 s per solve),
+so the public map is denser but laggier than production's used to be.
 
 ⚠️ Do NOT start the fleet as a host process (`systemd-run`, a systemd unit, or a
 bare `python3 -m retina_simulation.orchestrator`) while the Compose `fleet` service

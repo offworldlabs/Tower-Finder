@@ -11,18 +11,23 @@
  *   defaultsGroundTruthOff — ADS-B ground truth starts hidden.
  *
  * The last two are both asking "is this the production real-radar surface?",
- * which is `map.retina.fm` and nothing else. Every other map surface — prod's
- * testmap, staging, the test droplet, the laptop — is fed by the synthetic
- * fleet, where the real-only feed would be empty and the ground-truth overlay is
- * the reference you are there to look at. They stay separate exports because the
+ * which is `map.retina.fm` and nothing else. Every other map surface — testmap,
+ * staging, the test droplet, the laptop — is fed by the synthetic fleet, where
+ * the real-only feed would be empty and the ground-truth overlay is the
+ * reference you are there to look at. They stay separate exports because the
  * call sites read better naming the decision than the environment, but they are
  * deliberately one test.
  *
  * Hostnames covered by isMapDomain:
- *   map.*  testmap.*                  production
- *   staging-map.*  staging-testmap.*  staging
- *   test-map.*  test-testmap.*        the retina-test droplet
- *   map.localhost  testmap.localhost  the laptop Docker stack
+ *   map.*                              production (the only real-radar surface)
+ *   testmap.*                          the public demo — served by STAGING, not
+ *                                      production, which runs no fleet
+ *   staging-map.*                      staging, same data as testmap
+ *   test-map.*  test-testmap.*         the retina-test droplet
+ *   map.localhost  testmap.localhost   the laptop Docker stack
+ *
+ * The regexes are unchanged by testmap moving droplet: they key off the
+ * hostname, which is the same string wherever it is served from.
  *
  * Hostname is read once at module load — we never switch domains at runtime.
  */

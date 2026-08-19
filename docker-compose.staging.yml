@@ -18,6 +18,10 @@
 services:
   tower-finder:
     container_name: retina-staging-server
+    # Consumed by services/alerting.py, which otherwise sees the container id or
+    # the service name (varies by Compose version), neither of which says which
+    # droplet raised an alert.
+    hostname: retina-staging
     # No TCP ingest on staging. The base publishes 3012 for real receiver nodes;
     # staging has none, and its own fleet reaches the server as tower-finder:3012
     # over the compose network, never via the host port. Verified with `ss`: zero
@@ -44,6 +48,10 @@ services:
       # fleet that POSTs through the ingest write path, and main.py mounts that
       # path only for a stack that sets this flag.
       - SYNTHETIC_FLEET_ENABLED=1
+      # Labels alerts, and a variable of its own rather than a reading of
+      # RETINA_ENV above: this box names itself `staging` in an alert while still
+      # running the `test` guards. See services/alerting.py.
+      - ALERT_ENVIRONMENT=staging
       - CORS_ORIGINS=https://staging-towers.retina.fm,https://staging-api.retina.fm,https://staging-map.retina.fm,https://staging-dash.retina.fm,https://staging-admin.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
       # at boot to render deploy/nginx/nginx.conf.template. One template serves
@@ -59,7 +67,14 @@ services:
       - HOST_MAP=staging-map.retina.fm
       - HOST_DASH=staging-dash.retina.fm
       - HOST_ADMIN=staging-admin.retina.fm
-      - HOST_TESTMAP=staging-testmap.retina.fm
+      # Not `staging-testmap`: this is the public demo surface. Production stopped
+      # running a simulator, and staging is the only environment that still has
+      # one, so the hostname people already use points here. The DNS record is
+      # Cloudflare-side and must be flipped after this deploys, not before, or the
+      # name resolves here with no vhost claiming it and falls to HOST_MAIN.
+      # staging-map.retina.fm serves identical data if a staging-prefixed name is
+      # ever wanted back.
+      - HOST_TESTMAP=testmap.retina.fm
       - HOST_LEGACY_REDIRECT=staging-tower-finder.retina.fm
       # The only host-naming part of the CSP. wss://*.retina.fm already covers
       # both environments, so only the two explicit origins vary.

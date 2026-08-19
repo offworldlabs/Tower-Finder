@@ -12,6 +12,10 @@ down_revision = "0001"
 branch_labels = None
 depends_on = None
 
+# Three new tables and nothing else. Code from before this revision has no
+# queries that name them.
+rollback_safety = "additive"
+
 
 def upgrade() -> None:
     # Unlike 0001, this creates unconditionally rather than inspecting for a

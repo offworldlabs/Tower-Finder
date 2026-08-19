@@ -122,7 +122,7 @@ systemctl enable --now docker
 echo ""
 echo "→ Deploying Tower Finder..."
 
-APP_DIR="/opt/tower-finder"
+APP_DIR="${APP_DIR:-/opt/tower-finder}"
 
 if [ -d "$APP_DIR/.git" ]; then
     echo "  Repo exists, pulling latest..."
@@ -152,17 +152,34 @@ fi
 echo ""
 echo "→ Applying the Cloudflare origin boundary (DOCKER-USER)..."
 chmod +x "${APP_DIR}/deploy/docker-user-firewall.sh"
-cp "${APP_DIR}/deploy/retina-firewall.service" /etc/systemd/system/retina-firewall.service
+# Rendered, not copied: the unit's ExecStart has to carry the real deploy
+# directory, and a literal path in the repo would silently keep pointing at the
+# old location after the directory moves. The boundary failing is quiet, so it
+# must not depend on someone remembering to edit the unit. Staged through a
+# temporary file to keep the write atomic: if rendering fails, the existing unit
+# stays intact rather than being left empty or partial.
+sed "s|@APP_DIR@|${APP_DIR}|g" "${APP_DIR}/deploy/retina-firewall.service" \
+    > /etc/systemd/system/retina-firewall.service.tmp
+mv /etc/systemd/system/retina-firewall.service.tmp \
+   /etc/systemd/system/retina-firewall.service
 systemctl daemon-reload
 systemctl enable retina-firewall.service
+# restart, not start: the unit is Type=oneshot with RemainAfterExit=yes, so
+# once it is active a `systemctl start` is a no-op that returns 0 without
+# re-running ExecStart. daemon-reload above picks up a changed unit file but
+# does not re-execute it either, so on a re-run of this script `start` would
+# leave the newly rendered unit installed but never exercised, and the status
+# line below would report whatever the previous activation left behind rather
+# than the result of this run. `restart` always re-runs ExecStart.
+#
 # Fail-closed but not silently: under `set -euo pipefail` a bare `systemctl
-# start` that fails would abort the whole script right here, before .env is
+# restart` that fails would abort the whole script right here, before .env is
 # written and before `docker compose up`, leaving the operator with a raw
 # systemd/iptables error and a half-configured box. Naming the failure and
 # dumping the unit's status and recent logs first turns that into a diagnosis
-# — the script still stops (an origin without this boundary must not proceed
-# to serve traffic), it just says why before it does.
-if ! systemctl start retina-firewall.service; then
+# (the script still stops, an origin without this boundary must not proceed
+# to serve traffic, it just says why before it does).
+if ! systemctl restart retina-firewall.service; then
     echo "✗ retina-firewall.service failed to start — the Cloudflare origin" >&2
     echo "  boundary is not in place. Provisioning stops here rather than" >&2
     echo "  continue with an unprotected origin." >&2

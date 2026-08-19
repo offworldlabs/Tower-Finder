@@ -7,12 +7,44 @@ RETINA_DB_PATH, which is the only way the round trip can be trusted.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 from tests.migration_helpers import BACKEND, ROLLBACK_AHEAD_SENTINEL, _alembic
+
+
+def test_migrations_have_exactly_one_head(tmp_path):
+    """Two branches that each add a revision off the same parent will merge
+    without a textual conflict: different files, nothing overlapping, nothing a
+    review would show. What they leave behind is an Alembic tree with two
+    heads, and `alembic upgrade head` refusing to choose between them.
+
+    That refusal reads "Multiple head revisions are present", which is not the
+    wording the `elif` in deploy/start.sh tolerates, so it falls through to the
+    refuse-to-boot `else` below and no environment starts until the heads are
+    reconciled. The rest of this file goes red too, along with conftest.py's
+    node schema template and every test behind it, but those all fail on
+    `returncode == 0` with Alembic's reason left on the subprocess's stdout,
+    where the assertion message does not carry it. This test sits first so it
+    is the first failure of the run, and it prints the colliding revisions. The
+    fix is to renumber the later one onto the other's head, or `alembic merge`.
+    """
+    # `heads` is answered from migrations/versions/ through the ScriptDirectory
+    # alone and never imports env.py, so nothing is created at this path.
+    # _alembic requires one all the same.
+    result = _alembic("heads", db_path=tmp_path / "unused.db")
+    # Both streams: Alembic's `util.err` puts a clean failure, a missing
+    # alembic.ini say, on stdout behind a "FAILED:" prefix, and only an
+    # uncaught traceback such as a dangling down_revision reaches stderr.
+    # Reporting one of the two is how the failures described above lose their
+    # reason.
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    heads = [line for line in result.stdout.splitlines() if line.strip()]
+    assert len(heads) == 1, result.stdout
 
 
 def test_upgrade_downgrade_upgrade_round_trips(tmp_path):
@@ -185,3 +217,72 @@ def test_rollback_ahead_sentinel_matches_alembics_wording(tmp_path):
     assert result.returncode != 0, result.stdout + result.stderr
     combined = result.stdout + result.stderr
     assert ROLLBACK_AHEAD_SENTINEL in combined, combined
+
+
+VALID_ROLLBACK_SAFETY = {"additive", "destructive"}
+
+
+def _graded_revisions() -> list[Path]:
+    """Exactly the files deploy/classify-migration-gap.py grades.
+
+    Its `_versions_at` takes every `*.py` under versions/ bar `__init__.py`, so
+    the two tests below cover that set rather than the one our naming
+    convention describes.
+    """
+    return sorted(p for p in (BACKEND / "migrations" / "versions").glob("*.py") if p.name != "__init__.py")
+
+
+def test_every_migration_is_numbered_for_chain_order():
+    """`_versions_at` in deploy/classify-migration-gap.py returns its listing
+    `sorted()`, and the classifier then treats the last element as the head of
+    the chain: `_revision_of(here[-1])` is the revision it reports the database
+    as being left at, and `_revision_of(restored[-1])` is the downgrade target
+    it tells an operator to run. Filename sort is chain order only while every
+    revision is named `NNNN_`.
+
+    alembic.ini sets no file_template, so `alembic revision -m "..."` writes a
+    12-hex prefix, and ASCII sorts digits before letters. Such a file lands at
+    the end of the listing whatever its place in the chain, and the report then
+    names the wrong revision and computes the wrong downgrade target, with
+    nothing about it looking wrong. file_template cannot fix this either, since
+    the number is chosen per revision with `--rev-id`, so the enforcement is
+    here. Failing at authoring time costs a `git mv`; the alternative is finding
+    out during a production rollback.
+
+    The declaration gate below is the other half of this: it makes such a file
+    declare its safety, but says nothing about where it sorts.
+    """
+    versions = _graded_revisions()
+    assert versions, "no revisions found under migrations/versions/"
+
+    for path in versions:
+        assert re.match(r"^\d{4}_", path.name), (
+            f"{path.name} is not named NNNN_<slug>.py, so deploy/classify-migration-gap.py "
+            "cannot derive chain order from the filename sort"
+        )
+
+
+def test_every_migration_declares_rollback_safety():
+    """deploy/classify-migration-gap.py reads this constant out of each revision
+    to decide whether a rollback across it is safe to serve, and grades a
+    missing one destructive. That default is deliberately loud, but it is only
+    loud at rollback time, on production, when someone is already having a bad
+    day. Failing here costs a line in the revision instead.
+
+    Both the set and the pattern are the classifier's, deliberately: a gate that
+    covers less than the consumer grades is a gate with a hole in it. A revision
+    named the default way slips past a `[0-9]*.py` glob, as would one written
+    `rollback_safety = 'additive'` past a stricter regex, and the first anyone
+    hears of either is the classifier grading it undeclared, hence destructive,
+    on the next production rollback.
+    """
+    versions = _graded_revisions()
+    assert versions, "no revisions found under migrations/versions/"
+
+    for path in versions:
+        match = re.search(r'^rollback_safety\s*=\s*["\'](\w+)["\']', path.read_text(), re.MULTILINE)
+        assert match, f"{path.name} does not declare rollback_safety"
+        assert match.group(1) in VALID_ROLLBACK_SAFETY, (
+            f"{path.name} declares rollback_safety = {match.group(1)!r}, "
+            f"expected one of {sorted(VALID_ROLLBACK_SAFETY)}"
+        )

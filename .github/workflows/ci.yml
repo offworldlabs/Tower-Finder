@@ -3,12 +3,44 @@ name: CI
 on:
   push:
     branches: [main]
+  # No base-branch filter. `branches:` on pull_request matches the PR's BASE, so
+  # a PR stacked on a feature branch ran none of the jobs below while still
+  # showing a green claude-review tick, which reads as a pass. What wants testing
+  # is the head; where it is aimed is irrelevant.
+  # `edited` is not in the default set (`opened`, `synchronize`, `reopened`) and
+  # is the action a base-branch change arrives as. Without it, a PR retargeted
+  # when its parent merges keeps the tick it earned against the old base and is
+  # never validated against the new one, which is the second half of the trap
+  # the base filter opened. The jobs below discard the title and body edits that
+  # come with it.
   pull_request:
-    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+  # So a branch can be run on demand, which was otherwise impossible.
+  workflow_dispatch:
+
+# Testing every PR regardless of base would otherwise multiply CI minutes: this
+# cancels superseded runs on the same PR ref. Push-to-main runs (and manual
+# workflow_dispatch runs) get a group unique to their own run_id instead, since
+# the deploy jobs below hang off them and a half-run deploy is worse than a slow
+# one: they are never cancelled, and (unlike a group shared with other runs on
+# the same ref) they never queue behind an earlier run either. The deploy jobs'
+# own job-level concurrency groups are what serialise deploys.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('ci-{0}-pull_request-{1}', github.workflow, github.ref) || format('ci-{0}-{1}-{2}', github.workflow, github.event_name, github.run_id) }}
+  # Same condition the jobs carry, and for a sharper reason. Cancellation happens
+  # when the new run is created, before any job-level `if:` is evaluated, so a
+  # title edit would otherwise cancel a real run mid-flight and then skip every
+  # job in the run that replaced it, leaving the PR with no signal at all. A
+  # no-op edit queues instead, and skips quickly once it starts.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base != null) }}
 
 jobs:
   backend-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # `edited` covers title and body edits as well as the base change we want,
+    # and `changes.base` is populated only for the latter.
+    if: github.event.action != 'edited' || github.event.changes.base
     defaults:
       run:
         working-directory: backend
@@ -29,10 +61,26 @@ jobs:
       - name: Lint (pre-commit)
         working-directory: .
         run: pre-commit run --all-files --show-diff-on-failure
+      # The node API's wire contract is generated from the routes, not authored,
+      # so this is what makes it trustworthy: the committed file cannot be
+      # hand-edited to match a change, because the next run regenerates it and
+      # notices. Ahead of pytest, which asserts the same thing, because a
+      # dedicated step names the remediation instead of burying it in a diff.
+      #
+      # RETINA_ENV because importing the app outside a test process otherwise
+      # resolves as production, which refuses to start without its secrets.
+      - name: Node API contract is current
+        env:
+          RETINA_ENV: dev
+        run: python -m scripts.generate_openapi --check
       - run: pytest tests/ -v --tb=short -m "not external"
 
   frontend-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # `edited` covers title and body edits as well as the base change we want,
+    # and `changes.base` is populated only for the latter.
+    if: github.event.action != 'edited' || github.event.changes.base
     defaults:
       run:
         working-directory: frontend
@@ -51,6 +99,10 @@ jobs:
 
   dashboard-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # `edited` covers title and body edits as well as the base change we want,
+    # and `changes.base` is populated only for the latter.
+    if: github.event.action != 'edited' || github.event.changes.base
     defaults:
       run:
         working-directory: dashboard
@@ -69,6 +121,10 @@ jobs:
 
   docker-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # `edited` covers title and body edits as well as the base change we want,
+    # and `changes.base` is populated only for the latter.
+    if: github.event.action != 'edited' || github.event.changes.base
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,6 +134,10 @@ jobs:
   env-parity:
     name: Staging/production parity
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # `edited` covers title and body edits as well as the base change we want,
+    # and `changes.base` is populated only for the latter.
+    if: github.event.action != 'edited' || github.event.changes.base
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -90,31 +150,94 @@ jobs:
       - name: Stub backend/.env for compose resolution
         run: touch backend/.env
       # Staging only protects production while the two stay the same everywhere
-      # that isn't hostnames or fleet size. This fails the build on any other
+      # that isn't hostnames or the simulator. This fails the build on any other
       # difference — in the compose merge or in the rendered nginx config —
       # naming the exact key so it can't be added by accident.
       - name: Check compose + nginx parity
         run: python3 deploy/check-env-parity.py
 
+  playwright-image:
+    name: Resolve the Playwright image
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # `edited` covers title and body edits as well as the base change we want,
+    # and `changes.base` is populated only for the latter.
+    if: github.event.action != 'edited' || github.event.changes.base
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      # The tag is DERIVED from the lockfile rather than written out here, so
+      # the browsers baked into the container cannot disagree with the client
+      # that drives them. Bumping Playwright is an npm operation and nothing
+      # else; there is deliberately no version string in this file to forget.
+      #
+      # The lockfile, not package.json: the latter carries a range (^1.59.1)
+      # and `npm ci` installs whatever the lock resolved. Only the lock states
+      # what will actually run.
+      #
+      # This job has no `if:` gate on push-to-main, unlike the two E2E jobs
+      # that consume it. That is the point of the verify below — see there.
+      - name: Resolve and verify
+        id: resolve
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./frontend/package-lock.json').packages['node_modules/@playwright/test'].version")
+          IMAGE="mcr.microsoft.com/playwright:v${VERSION}-noble"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          # A derived tag cannot be stale, but it can name an image that was
+          # never published — Microsoft does not necessarily ship one for every
+          # patch release. Checked HERE, on the pull request, because the jobs
+          # that pull it only run on push to main: without this, an unpublished
+          # version surfaces as a container-pull failure after the merge, with
+          # nothing pointing at the lockfile bump that caused it.
+          if ! docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "::error::${IMAGE} does not exist in the registry. frontend/package-lock.json resolves @playwright/test to ${VERSION}, and no Playwright container image was published for it. Pin the lockfile to a release that has one."
+            exit 1
+          fi
+          echo "Resolved and verified ${IMAGE}"
+
   e2e-staging:
     name: Playwright E2E (staging)
     runs-on: ubuntu-latest
-    needs: [staging-smoke-tests]
+    # Only the pull and npm ci sit outside the test step's own cap now, and an
+    # image pull is minutes at worst. See the production job for why the job
+    # cap is a backstop rather than the primary bound.
+    timeout-minutes: 30
+    needs: [staging-smoke-tests, playwright-image]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # The browsers and their shared libraries ship in the image, so there is no
+    # install step and neither apt nor Playwright's CDN is in this path. Both
+    # broke repeatedly on 2026-08-18 and 2026-08-19; see the production job.
+    container:
+      image: ${{ needs.playwright-image.outputs.image }}
+    # `npm ci` runs @playwright/test's postinstall, which fetches browsers. The
+    # image sets PLAYWRIGHT_BROWSERS_PATH=/ms-playwright and the tag is derived
+    # to match the lockfile, so it finds the right revision already there and
+    # does nothing. This makes that a guarantee rather than an expectation: if
+    # the browsers were ever NOT found, the postinstall would quietly download
+    # them from the CDN this job exists to avoid, and the only symptom would be
+    # a slow green run. With this set it fails loudly at the browser instead,
+    # pointing at the cause. See microsoft/playwright#4283.
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
     defaults:
       run:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
+      # Kept despite the image shipping its own Node: this pins the version the
+      # tests run under to the same 20 as every other job, rather than letting
+      # it drift with whatever the Playwright image happens to carry, and keeps
+      # the npm cache. Only browser provisioning changes here.
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci --legacy-peer-deps
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
       - name: Run E2E tests (staging)
+        timeout-minutes: 15
         run: E2E_ENV=staging npx playwright test
         env:
           CI: "true"
@@ -123,28 +246,62 @@ jobs:
   e2e-prod:
     name: Playwright E2E (production)
     runs-on: ubuntu-latest
-    needs: [production-smoke-tests]
+    # A backstop above the test step's own cap, not the primary bound: a job
+    # timeout is a cancellation and would skip the rollback below, whereas the
+    # step cap marks the step failed and keeps it reachable.
+    timeout-minutes: 30
+    needs: [production-smoke-tests, playwright-image]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # The browsers and their shared libraries ship in the image, so there is no
+    # install step at all. That step was the single worst source of red runs
+    # here: `npx playwright install --with-deps` fetches the browsers from
+    # Playwright's CDN, which stalled twice on 2026-08-18, and before that runs
+    # an apt update, which hung for 14m34s against the runner's dead
+    # azure.archive.ubuntu.com mirror on both 2026-08-18 and 2026-08-19.
+    #
+    # It also mattered more here than anywhere else: under the old gating an
+    # install that exited non-zero satisfied `failure()` and rolled a healthy
+    # production back. Removing the step removes that class of event rather
+    # than only declining to act on it.
+    container:
+      image: ${{ needs.playwright-image.outputs.image }}
+    # See the staging job: makes the postinstall's no-op a guarantee.
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
     defaults:
       run:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
+      # See the staging job for why setup-node is kept inside the container.
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci --legacy-peer-deps
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+      # Bounded at the step rather than relying on the job cap: a step timeout
+      # marks the step failed, which still trips the rollback below, whereas a
+      # job timeout is a cancellation and would skip it. A production wedged
+      # badly enough to hang Playwright is exactly when the rollback is wanted.
       - name: Run E2E tests (production)
+        id: e2e
+        timeout-minutes: 15
         run: E2E_ENV=prod npx playwright test
         env:
           CI: "true"
           RADAR_API_KEY: ${{ secrets.RADAR_API_KEY }}
+      # Scoped to the test step's own outcome, as the production smoke job is.
+      # A bare failure() also fires when the container fails to pull, or when
+      # checkout or npm ci fails, none of which say anything about whether
+      # production is healthy. The browser install that made this urgent is
+      # gone, but the reasoning outlives it: anything that breaks before the
+      # tests run is a statement about the runner, not about production. An
+      # infrastructure failure now leaves the job red for a human to read,
+      # and only tests that ran and
+      # failed roll production back.
       - name: Rollback production on E2E failure
-        if: failure()
+        if: failure() && steps.e2e.outcome == 'failure'
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -165,6 +322,7 @@ jobs:
   deploy-staging:
     name: Deploy to staging
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [backend-tests, frontend-build, dashboard-build, docker-build, env-parity]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     concurrency:
@@ -290,10 +448,15 @@ jobs:
   staging-smoke-tests:
     name: Staging smoke tests
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     needs: [deploy-staging]
     steps:
       - uses: actions/checkout@v4
+      # The curls in this loop carry no --max-time, so against a hung origin
+      # the 24 iterations run far past the job cap. Bounded here rather than by
+      # rewriting the loop, which deploy/staging-smoke-test.sh mirrors.
       - name: Wait for fleet to connect
+        timeout-minutes: 10
         run: |
           echo "Waiting for fleet nodes to connect..."
           # Through the edge, not at the droplet's address: the origin now requires
@@ -315,11 +478,15 @@ jobs:
             sleep 5
           done
       - name: Run smoke tests against staging
+        timeout-minutes: 15
         run: bash deploy/staging-smoke-test.sh
 
   deploy-production:
     name: Deploy to production
     runs-on: ubuntu-latest
+    # Above the ssh-action's own command_timeout below, so a stuck deploy
+    # surfaces as that step's error rather than as a bare job timeout.
+    timeout-minutes: 30
     # Gate prod on BOTH the staging smoke tests and the full staging Playwright
     # E2E suite (`e2e-staging`). Previously only staging-smoke-tests gated this,
     # so the ~127-test E2E ran in parallel with the prod deploy and couldn't
@@ -358,6 +525,35 @@ jobs:
             # should take a production deploy.
             if [ "$(hostname)" != "retina-prod" ]; then
               echo "::error::Refusing to deploy production onto '$(hostname)' — expected retina-prod. If this droplet was rebuilt, finish provisioning it (hostnamectl set-hostname retina-prod); otherwise this job is pointed at the wrong box."
+              exit 1
+            fi
+
+            # Checked immediately after identity, and for a similar reason: if
+            # this box is still mid-deploy from an earlier run, none of the
+            # questions below it are worth asking.
+            #
+            # The marker is written after pre-deploy.sh and cleared when the app
+            # comes back healthy or a rollback succeeds. This run has not written
+            # one yet, so finding one here means an earlier attempt was left half
+            # deployed and never recovered — its rollback failed, or the run was
+            # cancelled before one could.
+            #
+            # Deploying over that would destroy the only way back. pre-deploy.sh
+            # snapshots the CURRENTLY RUNNING container as the new rollback
+            # point, so it would capture the broken build, discard the good one,
+            # and then the marker write would overwrite the evidence too. The
+            # next rollback would faithfully restore the breakage.
+            #
+            # Deliberately ANY marker rather than one from another run: "Re-run
+            # failed jobs" keeps the same run id, and a retry poisons the
+            # snapshot exactly as a fresh run would.
+            #
+            # The cost is that an incident which leaves a marker behind also
+            # blocks deploys until a human clears it. That is the intended
+            # trade: the box is in an unknown state and its rollback point is
+            # the thing at risk.
+            if [ -f .deploy-in-progress ]; then
+              echo "::error::/opt/tower-finder/.deploy-in-progress is still present on $(hostname) ($(cat .deploy-in-progress)). An earlier deploy was left mid-flight and never confirmed healthy — its rollback failed, or was cancelled before it ran. Deploying now would snapshot the broken container as the new rollback point and lose the good one. Inspect the box and recover it (bash deploy/rollback.sh, or fix forward), then delete the marker and re-run. Refusing to deploy; the running stack is untouched."
               exit 1
             fi
 
@@ -445,13 +641,6 @@ jobs:
             fi
             echo "Origin-pull CA present and parseable: ${CF_CA}"
 
-            # Pre-deploy: save rollback image + git tag. NOT `|| true`: if we
-            # cannot capture a rollback point, abort the deploy rather than ship
-            # with no way back. A swallowed failure here previously let a deploy
-            # proceed with a stale/absent rollback image, so a later rollback
-            # silently restored the wrong build.
-            bash deploy/pre-deploy.sh
-
             # Pre-flight: refuse to deploy when the disk is near full. Without
             # this, git fetch silently writes a partial pack ("No space left on
             # device"), the working tree never advances, and the subsequent
@@ -465,6 +654,31 @@ jobs:
               docker system df 2>/dev/null || true
               exit 1
             fi
+
+            # Pre-deploy: save rollback image + git tag. NOT `|| true`: if we
+            # cannot capture a rollback point, abort the deploy rather than ship
+            # with no way back. A swallowed failure here previously let a deploy
+            # proceed with a stale/absent rollback image, so a later rollback
+            # silently restored the wrong build.
+            bash deploy/pre-deploy.sh
+
+            # From here on the box is mid-deploy: a rollback point now exists,
+            # and everything below moves the tree or the running containers.
+            # The marker is what lets the rollback job tell "died in a
+            # pre-flight, stack untouched" from "died with production half
+            # deployed" — the two need opposite responses.
+            #
+            # Every check that can refuse the deploy sits ABOVE this line, which
+            # is the property the rollback job depends on. The disk pre-flight
+            # used to sit below it; it refuses without touching anything, so a
+            # full disk would have been read as a half-finished deploy and cost
+            # production a needless down/up cycle. Keep new pre-flights above.
+            #
+            # The run id is not decoration: the rollback job refuses to act on a
+            # marker written by a different run, because that means an earlier
+            # deploy was left mid-flight and never recovered.
+            echo "run ${{ github.run_id }} started $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              > /opt/tower-finder/.deploy-in-progress
 
             # Hard-reset rather than `git pull`: the latter aborts silently on
             # divergent branches (deploy run 25481699738 — the server had a
@@ -496,7 +710,9 @@ jobs:
             docker builder prune -f --keep-storage 10GB
             # Deploy the app FIRST, on its own. Building only `tower-finder`
             # here means a broken Dockerfile.fleet can't abort the production
-            # app deploy (the fleet is a separate step below, after health).
+            # app deploy. Production runs no fleet simulator (see the `sim`
+            # profile in docker-compose.prod.yml), so `tower-finder` is the
+            # whole of the production deploy; staging still builds both.
             docker compose up -d --build tower-finder
 
             # Wait for backend to become healthy (up to 90s — matches staging
@@ -515,66 +731,155 @@ jobs:
               fi
             done
 
-            # Now bring up the fleet simulator (Compose `fleet` service). This
-            # is a SEPARATE step so a fleet build/start failure surfaces loudly
-            # here — with the real error — but only AFTER the app above is
-            # already deployed and healthy, so it can't take the app down with
-            # it. --no-deps: the app is up already; don't let --build touch it.
-            # The fleet has restart: unless-stopped, so unlike the old transient
-            # systemd-run unit it also survives reboots. (RADAR_API_KEY reaches
-            # it via backend/.env, the same file the app loads.)
-            docker compose up -d --build --no-deps fleet
+            # Reached only by the loop's `break`, i.e. the app answered
+            # /api/health. The box is no longer mid-deploy, so drop the marker;
+            # any failure after this point is a smoke/E2E failure, which the
+            # rollback steps on those jobs already cover.
+            rm -f /opt/tower-finder/.deploy-in-progress
+
+  rollback-production-on-deploy-failure:
+    name: Roll back production if the deploy failed after it began
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [deploy-production]
+    # Same group as deploy-production. The slot frees the moment that job ends,
+    # so without this a following push's deploy can be inside `git reset --hard`
+    # and `docker compose up --build` on /opt/tower-finder while rollback.sh is
+    # running `git reset --hard` and `docker compose down` in the same
+    # directory. Serialising can delay a rollback behind a queued deploy, which
+    # is the lesser problem: that deploy takes its own snapshot and supersedes
+    # the rollback, whereas two writers in one directory corrupts both.
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    # `always() && ...result == 'failure'` rather than a bare `failure()`.
+    # failure() is true when ANY ancestor job failed, and deploy-production has
+    # ancestors: an e2e-staging failure skips the deploy entirely, and this job
+    # would then SSH into production to consider rolling back a deploy that
+    # never ran. Keyed to the deploy job's own result, it cannot.
+    #
+    # This is the gap the two existing rollbacks do not cover. Both hang off
+    # jobs DOWNSTREAM of the deploy (production-smoke-tests, e2e-prod), and a
+    # failed deploy skips those jobs and their rollback steps with them.
+    # 'cancelled' as well as 'failure'. Cancelling mid-deploy leaves production
+    # exactly as half-deployed as a crash does, and deploy-production sets
+    # cancel-in-progress: false, so this can only be a human pressing cancel —
+    # never the pipeline cancelling itself. The marker check below still makes
+    # a cancel during the pre-flights a no-op.
+    if: >-
+      always() && (
+        needs.deploy-production.result == 'failure' ||
+        needs.deploy-production.result == 'cancelled'
+      )
+    steps:
+      - name: Roll back, but only if the deploy actually mutated the box
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: root
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          command_timeout: 15m
+          script: |
+            set -e
+            # The same identity assertion the deploy and the other two rollback
+            # paths carry, inline for the same reason: rollback.sh resets the
+            # tree and retags images over :latest, so a SERVER_HOST pointed at
+            # the wrong droplet does more damage here than a deploy would.
+            [ "$(hostname)" = "retina-prod" ] || { echo "::error::Refusing to roll back on '$(hostname)' — expected retina-prod."; exit 1; }
+            cd /opt/tower-finder
+
+            # deploy-production writes this marker immediately after
+            # pre-deploy.sh captures the rollback point, and clears it once the
+            # app answers /api/health. Its absence means the deploy died in its
+            # pre-flights with the running stack untouched.
+            #
+            # Rolling back in that case would be actively harmful rather than
+            # merely pointless: tower-finder:rollback and the newest deploy-*
+            # tag still describe the PREVIOUS deploy's snapshot, so rollback.sh
+            # would drag production back past a deploy that succeeded in order
+            # to recover from one that never started.
+            if [ ! -f .deploy-in-progress ]; then
+              echo "No .deploy-in-progress marker — the deploy failed before mutating anything, so what is running is already the last-known-good build. Nothing to roll back."
+              exit 0
+            fi
+
+            MARKER=$(cat .deploy-in-progress)
+
+            # The marker records which run wrote it. One from a DIFFERENT run
+            # means an earlier deploy was left mid-flight and never recovered —
+            # its rollback failed, or someone cancelled and walked away — and
+            # this run then died in its own pre-flights without touching
+            # anything.
+            #
+            # Rolling back on that would be a guess. The box could be an
+            # unrecovered outage, or one a human has already fixed forward by
+            # hand and not tidied up after; rollback.sh would undo the second.
+            # Reporting "nothing to roll back" would be worse still — a green
+            # run over a production box that is genuinely broken. So stop, and
+            # say exactly what is ambiguous.
+            case "$MARKER" in
+              "run ${{ github.run_id }} "*) ;;
+              *)
+                echo "::error::/opt/tower-finder/.deploy-in-progress was left behind by a different run (${MARKER}). Production was put mid-deploy earlier and never confirmed healthy since. Refusing to roll back automatically, because this run touched nothing and cannot tell an unrecovered outage from a box already fixed by hand. Inspect retina-prod, recover it, then delete the marker."
+                exit 1
+                ;;
+            esac
+
+            echo "Deploy failed after it began mutating the box (${MARKER}). Rolling back..."
+
+            # rollback.sh distinguishes three outcomes and `set -e` would
+            # collapse the last two, so take its status explicitly.
+            set +e
+            bash deploy/rollback.sh
+            rc=$?
+            set -e
+
+            case "$rc" in
+              0)
+                rm -f .deploy-in-progress
+                echo "Rollback complete — production is back on the previous build."
+                ;;
+              2)
+                # Service restored, but the database is left ahead of the code
+                # now running against it. The box is no longer mid-deploy, so
+                # the marker goes; the run stays red so a human sees the report.
+                rm -f .deploy-in-progress
+                echo "::error::Production is back up, but a database downgrade is outstanding — see the report above before trusting this rollback."
+                exit 2
+                ;;
+              *)
+                # Marker deliberately left in place: the box is still
+                # mid-deploy, and that is exactly what the next run must know.
+                echo "::error::Rollback FAILED (exit ${rc}). Production may still be down — SSH to retina-prod and recover by hand, then delete /opt/tower-finder/.deploy-in-progress so the next deploy is not blocked by it."
+                exit "$rc"
+                ;;
+            esac
+
 
   production-smoke-tests:
     name: Production smoke tests
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     needs: [deploy-production]
     steps:
       - uses: actions/checkout@v4
-      - name: Wait for fleet to stabilize
+      - name: Let production settle
         run: |
-          # Require the active-node count to be ≥ MIN_NODES AND non-decreasing
-          # for STABLE_TARGET consecutive checks before declaring the deploy
-          # healthy. The previous version broke out on the first hit, which
-          # let "flapping" deploys (nodes reconnect, then drop again) pass
-          # smoke tests with a half-broken fleet.
-          MIN_NODES=10
-          STABLE_TARGET=3
-          echo "Waiting 60s for fleet nodes to reconnect..."
+          # This step used to hold the deploy until the simulated fleet had
+          # reconnected at ≥10 active nodes. Production no longer runs one, and
+          # the only nodes left are real boards, so that assertion would now
+          # gate every production deploy — and, via the rollback step below, an
+          # automatic revert of a good build — on third-party hardware being
+          # online. Node health is a fleet-monitoring concern, not a deploy gate.
+          #
+          # The wait itself is kept: the app was restarted moments ago and the
+          # smoke tests should not race its warmup. The deploy job has already
+          # confirmed /api/health.
+          echo "Waiting 60s for the app to settle before smoke tests..."
           sleep 60
-          stable=0
-          last=0
-          # Through the edge, not at the droplet's address: the origin now
-          # requires Cloudflare's client certificate (ssl_verify_client in
-          # deploy/nginx/snippets/tls.conf) and the DOCKER-USER boundary drops
-          # anything on 443 that is not from a Cloudflare range, so a
-          # direct-to-IP request can only ever time out or 400 — and this loop
-          # ends in `exit 1`, so it would fail every production deploy. `-k`
-          # does not help: that flag governs verification of the SERVER's
-          # certificate, not presentation of a client one. api.retina.fm is the
-          # same host this job's own smoke tests hit for this endpoint (BASE_URL
-          # below).
-          for i in $(seq 1 18); do
-            COUNT=$(curl -s https://api.retina.fm/api/test/dashboard \
-              | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['active'])" 2>/dev/null) || COUNT=0
-            if [ "${COUNT:-0}" -ge "$MIN_NODES" ] && [ "${COUNT:-0}" -ge "$last" ]; then
-              stable=$((stable + 1))
-              echo "Attempt $i/18: ${COUNT} nodes — stable ${stable}/${STABLE_TARGET}"
-              if [ "$stable" -ge "$STABLE_TARGET" ]; then
-                echo "Fleet stable at ${COUNT} nodes (≥${STABLE_TARGET} consecutive checks)"
-                exit 0
-              fi
-            else
-              echo "Attempt $i/18: ${COUNT} nodes (was ${last}) — resetting stability counter"
-              stable=0
-            fi
-            last="${COUNT:-0}"
-            sleep 10
-          done
-          echo "::error::Fleet did not stabilize at ≥${MIN_NODES} nodes after 60s + 18×10s"
-          exit 1
       - name: Run production smoke tests
         id: smoke
+        timeout-minutes: 15
         env:
           BASE_URL: https://api.retina.fm
         run: |
@@ -584,7 +889,8 @@ jobs:
           check_status() {
             local name="$1" url="$2" expected="$3"
             printf "  %-40s " "$name"
-            # Retry once on connection error (transient load spikes during fleet reconnect)
+            # Retry once on connection error (transient load spikes just after
+            # the app restarts)
             CODE=$($CURL -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) \
               || CODE=$($CURL -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) \
               || { echo "FAIL (connection)"; FAIL=$((FAIL+1)); return; }
@@ -615,13 +921,17 @@ jobs:
           AIRCRAFT=$(curl -sk "${BASE_URL}/api/test/dashboard" \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['pipeline']['aircraft_on_map'])" 2>/dev/null) || AIRCRAFT=0
           printf "  %-40s " "Aircraft on map > 0"
-          if [ "${AIRCRAFT:-0}" -gt 0 ]; then echo "OK ($AIRCRAFT)"; PASS=$((PASS+1)); else echo "WARN ($AIRCRAFT — fleet may still be connecting)"; fi
+          if [ "${AIRCRAFT:-0}" -gt 0 ]; then echo "OK ($AIRCRAFT)"; PASS=$((PASS+1)); else echo "WARN ($AIRCRAFT — real nodes may be quiet or still connecting)"; fi
 
-          # Guard: active node count must not exceed 220 (multiple simultaneous fleets = 400+)
+          # Guard against a runaway population. Production runs no simulator now,
+          # so anything near this ceiling means either a `--profile sim` fleet was
+          # left running or the analytics manager is not evicting (ClickUp
+          # 86caxcbc3). Kept at 220 rather than retightened to the real headcount
+          # so a node cutover cannot fail a deploy.
           NODES=$(curl -sk "${BASE_URL}/api/test/dashboard" \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['active'])" 2>/dev/null) || NODES=0
-          printf "  %-40s " "Active nodes ≤ 220 (single fleet)"
-          if [ "${NODES:-0}" -le 220 ]; then echo "OK ($NODES)"; PASS=$((PASS+1)); else echo "FAIL ($NODES > 220 — multiple fleet simulators may be running)"; FAIL=$((FAIL+1)); fi
+          printf "  %-40s " "Active nodes ≤ 220"
+          if [ "${NODES:-0}" -le 220 ]; then echo "OK ($NODES)"; PASS=$((PASS+1)); else echo "FAIL ($NODES > 220 — a simulator fleet may be running, or nodes are not being evicted)"; FAIL=$((FAIL+1)); fi
 
           echo ""
           echo "Results: $PASS passed, $FAIL failed"
@@ -629,10 +939,9 @@ jobs:
       # Auto-rollback on smoke failure, mirroring the prod E2E job. A failed
       # smoke test means a bad build is live serving prod; revert to
       # last-known-good rather than leaving it up for a human to catch. The
-      # stabilise loop above (3 consecutive stable checks) guards against a
-      # transient fleet-reconnect flap tripping this. The condition is scoped to
-      # the smoke step's own outcome, so a stabilise-loop timeout fails the job
-      # for a human to inspect without triggering an automatic rollback.
+      # condition is scoped to the smoke step's own outcome, so a failure in the
+      # settle step above fails the job for a human to inspect without
+      # triggering an automatic rollback.
       - name: Rollback production on smoke-test failure
         if: failure() && steps.smoke.outcome == 'failure'
         uses: appleboy/ssh-action@v1

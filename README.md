@@ -109,6 +109,28 @@ development.
 
 ## API
 
+### The v1 node API
+
+The four endpoints under `/v1/nodes` that receiver nodes talk to are a versioned
+wire contract, published at [`contracts/nodes-v1.openapi.yaml`](contracts/nodes-v1.openapi.yaml).
+The node client and the conformance harness are independent implementations of
+it, so it is the one part of this API with consumers holding a pinned version.
+
+That file is **generated, not written**. It comes from the routes and the
+Pydantic models, and CI regenerates it and fails when it differs from what is
+committed, which is what stops the file being edited to match a change instead of
+the change being noticed. Change a node route, then:
+
+```bash
+cd backend && RETINA_ENV=dev .venv/bin/python -m scripts.generate_openapi
+```
+
+and commit the result alongside. Behaviour a schema cannot carry (whether a
+refusal may be retried, and whether retrying can ever help) is annotated onto
+the routes as `x-retry` and `x-terminal`, and the vocabulary is defined in the
+contract's own description. A breaking change raises `NODE_API_VERSION` in
+`backend/routes/nodes.py`.
+
 ### `GET /api/towers`
 
 | Parameter  | Type   | Required | Default | Description                             |

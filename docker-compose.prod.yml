@@ -2,8 +2,10 @@
 # Combined with docker-compose.yml (the shared base). Everything that is not
 # inherently per-environment lives in the base; this file carries only the
 # production values for the things that legitimately differ:
-#   hostnames/CORS · droplet capacity · fleet scale · the external edge network
-#   · the two build-out flags on the environment block below
+#   hostnames/CORS · droplet capacity · whether the fleet runs at all, and at
+#     what scale · the external edge network
+#   · the two build-out flags on the environment block below · the name this
+#     droplet gives itself in alerts
 #
 # Usage (the host's ./.env sets COMPOSE_FILE, so this is normally implicit):
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
@@ -15,6 +17,10 @@
 services:
   tower-finder:
     container_name: retina-prod-server
+    # Consumed by services/alerting.py, which otherwise sees the container id or
+    # the service name (varies by Compose version), neither of which says which
+    # droplet raised an alert.
+    hostname: retina-prod
     environment:
       # This box ran `RETINA_ENV=test` for one reason, keeping the anonymous
       # admin bypass open, and paid for it with four unrelated guards: the
@@ -30,11 +36,23 @@ services:
       - AUTH_ALLOW_ANONYMOUS_ADMIN=1
       # The simulation subsystem, likewise asked for by name: for now the ingest
       # write path, in time the fleet container as well, which is why the flag is
-      # named for the subsystem rather than for that one route. Prod needs it
-      # because testmap.retina.fm is served from a synthetic fleet in this same
-      # stack, and that fleet POSTs through the ingest path. Every environment
-      # now sets it, so main.py gates the mount on the flag alone.
+      # named for the subsystem rather than for that one route. Every environment
+      # sets it, so main.py gates the mount on the flag alone.
+      #
+      # Production's original reason for it has gone: it was here because a fleet
+      # in this same stack POSTed through the ingest path to feed testmap, and
+      # production now runs no fleet and no longer serves that hostname. The flag
+      # is left set for the moment because dropping it is a behaviour change on a
+      # live box — it unmounts write routes — and wants its own PR and its own
+      # verification, not a drive-by in a hostname move. Tracked in ClickUp
+      # 86cb5p19x.
       - SYNTHETIC_FLEET_ENABLED=1
+      # Labels alerts, and deliberately not RETINA_ENV even though the two read
+      # the same here. Staging and test both still run `test` while the build-out
+      # lasts, so RETINA_ENV cannot say which box an alert came from, and a label
+      # sourced from it would change meaning the day a guard decision does. See
+      # services/alerting.py.
+      - ALERT_ENVIRONMENT=production
       - CORS_ORIGINS=https://towers.retina.fm,https://api.retina.fm,https://map.retina.fm,https://dash.retina.fm,https://admin.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
       # at boot to render deploy/nginx/nginx.conf.template. One template serves
@@ -44,7 +62,14 @@ services:
       - HOST_MAP=map.retina.fm
       - HOST_DASH=dash.retina.fm
       - HOST_ADMIN=admin.retina.fm
-      - HOST_TESTMAP=testmap.retina.fm
+      # Parked, deliberately. `testmap.retina.fm` is now served by staging,
+      # which is the only environment still running a simulator, so production
+      # has no synthetic map surface to expose. The vhost cannot simply be
+      # dropped: the nginx half of deploy/check-env-parity.py requires every
+      # environment to render the same seven vhosts, byte-identical once
+      # hostnames are tokenised. So the block still renders, under a name with
+      # no DNS record, and never receives a request.
+      - HOST_TESTMAP=testmap-retired.retina.fm
       - HOST_LEGACY_REDIRECT=tower-finder.retina.fm
       # The only host-naming part of the CSP. wss://*.retina.fm already covers
       # both environments, so only the two explicit origins vary.
@@ -60,6 +85,25 @@ services:
 
   fleet:
     container_name: retina-prod-fleet
+    # Not started on production. The associator pre-computes an overlap grid
+    # pairwise across every registered node, so 25 synthetic nodes cost the
+    # solver roughly as much as the real fleet will, and production was sitting
+    # at 107% CPU with `solver_latency_high` at rest before the real nodes had
+    # even cut over. A profile no environment enables is what keeps a bare
+    # `docker compose up -d` on the droplet from quietly bringing it back.
+    #
+    # This emptied testmap.retina.fm, which this droplet used to serve off this
+    # fleet. That hostname has since moved to staging, the only environment still
+    # running a simulator, so production's testmap vhost is parked (see
+    # HOST_TESTMAP above) and starting this fleet would populate nothing anyone
+    # looks at.
+    #
+    # The sizing below is kept, not deleted, so the fleet can be brought back for
+    # an afternoon without a PR:
+    #   docker compose --profile sim up -d --build --no-deps fleet
+    #   docker compose restart tower-finder   # re-registers the synthetic nodes
+    # Staging and test are unaffected and still run theirs by default.
+    profiles: ["sim"]
     environment:
       # Fleet is scoped to one metro (Greenville, SC), so counts are sized for a
       # single terminal area rather than a continent. Set FLEET_METRO="" to go

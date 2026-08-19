@@ -107,6 +107,35 @@ _set_busy_timeout
 # code path rather than a copy.
 resolve_n2_chi2
 
+# ── routes/node_schemas.py ──────────────────────────────────────────────────
+
+# Pydantic model fields, read by Pydantic's own validation and serialisation
+# rather than by any attribute access vulture can trace. These are the wire
+# contract at contracts/nodes-v1.openapi.yaml expressed in Python: a field
+# deleted because it looks unreferenced is a field the node sends and the
+# server then rejects. The handlers that read them land with 86cb2cy3v.
+#
+# Only the names not already listed above appear here, and only those the four
+# endpoints' request and response bodies actually carry.
+remote_management
+server_time
+seq
+accepted
+config_stale
+streaming_allowed
+disk_free_mb
+temp_c
+blah2
+owl_os
+retina_node
+blah2_image
+uptime_s
+detail
+# The two model hooks are called by Pydantic during validation and
+# serialisation, through the decorator rather than from a call site.
+_arrays_are_parallel
+_omit_absent_detail
+
 # ── core/nodes.py ───────────────────────────────────────────────────────────
 
 # SQLAlchemy's declarative mapper reads these class-level attributes to build
@@ -141,14 +170,17 @@ last_used_at
 # module-level names and the two functions reflectively (revision identity,
 # chain order, upgrade/downgrade direction); nothing in the tree references
 # them statically. Vulture whitelists match by name rather than by file, so
-# these six entries also cover every revision added in future, and the
-# alternative is a whitelist entry per migration file, forever.
+# these entries also cover every revision added in future, and the alternative
+# is a whitelist entry per migration file, forever.
 revision
 down_revision
 branch_labels
 depends_on
 upgrade
 downgrade
+# rollback_safety is read by deploy/classify-migration-gap.py via regex to
+# determine whether a rollback across this revision is safe to serve.
+rollback_safety
 
 
 # ── Framework attributes (previously CI --ignore-names) ───────────────────────

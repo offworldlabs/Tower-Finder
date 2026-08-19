@@ -93,12 +93,19 @@ echo "[start.sh] Rendered nginx config for RETINA_ENV=${RETINA_ENV} (${HOST_MAIN
 # exits non-zero with "Can't locate revision identified by '<rev>'" the moment
 # the database is ahead of what this image ships. Treating that as a boot
 # failure would turn every rollback into a crash-loop, which defeats the point
-# of rolling back. An additive revision the older code doesn't know about is
-# harmless to leave in place, since the old code never touches the new column,
-# so that specific failure is logged and swallowed; anything else (a broken
-# revision, a locked or corrupt database, an unreadable file) still aborts the
-# boot exactly as before. A destructive revision needs `alembic downgrade` run
-# by hand before deploying the older image; see docs/runbook.md.
+# of rolling back, so that specific failure is logged and swallowed; anything
+# else (a broken revision, a locked or corrupt database, an unreadable file)
+# still aborts the boot exactly as before.
+#
+# The swallow is not a judgement that the gap is harmless. This image cannot
+# make that judgement: the revisions the database is ahead by are precisely the
+# ones absent from its own migrations/versions/, so all it has is a revision id
+# it cannot resolve. Any rule it enforced would therefore fire on every
+# rollback, additive ones included, and refusing to boot would turn a benign
+# rollback into an outage on the recovery path. The grading happens on the host
+# instead, before the tree moves, where both trees are reachable:
+# deploy/classify-migration-gap.py, called by deploy/rollback.sh. A destructive
+# revision needs `alembic downgrade` run by hand; see docs/runbook.md.
 #
 # The grep below matches free text Alembic itself controls, not us, so a
 # future Alembic release rewording that message would make this stop matching
@@ -140,7 +147,10 @@ if MIGRATION_OUTPUT=$(cd /app/backend && python3 -m alembic upgrade head 2>&1); 
         printf '%s\n' "${CURRENT_OUTPUT}"
     fi
 elif printf '%s\n' "${MIGRATION_OUTPUT}" | grep -q "Can't locate revision"; then
-    echo "[start.sh] Database is ahead of this image's migrations (rollback); continuing without downgrading"
+    echo "[start.sh] Database is ahead of this image's migrations (rollback); booting anyway."
+    echo "[start.sh] This image cannot tell whether that is safe: it does not ship the"
+    echo "[start.sh] revisions in question. deploy/rollback.sh grades them at rollback"
+    echo "[start.sh] time and prints the verdict; see docs/runbook.md."
     printf '%s\n' "${MIGRATION_OUTPUT}"
 else
     echo "[start.sh] Migration failed, refusing to boot:"
