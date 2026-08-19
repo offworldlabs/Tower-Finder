@@ -10,7 +10,7 @@ Two problems in how state.multinode_tracks renders as mn-* aircraft:
   display window to MN_ONESHOT_TTL_S seconds.
 
 - a later solve of the same aircraft that misses the 6 km track-key match
-  (_multinode_track_key) mints a new entry instead of updating the old one,
+  (multinode_key_decision) mints a new entry instead of updating the old one,
   so the old ghost keeps rendering beside the new, correct entry.  solver.py
   now supersedes any earlier entry that shares a source single-node track id
   with the new solve, under a different key.

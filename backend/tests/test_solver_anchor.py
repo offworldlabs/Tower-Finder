@@ -3,7 +3,7 @@
 Two things are pinned here:
 
 - multinode_key_decision, the pure keying rule extracted from the old
-  _multinode_track_key (precedent: claim_decision) — adsb precedence,
+  multinode_key_decision (precedent: claim_decision) — adsb precedence,
   anchor honoring (and its distance/liveness/dark-only guards), the
   existing proximity scan, and minting.
 - Its threading through _process_solver_item: an anchor_key on the solver

@@ -1111,7 +1111,7 @@ def run(
                     # sharing one receiver confine the fix better than two
                     # receivers far apart do.  An aggregate over all n hides it.
                     res.err_by_n[nn].append(d)
-                    # Track identity, mirroring solver._multinode_track_key:
+                    # Track identity, mirroring solver.multinode_key_decision:
                     # a solve with a known transponder collapses onto that
                     # aircraft, so a real target is one track however many
                     # times it is solved.

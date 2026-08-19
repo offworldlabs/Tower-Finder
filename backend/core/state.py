@@ -106,7 +106,7 @@ def _global_tracks_for_claiming():
     Only mn-dark-* keys are claimable: an ADS-B-tagged track already has an
     external identity (a transponder hex) and must never be re-derived by
     top-down projection — mirrors "only dark tracks are claimable" at
-    solver.py's _multinode_track_key / multinode_key_decision.  Eligibility
+    solver.py's multinode_key_decision.  Eligibility
     filtering, the DR-age cap and the CLAIM_MAX_GLOBAL_TRACKS truncation are
     all applied by the LIB, not here — this stays a dumb snapshot so the
     offline bench measures the shipped filtering.
@@ -347,7 +347,7 @@ solver_queue_drops: int = 0
 solver_stale_drops: int = 0
 
 # Multinode entries removed because a later solve shared a source single-node
-# track under a different track key (the 6 km match in _multinode_track_key
+# track under a different track key (the 6 km match in multinode_key_decision
 # missed).  One aircraft is one set of source tracks, so the earlier entry is
 # replaced immediately rather than coexisting with the new one until its own
 # 60 s expiry.

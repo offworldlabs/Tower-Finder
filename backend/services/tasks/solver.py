@@ -639,7 +639,7 @@ def multinode_key_decision(
          converged somewhere else entirely is not honored just because a
          claim was attempted.
       3. Existing DR proximity scan, moved verbatim from the pre-claiming
-         _multinode_track_key: only dark tracks are claimable — an untagged
+         track-key logic (now this function): only dark tracks are claimable — an untagged
          solve must never steal the identity of an ADS-B-tagged aircraft
          that happens to be nearby — dead-reckoned forward so a fast target
          is not rejected purely for having moved since its last solve.
@@ -688,16 +688,6 @@ def multinode_key_decision(
         return best_key, "proximity"
     # No claimant — a genuinely new target.
     return f"mn-dark-{result.get('timestamp_ms', 0)}-{lat:.3f}-{lon:.3f}", "minted"
-
-
-def _multinode_track_key(result: dict, adsb_hex: str | None, anchor_key: str | None = None) -> str:
-    """Thin wrapper over multinode_key_decision against state.multinode_tracks.
-
-    Call under _MN_TRACKS_LOCK — multinode_key_decision reads
-    state.multinode_tracks and the caller writes back into it.
-    """
-    key, _how = multinode_key_decision(state.multinode_tracks, result, adsb_hex, anchor_key)
-    return key
 
 
 # Maximum age (seconds) of a solver queue item before it is discarded without

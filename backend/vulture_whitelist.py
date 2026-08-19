@@ -183,6 +183,12 @@ downgrade
 rollback_safety
 
 
+# Module-level counter incremented only through the string-keyed
+# state.bump_counter("adsb_seed_frames_autotagged") in
+# services/frame_processor.py, which vulture cannot resolve to this name.
+adsb_seed_frames_autotagged
+
+
 # ── Framework attributes (previously CI --ignore-names) ───────────────────────
 # Moved out of the vulture invocation so the reason lives with the name.
 # `model_config` is the pydantic v2 class-level config attribute, read by
