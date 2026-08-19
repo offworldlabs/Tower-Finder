@@ -113,6 +113,19 @@ jobs:
               exit 1
             fi
 
+            # Mirrors ci.yml's .env pre-flight, and matters more here than
+            # there. pre-deploy.sh reads the running image via `docker compose
+            # images`, which resolves through whatever ./.env names, so a .env
+            # naming another environment would have it snapshot the wrong
+            # service — and the correctness of that snapshot is precisely what
+            # this workflow exists to verify. The overlay is rewritten from the
+            # tree after the reset below; this only rejects one already on the
+            # box that names something else.
+            if [ -f .env ] && ! grep -q '^COMPOSE_FILE=.*docker-compose\.test\.yml' .env; then
+              echo "::error::/opt/tower-finder/.env on $(hostname) exists but does not select the test overlay — it names another environment. Inspect it; do not deploy."
+              exit 1
+            fi
+
             AVAIL_MB=$(df -m / | awk 'NR==2 {print $4}')
             if [ "${AVAIL_MB:-0}" -lt 2048 ]; then
               echo "::error::Test droplet only ${AVAIL_MB}MB free (< 2GB threshold). Aborting."
