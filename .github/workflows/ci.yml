@@ -211,6 +211,16 @@ jobs:
     # broke repeatedly on 2026-08-18 and 2026-08-19; see the production job.
     container:
       image: ${{ needs.playwright-image.outputs.image }}
+    # `npm ci` runs @playwright/test's postinstall, which fetches browsers. The
+    # image sets PLAYWRIGHT_BROWSERS_PATH=/ms-playwright and the tag is derived
+    # to match the lockfile, so it finds the right revision already there and
+    # does nothing. This makes that a guarantee rather than an expectation: if
+    # the browsers were ever NOT found, the postinstall would quietly download
+    # them from the CDN this job exists to avoid, and the only symptom would be
+    # a slow green run. With this set it fails loudly at the browser instead,
+    # pointing at the cause. See microsoft/playwright#4283.
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
     defaults:
       run:
         working-directory: frontend
@@ -255,6 +265,9 @@ jobs:
     # than only declining to act on it.
     container:
       image: ${{ needs.playwright-image.outputs.image }}
+    # See the staging job: makes the postinstall's no-op a guarantee.
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
     defaults:
       run:
         working-directory: frontend
