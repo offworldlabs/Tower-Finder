@@ -1,4 +1,4 @@
-"""Registering a node over HTTP must not stall the event loop.
+"""Registering a node must not stall the event loop, whichever path it arrives by.
 
 `InterNodeAssociator.register_node` pre-computes an overlap grid against every
 node already registered, which is seconds of CPU once a fleet is up. Called
@@ -9,7 +9,9 @@ nothing on it (86cb5hef4) — the ingest POSTs stopped returning inside the
 client's 30 s timeout.
 
 `services/tcp_handler.py` already dispatches registration to a dedicated
-executor. These tests hold the HTTP paths to the same rule.
+executor. These tests hold every other path to the same rule: both HTTP ingest
+endpoints, the v1 pipeline path in `services/node_pipeline.py`, and the blah2
+bridge.
 """
 
 import asyncio
@@ -158,3 +160,155 @@ class TestRegistrationStillHappens:
         )
 
         assert [nid for nid, _ in seen] == ["test-passthrough"]
+
+
+# ── The paths that do not go through an HTTP handler ──────────────────────────
+#
+# The two below reach the same registration from elsewhere: `node_pipeline` on
+# the v1 path (POST /v1/nodes/register in-request, and once per node at
+# startup), and `blah2_bridge` for the real receivers. Neither can be driven
+# through the ASGI client, so they are timed directly.
+
+# The v1 node's stored configuration. Of these only beam_width_deg is nullable,
+# and it is given a value here rather than the null a real node carries: a null
+# width reaches the associator's geometry and raises, which is 86cb5dh4d and is
+# being fixed on its own branch. These tests are about where registration runs,
+# not what it is handed, so they take the config shape that already works.
+_V1_CONFIG = {
+    "rx_lat": 51.42,
+    "rx_lon": -0.91,
+    "rx_alt_ft": 120.0,
+    "tx_lat": 51.37,
+    "tx_lon": -0.88,
+    "tx_alt_ft": 900.0,
+    "tx_callsign": "Crystal Palace",
+    "fc_hz": 570_000_000.0,
+    "fs_hz": 2_000_000.0,
+    "beam_width_deg": 41.0,
+    "max_range_km": 50.0,
+    "cpi_s": 0.5,
+    "delay_tolerance_us": 6.67,
+    "doppler_tolerance_hz": 5.0,
+}
+_V1_NODE_ID = "test-loop-v1"
+
+# Coarse enough that the heartbeat is not itself the load, fine enough that a
+# stall of RESPONSIVE_S cannot hide between two ticks.
+_TICK_S = 0.01
+
+
+async def _longest_stall_during(coro) -> float:
+    """The longest the event loop went unserviced while `coro` ran.
+
+    A bystander that merely waits its turn is not enough here: `register_with_pipeline`
+    awaits a database read before it reaches the registration, and that await hands
+    the bystander its turn early whether or not the registration blocks afterwards.
+    A heartbeat ticking throughout measures the stall wherever in the coroutine
+    it falls.
+
+    The heartbeat is given its first turn before `coro` starts. Without that it
+    would never run at all against a path with no suspension point of its own
+    (`_register_node` is one), leaving no gaps to report and the stall measuring
+    as zero — which is the one answer that must not come back by default.
+    """
+    gaps: list[float] = []
+    running = True
+
+    async def heartbeat():
+        last = time.perf_counter()
+        while running:
+            await asyncio.sleep(_TICK_S)
+            now = time.perf_counter()
+            gaps.append(now - last)
+            last = now
+
+    ticker = asyncio.create_task(heartbeat())
+    await asyncio.sleep(0)
+    try:
+        await coro
+    finally:
+        running = False
+        await ticker
+    assert gaps, "the heartbeat never ran, so nothing was measured"
+    return max(gaps)
+
+
+@pytest.fixture
+async def v1_node(node_session):
+    from core.nodes import Node, NodeConfig
+
+    node = Node(
+        node_id=_V1_NODE_ID,
+        node_ref="ndetestloopv100",
+        board_model="raspberrypi5-4gb",
+        status="active",
+        active_config_version=1,
+    )
+    node_session.add(node)
+    node_session.add(NodeConfig(node_id=_V1_NODE_ID, version=1, **_V1_CONFIG))
+    await node_session.flush()
+    yield node
+    # Teardown is the autouse _clean_nodes above: it clears every `test-` node
+    # from all three stores, and _V1_NODE_ID is one. Repeating it here would be
+    # a second cleanup path to keep in step with the first.
+
+
+class TestTheNonHttpPathsDoNotBlockTheLoop:
+    async def test_v1_pipeline_registration_leaves_the_loop_free(self, node_session, v1_node, slow_registration):
+        from services.node_pipeline import register_with_pipeline
+
+        stall = await _longest_stall_during(register_with_pipeline(node_session, v1_node))
+
+        assert stall < RESPONSIVE_S
+
+    async def test_blah2_bridge_registration_leaves_the_loop_free(self, slow_registration):
+        from services.blah2_bridge import _build_node, _register_node
+
+        node = _build_node(
+            {
+                "node_id": "test-loop-blah2",
+                "detection_url": "https://example.test/api/detection",
+                "rx_lat": 33.9,
+                "rx_lon": -84.6,
+                "tx_lat": 33.8,
+                "tx_lon": -84.1,
+                "fc_hz": 177_000_000,
+            }
+        )
+
+        stall = await _longest_stall_during(_register_node(node))
+
+        assert stall < RESPONSIVE_S
+
+
+class TestTheNonHttpRegistrationsStillHappen:
+    async def test_the_v1_node_reaches_the_registries(self, node_session, v1_node):
+        from core import state
+        from services.node_pipeline import register_with_pipeline
+
+        await register_with_pipeline(node_session, v1_node)
+
+        assert state.connected_nodes[_V1_NODE_ID]["peer"] == "v1"
+        assert state.node_associator.node_geometries[_V1_NODE_ID].rx_lat == _V1_CONFIG["rx_lat"]
+        assert state.node_analytics.detection_areas[_V1_NODE_ID].rx_lat == _V1_CONFIG["rx_lat"]
+
+    async def test_the_blah2_node_reaches_the_registries(self):
+        from core import state
+        from services.blah2_bridge import _build_node, _register_node
+
+        node = _build_node(
+            {
+                "node_id": "test-registered-blah2",
+                "detection_url": "https://example.test/api/detection",
+                "rx_lat": 33.9,
+                "rx_lon": -84.6,
+                "tx_lat": 33.8,
+                "tx_lon": -84.1,
+                "fc_hz": 177_000_000,
+            }
+        )
+
+        await _register_node(node)
+
+        assert state.connected_nodes["test-registered-blah2"]["peer"] == node.peer
+        assert state.node_associator.node_geometries["test-registered-blah2"].rx_lat == 33.9
