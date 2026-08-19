@@ -104,6 +104,21 @@ backend on `:8000`. To reach the live-map surface locally, open
 There's a backend-free map sandbox at `/test-radar` (one node, one aircraft,
 one ellipse) for working on map rendering without the pipeline.
 
+### Full stack in Docker
+
+To run the built image exactly as the droplets do (nginx rendered from the
+shared template, plain HTTP), overlay the laptop compose file on the base:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+```
+
+Serves `http://testmap.localhost:8080` (live map + synthetic fleet),
+`http://api.localhost:8080`, and towers/dash/admin on the same port — the
+endpoint list and the reasoning live in `docker-compose.local.yml`'s header.
+Always pass `--build`: the frontend bundle and backend are baked into the
+image, so a plain `up` silently reuses the previous build.
+
 ### See real data without running the pipeline
 
 The simulation fleet (`retina-simulation`) feeds testmap. Production runs no

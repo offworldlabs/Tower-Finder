@@ -1,0 +1,463 @@
+From 7fbbf6369f3e518c2ebb1a1464374f46d8085a87 Mon Sep 17 00:00:00 2001
+From: Josh Poole <joshpoole04@gmail.com>
+Date: Wed, 20 May 2026 12:29:20 +0100
+Subject: [PATCH] 20260520 - add RF profile endpoint and spectral measurement
+ handling
+
+---
+ backend/routes/towers.py            | 105 ++++++++++++++++++++++++++++
+ backend/services/tower_ranking.py   |  53 ++++++++++++--
+ backend/tests/test_tower_ranking.py |  86 +++++++++++++++++++++++
+ backend/tests/test_towers_routes.py |  97 +++++++++++++++++++++++++
+ 4 files changed, 334 insertions(+), 7 deletions(-)
+
+diff --git a/backend/routes/towers.py b/backend/routes/towers.py
+index 738334d..e17f012 100644
+--- a/backend/routes/towers.py
++++ b/backend/routes/towers.py
+@@ -7,6 +7,7 @@ import os
+ import httpx
+ import orjson
+ from fastapi import APIRouter, Depends, HTTPException, Query
++from pydantic import BaseModel, Field
+ 
+ from clients.fcc import fetch_fcc_broadcast_systems
+ from clients.maprad import fetch_broadcast_systems
+@@ -16,11 +17,32 @@ from services.tower_ranking import (
+     _CONFIG_PATH,
+     DEFAULT_LIMIT,
+     DEFAULT_RADIUS_KM,
++    SpectralMeasurement,
+     parse_user_frequencies,
+     process_and_rank,
+     reload_config,
+ )
+ 
++
++# ── Request models ────────────────────────────────────────────────────────────
++
++class SpectralMeasurementIn(BaseModel):
++    freq_mhz: float
++    snr_db: float | None = None
++    obw_fraction: float | None = None
++    score: float | None = None
++    power_db: float | None = None
++    band: str | None = None
++
++
++class RfProfileRequest(BaseModel):
++    lat: float = Field(..., ge=-90, le=90)
++    lon: float = Field(..., ge=-180, le=180)
++    measurements: list[SpectralMeasurementIn] = Field(default_factory=list)
++    radius_km: int = Field(default=0, ge=0, le=300)
++    limit: int = Field(default=0, ge=0, le=200)
++    source: str = "auto"
++
+ _NODE_DROPOUT_THRESHOLD = float(os.getenv("NODE_DROPOUT_THRESHOLD", "0.8"))
+ 
+ router = APIRouter()
+@@ -153,6 +175,89 @@ async def find_towers(
+     }
+ 
+ 
++@router.post("/api/towers/profile")
++async def tower_profile(body: RfProfileRequest):
++    """Accept an RF profile from the spectrum analyser and return towers ranked
++    by measured signal quality rather than estimated received power."""
++    source = body.source.lower()
++    if source == "auto":
++        source = _detect_source(body.lat, body.lon)
++    if source not in ("us", "au", "ca"):
++        raise HTTPException(status_code=400, detail="Invalid source. Use: us, au, ca, auto")
++
++    effective_radius = body.radius_km if body.radius_km > 0 else DEFAULT_RADIUS_KM
++    effective_limit  = body.limit     if body.limit     > 0 else DEFAULT_LIMIT
++
++    try:
++        if source == "us":
++            raw = await fetch_fcc_broadcast_systems(body.lat, body.lon, radius_km=effective_radius)
++            if API_KEY:
++                try:
++                    maprad_raw = await fetch_broadcast_systems(
++                        API_KEY, body.lat, body.lon, radius_km=effective_radius, source=source,
++                    )
++                    raw.extend(maprad_raw)
++                except Exception:
++                    logging.warning("Maprad supplement failed, using FCC data only")
++        else:
++            if not API_KEY:
++                raise HTTPException(status_code=500, detail="MAPRAD_API_KEY not configured")
++            raw = await fetch_broadcast_systems(
++                API_KEY, body.lat, body.lon, radius_km=effective_radius, source=source,
++            )
++    except HTTPException:
++        raise
++    except Exception:
++        logging.exception("Tower data fetch failed")
++        raise HTTPException(status_code=502, detail="External service unavailable. Please try again.") from None
++
++    measurements = [
++        SpectralMeasurement(
++            freq_mhz=m.freq_mhz,
++            snr_db=m.snr_db,
++            obw_fraction=m.obw_fraction,
++            score=m.score,
++            power_db=m.power_db,
++            band=m.band,
++        )
++        for m in body.measurements
++    ]
++
++    towers = process_and_rank(
++        raw, body.lat, body.lon,
++        limit=effective_limit,
++        radius_km=effective_radius,
++        measurements=measurements or None,
++    )
++
++    tower_coords = [(t["latitude"], t["longitude"]) for t in towers]
++    elevations = await _batch_lookup_elevations(tower_coords)
++    for t in towers:
++        key = (round(t["latitude"], 6), round(t["longitude"], 6))
++        elev = elevations.get(key)
++        t["elevation_m"] = round(elev, 1) if elev is not None else None
++        if elev is not None and t.get("antenna_height_m") is not None:
++            t["altitude_m"] = round(elev + t["antenna_height_m"], 1)
++        elif elev is not None:
++            t["altitude_m"] = round(elev, 1)
++        else:
++            t["altitude_m"] = None
++
++    matched_count = sum(1 for t in towers if t["frequency_matched"])
++    return {
++        "towers": towers,
++        "query": {
++            "latitude":   body.lat,
++            "longitude":  body.lon,
++            "radius_km":  effective_radius,
++            "source":     source,
++            "measurement_count": len(measurements),
++        },
++        "count":   len(towers),
++        "matched": matched_count,
++    }
++
++
+ @router.get("/api/health")
+ async def health():
+     import resource
+diff --git a/backend/services/tower_ranking.py b/backend/services/tower_ranking.py
+index 70ce25b..c38fd2a 100644
+--- a/backend/services/tower_ranking.py
++++ b/backend/services/tower_ranking.py
+@@ -1,9 +1,21 @@
+ import json
+ import math
+ import re
++from dataclasses import dataclass, field
+ 
+ from core.runtime_config import migrate_defaults_into_runtime, runtime_path
+ 
++
++@dataclass
++class SpectralMeasurement:
++    """A single channel measurement from the retina-spectrum analyser."""
++    freq_mhz: float
++    snr_db: float | None = field(default=None)
++    obw_fraction: float | None = field(default=None)
++    score: float | None = field(default=None)
++    power_db: float | None = field(default=None)
++    band: str | None = field(default=None)
++
+ EARTH_RADIUS_KM = 6371.0
+ FREQUENCY_MATCH_TOLERANCE_MHZ = 5.0  # ±5 MHz for user-measured frequency matching
+ 
+@@ -249,7 +261,15 @@ def parse_user_frequencies(raw: str, max_count: int = 10) -> list[float]:
+     return freqs
+ 
+ 
+-def process_and_rank(raw_systems: list, user_lat: float, user_lon: float, limit: int = 0, user_frequencies: list[float] | None = None, radius_km: float = 0) -> list:
++def process_and_rank(
++    raw_systems: list,
++    user_lat: float,
++    user_lon: float,
++    limit: int = 0,
++    user_frequencies: list[float] | None = None,
++    radius_km: float = 0,
++    measurements: list[SpectralMeasurement] | None = None,
++) -> list:
+     """
+     Takes raw system records from Maprad, filters and ranks them
+     for passive radar suitability.
+@@ -298,7 +318,7 @@ def process_and_rank(raw_systems: list, user_lat: float, user_lon: float, limit:
+             brg = initial_bearing(user_lat, user_lon, tower_lat, tower_lon)
+             dist_class = classify_distance(dist)
+ 
+-            # Check if tower frequency matches any user-measured frequency (±5 MHz)
++            # Match against user-supplied raw frequencies (legacy path)
+             freq_matched = False
+             if user_frequencies:
+                 for uf in user_frequencies:
+@@ -306,6 +326,14 @@ def process_and_rank(raw_systems: list, user_lat: float, user_lon: float, limit:
+                         freq_matched = True
+                         break
+ 
++            # Match against spectrum analyser measurements (richer path)
++            measured: SpectralMeasurement | None = None
++            if measurements:
++                for m in measurements:
++                    if abs(freq_val - m.freq_mhz) <= FREQUENCY_MATCH_TOLERANCE_MHZ:
++                        measured = m
++                        break
++
+             towers.append({
+                 "callsign": device.get("callsign") or "",
+                 "name": loc.get("name") or "",
+@@ -323,7 +351,10 @@ def process_and_rank(raw_systems: list, user_lat: float, user_lon: float, limit:
+                 "eirp_dbm": round(eirp, 1),
+                 "licence_type": licence.get("type") or "",
+                 "licence_subtype": licence.get("subtype") or "",
+-                "frequency_matched": freq_matched,
++                "frequency_matched": freq_matched or (measured is not None),
++                "measured_snr_db":       measured.snr_db       if measured else None,
++                "measured_score":        measured.score        if measured else None,
++                "measured_obw_fraction": measured.obw_fraction if measured else None,
+             })
+ 
+     # Deduplicate by (callsign, frequency) — keep the strongest
+@@ -334,14 +365,22 @@ def process_and_rank(raw_systems: list, user_lat: float, user_lon: float, limit:
+             seen[key] = t
+     towers = list(seen.values())
+ 
+-    # Sort using configurable sort order
+-    # If user frequencies provided, frequency-matched towers sort first
++    # Sort using configurable sort order.
++    # Priority tiers (highest first):
++    #   1. measured_score from spectrum analyser (when measurements provided) — desc
++    #   2. frequency_matched (when raw frequencies provided without measurements)
++    #   3. configurable SORT_ORDER (band → distance → received power)
+     has_user_freqs = bool(user_frequencies)
++    has_measurements = bool(measurements)
+ 
+     def _sort_key(t):
+         parts = []
+-        # Frequency match is highest priority when user provided frequencies
+-        if has_user_freqs:
++        if has_measurements:
++            ms = t.get("measured_score")
++            # Negate for ascending sort: higher score → more negative → sorts first.
++            # Unmatched towers (ms=None) get +1.0 so they always sort after matched ones.
++            parts.append(-(ms if ms is not None else -1.0))
++        elif has_user_freqs:
+             parts.append(0 if t.get("frequency_matched") else 1)
+         for rule in SORT_ORDER:
+             field = rule["field"]
+diff --git a/backend/tests/test_tower_ranking.py b/backend/tests/test_tower_ranking.py
+index 7db2895..0f6a5be 100644
+--- a/backend/tests/test_tower_ranking.py
++++ b/backend/tests/test_tower_ranking.py
+@@ -7,6 +7,7 @@ from services.tower_ranking import (
+     DEFAULT_LIMIT,
+     FREQUENCY_MATCH_TOLERANCE_MHZ,
+     SENSITIVITY_DBM,
++    SpectralMeasurement,
+     _as_float,
+     bearing_to_cardinal,
+     classify_band,
+@@ -616,3 +617,88 @@ class TestParseGeomEdgeCases:
+     def test_polygon_all_invalid_coords_returns_none(self):
+         """POLYGON where all coord pairs have bare '-' → empty lats list → None."""
+         assert parse_geom("POLYGON((- -, - -))") is None
++
++
++# ── SpectralMeasurement ranking ───────────────────────────────────────────────
++
++# Three towers at different distances/bands around Atlanta.
++_VHF_DEVICE = _device(freq_mhz=201.0, lat=33.60, lon=-84.388, callsign="WATL")
++_VHF_SYSTEM = _system([_VHF_DEVICE])
++
++_UHF_DEVICE = _device(freq_mhz=533.0, lat=33.93, lon=-84.000, callsign="WUHF")
++_UHF_SYSTEM = _system([_UHF_DEVICE])
++
++
++class TestProcessAndRankMeasurements:
++
++    def test_measurement_fields_present_on_matched_tower(self):
++        """A tower whose frequency matches a measurement gets measured_* fields."""
++        m = SpectralMeasurement(freq_mhz=95.5, snr_db=28.0, obw_fraction=0.72, score=0.85)
++        result = process_and_rank([_FM_SYSTEM], _USER_LAT, _USER_LON, measurements=[m])
++        assert len(result) == 1
++        t = result[0]
++        assert t["frequency_matched"] is True
++        assert t["measured_snr_db"] == 28.0
++        assert t["measured_obw_fraction"] == 0.72
++        assert t["measured_score"] == 0.85
++
++    def test_unmatched_tower_measured_fields_are_none(self):
++        """A tower with no nearby measurement has None for all measured_* fields."""
++        m = SpectralMeasurement(freq_mhz=201.0, score=0.9)  # VHF, not FM
++        result = process_and_rank([_FM_SYSTEM], _USER_LAT, _USER_LON, measurements=[m])
++        assert len(result) == 1
++        t = result[0]
++        assert t["frequency_matched"] is False
++        assert t["measured_score"] is None
++        assert t["measured_snr_db"] is None
++
++    def test_high_score_sorts_before_unmatched(self):
++        """A measured FM tower outranks an unmatched VHF tower regardless of band priority."""
++        m = SpectralMeasurement(freq_mhz=95.5, score=0.9)
++        systems = [_FM_SYSTEM, _VHF_SYSTEM]
++        result = process_and_rank(systems, _USER_LAT, _USER_LON, measurements=[m])
++        assert result[0]["callsign"] == "WXYZ"   # FM — matched, score 0.9
++        assert result[1]["callsign"] == "WATL"   # VHF — unmatched
++
++    def test_higher_score_sorts_first_among_matched(self):
++        """Of two matched towers, the one with higher measured_score ranks first."""
++        m_fm  = SpectralMeasurement(freq_mhz=95.5,  score=0.4)
++        m_vhf = SpectralMeasurement(freq_mhz=201.0, score=0.9)
++        systems = [_FM_SYSTEM, _VHF_SYSTEM]
++        result = process_and_rank(systems, _USER_LAT, _USER_LON, measurements=[m_fm, m_vhf])
++        assert result[0]["callsign"] == "WATL"   # VHF — score 0.9
++        assert result[1]["callsign"] == "WXYZ"   # FM  — score 0.4
++
++    def test_zero_score_matched_sorts_before_unmatched(self):
++        """A matched tower with score=0 still sorts before an unmatched tower."""
++        m = SpectralMeasurement(freq_mhz=95.5, score=0.0)
++        systems = [_FM_SYSTEM, _VHF_SYSTEM]
++        result = process_and_rank(systems, _USER_LAT, _USER_LON, measurements=[m])
++        assert result[0]["callsign"] == "WXYZ"   # FM — matched (score 0)
++        assert result[1]["callsign"] == "WATL"   # VHF — unmatched
++
++    def test_tolerance_boundary_match(self):
++        """Measurement exactly at FREQUENCY_MATCH_TOLERANCE_MHZ away still matches."""
++        m = SpectralMeasurement(freq_mhz=95.5 + FREQUENCY_MATCH_TOLERANCE_MHZ, score=0.8)
++        result = process_and_rank([_FM_SYSTEM], _USER_LAT, _USER_LON, measurements=[m])
++        assert result[0]["frequency_matched"] is True
++
++    def test_tolerance_boundary_no_match(self):
++        """Measurement just beyond tolerance does not match."""
++        m = SpectralMeasurement(freq_mhz=95.5 + FREQUENCY_MATCH_TOLERANCE_MHZ + 0.1, score=0.8)
++        result = process_and_rank([_FM_SYSTEM], _USER_LAT, _USER_LON, measurements=[m])
++        assert result[0]["frequency_matched"] is False
++        assert result[0]["measured_score"] is None
++
++    def test_empty_measurements_list_falls_back_to_default_ranking(self):
++        """Passing measurements=[] behaves identically to measurements=None."""
++        r_none  = process_and_rank([_FM_SYSTEM, _VHF_SYSTEM], _USER_LAT, _USER_LON)
++        r_empty = process_and_rank([_FM_SYSTEM, _VHF_SYSTEM], _USER_LAT, _USER_LON, measurements=[])
++        assert [t["callsign"] for t in r_none] == [t["callsign"] for t in r_empty]
++
++    def test_measurement_without_score_does_not_crash(self):
++        """SpectralMeasurement with score=None is handled gracefully."""
++        m = SpectralMeasurement(freq_mhz=95.5, snr_db=20.0, score=None)
++        result = process_and_rank([_FM_SYSTEM], _USER_LAT, _USER_LON, measurements=[m])
++        assert result[0]["frequency_matched"] is True
++        assert result[0]["measured_score"] is None
+diff --git a/backend/tests/test_towers_routes.py b/backend/tests/test_towers_routes.py
+index 861ab7b..a5aa56e 100644
+--- a/backend/tests/test_towers_routes.py
++++ b/backend/tests/test_towers_routes.py
+@@ -318,3 +318,100 @@ class TestFindTowersServiceErrors:
+                 r = c.get("/api/towers?lat=33.9&lon=-84.6&source=au")
+ 
+         assert r.status_code == 502
++
++
++# ── POST /api/towers/profile ─────────────────────────────────────────────────
++
++# Minimal raw-system returned by a mocked FCC fetch
++_MOCK_SYSTEM = {
++    "licence": {"type": "Broadcast", "subtype": "FM"},
++    "devices": [{
++        "frequency": 95.5,
++        "callsign": "WXYZ",
++        "antennaHeight": 150,
++        "location": {"geom": "POINT(-84.388 33.93)", "name": "Atlanta FM", "state": "GA"},
++        "eirp": 10000,   # watts → ~70 dBm EIRP
++    }],
++}
++
++
++class TestTowerProfile:
++    """Tests for POST /api/towers/profile."""
++
++    @pytest.fixture()
++    def _mock_fcc(self):
++        with unittest.mock.patch(
++            "routes.towers.fetch_fcc_broadcast_systems",
++            new=unittest.mock.AsyncMock(return_value=[_MOCK_SYSTEM]),
++        ), unittest.mock.patch(
++            "routes.towers._batch_lookup_elevations",
++            new=unittest.mock.AsyncMock(return_value={}),
++        ):
++            yield
++
++    def test_valid_request_returns_200(self, client, _mock_fcc):
++        r = client.post("/api/towers/profile", json={
++            "lat": 33.749, "lon": -84.388,
++            "measurements": [{"freq_mhz": 95.5, "snr_db": 25.0, "score": 0.85}],
++        })
++        assert r.status_code == 200
++
++    def test_response_shape(self, client, _mock_fcc):
++        r = client.post("/api/towers/profile", json={
++            "lat": 33.749, "lon": -84.388,
++            "measurements": [{"freq_mhz": 95.5, "snr_db": 25.0, "score": 0.85}],
++        })
++        body = r.json()
++        assert "towers" in body
++        assert "count" in body
++        assert "matched" in body
++        assert "query" in body
++        assert body["query"]["measurement_count"] == 1
++
++    def test_matched_tower_has_measured_fields(self, client, _mock_fcc):
++        r = client.post("/api/towers/profile", json={
++            "lat": 33.749, "lon": -84.388,
++            "measurements": [{"freq_mhz": 95.5, "snr_db": 25.0, "obw_fraction": 0.72, "score": 0.85}],
++        })
++        body = r.json()
++        assert body["matched"] == 1
++        t = body["towers"][0]
++        assert t["frequency_matched"] is True
++        assert t["measured_snr_db"] == 25.0
++        assert t["measured_obw_fraction"] == 0.72
++        assert t["measured_score"] == 0.85
++
++    def test_empty_measurements_still_returns_towers(self, client, _mock_fcc):
++        r = client.post("/api/towers/profile", json={
++            "lat": 33.749, "lon": -84.388,
++            "measurements": [],
++        })
++        assert r.status_code == 200
++        assert r.json()["count"] >= 1
++
++    def test_missing_lat_returns_422(self, client):
++        r = client.post("/api/towers/profile", json={"lon": -84.388, "measurements": []})
++        assert r.status_code == 422
++
++    def test_lat_out_of_range_returns_422(self, client):
++        r = client.post("/api/towers/profile", json={
++            "lat": 999, "lon": -84.388, "measurements": [],
++        })
++        assert r.status_code == 422
++
++    def test_invalid_source_returns_400(self, client, _mock_fcc):
++        r = client.post("/api/towers/profile", json={
++            "lat": 33.749, "lon": -84.388,
++            "measurements": [], "source": "zz",
++        })
++        assert r.status_code == 400
++
++    def test_upstream_failure_returns_502(self, client):
++        with unittest.mock.patch(
++            "routes.towers.fetch_fcc_broadcast_systems",
++            new=unittest.mock.AsyncMock(side_effect=Exception("FCC down")),
++        ):
++            r = client.post("/api/towers/profile", json={
++                "lat": 33.749, "lon": -84.388, "measurements": [],
++            })
++        assert r.status_code == 502
+-- 
+2.43.0
+
