@@ -109,6 +109,39 @@ async def association_status():
             "rejected": getattr(_a, "track_pairs_rejected", 0),
             "superseded": getattr(_a, "track_pairs_superseded", 0),
         },
+        # Top-down claiming (ASSOC_CLAIM_MODE) since boot.  rounds/matched/
+        # conflicts/anchored_inputs are all live in shadow too — _claim_round
+        # computes and counts them unconditionally; shadow only forces the
+        # RETURNED anchored-input list (and claimed ids) back to empty
+        # afterward, in submit_tracks_round, which is what makes it provably
+        # inert downstream.  tracklets_excluded is the one that only ever
+        # moves in active mode, since the exclusion filter never runs
+        # against an empty claimed-ids map.  off mode reads zero everywhere
+        # here BY DESIGN, not because nothing is happening.
+        "claiming": {
+            "mode": _a.claim_mode,
+            "rounds": getattr(_a, "claim_rounds", 0),
+            "matched": getattr(_a, "claims_matched", 0),
+            "conflicts": getattr(_a, "claim_conflicts", 0),
+            "anchored_inputs": getattr(_a, "anchored_inputs_emitted", 0),
+            "tracklets_excluded": getattr(_a, "tracklets_excluded", 0),
+        },
+        # ADS-B seeding (ADSB_SEED_MODE), same "cumulative since boot,
+        # shadow moves everything but tracklets_excluded" shape as claiming
+        # above: tagged/no_state/gate_rejects/inputs_emitted move in shadow
+        # too — _adsb_seed_round computes and counts them unconditionally;
+        # tracklets_excluded only moves in active, since the exclusion
+        # filter never runs against an empty tagged-ids map.  off reads
+        # zero everywhere here BY DESIGN.
+        "adsb_seed": {
+            "mode": _a.adsb_seed_mode,
+            "rounds": getattr(_a, "adsb_seed_rounds", 0),
+            "tagged": getattr(_a, "adsb_tracklets_tagged", 0),
+            "no_state": getattr(_a, "adsb_seed_no_state", 0),
+            "gate_rejects": getattr(_a, "adsb_seed_gate_rejects", 0),
+            "tracklets_excluded": getattr(_a, "adsb_tracklets_excluded", 0),
+            "inputs_emitted": getattr(_a, "adsb_inputs_emitted", 0),
+        },
         "overlaps": _a.get_overlap_summary(),
     }
 

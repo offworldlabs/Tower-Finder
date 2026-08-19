@@ -17,6 +17,7 @@ export default function Toolbar({
   showStats,
   showRangeRings,
   showInBeamDiag,
+  showArcs,
   soundOn,
   tileTheme,
   hasUserLoc,
@@ -32,6 +33,7 @@ export default function Toolbar({
   onToggleStats,
   onToggleRangeRings,
   onToggleInBeamDiag,
+  onToggleArcs,
   onToggleSound,
   onCycleTheme,
   onShare,
@@ -52,6 +54,9 @@ export default function Toolbar({
 
       <button className={`toggle-btn${showCoverage ? " active" : ""}`} onClick={onToggleCoverage}>
         Coverage
+      </button>
+      <button className={`toggle-btn${showArcs ? " active" : ""}`} onClick={onToggleArcs} title="Show / hide bistatic detection arcs (d)">
+        Arcs
       </button>
       <button className={`toggle-btn${showIlluminators ? " active" : ""}`} onClick={onToggleIlluminators}>
         Illuminators

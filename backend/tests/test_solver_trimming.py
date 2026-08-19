@@ -1,0 +1,829 @@
+"""Tests for node-trimming recovery at the rms_delay gate (n>=4) and for
+beam-rejection instrumentation.
+
+Context (measured live, 35-min window): the rms_delay gate rejected 197 of
+202 n>=6 solves, and half of those rejects were within 3 km of truth at
+solve time.  Cause: one contaminated measurement (a single-node track from a
+different aircraft, bundled in by association) inflates rms_delay while
+Huber keeps the fitted position good.  solver.py's _trim_and_resolve drops
+the worst-residual node(s) and re-solves, down to a floor of 3 nodes,
+instead of discarding the whole solve.
+
+Separately, the beam gate used to return on the first node that failed;
+it now evaluates every contributing node and records per-node geometry
+diagnostics in the solve history so a rejection can be understood after the
+fact.
+"""
+
+import time
+
+from core import state
+from services.tasks import solver as solver_mod
+
+LAT, LON = 35.0, -82.0
+
+_MISSING = object()
+
+
+def _stub_result(node_ids, rms_delay, per_node=None, lat=LAT, lon=LON, **overrides):
+    """A solve_multinode-shaped success dict for the given contributing
+    nodes."""
+    result = {
+        "success": True,
+        "lat": lat,
+        "lon": lon,
+        "alt_m": 9000.0,
+        "timestamp_ms": int(time.time() * 1000),
+        "vel_east": 0.0,
+        "vel_north": 0.0,
+        "rms_delay": rms_delay,
+        "rms_doppler": 5.0,
+        "n_nodes": len(node_ids),
+        "n_measurements": len(node_ids),
+        "contributing_node_ids": list(node_ids),
+    }
+    if per_node is not None:
+        result["per_node_delay_res_us"] = dict(per_node)
+    result.update(overrides)
+    return result
+
+
+def _s_in(node_ids, lat=LAT, lon=LON, alt_km=9.0, **overrides):
+    s_in = {
+        "initial_guess": {"lat": lat, "lon": lon, "alt_km": alt_km},
+        "measurements": [{"node_id": nid, "delay_us": 10.0, "doppler_hz": 1.0, "snr": 15.0} for nid in node_ids],
+        "n_nodes": len(node_ids),
+        "timestamp_ms": int(time.time() * 1000),
+    }
+    s_in.update(overrides)
+    return s_in
+
+
+def _stub_solve_fn(table: dict):
+    """solve_fn keyed on the frozenset of node_ids in s_in["measurements"].
+
+    _solve_best_altitude calls solve_fn once per altitude layer — the stub
+    must answer identically regardless of which layer it is asked to try, so
+    it is keyed only on which nodes are present.  A registered value of None
+    simulates a re-solve that fails to converge; an unregistered node set
+    simulates one solve_multinode itself rejects outright.
+    """
+
+    def fn(s_in, node_cfgs):
+        nodes = frozenset(m["node_id"] for m in s_in["measurements"])
+        base = table.get(nodes, _MISSING)
+        if base is _MISSING:
+            return {"success": False}
+        if base is None:
+            return None
+        return dict(base)
+
+    return fn
+
+
+class _TrimmingTestBase:
+    def setup_method(self):
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+
+    def teardown_method(self):
+        solver_mod._reset_for_tests()
+
+    def _run(self, s_in, solve_fn, cfgs=None):
+        return solver_mod._process_solver_item((dict(s_in), cfgs or {}, time.time()), solve_fn)
+
+
+class TestTrimRecoversPublish(_TrimmingTestBase):
+    """Case 1: a bad node's residual sinks rms_delay; dropping it alone
+    recovers a solve that publishes."""
+
+    def test_trim_drops_bad_node_and_publishes(self):
+        full_nodes = ["n1", "n2", "n3", "n4", "bad"]
+        trim_nodes = ["n1", "n2", "n3", "n4"]
+        table = {
+            frozenset(full_nodes): _stub_result(
+                full_nodes,
+                rms_delay=8.0,
+                per_node={"n1": 0.5, "n2": 0.5, "n3": 0.5, "n4": 0.5, "bad": 12.0},
+            ),
+            frozenset(trim_nodes): _stub_result(
+                trim_nodes,
+                rms_delay=0.8,
+                per_node={"n1": 0.3, "n2": 0.3, "n3": 0.3, "n4": 0.3},
+            ),
+        }
+        result = self._run(_s_in(full_nodes), _stub_solve_fn(table))
+
+        assert result is not None and result["success"]
+        assert result["n_nodes"] == 4
+        (entry,) = state.multinode_tracks.values()
+        assert entry["n_nodes"] == 4
+
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "published"
+        assert rec["trimmed_node_ids"] == ["bad"]
+        assert rec["pre_trim_rms_delay"] == 8.0
+        assert rec["pre_trim_n_nodes"] == 5
+        assert rec["trim_rounds"] == 1
+        assert state.solver_trimmed == 1
+
+
+class TestTrimPrunesSourceTracks(_TrimmingTestBase):
+    """Case 2: when the input carries per-node track ids, a trim also drops
+    the dropped node's tracks from the published provenance; without that
+    field the original track_ids pass through untouched."""
+
+    _FULL = ["n1", "n2", "n3", "n4", "bad"]
+    _TRIM = ["n1", "n2", "n3", "n4"]
+    _PER_NODE = {"n1": 0.5, "n2": 0.5, "n3": 0.5, "n4": 0.5, "bad": 12.0}
+
+    def _table(self):
+        return {
+            frozenset(self._FULL): _stub_result(
+                self._FULL,
+                rms_delay=8.0,
+                per_node=self._PER_NODE,
+            ),
+            frozenset(self._TRIM): _stub_result(
+                self._TRIM,
+                rms_delay=0.8,
+                per_node={"n1": 0.3, "n2": 0.3, "n3": 0.3, "n4": 0.3},
+            ),
+        }
+
+    def test_track_ids_by_node_prunes_the_dropped_node(self):
+        s_in = _s_in(
+            self._FULL,
+            track_ids=["t1", "t2", "t3", "t4", "tbad"],
+            track_ids_by_node={
+                "n1": ["t1"],
+                "n2": ["t2"],
+                "n3": ["t3"],
+                "n4": ["t4"],
+                "bad": ["tbad"],
+            },
+        )
+        result = self._run(s_in, _stub_solve_fn(self._table()))
+        assert result is not None and result["success"]
+        assert result["source_track_ids"] == ["t1", "t2", "t3", "t4"]
+
+    def test_without_track_ids_by_node_track_ids_are_unchanged(self):
+        s_in = _s_in(
+            self._FULL,
+            track_ids=["t1", "t2", "t3", "t4", "tbad"],
+        )
+        result = self._run(s_in, _stub_solve_fn(self._table()))
+        assert result is not None and result["success"]
+        assert result["source_track_ids"] == [
+            "t1",
+            "t2",
+            "t3",
+            "t4",
+            "tbad",
+        ]
+
+
+class TestTrimFloor(_TrimmingTestBase):
+    """Case 3: dropping every over-threshold candidate would go below the
+    3-node floor — keep the 3 lowest-residual nodes instead, and never
+    re-solve with fewer than that."""
+
+    def test_floor_keeps_three_lowest_residual_nodes(self):
+        nodes4 = ["n1", "n2", "n3", "n4"]
+        nodes3 = ["n1", "n2", "n3"]
+        called_node_sets: list[frozenset] = []
+        table = {
+            frozenset(nodes4): _stub_result(
+                nodes4,
+                rms_delay=4.0,
+                per_node={"n1": 0.5, "n2": 0.5, "n3": 7.0, "n4": 8.0},
+            ),
+            frozenset(nodes3): _stub_result(
+                nodes3,
+                rms_delay=2.0,
+                per_node={"n1": 0.3, "n2": 0.3, "n3": 0.3},
+            ),
+        }
+
+        def solve_fn(s_in, cfgs):
+            nodes = frozenset(m["node_id"] for m in s_in["measurements"])
+            called_node_sets.append(nodes)
+            base = table.get(nodes, _MISSING)
+            return dict(base) if base not in (_MISSING, None) else None
+
+        result = self._run(_s_in(nodes4), solve_fn)
+
+        assert result is not None and result["success"]
+        assert result["n_nodes"] == 3
+        assert all(len(ns) >= 3 for ns in called_node_sets)
+
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "published"
+        assert sorted(rec["trimmed_node_ids"]) == ["n4"]
+
+
+class TestTrimGivesUp(_TrimmingTestBase):
+    """Case 4: rms never clears the gate no matter what is trimmed — reject,
+    but the reject record still shows what trimming tried, and nothing
+    publishes."""
+
+    def test_persistent_bad_rms_ends_in_reject_with_trim_metadata(self):
+        nodes5 = ["n1", "n2", "n3", "n4", "n5"]
+        nodes4 = ["n1", "n2", "n3", "n4"]
+        nodes3 = ["n1", "n2", "n3"]
+        table = {
+            frozenset(nodes5): _stub_result(
+                nodes5,
+                rms_delay=8.0,
+                per_node={"n1": 0.5, "n2": 0.6, "n3": 0.7, "n4": 0.8, "n5": 20.0},
+            ),
+            frozenset(nodes4): _stub_result(
+                nodes4,
+                rms_delay=8.0,
+                per_node={"n1": 0.5, "n2": 0.6, "n3": 0.7, "n4": 9.0},
+            ),
+            frozenset(nodes3): _stub_result(
+                nodes3,
+                rms_delay=8.0,
+                per_node={"n1": 0.5, "n2": 0.6, "n3": 0.7},
+            ),
+        }
+        result = self._run(_s_in(nodes5), _stub_solve_fn(table))
+
+        # Rejected, not a crash: the last trimmed (3-node) result comes back,
+        # just not published.
+        assert result is not None and result["success"]
+        assert result["rms_delay"] == 8.0
+        assert state.multinode_tracks == {}
+        assert state.solver_trimmed == 0
+
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_rms_delay"
+        assert rec["pre_trim_n_nodes"] == 5
+        assert rec["pre_trim_rms_delay"] == 8.0
+        assert sorted(rec["trimmed_node_ids"]) == ["n4", "n5"]
+
+
+class TestTrimSkippedWithoutResiduals(_TrimmingTestBase):
+    """Case 5: an old lib build with no per_node_delay_res_us — trimming
+    never runs, and the reject record carries no trim keys at all."""
+
+    def test_missing_residuals_disables_trimming(self):
+        nodes5 = ["n1", "n2", "n3", "n4", "n5"]
+        result = self._run(
+            _s_in(nodes5),
+            _stub_solve_fn(
+                {
+                    frozenset(nodes5): _stub_result(
+                        nodes5,
+                        rms_delay=8.0,
+                    )
+                }
+            ),
+        )
+        assert result is not None and result.get("rms_delay") == 8.0
+        assert state.multinode_tracks == {}
+
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_rms_delay"
+        assert "trimmed_node_ids" not in rec
+        assert "pre_trim_rms_delay" not in rec
+
+
+class TestTrimResolveFailure(_TrimmingTestBase):
+    """Case 6: the trimmed re-solve itself fails to converge — trimming is
+    abandoned and the ORIGINAL (untrimmed) result is what gets gated, not a
+    crash and not a success-less publish."""
+
+    def test_failed_resolve_falls_back_to_pre_trim_result(self):
+        full_nodes = ["n1", "n2", "n3", "n4", "bad"]
+        trim_nodes = ["n1", "n2", "n3", "n4"]
+        table = {
+            frozenset(full_nodes): _stub_result(
+                full_nodes,
+                rms_delay=8.0,
+                per_node={"n1": 0.5, "n2": 0.5, "n3": 0.5, "n4": 0.5, "bad": 20.0},
+            ),
+            frozenset(trim_nodes): None,  # re-solve fails to converge
+        }
+        result = self._run(_s_in(full_nodes), _stub_solve_fn(table))
+
+        assert result is not None and result["success"]
+        assert result["n_nodes"] == 5  # pre-trim result, untouched
+        assert result["rms_delay"] == 8.0
+        assert state.multinode_tracks == {}
+
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_rms_delay"
+        assert "trimmed_node_ids" not in rec
+
+
+class TestBeamInstrumentation(_TrimmingTestBase):
+    """Case 7: the beam gate now evaluates every contributing node and
+    records per-node geometry for each failure."""
+
+    def test_out_of_beam_records_per_node_diagnostics(self):
+        s_in = {
+            "n_nodes": 1,
+            "measurements": [
+                {"node_id": "n1", "delay_us": 10.0, "doppler_hz": 1.0, "snr": 15.0},
+            ],
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        cfgs = {
+            "n1": {
+                "rx_lat": 35.0,
+                "rx_lon": -82.0,
+                "beam_azimuth_deg": 90.0,
+                "beam_width_deg": 10.0,
+                "max_range_km": 5.0,
+            },
+        }
+
+        def solve_fn(_s_in, _cfgs):
+            return _stub_result(
+                ["n1"],
+                rms_delay=1.0,
+                lat=36.0,
+                lon=-82.0,
+            )
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is None
+        assert state.solver_fail_beam == 1
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_beam"
+        failures = rec["beam_failures"]
+        assert len(failures) == 1
+        assert failures[0]["node_id"] == "n1"
+        assert isinstance(failures[0]["range_km"], float)
+        assert failures[0]["range_km"] > 5.0
+        assert isinstance(failures[0]["bearing_off_deg"], float)
+
+
+class TestTrimEnvKnob(_TrimmingTestBase):
+    """Case 8: raising SOLVER_RMS_DELAY_MAX_US (env-overridable at import,
+    monkeypatched here) lets a solve pass without ever trimming."""
+
+    def test_raised_threshold_publishes_untrimmed(self, monkeypatch):
+        monkeypatch.setattr(solver_mod, "_SOLVER_RMS_DELAY_MAX_US", 10.0)
+        nodes5 = ["n1", "n2", "n3", "n4", "n5"]
+        result = self._run(
+            _s_in(nodes5),
+            _stub_solve_fn(
+                {
+                    frozenset(nodes5): _stub_result(
+                        nodes5,
+                        rms_delay=8.0,
+                        per_node={"n1": 0.5, "n2": 0.5, "n3": 0.5, "n4": 0.5, "n5": 12.0},
+                    )
+                }
+            ),
+        )
+
+        assert result is not None and result["success"]
+        assert result["n_nodes"] == 5
+        (entry,) = state.multinode_tracks.values()
+        assert entry["n_nodes"] == 5
+
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "published"
+        assert "trimmed_node_ids" not in rec
+        assert state.solver_trimmed == 0
+
+
+class TestBeamGateNSplit(_TrimmingTestBase):
+    """The bearing half of the beam gate is n=2-only (measured 35-min
+    instrumentation autopsy): at n>=3 it killed 105 good solves to stop 8
+    bad ones, and 316/474 failing-node evaluations had the true target
+    outside the wedge anyway — a node's wedge constrains where its
+    detection was MADE, not where a multi-epoch track is NOW.  At n=2 it
+    stays: the documented mirror-disambiguation gate (92 bad vs 9 good).
+    The range half (differential or monostatic ceiling) applies at every N
+    and never false-fired (0/474).
+    """
+
+    def test_n3_publishes_outside_wedge_but_in_range(self):
+        # All three nodes' beams point due north (azimuth 0, +-5 deg half
+        # width); the solve sits ~40-55 km due east of each — hugely
+        # outside every wedge, but well inside each generous max_range_km.
+        # At n=3 the bearing rule never runs, so this now publishes.
+        solve_lat, solve_lon = 35.0, -81.5
+        node_ids = ["a", "b", "c"]
+        cfgs = {
+            "a": {
+                "rx_lat": 35.0,
+                "rx_lon": -82.0,
+                "beam_azimuth_deg": 0.0,
+                "beam_width_deg": 10.0,
+                "max_range_km": 200.0,
+            },
+            "b": {
+                "rx_lat": 35.1,
+                "rx_lon": -82.1,
+                "beam_azimuth_deg": 0.0,
+                "beam_width_deg": 10.0,
+                "max_range_km": 200.0,
+            },
+            "c": {
+                "rx_lat": 34.9,
+                "rx_lon": -81.9,
+                "beam_azimuth_deg": 0.0,
+                "beam_width_deg": 10.0,
+                "max_range_km": 200.0,
+            },
+        }
+        s_in = _s_in(node_ids, lat=solve_lat, lon=solve_lon)
+        solve_fn = _stub_solve_fn(
+            {
+                frozenset(node_ids): _stub_result(
+                    node_ids,
+                    rms_delay=1.0,
+                    lat=solve_lat,
+                    lon=solve_lon,
+                )
+            }
+        )
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is not None and result["success"]
+        (entry,) = state.multinode_tracks.values()
+        assert entry["n_nodes"] == 3
+
+    def test_n3_rejected_beam_beyond_bistatic_range_rule_is_range(self):
+        solve_lat, solve_lon = 36.0, -82.0
+        node_ids = ["bad", "g1", "g2"]
+        cfgs = {
+            # Bistatic differential from this geometry to the solve is
+            # ~100+ km, far past the 5 km declared limit.
+            "bad": {
+                "rx_lat": 35.0,
+                "rx_lon": -82.0,
+                "tx_lat": 35.0,
+                "tx_lon": -81.9,
+                "max_bistatic_range_km": 5.0,
+                "max_range_km": 500.0,
+            },
+            "g1": {"rx_lat": 36.0, "rx_lon": -82.0, "max_range_km": 500.0},
+            "g2": {"rx_lat": 36.0, "rx_lon": -81.9, "max_range_km": 500.0},
+        }
+        s_in = _s_in(node_ids, lat=solve_lat, lon=solve_lon)
+        solve_fn = _stub_solve_fn(
+            {
+                frozenset(node_ids): _stub_result(
+                    node_ids,
+                    rms_delay=1.0,
+                    lat=solve_lat,
+                    lon=solve_lon,
+                )
+            }
+        )
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is None
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_beam"
+        failures = rec["beam_failures"]
+        assert len(failures) == 1
+        assert failures[0]["node_id"] == "bad"
+        assert failures[0]["rule"] == "range"
+
+    def test_n2_rejected_beam_outside_wedge_rule_is_bearing(self):
+        s_in = {
+            "n_nodes": 2,
+            "measurements": [
+                {"node_id": "n1", "delay_us": 10.0, "doppler_hz": 1.0, "snr": 15.0},
+            ],
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        cfgs = {
+            "n1": {
+                "rx_lat": 35.0,
+                "rx_lon": -82.0,
+                "beam_azimuth_deg": 90.0,
+                "beam_width_deg": 10.0,
+                "max_range_km": 500.0,
+            },
+        }
+
+        def solve_fn(_s_in, _cfgs):
+            return _stub_result(
+                ["n1"],
+                rms_delay=1.0,
+                lat=36.0,
+                lon=-82.0,
+                n_nodes=2,
+            )
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is None
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_beam"
+        assert rec["beam_failures"][0]["rule"] == "bearing"
+
+    def test_n2_publishes_when_in_wedge_and_in_range(self):
+        s_in = {
+            "n_nodes": 2,
+            "chi2_per_dof": 0.5,
+            "n_epochs": 8,
+            "measurements": [
+                {"node_id": "n1", "delay_us": 10.0, "doppler_hz": 1.0, "snr": 15.0},
+                {"node_id": "n2", "delay_us": 12.0, "doppler_hz": 1.0, "snr": 15.0},
+            ],
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        cfgs = {
+            "n1": {
+                "rx_lat": 35.0,
+                "rx_lon": -82.0,
+                "beam_azimuth_deg": 0.0,
+                "beam_width_deg": 20.0,
+                "max_range_km": 500.0,
+            },
+            "n2": {
+                "rx_lat": 35.0,
+                "rx_lon": -82.1,
+                "beam_azimuth_deg": 0.0,
+                "beam_width_deg": 20.0,
+                "max_range_km": 500.0,
+            },
+        }
+
+        def solve_fn(_s_in, _cfgs):
+            return _stub_result(
+                ["n1", "n2"],
+                rms_delay=1.0,
+                lat=36.0,
+                lon=-82.0,
+                n_nodes=2,
+            )
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is not None and result["success"]
+        (entry,) = state.multinode_tracks.values()
+        assert entry["n_nodes"] == 2
+
+    def test_n2_omni_node_skips_bearing_but_enforces_range(self):
+        # No beam_azimuth_deg and no tx -> node_beam_params resolves
+        # beam_azimuth_deg to None (omnidirectional): the bearing rule has
+        # nothing to test even though n_nodes == 2, but max_range_km still
+        # gates the monostatic circle.
+        s_in = {
+            "n_nodes": 2,
+            "measurements": [
+                {"node_id": "n1", "delay_us": 10.0, "doppler_hz": 1.0, "snr": 15.0},
+            ],
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        cfgs = {"n1": {"rx_lat": 35.0, "rx_lon": -82.0, "max_range_km": 5.0}}
+
+        def solve_fn(_s_in, _cfgs):
+            return _stub_result(
+                ["n1"],
+                rms_delay=1.0,
+                lat=36.0,
+                lon=-82.0,
+                n_nodes=2,
+            )
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is None
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_beam"
+        failure = rec["beam_failures"][0]
+        assert failure["rule"] == "range"
+
+
+class _StubFov:
+    """Duck-types EmpiricalCoverageState's beam-gate surface — enough for
+    solver.fov_gate_verdict to run without a real accumulated state."""
+
+    def __init__(self, ok: bool, wedge: str = "closed", limit_km: float = 10.0):
+        self.ok = ok
+        self.wedge = wedge
+        self.limit_km_value = limit_km
+
+    def contains(self, bearing, range_km):
+        return self.ok
+
+    def wedge_state(self, bearing):
+        return self.wedge
+
+    def limit_km(self, bearing):
+        return self.limit_km_value
+
+
+class TestFovGateActive(_TrimmingTestBase):
+    """FOV_MODE active/shadow beam-gate behaviour (solver.fov_gate_verdict).
+
+    TestBeamGateNSplit/TestBeamInstrumentation above run under the default
+    FOV_MODE=off and stay green unchanged — state.FOV_MODE is only read
+    inside the beam-gate block, and every test here monkeypatches it
+    explicitly rather than relying on the env var, so these are exercised in
+    the same pytest run.
+    """
+
+    def _stub_fov(self, monkeypatch, fovs: dict):
+        monkeypatch.setattr(state.node_analytics, "learned_fov_for", lambda nid: fovs.get(nid))
+
+    def test_n2_learned_bin_rescues_a_wedge_reject(self, monkeypatch):
+        """The invented-azimuth kill path: a narrow theoretical wedge pointed
+        away from the solve would reject on bearing alone; an fov that has
+        actually seen this bearing (contains() True) replaces that verdict."""
+        monkeypatch.setattr(state, "FOV_MODE", "active")
+        s_in = {
+            "n_nodes": 2,
+            # Pre-fitted (as the offline bench and a deferred-fit worker item
+            # both may arrive), so the n=2 confirmation gate (a separate
+            # concern from the beam gate this test targets) clears cleanly.
+            "chi2_per_dof": 0.5,
+            "n_epochs": 8,
+            "measurements": [
+                {"node_id": "n1", "delay_us": 10.0, "doppler_hz": 1.0, "snr": 15.0},
+                {"node_id": "n2", "delay_us": 12.0, "doppler_hz": 1.0, "snr": 15.0},
+            ],
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        cfgs = {
+            "n1": {
+                "rx_lat": 35.0,
+                "rx_lon": -82.0,
+                "beam_azimuth_deg": 270.0,
+                "beam_width_deg": 10.0,
+                "max_range_km": 500.0,
+            },
+            "n2": {
+                "rx_lat": 35.0,
+                "rx_lon": -82.1,
+                "beam_azimuth_deg": 270.0,
+                "beam_width_deg": 10.0,
+                "max_range_km": 500.0,
+            },
+        }
+        self._stub_fov(monkeypatch, {"n1": _StubFov(ok=True), "n2": _StubFov(ok=True)})
+
+        def solve_fn(_s_in, _cfgs):
+            return _stub_result(["n1", "n2"], rms_delay=1.0, lat=36.0, lon=-82.0, n_nodes=2)
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is not None and result["success"]
+        (entry,) = state.multinode_tracks.values()
+        assert entry["n_nodes"] == 2
+
+    def test_n2_closed_bin_rejects_even_though_the_wedge_would_pass(self, monkeypatch):
+        """fov REPLACES the legacy rules at n=2, not just widens them: a
+        theoretical wedge that would happily pass this solve is overridden
+        by a closed fov bin.  Also covers the rule:"fov" failure fields."""
+        monkeypatch.setattr(state, "FOV_MODE", "active")
+        s_in = {
+            "n_nodes": 2,
+            "measurements": [
+                {"node_id": "n1", "delay_us": 10.0, "doppler_hz": 1.0, "snr": 15.0},
+                {"node_id": "n2", "delay_us": 12.0, "doppler_hz": 1.0, "snr": 15.0},
+            ],
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        cfgs = {
+            "n1": {
+                "rx_lat": 35.0,
+                "rx_lon": -82.0,
+                "beam_azimuth_deg": 0.0,
+                "beam_width_deg": 20.0,
+                "max_range_km": 500.0,
+            },
+            "n2": {
+                "rx_lat": 35.0,
+                "rx_lon": -82.1,
+                "beam_azimuth_deg": 0.0,
+                "beam_width_deg": 20.0,
+                "max_range_km": 500.0,
+            },
+        }
+        self._stub_fov(
+            monkeypatch,
+            {
+                "n1": _StubFov(ok=False, wedge="closed", limit_km=3.5),
+                "n2": _StubFov(ok=True),
+            },
+        )
+
+        def solve_fn(_s_in, _cfgs):
+            return _stub_result(["n1", "n2"], rms_delay=1.0, lat=36.0, lon=-82.0, n_nodes=2)
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is None
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_beam"
+        failures = {f["node_id"]: f for f in rec["beam_failures"]}
+        assert set(failures) == {"n1"}  # n2's fov passed — only n1 failed
+        assert failures["n1"]["rule"] == "fov"
+        assert failures["n1"]["fov_state"] == "closed"
+        assert failures["n1"]["fov_limit_km"] == 3.5
+
+    def test_n3_or_semantics_never_loses_a_solve_kept_today(self, monkeypatch):
+        """n>=3 only ever widens: every node's fov says closed, but today's
+        range rule alone already keeps this solve, so it must still
+        publish."""
+        monkeypatch.setattr(state, "FOV_MODE", "active")
+        solve_lat, solve_lon = 35.0, -81.5
+        node_ids = ["a", "b", "c"]
+        cfgs = {
+            "a": {"rx_lat": 35.0, "rx_lon": -82.0, "max_range_km": 200.0},
+            "b": {"rx_lat": 35.1, "rx_lon": -82.1, "max_range_km": 200.0},
+            "c": {"rx_lat": 34.9, "rx_lon": -81.9, "max_range_km": 200.0},
+        }
+        self._stub_fov(monkeypatch, {nid: _StubFov(ok=False) for nid in node_ids})
+        s_in = _s_in(node_ids, lat=solve_lat, lon=solve_lon)
+        solve_fn = _stub_solve_fn(
+            {
+                frozenset(node_ids): _stub_result(
+                    node_ids,
+                    rms_delay=1.0,
+                    lat=solve_lat,
+                    lon=solve_lon,
+                )
+            }
+        )
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is not None and result["success"]
+        (entry,) = state.multinode_tracks.values()
+        assert entry["n_nodes"] == 3
+
+    def test_shadow_counts_verdicts_and_tags_history_without_changing_outcome(self, monkeypatch):
+        """shadow: today's rules still decide the outcome; the fov verdict
+        is only counted and tagged onto the rejected_beam history record."""
+        monkeypatch.setattr(state, "FOV_MODE", "shadow")
+        s_in = {
+            "n_nodes": 2,
+            "measurements": [
+                {"node_id": "n1", "delay_us": 10.0, "doppler_hz": 1.0, "snr": 15.0},
+            ],
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        cfgs = {
+            "n1": {
+                "rx_lat": 35.0,
+                "rx_lon": -82.0,
+                "beam_azimuth_deg": 90.0,
+                "beam_width_deg": 10.0,
+                "max_range_km": 500.0,
+            },
+        }
+        # Today's rule rejects on bearing; the fov would pass — the
+        # fov_shadow_would_pass bucket (the radar3 recovery number).
+        self._stub_fov(monkeypatch, {"n1": _StubFov(ok=True)})
+
+        def solve_fn(_s_in, _cfgs):
+            return _stub_result(["n1"], rms_delay=1.0, lat=36.0, lon=-82.0, n_nodes=2)
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is None  # shadow never changes the outcome
+        assert state.fov_shadow_would_pass == 1
+        assert state.fov_shadow_agree == 0
+        assert state.fov_shadow_would_reject == 0
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_beam"
+        assert rec["fov_verdict"] == [
+            {"node_id": "n1", "today_pass": False, "fov_verdict": True},
+        ]
+
+    def test_shadow_agree_when_both_reject(self, monkeypatch):
+        monkeypatch.setattr(state, "FOV_MODE", "shadow")
+        s_in = {
+            "n_nodes": 2,
+            "measurements": [
+                {"node_id": "n1", "delay_us": 10.0, "doppler_hz": 1.0, "snr": 15.0},
+            ],
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        cfgs = {
+            "n1": {
+                "rx_lat": 35.0,
+                "rx_lon": -82.0,
+                "beam_azimuth_deg": 90.0,
+                "beam_width_deg": 10.0,
+                "max_range_km": 500.0,
+            },
+        }
+        self._stub_fov(monkeypatch, {"n1": _StubFov(ok=False)})
+
+        def solve_fn(_s_in, _cfgs):
+            return _stub_result(["n1"], rms_delay=1.0, lat=36.0, lon=-82.0, n_nodes=2)
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        assert result is None
+        assert state.fov_shadow_agree == 1
+        assert state.fov_shadow_would_pass == 0
+        assert state.fov_shadow_would_reject == 0

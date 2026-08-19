@@ -21,6 +21,12 @@ export const ARC_TOTAL_LIFE_MS = ARC_HOLD_MS + ARC_FADE_MS;
 // so labels, selection and error computation are unaffected.
 // TTL for truth objects when the feed stops (pushes arrive every ~2 s).
 export const GT_FEED_STALE_MS = 30_000;
+// Grace before a truth object missing from a snapshot is forgotten.  The
+// backend can legitimately drop a hex from one snapshot and bring it back:
+// the GT snapshot is rebuilt only every 5 s (GT_REFRESH_S) while the trail GC
+// runs on a 10 s staleness rule, so a push hiccup or a single dropped WS
+// frame produced a visible blink when the prune fired on first absence.
+export const GT_PRUNE_GRACE_MS = 10_000;
 export const GT_KEY_PREFIX = "gt:";
 export const groundTruthKey = (hex) => GT_KEY_PREFIX + hex;
 
@@ -28,6 +34,17 @@ export const groundTruthKey = (hex) => GT_KEY_PREFIX + hex;
 // arc midpoint, not a real fix).  Backend emits this verbatim — keep in sync
 // with the backend constant if it ever moves.
 export const POSITION_SOURCE_ARC_ONLY = "single_node_ellipse_arc";
+
+// Dead-reckoning elapsed cap (seconds) for arc-only tracks.  Their backend
+// position is pinned to the arc midpoint between delay updates, so a long
+// glide walks the anchor straight off the measured locus: with the generic
+// 60 s cap, staging measured 26/415 displayed arc-only positions outside
+// their own node's beam wedge, median 5.9 km from their own arc (7–11 km
+// after a full 60 s glide).  10 s keeps short gaps smooth while bounding the
+// divergence.  Other position sources keep the 60 s cap.  (Arc-only tracks
+// render no plane icon, but the DR position still drives arc-rebuild
+// anchoring, list centering, and the smooth store.)
+export const ARC_DR_MAX_S = 10;
 
 // Doppler colour gradient — dark blue (approaching) → light blue → cyan → light red → dark red (receding)
 // Centre stop is bright cyan so near-zero-doppler arcs are always visible on light basemaps.

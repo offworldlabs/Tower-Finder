@@ -12,6 +12,10 @@ from tests.migration_helpers import _alembic
 
 # Must be set before any backend module imports auth.py or routes/radar.py
 os.environ.setdefault("RETINA_ENV", "test")
+# No solver process pool under pytest: tests monkeypatch the compute functions,
+# and an unpicklable closure cannot be shipped to a pool child.  See the
+# _POOL_ENABLED comment in services/tasks/solver.py.
+os.environ.setdefault("SOLVER_POOL", "0")
 # Needed so the /api/radar/detections auth guard is active in tests.
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 # The suite has no OAuth provider to log in against, so the route tests reach the
@@ -19,6 +23,11 @@ os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 # explicit opt-in and no longer follows from RETINA_ENV=test, so ask for it here.
 # Set before core.users is imported: AUTH_BYPASS is derived once, at import.
 os.environ.setdefault("AUTH_ALLOW_ANONYMOUS_ADMIN", "1")
+# The arc-ux sim-ingest tests exercise routes main.py now mounts only behind
+# this flag (the compose overlays all set it); the mount-gate test itself spawns
+# child interpreters with an explicit env, so this parent-process default does
+# not reach it.
+os.environ.setdefault("SYNTHETIC_FLEET_ENABLED", "1")
 # The suite truncates tables and creates schema, so it must never be pointed at
 # a real database. A hard assignment, not setdefault: the README tells readers
 # to export RETINA_DB_PATH to try a migration against a scratch file, and a
@@ -80,6 +89,27 @@ def _clean_db():
     asyncio.run(_setup())
     asyncio.set_event_loop(asyncio.new_event_loop())
     yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_state_snapshot(tmp_path):
+    """Point the snapshot at a per-test path so runs cannot pollute each other.
+
+    restore_snapshot() runs in the app lifespan and save_snapshot() on its way
+    out, so any test that builds a TestClient was reading — and rewriting —
+    the developer's real backend/data/state_snapshot.json.  That was invisible
+    while the snapshot held only trust/reputation data, but simulation_config
+    is now persisted too, so one run's PUTs came back as the next run's "fresh
+    backend" and broke the only-if-set assertions in test_sim_ingest.
+    Function-scoped rather than session-scoped: a shared path just relocates
+    the leak from the repo into tmp.
+    """
+    from services import state_snapshot
+
+    orig = state_snapshot._SNAPSHOT_PATH
+    state_snapshot._SNAPSHOT_PATH = str(tmp_path / "state_snapshot.json")
+    yield
+    state_snapshot._SNAPSHOT_PATH = orig
 
 
 @pytest.fixture(autouse=True)

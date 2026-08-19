@@ -41,10 +41,152 @@ def _percentile(vals: list, pct: float) -> float:
 # without this the constraint would only ever take effect on a restart.
 _COVERAGE_DIGESTS: dict[str, tuple] = {}
 
+# The raw digest is per-bin p85 at 0.1 km resolution, so while calibration
+# points accumulate it moves with nearly every point and "only acts when the
+# digest moves" degenerated into rebuilding every node's grids on every cycle
+# (py-spy on staging: the analytics thread at ~23% of process CPU with the
+# solver queue starving behind it, 50k pair rebuilds since boot).  Two dampers:
+# compare at 2 km granularity — sub-bucket drift cannot meaningfully change
+# which 3 km association grid cells the constraint excludes — and re-check a
+# node at most every 150 s, which also skips the per-bin p85 recompute for
+# nodes inside the window.  A node's first build is never delayed.
+_COVERAGE_DIGEST_QUANT_KM = 2.0
+_COVERAGE_RECHECK_MIN_S = 150.0
+_COVERAGE_NEXT_CHECK: dict[str, float] = {}
+
+
+# ── Disappearance detector (FOV_MODE shadow/active) ─────────────────────────
+#
+# node_id -> {hex -> ts last detected}.  A hex enters when the node's own
+# tracker has it detected (the was-detected precondition: an aircraft this
+# node has never detected can never produce a negative event, however long
+# it goes unseen — the feedback-loop guard, so the detector can never talk
+# itself into shrinking a node's coverage from mere silence).  It leaves the
+# instant an event is emitted for it (one event per disappearance) or after
+# _FOV_DISAPPEAR_MEMORY_S without being redetected.
+_DETECTED_RECENTLY: dict[str, dict[str, float]] = {}
+
+# Shrink itself needs >= 3 events spanning >= 10 min
+# (empirical_coverage.FOV_NEG_EVENTS_TO_SHRINK / FOV_NEG_MIN_SPAN_S), so
+# remembering a hex for less than that buys nothing — but 90 s gives room
+# for an ordinary detection gap (an SNR dip, a rotor-blade flash) without
+# minting a spurious "disappearance" for a target that never left.
+_FOV_DISAPPEAR_MEMORY_S = 90.0
+# An ADS-B fix older than this cannot say where the aircraft is NOW with any
+# confidence — recording an event against a stale position would file it
+# under the wrong bearing bin, corrupting the very evidence FOV_MODE relies
+# on to converge toward the true obstruction.
+_FOV_EVENT_MAX_ADSB_AGE_S = 30.0
+# Bounds one node's worst-case contribution to one 30 s cycle.  An outage or
+# a mass ADS-B glitch must mint a bounded burst, not an unbounded one — the
+# per-bin FOV_NEG_MAX_PER_BIN FIFO caps the accumulated damage, but this
+# caps how fast any one cycle can do damage.
+_FOV_MAX_EVENTS_PER_NODE_CYCLE = 5
+# A node that has not been heard from recently is not "failing to detect" —
+# it is dark, and its remembered hexes must not be scored as disappearances
+# just because nothing is arriving to redetect them.  NodeMetrics.last_heartbeat
+# (record_heartbeat) is the closest existing per-node liveness timestamp —
+# already the codebase's own gate for this exact question (see
+# NodeReputation.evaluate_heartbeat) — so this reuses it rather than adding a
+# new per-frame timestamp to NodeMetrics for one caller.
+_FOV_NODE_LIVENESS_MAX_AGE_S = 60.0
+
 
 def _reset_for_tests() -> None:
     """Restore this module's private state to boot values.  Tests only."""
     _COVERAGE_DIGESTS.clear()
+    _COVERAGE_NEXT_CHECK.clear()
+    _DETECTED_RECENTLY.clear()
+
+
+def _quantize_digest(digest: tuple) -> tuple:
+    """Quantize a coverage_digest() entry for change detection.
+
+    Two shapes reach here: the shrink-only prior's per-bin ``float | None``
+    (constraint_digest, FOV_MODE off) and the learned FOV's per-bin
+    ``(state_code, limit) | None`` (fov_digest, shadow/active).  The tuple
+    form is compared with the state half taken verbatim — a bin opening
+    (e.g. "closed" -> "prior") must trigger a rebuild even when its rounded
+    limit does not move in the same tick, because a closed bin excludes
+    association entirely while an open one, however small its limit, does
+    not — and the limit half quantized same as the float form, so a
+    tightened-vs-widened polygon and an opened-vs-closed bin damp rebuilds
+    on the same 2 km grain.
+    """
+    out = []
+    for v in digest:
+        if v is None:
+            out.append(None)
+        elif isinstance(v, tuple):
+            state_code, limit_km = v
+            out.append((state_code, round(limit_km / _COVERAGE_DIGEST_QUANT_KM)))
+        else:
+            out.append(round(v / _COVERAGE_DIGEST_QUANT_KM))
+    return tuple(out)
+
+
+def _refresh_disappearance_detector(
+    node_id: str, now: float, rx_lat: float, rx_lon: float, detected_hexes: set[str]
+) -> None:
+    """One node's disappearance-event pass for one 30 s cycle.
+
+    Callers gate this on state.FOV_MODE != "off" — it runs in BOTH shadow
+    and active (warming the negative-evidence stream so an active flip does
+    not start cold), never in off.
+
+    Refreshes _DETECTED_RECENTLY[node_id] from detected_hexes, applies the
+    liveness guard, then for every remembered hex now absent looks for a
+    fresh ADS-B fix inside the node's CURRENT learned FOV and records one
+    event for it — capped at _FOV_MAX_EVENTS_PER_NODE_CYCLE, one event per
+    disappearance (the hex is dropped from memory once scored either way:
+    emitted, or aged out past _FOV_DISAPPEAR_MEMORY_S with nothing to score
+    it against).
+    """
+    memory = _DETECTED_RECENTLY.setdefault(node_id, {})
+    for hex_code in detected_hexes:
+        memory[hex_code] = now
+    if not memory:
+        return
+
+    metrics = state.node_analytics.metrics.get(node_id)
+    live = metrics is not None and (now - metrics.last_heartbeat) <= _FOV_NODE_LIVENESS_MAX_AGE_S
+    if not live:
+        # Neither grown (a dark tracker yields no detected_hexes) nor scored
+        # here — a dark node's dead tracks must not shrink its FOV.  Entries
+        # still expire on their own via _FOV_DISAPPEAR_MEMORY_S once the
+        # node comes back.
+        return
+
+    fov = state.node_analytics.learned_fov_for(node_id)
+    if fov is None:
+        return
+
+    emitted = 0
+    for hex_code, last_seen in list(memory.items()):
+        if hex_code in detected_hexes:
+            continue  # still there
+        if now - last_seen > _FOV_DISAPPEAR_MEMORY_S:
+            memory.pop(hex_code, None)  # too stale to say anything
+            continue
+        if emitted >= _FOV_MAX_EVENTS_PER_NODE_CYCLE:
+            continue  # cycle cap -- reconsidered next cycle
+        entry = state.adsb_aircraft.get(hex_code)
+        if entry is None:
+            continue  # no current position to test or record against
+        lat, lon = entry.get("lat"), entry.get("lon")
+        if lat is None or lon is None:
+            continue
+        fix_age_s = now - entry.get("last_seen_ms", 0) / 1000.0
+        if fix_age_s > _FOV_EVENT_MAX_ADSB_AGE_S:
+            continue
+        brg = bearing_deg(rx_lat, rx_lon, lat, lon)
+        dist_km = haversine_km(rx_lat, rx_lon, lat, lon)
+        if not fov.contains(brg, dist_km):
+            continue  # not predicted detectable here right now
+        if state.node_analytics.record_negative_event(node_id, lat, lon):
+            state.bump_counter("fov_neg_events")
+            emitted += 1
+            memory.pop(hex_code, None)
 
 
 def _refresh_coverage_constraints() -> int:
@@ -52,13 +194,20 @@ def _refresh_coverage_constraints() -> int:
 
     Runs on the analytics cadence, not the frame path: each rebuild costs one
     grid computation per neighbour.  Only acts when a node's constraint digest
-    actually moves, so a settled fleet pays nothing.
+    moves a 2 km bucket, re-checked at most every _COVERAGE_RECHECK_MIN_S per
+    node, so a settled fleet pays nothing and an accumulating one pays a
+    bounded rate instead of a rebuild per calibration point.
     """
     rebuilt = 0
+    now = time.monotonic()
     for node_id in list(state.node_associator.node_geometries):
+        if node_id in _COVERAGE_DIGESTS and now < _COVERAGE_NEXT_CHECK.get(node_id, 0.0):
+            continue
         digest = state.node_analytics.coverage_digest(node_id)
         if digest is None:
             continue
+        _COVERAGE_NEXT_CHECK[node_id] = now + _COVERAGE_RECHECK_MIN_S
+        digest = _quantize_digest(digest)
         if _COVERAGE_DIGESTS.get(node_id) == digest:
             continue
         # Record before rebuilding: a failure mid-rebuild should not spin.
@@ -238,6 +387,42 @@ def _aircraft_in_beam(
     )
 
 
+def _detected_hexes_for(node_id: str) -> set[str]:
+    """Lowercase ADS-B hexes the node's own tracker currently detects.
+
+    "Detected" means associated a real detection on the latest frame; a
+    coasting track is precisely NOT a detection, and counting it both
+    delayed disappearance events and credited miss-rate "detected" into
+    space the node cannot see.  Independent of the ADS-B in-range
+    comparison — read by the miss-rate calculation below and, under
+    FOV_MODE shadow/active, by the disappearance detector.
+    """
+    pipeline = state.node_pipelines.get(node_id)
+    detected: set[str] = set()
+    if pipeline:
+        for track in pipeline.tracker.tracks:
+            # getattr default keeps stub tracks in tests harmless; a raw
+            # tracker Track always has n_missed.
+            if getattr(track, "n_missed", 0) != 0:
+                continue
+            # The newest associated detection's own ADS-B tag outranks the
+            # track's adsb_hex: the latter goes stale on identity swaps onto
+            # untagged targets and would report the departed aircraft as
+            # still detected.  Fall back to the track hex only when the
+            # detection carries no tag (real nodes whose correlation lags).
+            hex_val = None
+            _get_recent = getattr(track, "get_recent_detections", None)
+            if callable(_get_recent):
+                _recent = _get_recent(n=1)
+                if _recent:
+                    hex_val = (_recent[0].get("adsb") or {}).get("hex")
+            if not hex_val:
+                hex_val = getattr(track, "adsb_hex", None)
+            if hex_val:
+                detected.add(hex_val.lower())
+    return detected
+
+
 def _refresh_missed_detections(nodes_snapshot: list):
     """Compare ADS-B ground truth against each node's beam geometry.
 
@@ -299,22 +484,50 @@ def _refresh_missed_detections(nodes_snapshot: list):
         max_bistatic = cfg.get("max_bistatic_range_km")
         max_bistatic = float(max_bistatic) if max_bistatic is not None else None
 
+        # FOV_MODE active only: score in_range against the learned FOV
+        # instead of the theoretical wedge — off and shadow keep today's
+        # _aircraft_in_beam verbatim, including in shadow (the display and
+        # this payload stay theoretical until active proves out; shadow only
+        # instruments the solver gate, see solver.py).
+        fov = state.node_analytics.learned_fov_for(nid) if state.FOV_MODE == "active" else None
+
         # Aircraft within this node's beam
         in_range: list[str] = []
         for hex_code, ac_lat, ac_lon in adsb_snapshot:
-            if _aircraft_in_beam(
-                ac_lat,
-                ac_lon,
-                rx_lat,
-                rx_lon,
-                beam_azimuth,
-                beam_width,
-                max_range,
-                tx_lat=tx_lat,
-                tx_lon=tx_lon,
-                max_bistatic_range_km=max_bistatic,
-            ):
+            if fov is not None:
+                ok = fov.contains(
+                    _bearing_deg(rx_lat, rx_lon, ac_lat, ac_lon),
+                    haversine_km(rx_lat, rx_lon, ac_lat, ac_lon),
+                )
+            else:
+                ok = _aircraft_in_beam(
+                    ac_lat,
+                    ac_lon,
+                    rx_lat,
+                    rx_lon,
+                    beam_azimuth,
+                    beam_width,
+                    max_range,
+                    tx_lat=tx_lat,
+                    tx_lon=tx_lon,
+                    max_bistatic_range_km=max_bistatic,
+                )
+            if ok:
                 in_range.append(hex_code)
+
+        # Which of these did the node actually detect?  Independent of
+        # in_range (a pure read of the node's own tracker) — computed here,
+        # ahead of the in_range early-return, ONLY under shadow/active so the
+        # disappearance detector below can use it even on a cycle where
+        # nothing is currently in theoretical/learned range.  Off leaves this
+        # whole block unreached, same as before FOV_MODE existed.
+        detected_hexes = None
+        if state.FOV_MODE != "off":
+            detected_hexes = _detected_hexes_for(nid)
+            try:
+                _refresh_disappearance_detector(nid, now, rx_lat, rx_lon, detected_hexes)
+            except Exception:
+                logging.exception("_refresh_disappearance_detector failed for %s", nid)
 
         if not in_range:
             result[nid] = {
@@ -326,15 +539,8 @@ def _refresh_missed_detections(nodes_snapshot: list):
             }
             continue
 
-        # Which of these did the node actually detect?
-        # Check the node's pipeline tracker for ADS-B hex associations.
-        pipeline = state.node_pipelines.get(nid)
-        detected_hexes: set[str] = set()
-        if pipeline:
-            for track in pipeline.tracker.tracks:
-                hex_val = getattr(track, "adsb_hex", None)
-                if hex_val:
-                    detected_hexes.add(hex_val.lower())
+        if detected_hexes is None:
+            detected_hexes = _detected_hexes_for(nid)
 
         in_range_set = set(h.lower() for h in in_range)
         detected_in_range = in_range_set & detected_hexes
@@ -439,28 +645,43 @@ def _velocity_accuracy() -> dict:
         if not speed:
             continue
         last = trail[-1]
-        truth.append((last[0], last[1], float(speed)))
+        # Heading rides along for the direction-error stats below; a truth
+        # aircraft with no heading (meta not carrying one) still counts for
+        # the speed-ratio stats, it just never contributes a heading sample.
+        truth.append((last[0], last[1], float(speed), meta.get("heading")))
     if not truth:
         return {}
 
     truth_max = max(t[2] for t in truth)
     ratios: list[float] = []
+    heading_errs: list[float] = []
+    vector_errs: list[float] = []
     over = 0
     for r in list(state.multinode_tracks.values()):
         lat, lon = r.get("lat"), r.get("lon")
         if lat is None or lon is None:
             continue
-        solved = math.hypot(r.get("vel_east", 0.0), r.get("vel_north", 0.0))
-        best, best_d = None, _VELOCITY_MATCH_KM
-        for t_lat, t_lon, t_speed in truth:
+        vel_east = r.get("vel_east", 0.0)
+        vel_north = r.get("vel_north", 0.0)
+        solved = math.hypot(vel_east, vel_north)
+        best, best_heading, best_d = None, None, _VELOCITY_MATCH_KM
+        for t_lat, t_lon, t_speed, t_heading in truth:
             d = haversine_km(lat, lon, t_lat, t_lon)
             if d < best_d:
-                best, best_d = t_speed, d
+                best, best_heading, best_d = t_speed, t_heading, d
         if not best:
             continue
         ratios.append(solved / best)
         if solved > truth_max:
             over += 1
+        # Heading is undefined near hover and the solve needs a direction to
+        # compare against — same floors as solver.py's per-solve heading_err.
+        if best >= 20.0 and best_heading is not None and solved > 1.0:
+            solved_heading = math.degrees(math.atan2(vel_east, vel_north)) % 360
+            heading_errs.append(abs((solved_heading - best_heading + 180.0) % 360.0 - 180.0))
+            gt_ve = best * math.sin(math.radians(best_heading))
+            gt_vn = best * math.cos(math.radians(best_heading))
+            vector_errs.append(math.hypot(vel_east - gt_ve, vel_north - gt_vn))
 
     out = {
         "n_matched": len(ratios),
@@ -479,6 +700,15 @@ def _velocity_accuracy() -> dict:
                 # Solves faster than any aircraft the simulator actually flies.
                 # Should be 0; currently is not.
                 "n_faster_than_any_truth": over,
+            }
+        )
+    if heading_errs:
+        out.update(
+            {
+                "heading_err_median_deg": round(_percentile(heading_errs, 50), 1),
+                "heading_err_p95_deg": round(_percentile(heading_errs, 95), 1),
+                "vector_err_median_ms": round(_percentile(vector_errs, 50), 1),
+                "vector_err_p95_ms": round(_percentile(vector_errs, 95), 1),
             }
         )
     return out
@@ -932,8 +1162,13 @@ def _refresh_mlat_verification():
         age_s = now - entry.get("last_seen_ms", 0) / 1000
         if age_s > 60:
             continue
-        gs_ms = (entry.get("gs", 0) or 0) * 0.514444
-        alt_m = (entry.get("alt_baro", 0) or 0) * 0.3048
+        # tar1090 convention: alt_baro is the string "ground" for aircraft on
+        # the ground — a bare multiply raised TypeError and killed the whole
+        # refresh cycle, leaving /api/test/mlat-accuracy permanently empty.
+        _gs_raw = entry.get("gs", 0) or 0
+        _alt_raw = entry.get("alt_baro", 0) or 0
+        gs_ms = (_gs_raw if isinstance(_gs_raw, (int, float)) else 0.0) * 0.514444
+        alt_m = (_alt_raw if isinstance(_alt_raw, (int, float)) else 0.0) * 0.3048
         adsb_truth_pool.append(
             (
                 adsb_hex,

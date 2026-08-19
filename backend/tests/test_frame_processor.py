@@ -227,6 +227,52 @@ class TestProcessOneFrame:
         process_one_frame("test-nan", frame, default)
         assert "testbad" not in state.adsb_aircraft
 
+    def test_claiming_anchored_inputs_reach_the_solver_queue(self, monkeypatch):
+        """Top-down claiming's anchored_inputs are already solver-input
+        shaped (see association._claim_round), so frame_processor must hand
+        them to the queue directly, alongside — not instead of — whatever
+        the bottom-up pairs formatted.  Stubs submit_tracks_round rather than
+        wiring a real multi-node claiming scenario through the tracker: the
+        contract under test is frame_processor's plumbing, not claiming
+        itself (covered in the lib's test_track_claiming.py)."""
+        from retina_analytics.association import AssociationRound
+
+        anchored = {
+            "initial_guess": {"lat": 35.0, "lon": -82.0, "alt_km": 7.0},
+            "initial_velocity": {"vel_east_ms": 100.0, "vel_north_ms": 50.0},
+            "measurements": [
+                {"node_id": "site-a", "delay_us": 10.0, "doppler_hz": 5.0, "snr": 15.0},
+                {"node_id": "site-b", "delay_us": 12.0, "doppler_hz": 4.0, "snr": 14.0},
+            ],
+            "n_nodes": 2,
+            "timestamp_ms": int(time.time() * 1000),
+            "adsb_hex": None,
+            "chi2_per_dof": None,
+            "n_epochs": 2,
+            "cv_epochs": [{"t_s": 0.0, "measurements": []}],
+            "track_pair_ids": [("t1", "t2")],
+            "track_ids": ["t1", "t2"],
+            "track_ids_by_node": {"site-a": ["t1"], "site-b": ["t2"]},
+            "anchor_key": "mn-dark-test-1",
+        }
+        monkeypatch.setattr(
+            state.node_associator,
+            "submit_tracks_round",
+            lambda *a, **kw: AssociationRound(pairs=[], anchored_inputs=[anchored], claims=[]),
+        )
+        while True:  # start from an empty queue so only this item is seen
+            try:
+                state.solver_queue.get_nowait()
+            except Exception:
+                break
+
+        default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        process_one_frame("test-anchor", _make_frame(), default)
+
+        s_in, _node_cfgs, _enqueued_at = state.solver_queue.get_nowait()
+        assert s_in["anchor_key"] == "mn-dark-test-1"
+        assert s_in["n_nodes"] == 2
+
 
 # ── Multinode result conversion ──────────────────────────────────────────────
 
@@ -290,6 +336,56 @@ class TestMultinodeToAircraft:
         assert ac["is_anomalous"] is False
         assert ac["anomaly_types"] == []
 
+    def test_contributing_track_anomaly_propagates(self):
+        """A result stamped anomalous by the solver (_collect_track_anomalies
+        from its contributing tracker tracks) carries the flag into the feed
+        entry and anomaly_hexes — a dark anomalous target must not go quiet
+        the moment it graduates from arc to solve."""
+        r = {
+            "lat": 33.9,
+            "lon": -84.6,
+            "alt_m": 9000.0,
+            "vel_east": 350.0,
+            "vel_north": 0.0,
+            "n_nodes": 2,
+            "n_measurements": 10,
+            "rms_delay": 0.3,
+            "rms_doppler": 0.8,
+            "is_anomalous": True,
+            "anomaly_types": ["supersonic"],
+            "max_velocity_ms": 420.0,
+        }
+        ac = multinode_to_aircraft("mn-dark-4", r)
+        try:
+            assert ac["is_anomalous"] is True
+            assert ac["anomaly_types"] == ["supersonic"]
+            assert ac["max_velocity_ms"] == 420.0
+            assert ac["hex"] in state.anomaly_hexes
+        finally:
+            with state.anomaly_lock:
+                state.anomaly_hexes.discard(ac["hex"])
+
+    def test_clean_result_discards_hex(self):
+        r = {
+            "lat": 33.9,
+            "lon": -84.6,
+            "alt_m": 3000.0,
+            "vel_east": 100.0,
+            "vel_north": 100.0,
+            "n_nodes": 2,
+            "n_measurements": 8,
+            "rms_delay": 0.2,
+            "rms_doppler": 0.5,
+        }
+        from services.id_utils import multinode_hex_from_key
+
+        mn_hex = multinode_hex_from_key("mn-key-5")
+        with state.anomaly_lock:
+            state.anomaly_hexes.add(mn_hex)
+        ac = multinode_to_aircraft("mn-key-5", r)
+        assert ac["is_anomalous"] is False
+        assert mn_hex not in state.anomaly_hexes
+
 
 # ── Build combined aircraft JSON ─────────────────────────────────────────────
 
@@ -302,6 +398,149 @@ class TestBuildCombinedAircraftJson:
         assert "aircraft" in result
         assert isinstance(result["aircraft"], list)
         assert "messages" in result
+
+    def test_detecting_nodes_lists_every_node_seeing_a_hex(self):
+        """The aircraft list is one-entry-per-hex (last writer wins), so
+        detecting_nodes is the only place the per-node fan-out is visible."""
+        import types
+
+        from retina_tracker.track import TrackState
+
+        import services.aircraft_feed as af
+
+        def _track(hex_):
+            return types.SimpleNamespace(
+                state_status=TrackState.ACTIVE,
+                adsb_hex=hex_,
+                history={"measurements": []},
+            )
+
+        af._reset_for_tests()
+        default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        try:
+            state.node_pipelines["det-node-a"] = types.SimpleNamespace(
+                config={"node_id": "det-node-a"},
+                tracker=types.SimpleNamespace(tracks=[_track("ABCDEF")]),
+            )
+            state.node_pipelines["det-node-b"] = types.SimpleNamespace(
+                config={"node_id": "det-node-b"},
+                tracker=types.SimpleNamespace(tracks=[_track("abcdef")]),
+            )
+            # Fresh ADS-B for the hex: the arc is skipped, the detection isn't.
+            state.adsb_aircraft["abcdef"] = {
+                "hex": "abcdef",
+                "lat": 33.9,
+                "lon": -84.6,
+                "last_seen_ms": int(time.time() * 1000),
+            }
+            result = build_combined_aircraft_json(default)
+            assert result["detecting_nodes"] == {
+                "abcdef": ["det-node-a", "det-node-b"],
+            }
+
+            # Cached between refreshes; _reset_for_tests clears it.
+            af._reset_for_tests()
+            state.node_pipelines.clear()
+            result = build_combined_aircraft_json(default)
+            assert result["detecting_nodes"] == {}
+        finally:
+            af._reset_for_tests()
+            state.node_pipelines.clear()
+            state.adsb_aircraft.pop("abcdef", None)
+
+    def test_pending_arcs_cover_adsb_tracks_with_buffer_key_fields(self):
+        """Every promoted single-node track emits its measured-delay arc into
+        detection_arcs — ADS-B-correlated tracks included (they used to be
+        skipped, which left them arc-less once dedup collapsed their
+        per-node aircraft entries).  Entries carry hex/delay_us so the
+        frontend arc buffer can key them exactly like per-aircraft arcs."""
+        import types
+        from unittest.mock import patch
+
+        from retina_tracker.track import TrackState
+
+        import services.aircraft_feed as af
+        from services.id_utils import passive_track_hex
+
+        def _track(hex_, track_id, delay):
+            return types.SimpleNamespace(
+                id=track_id,
+                state_status=TrackState.ACTIVE,
+                adsb_hex=hex_,
+                target_class="aircraft",
+                history={"measurements": [{"delay": delay, "doppler": -12.345}]},
+            )
+
+        af._reset_for_tests()
+        default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        try:
+            state.node_pipelines["det-node-a"] = types.SimpleNamespace(
+                config={"node_id": "det-node-a"},
+                tracker=types.SimpleNamespace(
+                    tracks=[
+                        _track("ABCDEF", "trk-adsb", 55.5),
+                        _track(None, "trk-dark", 44.25),
+                    ]
+                ),
+            )
+            state.adsb_aircraft["abcdef"] = {
+                "hex": "abcdef",
+                "lat": 33.9,
+                "lon": -84.6,
+                "alt_baro": 32000,
+                "last_seen_ms": int(time.time() * 1000),
+            }
+            with patch.object(af, "_build_single_node_arc", return_value=[[33.9, -84.6], [33.95, -84.55]]):
+                result = build_combined_aircraft_json(default)
+
+            arcs = {a["hex"]: a for a in result["detection_arcs"]}
+            adsb_arc = arcs["abcdef"]
+            assert adsb_arc["node_id"] == "det-node-a"
+            assert adsb_arc["delay_us"] == 55.5
+            assert adsb_arc["doppler_hz"] == -12.35
+            assert adsb_arc["alt_baro"] == 32000
+            assert len(adsb_arc["ambiguity_arc"]) == 2
+
+            dark_arc = arcs[passive_track_hex("trk-dark")]
+            assert dark_arc["hex"].startswith("pr")
+            assert dark_arc["delay_us"] == 44.25
+            assert dark_arc["alt_baro"] is None
+        finally:
+            af._reset_for_tests()
+            state.node_pipelines.pop("det-node-a", None)
+            state.adsb_aircraft.pop("abcdef", None)
+
+    def test_pending_arcs_still_skip_tentative_tracks(self):
+        import types
+        from unittest.mock import patch
+
+        from retina_tracker.track import TrackState
+
+        import services.aircraft_feed as af
+
+        af._reset_for_tests()
+        default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        try:
+            state.node_pipelines["det-node-a"] = types.SimpleNamespace(
+                config={"node_id": "det-node-a"},
+                tracker=types.SimpleNamespace(
+                    tracks=[
+                        types.SimpleNamespace(
+                            id="trk-tent",
+                            state_status=TrackState.TENTATIVE,
+                            adsb_hex=None,
+                            target_class="aircraft",
+                            history={"measurements": [{"delay": 60.0, "doppler": 5.0}]},
+                        )
+                    ]
+                ),
+            )
+            with patch.object(af, "_build_single_node_arc", return_value=[[33.9, -84.6], [33.95, -84.55]]):
+                result = build_combined_aircraft_json(default)
+            assert result["detection_arcs"] == []
+        finally:
+            af._reset_for_tests()
+            state.node_pipelines.pop("det-node-a", None)
 
     def test_adsb_only_excluded_from_map(self):
         """ADS-B-only aircraft (no radar detection) are intentionally excluded."""

@@ -177,6 +177,9 @@ class TestGroundTruth:
             "is_anomalous": False,
             "speed_ms": 250.0,
             "heading": 90,
+            "has_adsb": True,
+            "adsb_callsign": "ABC1234",
+            "anomaly_event": "hijack",
         }
         r = client.get("/api/v1/ground-truth/aircraft")
         assert r.status_code == 200
@@ -186,6 +189,28 @@ class TestGroundTruth:
         assert ac["hex"] == "GT01"
         assert ac["object_type"] == "aircraft"
         assert len(ac["trail"]) == 1
+        assert ac["has_adsb"] is True
+        assert ac["adsb_callsign"] == "ABC1234"
+        assert ac["anomaly_event"] == "hijack"
+
+    def test_ground_truth_meta_defaults_for_old_payloads(self, client):
+        from collections import deque
+
+        state.ground_truth_trails["GT02"] = deque(
+            [{"lat": 33.45, "lon": -112.07, "ts": 1.0}],
+            maxlen=100,
+        )
+        state.ground_truth_meta["GT02"] = {
+            "object_type": "aircraft",
+            "is_anomalous": False,
+            "speed_ms": 0,
+            "heading": 0,
+        }
+        r = client.get("/api/v1/ground-truth/aircraft")
+        ac = r.json()["aircraft"][0]
+        assert ac["has_adsb"] is False
+        assert ac["adsb_callsign"] is None
+        assert ac["anomaly_event"] is None
 
     def test_ground_truth_real_empty(self, client):
         r = client.get("/api/v1/ground-truth/real")

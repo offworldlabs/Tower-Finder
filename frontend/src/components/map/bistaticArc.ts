@@ -1,10 +1,18 @@
 // Bistatic-ellipse ambiguity arc builder — JS port of
-// backend/services/frame_processor.py::_build_single_node_arc.
+// backend/services/track_gates.py::_build_single_node_arc.
 //
-// Used to recompute the displayed arc segment client-side each frame so it
-// follows the dead-reckoned aircraft icon between sparse bistatic detections.
-// The locus itself is determined by delay_us (constant once measured); only
-// the 25-km trim window slides along the locus as the aircraft moves.
+// Used to rebuild the displayed arc client-side from the MEASURED delay_us.
+// The arc is the full delay ellipse clipped to the node's detection area
+// (differential-range limit or monostatic circle, plus the beam wedge when
+// the node genuinely has one) — it is NOT trimmed around the aircraft
+// position, so it represents every position consistent with the measured
+// delay.
+//
+// Ground-projected, altitude-agnostic by design (2026-08 direction): the
+// arc is a pure function of the measured delay and the node's detection-area
+// geometry — target altitude never enters it.  A high-altitude target's arc
+// therefore sits a few km outside its ground position; that is the intended
+// raw-measurement picture, not a bug.
 
 export interface NodeGeometry {
   rx_lat: number;
@@ -19,9 +27,19 @@ export interface NodeGeometry {
   rx_lon_real?: number | null;
   tx_lat: number;
   tx_lon: number;
+  /**
+   * RX/TX altitudes (m ASL).  No longer read by this builder (arcs are
+   * altitude-agnostic, 2026-08) — kept on the type because other callers
+   * populate and pass through NodeGeometry objects carrying them (see
+   * hooks.ts / types.ts).
+   */
+  rx_alt_m?: number | null;
+  tx_alt_m?: number | null;
   beam_azimuth_deg?: number | null;
   beam_width_deg?: number | null;
   max_range_km?: number | null;
+  /** Differential-range detection limit (km), when the node declares one. */
+  max_bistatic_range_km?: number | null;
 }
 
 export function bearingDeg(
@@ -49,19 +67,29 @@ function enuToLla(
 /**
  * Build the bistatic-ambiguity arc for one detection.
  *
- * The arc is the locus of points where the bistatic delay equals delayUs.
- * When targetLat/targetLon are provided we trim to a ~25 km segment centred
- * on the bearing from RX to that target — produces a short visible blip
- * near where the aircraft is now, instead of the full beam-spanning curve.
+ * The arc is the locus of points where the bistatic delay equals delayUs,
+ * clipped to the node's detection area: the differential-range limit when
+ * the node declares max_bistatic_range_km (else the monostatic max_range_km
+ * circle), and the beam wedge when the node genuinely has one (a declared
+ * width >= 360° means omnidirectional → the full closed ellipse).
+ *
+ * Mirrors backend/services/track_gates.py::_build_single_node_arc — the arc
+ * is deliberately NOT trimmed around the aircraft's own position: it shows
+ * every position the aircraft could occupy given the measured delay.
+ *
+ * Ground-projected, altitude-agnostic by design (2026-08 direction): this
+ * builder is a pure function of delayUs and the node's detection-area
+ * geometry — target altitude is never consulted, so a high-altitude
+ * target's arc sits a few km outside its ground position.  That is the
+ * intended raw-measurement picture, not a bug; see the backend docstring
+ * for the reasoning.
  *
  * Returns null when geometry is missing or the arc can't be constructed
- * (e.g. aircraft outside beam, or delay too large for any in-beam range).
+ * (e.g. delay too large for any in-area range).
  */
 export function buildBistaticArc(
   delayUs: number,
   node: NodeGeometry,
-  targetLat?: number,
-  targetLon?: number,
 ): [number, number][] | null {
   if (!delayUs || delayUs <= 0) return null;
   const rx_lat = node.rx_lat_real ?? node.rx_lat;
@@ -71,7 +99,7 @@ export function buildBistaticArc(
     return null;
   }
 
-  const beamWidthDeg = Number(node.beam_width_deg ?? 41);
+  const beamWidthDeg = Number(node.beam_width_deg ?? 42);
   const maxRangeKm = Number(node.max_range_km ?? 50);
   let beamAzimuthDeg = node.beam_azimuth_deg;
   if (beamAzimuthDeg == null) {
@@ -92,41 +120,46 @@ export function buildBistaticArc(
     return txDistKm + rangeKm - baselineKm;
   };
 
-  let centreBearing: number;
+  // differentialAt(0, ·) is exactly 0 for every bearing in the 2-D locus
+  // (RX's own ground point is always inside it), and differentialRangeKm is
+  // strictly positive here — so this can never actually reject.  Kept as
+  // the explicit invariant check rather than assumed silently.
+  if (differentialAt(0, 0) > differentialRangeKm) return null;
+
+  // Per-bearing binary-search ceiling.  With a declared differential limit
+  // the whole ellipse passes or fails at once (every point shares the
+  // measured differential); the search ceiling is then D/2 + baseline, a
+  // bound the locus provably never exceeds.  Without one, the monostatic
+  // circle clips per bearing.
+  let searchMaxKm: number;
+  const maxBistaticKm = node.max_bistatic_range_km;
+  if (maxBistaticKm != null && Number.isFinite(maxBistaticKm)) {
+    if (differentialRangeKm > Number(maxBistaticKm)) return null;
+    searchMaxKm = differentialRangeKm / 2 + baselineKm;
+  } else {
+    searchMaxKm = maxRangeKm;
+  }
+
+  // Sweep exactly the in-area bearing interval, centred on the boresight so
+  // the midpoint sits on the boresight crossing (matches the backend, whose
+  // arc midpoint becomes the track's displayed position).
   let sweepWidthDeg: number;
   let steps: number;
-  if (targetLat != null && targetLon != null) {
-    centreBearing = bearingDeg(rx_lat, rx_lon, targetLat, targetLon);
-    const targetEastKm = (targetLon - rx_lon) * 111.32 * cosLat;
-    const targetNorthKm = (targetLat - rx_lat) * 111.32;
-    const targetRangeKm = Math.max(Math.hypot(targetEastKm, targetNorthKm), 5);
-    // Geometric sweep that produces a ~12 km visible arc segment at the
-    // aircraft's range, then capped at 36° so close-in targets don't get
-    // the gigantic 120°-wide curve that the beam-width cap allowed (a 120°
-    // sweep at 8 km range draws a ~17 km radius near-straight line that
-    // dwarfs the icon).  36° matches the /test-radar reference fan and
-    // reads as a clearly curved short ellipse segment at typical zooms.
-    const BLIP_ARC_LENGTH_KM = 12;
-    const MAX_SWEEP_DEG = 36;
-    sweepWidthDeg = Math.min(
-      Math.min(beamWidthDeg, MAX_SWEEP_DEG),
-      (BLIP_ARC_LENGTH_KM / targetRangeKm) * (180 / Math.PI),
-    );
-    steps = 18;
+  if (beamWidthDeg >= 360) {
+    sweepWidthDeg = 360;
+    steps = 72;
   } else {
-    centreBearing = beamAzimuthDeg;
     sweepWidthDeg = beamWidthDeg;
     steps = 36;
   }
+  const centreBearing = beamAzimuthDeg;
 
   const halfSweep = sweepWidthDeg / 2;
   const points: [number, number][] = [];
   for (let step = 0; step <= steps; step++) {
     const bearing = centreBearing - halfSweep + sweepWidthDeg * (step / steps);
-    const deltaFromAxis = Math.abs(((bearing - beamAzimuthDeg + 180) % 360) - 180);
-    if (deltaFromAxis > beamWidthDeg / 2) continue;
     let lo = 0;
-    let hi = maxRangeKm;
+    let hi = searchMaxKm;
     if (differentialAt(hi, bearing) < differentialRangeKm) continue;
     for (let i = 0; i < 32; i++) {
       const mid = (lo + hi) / 2;
@@ -141,31 +174,4 @@ export function buildBistaticArc(
 
   if (points.length < 2) return null;
   return points;
-}
-
-/**
- * Compute the bistatic differential-range delay (µs) for a point at
- * (targetLat, targetLon) given RX and TX positions.
- *
- * This is the inverse of the delay→locus mapping: given the current
- * dead-reckoned icon position, compute which bistatic locus it sits on.
- * Using this as the delayUs input to buildBistaticArc ensures the resulting
- * arc passes through the aircraft icon regardless of how stale the last
- * measured delay_us is — matching the test-radar behaviour where
- * aircraftPos = arcMidpoint(arc).
- */
-export function computeBistaticDelayUs(
-  targetLat: number, targetLon: number,
-  rxLat: number, rxLon: number,
-  txLat: number, txLon: number,
-): number {
-  const cosLat = Math.max(0.1, Math.cos(((rxLat + txLat) / 2 * Math.PI) / 180));
-  const txEastKm  = (txLon - rxLon) * 111.32 * cosLat;
-  const txNorthKm = (txLat - rxLat) * 111.32;
-  const baselineKm = Math.hypot(txEastKm, txNorthKm);
-  const tgtEastKm  = (targetLon - rxLon) * 111.32 * cosLat;
-  const tgtNorthKm = (targetLat - rxLat) * 111.32;
-  const tgtRxKm  = Math.hypot(tgtEastKm, tgtNorthKm);
-  const tgtTxKm  = Math.hypot(tgtEastKm - txEastKm, tgtNorthKm - txNorthKm);
-  return (tgtRxKm + tgtTxKm - baselineKm) / 0.299792458;
 }

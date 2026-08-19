@@ -2,7 +2,7 @@
 
 Saved every SAVE_INTERVAL_S (60 s) by a background task.  Restored once at startup.
 Persists: trust_scores, reputations, accuracy_samples, chain_entries,
-node_identities, iq_commitments, anomaly_log.
+node_identities, iq_commitments, anomaly_log, simulation_config.
 """
 
 import hashlib
@@ -51,6 +51,10 @@ def save_snapshot() -> None:
         "node_identities": identities,
         "iq_commitments": dict(state.iq_commitments),
         "anomaly_log": list(state.anomaly_log),
+        "simulation_config": dict(state.simulation_config),
+        # The SIM_FRAC_* baseline in force when this was written — restore
+        # compares it against the running one to decide who wins.
+        "simulation_env_baseline": dict(state._SIMULATION_ENV_BASELINE),
     }
 
     os.makedirs(_SNAPSHOT_DIR, exist_ok=True)
@@ -92,6 +96,73 @@ def save_snapshot() -> None:
                 "State snapshot R2 replication failed — backup is stale",
                 {},
             )
+
+
+# Operator-settable keys carried across a restart.  Whitelisted rather than
+# wholesale-updated so a key retired from the schema cannot be resurrected by
+# an old snapshot.  `_updated_at` rides along deliberately — see below.
+_SIM_CONFIG_RESTORE_KEYS = frozenset(
+    {
+        "frac_anomalous",
+        "frac_drone",
+        "frac_dark",
+        "min_aircraft",
+        "max_aircraft",
+        "max_range_km",
+        "n_nodes",
+        "dual_fraction",
+        "_updated_at",
+    }
+)
+
+
+def _restore_simulation_config(snap: dict) -> None:
+    """Restore the physics-tab config, unless the deploy changed the intent.
+
+    Without this the dict is boot-state-only: a rebuild reverted whatever the
+    operator had set in the Physics tab, and because `_updated_at` is stamped
+    at import the fleet's poll loop then pushed those defaults into the
+    *running* world within 5 s.  Persisting it makes an applied scene survive
+    `docker compose up -d --build`.
+
+    Precedence: a runtime PUT outranks the SIM_FRAC_* env baseline (that is
+    the point of persisting it), but a deploy that *changes* SIM_FRAC_* is a
+    deliberate change of intent and outranks a stale runtime tweak.  The two
+    are separable because the baseline in force at write time travels in the
+    snapshot.  A pre-env-seeding snapshot has no recorded baseline, so its
+    effective baseline was the hardcoded fallbacks — compare against those.
+
+    `_updated_at` is restored verbatim rather than re-stamped.  The fleet
+    applies config only when the polled stamp strictly exceeds its last-seen
+    one, so keeping the original value means a fleet that did NOT restart
+    alongside the backend (it already holds these values) skips a pointless
+    re-apply, while a fleet that DID restart still applies — its last-seen
+    stamp resets to 0.0.  Re-stamping to now() would also make every backend
+    restart look like an operator edit to the UI's drift detection.
+    """
+    sim_cfg = snap.get("simulation_config")
+    if not isinstance(sim_cfg, dict):
+        return
+
+    running_baseline = dict(state._SIMULATION_ENV_BASELINE)
+    saved_baseline = snap.get("simulation_env_baseline")
+    if not isinstance(saved_baseline, dict):
+        saved_baseline = dict(state._SIM_FRAC_FALLBACKS)
+
+    if saved_baseline != running_baseline:
+        logging.info(
+            "SIM_FRAC_* changed since the snapshot was written (%s → %s) — "
+            "keeping the deployed values, discarding the saved simulation config",
+            saved_baseline,
+            running_baseline,
+        )
+        return
+
+    restored = {k: v for k, v in sim_cfg.items() if k in _SIM_CONFIG_RESTORE_KEYS}
+    if not restored:
+        return
+    state.simulation_config.update(restored)
+    logging.info("Simulation config restored from snapshot: %s", restored)
 
 
 def restore_snapshot() -> bool:
@@ -208,6 +279,9 @@ def restore_snapshot() -> bool:
 
     # Anomaly log
     state.anomaly_log = snap.get("anomaly_log", [])
+
+    # Simulation physics config
+    _restore_simulation_config(snap)
 
     logging.info(
         "State snapshot restored: %d trust scores, %d reputations, %d accuracy samples",

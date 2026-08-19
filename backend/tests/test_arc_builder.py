@@ -10,7 +10,11 @@ import math
 import pytest
 
 import services.frame_processor as _fp
-from config.constants import DISPLAY_STALE_TRACK_S, GATE_MAX_HOLD_S
+from config.constants import (
+    ARC_MIN_DIFFERENTIAL_KM,
+    DISPLAY_STALE_TRACK_S,
+    GATE_MAX_HOLD_S,
+)
 from core import state
 from services.frame_processor import _bearing_deg, _build_single_node_arc, _enu_to_lla
 
@@ -18,8 +22,9 @@ from services.frame_processor import _bearing_deg, _build_single_node_arc, _enu_
 
 
 class _FakeTrack:
-    def __init__(self, delay_us):
+    def __init__(self, delay_us, alt_m=None):
         self.latest_delay_us = delay_us
+        self.alt_m = alt_m
 
 
 # ─── Minimal node config (Atlanta-area bistatic geometry) ───────────────────
@@ -209,6 +214,205 @@ class TestBuildSingleNodeArc:
             assert mean_range(arc_large) > mean_range(arc_small)
 
 
+# ─── New contract: arc spans the entire detection area ───────────────────────
+
+
+def _arc_bearings(arc, rx_lat=_NODE_CFG["rx_lat"], rx_lon=_NODE_CFG["rx_lon"]):
+    """Bearings (deg from RX) of every arc point."""
+    return [_bearing_deg(rx_lat, rx_lon, lat, lon) for lat, lon in arc]
+
+
+def _angular_spread_deg(bearings):
+    """Widest angular extent covered by a bearing list (wrap-safe)."""
+    spread = 0.0
+    for a in bearings:
+        for b in bearings:
+            d = abs((a - b + 180.0) % 360.0 - 180.0)
+            spread = max(spread, d)
+    return spread
+
+
+class TestArcSpansDetectionArea:
+    """The emitted arc is the delay ellipse clipped to the node's detection
+    area — NOT trimmed to a blip around the track's own position estimate,
+    and NOT clipped to anything narrower than the beam the node genuinely has.
+    """
+
+    # Broadside boresight for _NODE_CFG (RX→TX bearing + 90°).
+    BORESIGHT = (
+        _bearing_deg(_NODE_CFG["rx_lat"], _NODE_CFG["rx_lon"], _NODE_CFG["tx_lat"], _NODE_CFG["tx_lon"]) + 90.0
+    ) % 360.0
+
+    def test_known_position_no_longer_trims_the_arc(self):
+        """A track with a known position used to get a ~25 km blip; the arc
+        must now span the full 90° wedge regardless."""
+        cfg, touched = dict(_NODE_CFG), set()
+        track = _ArcTrack(80.0, 33.65, -84.95)
+        arc = _fp._cached_single_node_arc("spanhex", track, cfg, touched)
+        assert arc is not None
+        spread = _angular_spread_deg(_arc_bearings(arc))
+        # Old behaviour: min(90°, ~36°) ≈ 36° sweep.  New: the whole wedge.
+        assert spread > 80.0
+
+    def test_omni_node_spans_beyond_any_wedge(self):
+        """beam_width >= 360 means omnidirectional: the arc is the full closed
+        ellipse, including bearings far outside the old broadside wedge."""
+        cfg = {**_NODE_CFG, "beam_width_deg": 360, "max_bistatic_range_km": 100.0}
+        arc = _build_single_node_arc(80.0, cfg)
+        assert arc is not None
+        assert len(arc) == 73  # 72 steps + closing point
+        # Ring closes on itself.
+        assert arc[0][0] == pytest.approx(arc[-1][0], abs=1e-6)
+        assert arc[0][1] == pytest.approx(arc[-1][1], abs=1e-6)
+        # Points exist well outside the old default wedge around boresight.
+        offsets = [abs((b - self.BORESIGHT + 180.0) % 360.0 - 180.0) for b in _arc_bearings(arc)]
+        assert max(offsets) > 150.0
+
+    def test_wedge_arc_stays_inside_genuine_beam(self):
+        """A genuinely directional node still yields a wedge-clipped arc —
+        the detection area itself is a wedge there."""
+        cfg = {**_NODE_CFG, "beam_width_deg": 48, "max_bistatic_range_km": 100.0}
+        arc = _build_single_node_arc(80.0, cfg)
+        assert arc is not None
+        offsets = [abs((b - self.BORESIGHT + 180.0) % 360.0 - 180.0) for b in _arc_bearings(arc)]
+        assert max(offsets) <= 24.0 + 0.5
+
+    def test_delay_beyond_differential_limit_returns_none(self):
+        """80 µs is ~24 km of differential range — past a 20 km limit the
+        node cannot have made this detection, so there is no arc."""
+        cfg = {**_NODE_CFG, "max_bistatic_range_km": 20.0}
+        assert _build_single_node_arc(80.0, cfg) is None
+
+    def test_arc_points_lie_on_measured_differential_within_limit(self):
+        """Every emitted point sits on the measured-delay ellipse, hence
+        inside the declared differential-range limit."""
+        from services.geo import C_KM_US, bistatic_differential_km
+
+        limit = 40.0
+        cfg = {**_NODE_CFG, "beam_width_deg": 360, "max_bistatic_range_km": limit}
+        delay_us = 80.0
+        arc = _build_single_node_arc(delay_us, cfg)
+        assert arc is not None
+        expected_km = delay_us * C_KM_US
+        for lat, lon in arc:
+            d = bistatic_differential_km(cfg["tx_lat"], cfg["tx_lon"], cfg["rx_lat"], cfg["rx_lon"], lat, lon)
+            # ENU-vs-spherical mismatch stays well under 1 km at these ranges.
+            assert d == pytest.approx(expected_km, abs=1.0)
+            assert d <= limit
+
+    def test_monostatic_range_excludes_out_of_reach_bearings(self):
+        """Without a bistatic limit the monostatic circle clips the locus:
+        bearings whose ellipse crossing lies beyond max_range_km are dropped,
+        the rest survive."""
+        cfg = {**_NODE_CFG, "max_range_km": 25}
+        arc = _build_single_node_arc(80.0, cfg)
+        assert arc is not None
+        # Part of the wedge is out of reach — the arc must be a strict subset…
+        assert 2 <= len(arc) < 37
+        # …and every surviving point is inside the circle.
+        for lat, lon in arc:
+            dlat = (lat - cfg["rx_lat"]) * 111.0
+            dlon = (lon - cfg["rx_lon"]) * 111.0 * math.cos(math.radians(lat))
+            assert math.hypot(dlat, dlon) <= 25.0 + 1.0
+
+    def test_point_budget_is_bounded(self):
+        """The arc ships every feed tick: <= 37 points for a wedge, <= 73 for
+        the full closed ellipse."""
+        wedge = _build_single_node_arc(80.0, dict(_NODE_CFG))
+        assert wedge is not None and len(wedge) <= 37
+        omni = _build_single_node_arc(80.0, {**_NODE_CFG, "beam_width_deg": 360, "max_bistatic_range_km": 100.0})
+        assert omni is not None and len(omni) <= 73
+
+
+# ─── Altitude no longer feeds arc geometry (2026-08 direction) ───────────────
+
+
+class TestArcIgnoresAltitude:
+    """Arcs are a pure function of the node-reported delay-Doppler
+    measurement, deliberately — no target-altitude correction.  A track's
+    alt_m (LM solver output or correlated ADS-B) used to solve a 3-D
+    ellipsoid at that altitude (see git history); it no longer reaches the
+    geometry at all.  alt_baro keeps flowing in payloads as panel display
+    data — it just stops shaping the drawn locus, so a high-altitude
+    target's arc now sits a few km outside its ground position, on purpose.
+    """
+
+    CFG = {**_NODE_CFG, "rx_alt_ft": 1000.0, "tx_alt_ft": 1600.0}
+    DELAY_US = 80.0
+
+    def test_track_altitude_is_ignored(self):
+        """A track carrying alt_m solves identically to the plain
+        float-delay call — altitude never reaches the geometry."""
+        via_track = _build_single_node_arc(
+            _FakeTrack(self.DELAY_US, alt_m=9000.0),
+            self.CFG,
+        )
+        via_delay = _build_single_node_arc(self.DELAY_US, self.CFG)
+        assert via_track == via_delay
+        assert via_track is not None
+
+    def test_arc_points_satisfy_2d_differential(self):
+        """Every emitted point sits on the measured 2-D delay ellipse."""
+        from services.geo import C_KM_US, bistatic_differential_km
+
+        measured_km = self.DELAY_US * C_KM_US
+        arc = _build_single_node_arc(self.DELAY_US, self.CFG)
+        assert arc is not None
+        for lat, lon in arc:
+            d = bistatic_differential_km(
+                self.CFG["tx_lat"],
+                self.CFG["tx_lon"],
+                self.CFG["rx_lat"],
+                self.CFG["rx_lon"],
+                lat,
+                lon,
+            )
+            assert d == pytest.approx(measured_km, abs=1.0)
+
+    @pytest.mark.parametrize("alt_m", [None, 0.0, 9000.0, 40000.0])
+    def test_alt_none_zero_high_all_identical(self, alt_m):
+        """None, zero and a high altitude all produce the same arc — there
+        is no altitude branch left to diverge on."""
+        baseline = _build_single_node_arc(self.DELAY_US, self.CFG)
+        arc = _build_single_node_arc(
+            _FakeTrack(self.DELAY_US, alt_m=alt_m),
+            self.CFG,
+        )
+        assert arc == baseline
+        assert arc is not None
+
+
+# ─── Differential-range floor (blob-stub suppression) ────────────────────────
+
+
+class TestArcDifferentialFloor:
+    """FIX C: a differential range below ARC_MIN_DIFFERENTIAL_KM means the
+    delay ellipse collapses onto the TX–RX baseline and the "arc" renders as
+    a misleading blob stub (staging: 36/415 emitted arcs were <5 km stubs,
+    median differential 2.6 km, many from clutter).  No arc is emitted below
+    the floor; the track itself still emits (position, no arc) — see
+    TestFloorTrackStillEmits.
+    """
+
+    def test_below_floor_returns_none(self):
+        # 8 µs ≈ 2.40 km differential — under the 3.0 km floor.
+        assert _build_single_node_arc(8.0, _NODE_CFG) is None
+        assert _build_single_node_arc(_FakeTrack(8.0), _NODE_CFG) is None
+
+    def test_above_floor_builds(self):
+        # 11 µs ≈ 3.30 km — clear of the floor; full wedge arc.
+        arc = _build_single_node_arc(11.0, _NODE_CFG)
+        assert arc is not None
+        assert len(arc) >= 2
+
+    def test_floor_boundary(self):
+        from services.geo import C_KM_US
+
+        floor_delay_us = ARC_MIN_DIFFERENTIAL_KM / C_KM_US
+        assert _build_single_node_arc(floor_delay_us * 0.999, _NODE_CFG) is None
+        assert _build_single_node_arc(floor_delay_us * 1.001, _NODE_CFG) is not None
+
+
 # ─── Aircraft JSON builder path (single_node_ellipse_arc) ───────────────────
 
 
@@ -261,14 +465,20 @@ class TestTrackEntryPaths:
 
 
 class TestGatePreservesArc:
-    """Speed and RMS gates must keep ambiguity_arc on the wire.
+    """The two gates treat the arc differently — deliberately.
 
-    On a previous iteration both gates set ambiguity_arc = None when the
-    measurement looked noisy.  That made the testmap look like every node
-    had gone idle whenever a single bad frame came through (~90% of
-    synthetic single-node tracks routinely sit above the 7 µs RMS threshold).
-    The gates now revert only the displayed lat/lon to the last good emit;
-    the arc itself is still emitted so the user can see what the radar saw.
+    Speed gate: keeps ambiguity_arc on the wire.  A speed-gate revert
+    distrusts the association of the arc midpoint to *this track*, not the
+    measurement itself, so "radar saw something along this curve" stays
+    honest.  (Nulling it on a previous iteration made the testmap look like
+    every node had gone idle whenever a single bad frame came through.)
+
+    RMS gate: suppresses the arc for the frame.  rms_delay above the gate is
+    the pipeline itself flagging the measurement as unfittable — staging
+    diagnosis: mis-associated delays carried rms_delay 11–21 µs against the
+    7 µs gate and their wrong-target arcs still drew (42% of ground-truth
+    checks failed the on-ellipse test).  The position-revert behaviour is
+    unchanged; only the arc is withheld.
     """
 
     HEX = "rgtest"
@@ -345,16 +555,22 @@ class TestGatePreservesArc:
     PREV_LAT, PREV_LON = 33.70, -84.85
     NOW_LAT, NOW_LON = 33.65, -84.95
 
-    def test_rms_gate_keeps_arc_and_reverts_lat_lon(self):
+    def test_rms_gate_suppresses_arc_and_reverts_lat_lon(self):
+        """Superseded intent: this test originally asserted the RMS gate
+        keeps the arc.  FIX B inverted that on the staging diagnosis quoted
+        in the class docstring — an rms_delay past the gate means the
+        pipeline distrusts the measurement itself, so emitting geometry
+        built from that measurement drew wrong-target arcs.  The gate now
+        suppresses the arc for the frame while reverting the position
+        exactly as before."""
         self._setup_state(
             rms_delay=12.5, prev_lat=self.PREV_LAT, prev_lon=self.PREV_LON, now_lat=self.NOW_LAT, now_lon=self.NOW_LON
         )
         ac = self._build()
         assert ac is not None, "aircraft must still appear in feed"
-        # Arc preserved — the whole point of this regression test.
-        assert ac["ambiguity_arc"] is not None
-        assert len(ac["ambiguity_arc"]) >= 2
-        # Position reverted to last good emit.
+        # Arc suppressed — the measurement is the thing the gate distrusts.
+        assert ac["ambiguity_arc"] is None
+        # Position reverted to last good emit, unchanged from before.
         assert ac["lat"] == self.PREV_LAT
         assert ac["lon"] == self.PREV_LON
         assert ac["position_source"] == "single_node_ellipse_arc"
@@ -386,8 +602,11 @@ class TestGatePreservesArc:
         )
         ac = self._build()
         assert ac is not None
-        # Arc preserved even though the gate fired.
+        # Arc preserved even though the gate fired — the speed gate distrusts
+        # the midpoint association, not the measurement, so unlike the RMS
+        # gate it must NOT suppress the arc.
         assert ac["ambiguity_arc"] is not None
+        assert len(ac["ambiguity_arc"]) >= 2
         # Position reverted to last good emit.
         assert ac["lat"] == self.PREV_LAT
         assert ac["lon"] == self.PREV_LON
@@ -506,6 +725,16 @@ class TestGateHoldIsBounded:
         assert ac is not None
         assert (ac["lat"], ac["lon"]) != (self.PREV_LAT, self.PREV_LON)
 
+    def test_expired_hold_also_restores_arc(self):
+        # FIX B ties arc suppression to the same condition that reverts the
+        # position (RMS distrust while the hold is live).  Past
+        # GATE_MAX_HOLD_S the measurement is accepted — position AND arc —
+        # for the same reason: noisy beats confidently absent.
+        self._setup(rms_delay=12.5, hold_age_s=GATE_MAX_HOLD_S + 5.0)
+        ac = self._build()
+        assert ac is not None
+        assert ac["ambiguity_arc"] is not None
+
     def test_held_position_coasts_instead_of_freezing(self):
         # Mid-hold the icon must advance along the track's velocity rather
         # than sit still while the aircraft flies away.
@@ -548,6 +777,95 @@ class TestGateHoldIsBounded:
         ac = self._build()
         assert ac is not None
         assert 5.0 <= ac["seen"] <= 7.5
+
+
+# ─── Below-floor differential: track emits, arc does not ─────────────────────
+
+
+class TestFloorTrackStillEmits:
+    """FIX C, feed side: a track whose differential sits under the arc floor
+    keeps emitting — position only, no arc.  The pre-existing 'valid delay
+    but no arc → suppress track' rule is for solves outside the antenna
+    beam; a below-floor measurement is fine, only its arc is withheld.
+    """
+
+    HEX = "flrtst"
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        for d in (
+            state.active_geo_aircraft,
+            state.track_last_emit,
+            state.track_gate_hold,
+            state.adsb_aircraft,
+            state.external_adsb_cache,
+            state.multinode_tracks,
+            state.track_histories,
+        ):
+            d.clear()
+        yield
+        for d in (
+            state.active_geo_aircraft,
+            state.track_last_emit,
+            state.track_gate_hold,
+            state.adsb_aircraft,
+            state.external_adsb_cache,
+            state.multinode_tracks,
+            state.track_histories,
+        ):
+            d.clear()
+
+    def _setup(self, delay_us):
+        import time as _time
+
+        from pipeline.passive_radar import GeolocatedTrack
+
+        track = GeolocatedTrack(
+            track_id=f"track-{self.HEX}",
+            lat=33.65,
+            lon=-84.95,
+            alt_m=3000,
+            vel_east=0.0,
+            vel_north=0.0,
+            vel_up=0.0,
+            rms_delay=1.0,
+            rms_doppler=1.0,
+            n_detections=10,
+            timestamp_ms=int(_time.time() * 1000),
+            adsb_hex=None,
+            latest_delay_us=delay_us,
+            target_class="aircraft",
+        )
+        track.wall_clock_ts = _time.time()
+        state.active_geo_aircraft[self.HEX] = (track, dict(_NODE_CFG))
+
+    def _build(self):
+        import types
+
+        from services.frame_processor import build_combined_aircraft_json
+
+        pipeline = types.SimpleNamespace(geolocated_tracks={}, config=dict(_NODE_CFG))
+        result = build_combined_aircraft_json(pipeline)
+        return next((a for a in result["aircraft"] if a["hex"] == self.HEX), None)
+
+    def test_below_floor_track_emits_without_arc(self):
+        # 8 µs ≈ 2.40 km differential < 3.0 km floor.
+        self._setup(delay_us=8.0)
+        ac = self._build()
+        assert ac is not None, "below-floor track must still emit"
+        assert ac["ambiguity_arc"] is None
+        # No arc midpoint to snap to → the solver position is displayed.
+        assert ac["position_source"] == "solver_single_node"
+        assert ac["lat"] == pytest.approx(33.65, abs=1e-4)
+        assert ac["lon"] == pytest.approx(-84.95, abs=1e-4)
+
+    def test_above_floor_track_gets_arc(self):
+        # Same track, honest differential — arc present, midpoint displayed.
+        self._setup(delay_us=80.0)
+        ac = self._build()
+        assert ac is not None
+        assert ac["ambiguity_arc"] is not None
+        assert ac["position_source"] == "single_node_ellipse_arc"
 
 
 # ─── Regression: arc-motion gs/heading fallback ──────────────────────────────
@@ -625,15 +943,14 @@ class TestArcMotionVelocityFallback:
         assert track_deg == pytest.approx(0.0, abs=2.0)
 
 
-# ─── Regression: position-jump (teleport) anomaly ────────────────────────────
+# ─── Regression: position-jump (teleport) is debug-only, never an anomaly ────
 
 
 class TestPositionJumpAnomaly:
-    """A track whose emitted position teleports across the map must be flagged
-    is_anomalous with a "position_jump" type — even without ADS-B and even
-    when the tracker itself saw nothing wrong.  The speed gate only reverts
-    arc-track positions (silently) and is skipped at dt ≥ 60 s; multinode
-    tracks have no gate at all.
+    """A track whose emitted position teleports across the map must NOT be
+    flagged anomalous — teleports are solver mis-association noise, not target
+    behaviour.  The jump stays observable as the per-entry position_jump debug
+    field and the state.position_jump_events counter.
     """
 
     HEX = "jmptst"
@@ -698,24 +1015,139 @@ class TestPositionJumpAnomaly:
         result = build_combined_aircraft_json(pipeline)
         return next((a for a in result["aircraft"] if a["hex"] == self.HEX), None)
 
-    def test_teleport_flagged(self):
+    def test_teleport_not_flagged_but_observable(self):
         # Previous emit ~200 km south, 90 s ago (dt ≥ 60 so the speed gate is
-        # skipped → the jump is emitted, not reverted).  Current arc midpoint
-        # lands SW of the Atlanta RX.  Absolute leap >> 30 km → flagged.
+        # skipped → the jump is emitted, not reverted).  Absolute leap >> 30 km
+        # → detected, but debug-only: no anomaly flag, no anomaly_hexes entry.
+        before = state.position_jump_events
         self._setup(now_lat=33.70, now_lon=-84.85, prev_lat=31.90, prev_lon=-84.85, prev_age_s=90.0)
         ac = self._build()
         assert ac is not None
-        assert ac["is_anomalous"] is True
-        assert "position_jump" in ac["anomaly_types"]
-        assert self.HEX in state.anomaly_hexes
+        assert ac["is_anomalous"] is False
+        assert "position_jump" not in (ac["anomaly_types"] or [])
+        assert ac["position_jump"] is True
+        assert self.HEX not in state.anomaly_hexes
+        assert state.position_jump_events == before + 1
 
     def test_normal_motion_not_flagged(self):
         # Previous emit ~1 km away, 3 s ago → ~330 kt, well within normal.
+        before = state.position_jump_events
         self._setup(now_lat=33.70, now_lon=-84.85, prev_lat=33.691, prev_lon=-84.85, prev_age_s=3.0)
         ac = self._build()
         assert ac is not None
         assert "position_jump" not in (ac["anomaly_types"] or [])
+        assert ac["position_jump"] is False
         assert self.HEX not in state.anomaly_hexes
+        assert state.position_jump_events == before
+
+
+class TestArcOnlyAnomalyAllowlist:
+    """Arc-only (no fresh ADS-B) tracks may only carry physically loud anomaly
+    types: supersonic Doppler or extreme acceleration.  Everything else from
+    the tracker is noise at single-node fidelity and must be stripped.
+    """
+
+    HEX = "allowtst"
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        for d in (
+            state.active_geo_aircraft,
+            state.track_last_emit,
+            state.track_arc_motion,
+            state.adsb_aircraft,
+            state.external_adsb_cache,
+            state.multinode_tracks,
+            state.track_histories,
+            state.ground_truth_meta,
+        ):
+            d.clear()
+        state.anomaly_hexes.discard(self.HEX)
+        yield
+        for d in (
+            state.active_geo_aircraft,
+            state.track_last_emit,
+            state.track_arc_motion,
+            state.adsb_aircraft,
+            state.external_adsb_cache,
+            state.multinode_tracks,
+            state.track_histories,
+            state.ground_truth_meta,
+        ):
+            d.clear()
+        state.anomaly_hexes.discard(self.HEX)
+
+    def _setup(self, anomaly_types, is_anomalous=True):
+        import time as _time
+
+        from pipeline.passive_radar import GeolocatedTrack
+
+        track = GeolocatedTrack(
+            track_id=f"track-{self.HEX}",
+            lat=34.70,
+            lon=-84.85,
+            alt_m=3000,
+            vel_east=0.0,
+            vel_north=0.0,
+            vel_up=0.0,
+            rms_delay=1.0,
+            rms_doppler=1.0,
+            n_detections=10,
+            timestamp_ms=int(_time.time() * 1000),
+            adsb_hex=None,
+            latest_delay_us=80.0,
+            target_class="aircraft",
+        )
+        track.wall_clock_ts = _time.time()
+        track.is_anomalous = is_anomalous
+        track.anomaly_types = set(anomaly_types)
+        state.active_geo_aircraft[self.HEX] = (track, dict(_NODE_CFG))
+
+    def _build(self):
+        import types
+
+        from services.frame_processor import build_combined_aircraft_json
+
+        pipeline = types.SimpleNamespace(geolocated_tracks={}, config=dict(_NODE_CFG))
+        result = build_combined_aircraft_json(pipeline)
+        return next((a for a in result["aircraft"] if a["hex"] == self.HEX), None)
+
+    def test_disallowed_types_stripped_supersonic_survives(self):
+        self._setup({"sustained_orbit", "supersonic"})
+        ac = self._build()
+        assert ac is not None
+        assert ac["position_source"] == "single_node_ellipse_arc"
+        assert ac["anomaly_types"] == ["supersonic"]
+        assert ac["is_anomalous"] is True
+        assert self.HEX in state.anomaly_hexes
+
+    def test_only_disallowed_types_unflags(self):
+        self._setup({"sustained_orbit", "long_hover"})
+        ac = self._build()
+        assert ac is not None
+        assert ac["anomaly_types"] == []
+        assert ac["is_anomalous"] is False
+        assert self.HEX not in state.anomaly_hexes
+
+    def test_bare_flag_without_types_dropped(self):
+        # Tracker is_anomalous with no surviving type is not evidence at
+        # arc-only fidelity.
+        self._setup(set(), is_anomalous=True)
+        ac = self._build()
+        assert ac is not None
+        assert ac["is_anomalous"] is False
+
+    def test_gt_flagged_hex_survives_clean_emit(self):
+        # sim_ingest owns hexes the simulator marked anomalous in ground
+        # truth: a clean radar emit for the same hex must not wipe them.
+        state.ground_truth_meta[self.HEX] = {"is_anomalous": True}
+        with state.anomaly_lock:
+            state.anomaly_hexes.add(self.HEX)
+        self._setup(set(), is_anomalous=False)
+        ac = self._build()
+        assert ac is not None
+        assert ac["is_anomalous"] is False
+        assert self.HEX in state.anomaly_hexes
 
 
 # ─── Single-node arc cache ───────────────────────────────────────────────────
@@ -724,10 +1156,11 @@ class TestPositionJumpAnomaly:
 class _ArcTrack:
     """Minimal track exposing the fields the arc cache fingerprints."""
 
-    def __init__(self, delay_us, lat, lon):
+    def __init__(self, delay_us, lat, lon, alt_m=None):
         self.latest_delay_us = delay_us
         self.lat = lat
         self.lon = lon
+        self.alt_m = alt_m
 
 
 def _spy_build_count(monkeypatch):
@@ -771,19 +1204,23 @@ class TestSingleNodeArcCache:
         _fp._cached_single_node_arc("abc", _ArcTrack(85.0, 33.65, -84.95), cfg, touched)
         assert calls["n"] == 2
 
-    def test_position_change_rebuilds(self, monkeypatch):
+    def test_position_change_hits_cache(self, monkeypatch):
+        # The arc is the full detection-area locus of the measured delay; it
+        # no longer depends on where the track estimate sits on that locus,
+        # so a moving track with an unchanged delay must be a cache hit.
         calls = _spy_build_count(monkeypatch)
         cfg, touched = dict(_NODE_CFG), set()
-        _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.6500, -84.95), cfg, touched)
-        _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.6502, -84.95), cfg, touched)
-        assert calls["n"] == 2
+        a1 = _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.6500, -84.95), cfg, touched)
+        a2 = _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.6502, -84.95), cfg, touched)
+        assert calls["n"] == 1
+        assert a1 == a2
 
     def test_jitter_within_epsilon_hits(self, monkeypatch):
         calls = _spy_build_count(monkeypatch)
         cfg, touched = dict(_NODE_CFG), set()
         _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95), cfg, touched)
-        # delay jitter < 5e-4 and position jitter < 5e-7 round to the same
-        # fingerprint, so this is a hit, not a rebuild.
+        # delay jitter < 5e-4 rounds to the same fingerprint, so this is a
+        # hit, not a rebuild.
         _fp._cached_single_node_arc("abc", _ArcTrack(80.0004, 33.6500001, -84.9500001), cfg, touched)
         assert calls["n"] == 1
 
@@ -800,9 +1237,30 @@ class TestSingleNodeArcCache:
         cfg, touched = dict(_NODE_CFG), set()
         track = _ArcTrack(80.0, 33.65, -84.95)
         cached = _fp._cached_single_node_arc("abc", track, cfg, touched)
-        fresh = _fp._build_single_node_arc(track, cfg, target_lat=track.lat, target_lon=track.lon)
+        fresh = _fp._build_single_node_arc(track, cfg)
         assert cached == fresh
         assert cached is not None  # sanity: these inputs produce a real arc
+
+    # ── Altitude no longer feeds the fingerprint (2026-08 pure-delay arcs) ──
+
+    def test_altitude_change_does_not_invalidate_cache(self, monkeypatch):
+        # Arcs are a pure function of the measured delay now — altitude
+        # plays no part in the fingerprint, so a track climbing between
+        # calls must be a cache hit: the exact same cached object comes
+        # back, not just an equal one.
+        calls = _spy_build_count(monkeypatch)
+        cfg, touched = dict(_NODE_CFG), set()
+        a1 = _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95, alt_m=3000.0), cfg, touched)
+        a2 = _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95, alt_m=9000.0), cfg, touched)
+        assert calls["n"] == 1
+        assert a1 is a2
+
+    def test_delay_change_still_rebuilds_regardless_of_altitude(self, monkeypatch):
+        calls = _spy_build_count(monkeypatch)
+        cfg, touched = dict(_NODE_CFG), set()
+        _fp._cached_single_node_arc("abc", _ArcTrack(80.0, 33.65, -84.95, alt_m=3000.0), cfg, touched)
+        _fp._cached_single_node_arc("abc", _ArcTrack(85.0, 33.65, -84.95, alt_m=3000.0), cfg, touched)
+        assert calls["n"] == 2
 
 
 # ─── Arc cache wired into build_combined_aircraft_json ──────────────────────

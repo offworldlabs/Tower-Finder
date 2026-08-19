@@ -29,6 +29,7 @@ N_CLUSTERS="${FLEET_N_CLUSTERS:-1}"
 # ring | dual | scatter — see generator.py --layout.  The orchestrator reads the
 # generated config file, so this only has to reach the generator call below.
 LAYOUT="${FLEET_LAYOUT:-ring}"
+DUAL_FRACTION="${FLEET_DUAL_FRACTION:-0}"
 VALIDATION_URL="${FLEET_VALIDATION_URL:-http://localhost:8000}"
 
 echo "═══════════════════════════════════════════════════"
@@ -38,6 +39,7 @@ echo "  Nodes:      ${NODES}"
 echo "  Regions:    ${REGIONS}"
 echo "  Metro:      ${METRO:-nationwide}"
 echo "  Layout:     ${LAYOUT}"
+echo "  Dual frac:  ${DUAL_FRACTION}"
 echo "  Mode:       ${MODE}"
 echo "  Server:     ${HOST}:${PORT}"
 echo "  Interval:   ${INTERVAL}s"
@@ -69,15 +71,57 @@ except:
     sleep 2
 done
 
+# Fetch the desired scene (node count / dual fraction) from the backend
+# before generating — it is the source of truth for a PUT the UI made since
+# this container last booted. compose's depends_on: service_healthy already
+# gates container start on the backend's HTTP healthcheck, so by here the
+# API is up; retry a few times anyway for the ordinary boot-race case.
+# Env stays the fallback on a persistently failed fetch or on either key
+# being absent (only-if-set backend pattern — a fresh backend ships neither).
+echo "Fetching desired scene from ${VALIDATION_URL}/api/simulation/config..."
+SCENE_OVERRIDES=""
+i=1
+while [ "$i" -le 3 ]; do
+    SCENE_OVERRIDES=$(python3 -c "
+import json
+import urllib.request
+
+try:
+    with urllib.request.urlopen('${VALIDATION_URL}/api/simulation/config', timeout=5) as resp:
+        cfg = json.loads(resp.read())
+except Exception:
+    raise SystemExit(1)
+
+out = []
+if 'n_nodes' in cfg:
+    out.append('NODES=' + str(int(cfg['n_nodes'])))
+if 'dual_fraction' in cfg:
+    out.append('DUAL_FRACTION=' + str(float(cfg['dual_fraction'])))
+if 'max_range_km' in cfg:
+    out.append('MAX_RANGE_KM=' + str(float(cfg['max_range_km'])))
+print('\n'.join(out))
+" 2>/dev/null) && break
+    echo "  Scene fetch attempt ${i}/3 failed, retrying..."
+    i=$((i + 1))
+    sleep 2
+done
+if [ -n "${SCENE_OVERRIDES}" ]; then
+    echo "Scene overrides from backend:"
+    echo "${SCENE_OVERRIDES}"
+    eval "${SCENE_OVERRIDES}"
+else
+    echo "No scene overrides applied — using env NODES=${NODES} DUAL_FRACTION=${DUAL_FRACTION} MAX_RANGE_KM=${MAX_RANGE_KM}"
+fi
+
 # Generate fleet config
-echo "Generating fleet config (${NODES} nodes, regions=${REGIONS}, metro=${METRO:-nationwide})..."
+echo "Generating fleet config (${NODES} nodes, regions=${REGIONS}, metro=${METRO:-nationwide}, dual_fraction=${DUAL_FRACTION})..."
 if [ -n "${METRO}" ]; then
     GEN_METRO_ARGS="--metro ${METRO}"
 else
     GEN_METRO_ARGS=""
 fi
 # shellcheck disable=SC2086  # GEN_METRO_ARGS is intentionally word-split
-python3 -m retina_simulation.generator --nodes "${NODES}" --regions "${REGIONS}" ${GEN_METRO_ARGS} --seed "${SEED}" --layout "${LAYOUT}" --n-cluster "${N_CLUSTER}" --n-clusters "${N_CLUSTERS}" --output /app/data/fleet_config.json
+python3 -m retina_simulation.generator --nodes "${NODES}" --regions "${REGIONS}" ${GEN_METRO_ARGS} --seed "${SEED}" --layout "${LAYOUT}" --n-cluster "${N_CLUSTER}" --n-clusters "${N_CLUSTERS}" --dual-fraction "${DUAL_FRACTION}" --output /app/data/fleet_config.json
 
 # Build orchestrator args
 ARGS="--config /app/data/fleet_config.json"

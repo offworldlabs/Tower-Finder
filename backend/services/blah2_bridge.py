@@ -67,7 +67,9 @@ _OPTIONAL_DEFAULTS = {
     "doppler_min": -300,
     "doppler_max": 300,
     "min_doppler": 15,
-    "beam_width_deg": 120,
+    # 42-degree Yagi per the actual hardware; the old 120 was a stale guess
+    # that tripled every radar3 beam gate and coverage sector.
+    "beam_width_deg": 42.0,
     "max_range_km": 140,
 }
 

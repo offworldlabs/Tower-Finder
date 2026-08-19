@@ -52,8 +52,15 @@ are in [`arc-display.md`](arc-display.md).
 
 - **`routes/`** — HTTP + WebSocket endpoints (towers, radar, streaming, auth,
   admin, analytics, test, output).
-- **`services/frame_processor.py`** — turns detection frames into tracks and the
-  combined aircraft JSON; builds single-node arcs.
+- **`services/frame_processor.py`** — frame ingest: turns detection frames into
+  per-node tracks. Split satellites: `aircraft_feed.py` (combined aircraft JSON
+  assembly), `track_gates.py` (per-track gates, dead-reckoning, anomaly flags,
+  single-node arc builder), `feed_gc.py` (stale-store GC), `feed_helpers.py`
+  (dedup, history, arc-motion velocity), `geo.py` (one home for the spherical
+  geometry and the beam/range semantics every gate shares).  Node beam/range
+  geometry (`beam_azimuth_deg`, `beam_width_deg`, `max_range_km`,
+  `max_bistatic_range_km`) flows from node registration into the per-node
+  pipelines, the arc builder, and inter-node association — one contract.
 - **`services/tasks/`** — background async tasks: `aircraft_flush` (broadcast),
   `solver` workers, `analytics_refresh`, archive lifecycle, snapshots,
   `health_monitor` + `heartbeat` (see [`alerting.md`](alerting.md)).
@@ -71,8 +78,31 @@ The math lives in separate repos under `libs/` so it can be versioned and reused
   least-squares solve for a position, with an altitude sweep for n≥3.
 - **retina-tracker** — Kalman multi-target tracker + anomaly detection.
 - **retina-simulation** — synthetic fleet generator (powers testmap + CI).
-- **retina-custody**, **retina-analytics** — custody protocol and node
-  trust/reputation.
+  Runtime-tunable via `PUT /api/simulation/config` (target-class fractions,
+  aircraft counts), which the fleet polls every 5 s; fleet scale itself comes
+  from the deployment env (`FLEET_*` in the compose files).
+- **retina-custody** — custody protocol.
+- **retina-analytics** — node trust/reputation, inter-node track association
+  (pairing + top-down claiming), and per-node empirical coverage / learned
+  FOV (see [`pipeline.md`](pipeline.md) §4 and §7).
+
+## Feature gates
+
+The multi-node stack's newer stages ship behind env flags (set in the
+gitignored `backend/.env`; unset = the safe default):
+
+| Env | Values | Default | Staging | Gates |
+|-----|--------|---------|---------|-------|
+| `SOLVER_CONSENSUS_MODE` | `off/shadow/active` | `off` | `active` | n≥3 consensus-refine hypothesis stage |
+| `ASSOC_CLAIM_MODE` | `off/shadow/active` | `off` | `active` | top-down tracklet claiming from global tracks |
+| `FOV_MODE` | `off/shadow/active` | `off` | `active` | learned empirical FOV as association grid + solver beam gate |
+| `ADSB_SEED_MODE` | `off/shadow/active` | `off` | `active` | ADS-B-seeded detection assignment: verified lit tracklets leave dark pairing, re-emitted as `mn-adsb-*` seeded solves |
+| `TRACK_SMOOTHER` | `kf/ewma/off` | `kf` | `kf` | display smoothing for multinode tracks (`ewma` is the rollback) |
+
+`shadow` computes and counts a stage's verdicts (exposed in
+`/api/test/solver-stats`) without letting them bind — the standard soak step
+before flipping `active`. Production currently sets none of the mode flags
+(all `off`).
 
 ## State & storage
 

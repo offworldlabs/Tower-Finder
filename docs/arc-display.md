@@ -1,104 +1,99 @@
 # Bistatic Ambiguity Arcs
 
-The arc lines visible on the map are bistatic ellipse sections — the set of
-points in the detection beam that share the same TX→target→RX path length as
-the measured detection.
+The arc curves visible on the map are bistatic ellipse sections — the set of
+points inside a node's detection area that share the same TX→target→RX path
+length as the measured detection.
 
 ---
 
 ## What an Arc Represents
 
-In a passive radar system the receiver can measure the extra travel time
-(bistatic delay) of a signal that bounced off a target, but that single
-measurement only constrains the target to lie somewhere on an ellipsoid with
-the TX and RX as foci. Intersected with the horizontal plane at a given
-altitude, this ellipsoid becomes an ellipse. The arc shown on the map is the
-portion of that ellipse that falls inside the node's detection beam.
+In a passive radar system the receiver measures the extra travel time
+(bistatic delay) of a signal that bounced off a target. That single
+measurement constrains the target to an ellipsoid with the TX and RX as foci —
+nothing more. The arc shown on the map is the portion of that locus the node
+could actually have detected: the full delay ellipse **clipped to the node's
+detection area** (its beam wedge and range limits).
 
-The arc is useful visual information even when the target position is not yet
-solved: it tells you exactly which region of the sky a node is detecting
-something in, and it constrains where the aircraft could be when no GPS/ADS-B
-is available.
-
----
-
-## Arc Computation (`_build_single_node_arc`)
-
-The arc is computed by binary-searching for each bearing within the detection
-beam. For each of 36 equally-spaced bearing steps:
-
-1. Compute the differential range `δr = ‖TX→point‖ + ‖point→RX‖ - ‖TX→RX‖`
-   at a candidate range along that bearing.
-2. Bisect between `r=0` and `r=max_range_km` until `δr` matches
-   `delay_µs × c` to within ~1 m.
-3. Convert the ENU result to lat/lon.
-
-The output is a list of `[lat, lon]` points — typically 30–36 — that trace the
-arc curve. Points that can't be reached within `max_range_km` (i.e. the
-target is off the far edge of the ellipse) are omitted, so shorter arcs are
-normal for detections with large delays.
+The arc deliberately spans the *entire* detection-area crossing, not a short
+segment near a guessed position. Earlier revisions trimmed the arc to a
+~25 km blip around the track's own position estimate, which made the arc read
+as a position fix; that fake precision is exactly what the arc exists to
+avoid. For the same reason, arc-only tracks render **no aircraft icon** — the
+arc itself is the complete statement of what the node knows.
 
 ---
 
-## When Arcs Are Shown
+## Arc Computation (`_build_single_node_arc`, `backend/services/track_gates.py`)
 
-Arcs are displayed in two contexts:
+For each bearing step across the node's beam wedge (36 steps → 37 points for
+a directional node; 72 steps → a closed 73-point ring for an omnidirectional
+one), the builder bisects along the bearing for the range whose bistatic
+differential matches the measured delay.
 
-### 1. Geolocated single-node tracks
-
-Each aircraft entry in the output that came from the single-node LM solver
-(`position_source = "single_node_ellipse_arc"` or `"solver_single_node"`)
-carries an `ambiguity_arc` field. This arc is built from the track's most
-recent `latest_delay_us` value.
-
-**Suppressed when**: `position_source = "adsb_associated"` — meaning the
-node has correlated this track with a live ADS-B transponder. The position is
-already known precisely; the arc would just be noise.
-
-**Multi-node solved aircraft** (`type = "multinode_solve"`) never carry an arc.
-
-### 2. Promoted pre-solve tracks (`detection_arcs` in the feed)
-
-For tracks that have been confirmed by the M-of-N tracker (promoted out of
-`TENTATIVE` state) but have not yet accumulated enough detections for the LM
-solver to converge, an arc is published in the top-level `detection_arcs`
-array of the aircraft feed.
-
-These arcs show up as soon as 4 consecutive detections on the same target
-have been associated — before any position fix — giving early visual feedback
-that something is being tracked.
-
-**Suppressed when** the track's ADS-B hex maps to a fresh entry in
-`state.adsb_aircraft` (< 60 s old). In that case the position is already known
-from ADS-B, so an arc is redundant.
-
----
-
-## Arc Fade (Frontend)
-
-The frontend accumulates arcs in a ring buffer keyed by `{node_id}_{ts}`.
-Each arc carries a `ts` field (Unix timestamp). The `DetectionArcs` component
-computes opacity as:
+The differential is evaluated in **3D** when the track has a usable altitude:
 
 ```
-age = now - arc.ts          // seconds
-opacity = max(0, 1 - age / FADE_WINDOW_S)
+differential_3d = √(g² + (h−h_rx)²) + √(g_tx² + (h−h_tx)²) − √(baseline² + (h_tx−h_rx)²)
 ```
 
-`FADE_WINDOW_S = 10`. Arcs older than 10 s are filtered out entirely before
-rendering. This means the most recent detection is bright and older ones fade
-out, so the display stays readable even at 1 Hz update rate.
+with `g`/`g_tx` the ground ranges to RX/TX, `h` the target altitude and
+`h_rx`/`h_tx` the node altitudes. Solving on the ground plane alone put the
+drawn locus a median 3.6 km outside the aircraft's true ground track (worse at
+high altitude / short range). Tracks with no altitude (radar-only `pr*`
+tracks) fall back to the 2D solve. Arcs are cached per
+`(delay, 500 m-altitude-bucket)` — see `ARC_ALT_BUCKET_M`.
+
+Range bounds per bearing: the differential-range limit when the node declares
+`max_bistatic_range_km` (a single yes/no for the whole locus — every point on
+it shares the measured differential), else the monostatic `max_range_km`
+circle. A measured delay beyond the node's declared limit yields no arc at
+all: the node could not have made that detection.
+
+The output is a list of `[lat, lon]` points. The arc **midpoint** (the
+boresight crossing of the locus) is used as the track's displayed lat/lon —
+a canonical point on the ambiguity curve, not a position estimate.
 
 ---
 
-## Decision Table
+## When Arcs Are Suppressed
 
-| Scenario | Arc shown? |
-|----------|-----------|
-| TENTATIVE track (< M detections) | No |
-| Promoted track, no ADS-B | Yes — in `detection_arcs` |
-| Promoted track, fresh ADS-B for this hex | No |
-| Single-node geolocated, no ADS-B | Yes — on the aircraft entry |
-| Single-node geolocated, ADS-B associated | No |
-| Multi-node solved | No |
-| ADS-B-only aircraft (not tracked by radar) | No |
+| Condition | Why |
+|-----------|-----|
+| `position_source = "adsb_associated"` | Position already known precisely from ADS-B. |
+| Multi-node solved (`type = "multinode_solve"`) | Position solved; the arc would be noise. |
+| RMS gate firing (`rms_delay` above threshold) | The pipeline itself distrusts the measurement — mis-associated delays must not draw wrong-target arcs. (The *speed* gate still emits its arc: it distrusts the position association, not the measurement.) |
+| Differential below `ARC_MIN_DIFFERENTIAL_KM` (3 km) | Near-baseline slivers clip to 1–5 km stubs that render as meaningless blobs. The track still emits, position only. |
+| Delay beyond the node's `max_bistatic_range_km` | Physically inconsistent with the node's declared reach. |
+| Promoted track with a fresh ADS-B entry (< 60 s) | Redundant — see pending arcs below. |
+
+**Pending detection arcs** (`detection_arcs` in the feed) are still published
+for tracks confirmed by the M-of-N tracker that have not yet accumulated
+enough detections for the solver — early visual feedback before any fix.
+
+---
+
+## Frontend Rendering (`DetectionArcs.tsx`, `arcBuffer.ts`, `bistaticArc.ts`)
+
+Arcs accumulate in an afterglow buffer keyed by
+`hex + node_id + measured delay (quantized to 0.1 µs)`:
+
+- Re-ingesting an **unchanged** measurement refreshes the one existing
+  stroke's fade clock — a stationary target stays bright as a single stroke.
+- A **changed** delay lays a new stroke at new geometry while the old one
+  fades — that is the genuine afterglow trail.
+
+Each stroke's geometry is rebuilt client-side from the **measured**
+`delay_us` via `buildBistaticArc` (which mirrors the backend's 3D formula,
+falling back to the backend-emitted arc when node geometry is missing).
+Geometry is frozen at creation; only style refreshes. Opacity fades linearly
+over `ARC_FADE_MS` (5 s), after which the buffer entry is pruned.
+
+Arc-only tracks dead-reckon their reference position for at most
+`ARC_DR_MAX_S` (10 s, vs 60 s for solved tracks) — the backend pins their
+position to the arc midpoint, so a long glide walks the reference off the
+measured locus.
+
+Selecting an arc track (from the list panel or by clicking the arc) highlights
+its arcs in amber, draws the detecting node's beam wedge, and centers the map
+on the arc midpoint.

@@ -17,6 +17,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ["C",       "Toggle node coverage zones"],
   ["I",       "Toggle illuminators (TX towers)"],
   ["G",       "Toggle ground-truth overlay"],
+  ["D",       "Toggle detection arcs"],
   ["A",       "Colour aircraft by altitude"],
   ["R",       "Range rings around selected"],
   ["S",       "Live stats panel"],
