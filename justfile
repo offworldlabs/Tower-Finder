@@ -238,15 +238,30 @@ logs:
     tail -n +1 -f "{{run}}/backend.log" "{{run}}/fleet.log" "{{run}}/frontend.log"
 
 # ── retina-test droplet ──────────────────────────────────────────────────────
-# The test droplet is deployed by rsync from the working tree, not by git. That is
+# `deploy-test` deploys by rsync from the working tree, not by git. That is
 # deliberate: staging and production deploy from `main` through CI precisely so
-# nothing unreviewed reaches them, and the whole point of retina-test is to run a
-# branch under load BEFORE it is reviewed. Giving it a git remote would either
-# duplicate that pipeline or invite pushing to it directly.
+# nothing unreviewed reaches them, and the whole point of this recipe is to run a
+# branch under load BEFORE it is reviewed. That rationale is unchanged, and this
+# remains the droplet's primary path.
 #
 # The consequence is that what runs there is whatever was in your tree, including
 # uncommitted edits, so `deploy-test-status` prints the local HEAD it was cut from
 # and whether that tree was dirty. Read it as a label, not a guarantee.
+#
+# What HAS changed: the droplet is no longer git-free. .github/workflows/
+# deploy-test.yml added a dispatch-only CI path that deploys a pushed ref by git,
+# so that the production auto-rollback machinery can be exercised end to end
+# without breaking production — pre-deploy.sh and rollback.sh are both git-based
+# and cannot run on a tree with no .git.
+#
+# The `--exclude '.git'` below therefore now means "leave the clone alone" rather
+# than "there deliberately is not one". Nothing about this recipe changes: rsync
+# still never creates or deletes a .git, and the clone survives every sync.
+#
+# The earlier worry that a git remote would "invite pushing to it directly" is
+# handled by what the remote IS — origin is the GitHub repo, so deploy-test.yml
+# can only deploy a ref that has been pushed there. Reaching the droplet without
+# review still means this recipe, which is the point.
 
 # The ssh target for the test droplet. Overridable, and deliberately not a
 # hostname or an address: this repo is public, so it should not be where anyone
@@ -268,8 +283,8 @@ deploy-test:
     # Rules are evaluated in the order given and the first match wins, which is
     # what makes the three groups below meaningful:
     #
-    # 1. Protect the receiver's state and keep .git out — there deliberately is
-    #    not one there, and rsync must not create one.
+    # 1. Protect the receiver's state and leave .git alone — the droplet is a
+    #    clone (see the note above), and rsync must neither create nor touch one.
     # 2. Force back in the things git IGNORES but the build needs. rsync has no
     #    notion of "tracked anyway", which git does: a tracked file still ships
     #    even when a pattern matches it. Without these the gitignore filter below

@@ -14,17 +14,39 @@ identical everywhere.
 On prod and staging the deploy writes that file itself each run, so it cannot be
 missing, stale or wrong — if you find one naming the wrong environment, the deploy
 stops before touching anything rather than deploying one environment onto
-another's hostnames. The test droplet has no CI, so its `.env` is placed by hand
-once: `cp deploy/env.test.example .env`.
+another's hostnames. The same is now true of test on a `deploy-test.yml` run;
+after a `just deploy-test` rsync, which excludes `.env`, whatever is on the box
+stays, so place it by hand once on a fresh droplet:
+`cp deploy/env.test.example .env`.
 
 | | prod | staging | test |
 |---|---|---|---|
 | **Overlay** | `docker-compose.prod.yml` | `docker-compose.staging.yml` | `docker-compose.test.yml` |
-| **Deployed by** | CI, on push to `main` | CI, on push to `main` | `just deploy-test` (rsync from a working tree) |
+| **Deployed by** | CI, on push to `main` | CI, on push to `main` | `just deploy-test` (rsync, pre-review) or `deploy-test.yml` (CI, dispatch-only, git) |
 | **Hostnames** | `*.retina.fm`, except `testmap` | `staging-*.retina.fm`, plus `testmap.retina.fm` | `test-*.retina.fm` |
 | **RAM / swap** | 7941 MB / 4 GB | 3915 MB / none | 3915 MB / 2 GB |
 | **Fleet** | none (see below) | 50 @ 1.0s (50 fps) | 50 @ 1.0s (50 fps) |
 | **TCP 3012** | published (real nodes) | closed | closed |
+
+### The test droplet has two deploy paths
+
+`just deploy-test` rsyncs your working tree, including uncommitted edits, so a
+branch can be run under load before it is reviewed. That remains its primary
+purpose and is unchanged.
+
+`.github/workflows/deploy-test.yml` is a dispatch-only CI path that deploys a
+pushed ref by git, and exists so the production auto-rollback machinery can be
+exercised end to end without breaking production to do it. `pre-deploy.sh` and
+`rollback.sh` are both git-based, so it requires `/opt/tower-finder` there to be
+a **git clone** — which is a change from this droplet's original rsync-only
+design, and worth understanding before you re-provision it.
+
+The two coexist rather than compete. `just deploy-test`'s rsync rules carry
+`--exclude '.git'` and there is no `--delete-excluded`, so a clone survives every
+sync untouched. What an rsync does do is leave the git tree dirty relative to
+`HEAD`, so after one, git's view of "what is deployed" is a label rather than a
+guarantee — the same caveat `just deploy-test-status` already prints. The next
+`deploy-test.yml` run resets the tree, which clears it.
 
 prod is the reference environment: `deploy/check-env-parity.py` compares the other
 two against it in CI and fails on any difference not listed in its
