@@ -237,9 +237,6 @@ branch, open a PR, get it green, then merge.
   branch got no tests, no lint and no build while the lone green automated-review
   tick made the page read as passing. Stacked PRs opened since run the full matrix,
   but an older branch keeps the old workflow until it is rebased.
-- **The compose service is `tower-finder`, not `server`.** `docker compose logs
-  server` returns nothing and reads as an all-clear when the app is down. Check
-  `docker compose ps --services` first.
 - **A new per-environment key needs an `env-parity` entry** or CI fails.
 
 ## Where to go next

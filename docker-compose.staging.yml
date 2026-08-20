@@ -16,14 +16,14 @@
 # the same commit, so the divergence is a recorded decision rather than drift.
 
 services:
-  tower-finder:
+  server:
     container_name: retina-staging-server
     # Consumed by services/alerting.py, which otherwise sees the container id or
     # the service name (varies by Compose version), neither of which says which
     # droplet raised an alert.
     hostname: retina-staging
     # No TCP ingest on staging. The base publishes 3012 for real receiver nodes;
-    # staging has none, and its own fleet reaches the server as tower-finder:3012
+    # staging has none, and its own fleet reaches the server as server:3012
     # over the compose network, never via the host port. Verified with `ss`: zero
     # established connections on it. Publishing it was therefore pure exposure —
     # and worse than it looks, because RETINA_ENV=test silences the missing

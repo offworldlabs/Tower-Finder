@@ -25,7 +25,7 @@ Three layers, in order of what they catch:
    `host: <value>` line, then one `key: value` line per `meta` entry. Both
    shapes carry `environment` (from `ALERT_ENVIRONMENT`, or the literal
    `unknown` when unset or empty) and `host` (from `socket.gethostname()`, set
-   by the `hostname:` each droplet overlay gives its `tower-finder` service, or
+   by the `hostname:` each droplet overlay gives its `server` service, or
    `unknown` if that call fails or returns empty), because each droplet's
    `ALERT_WEBHOOK_URL` points at its own channel: channel routing is
    configuration, and a misrouted URL would otherwise put an alert in the

@@ -205,7 +205,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - run: docker build -t tower-finder:ci .
+      - run: docker build -t retina-server:ci .
 
   env-parity:
     name: Staging/production parity
@@ -500,13 +500,20 @@ jobs:
             # cache reused); the disk pre-flight now catches that root cause, so a
             # full wipe is redundant and only forced slow from-scratch rebuilds.
             docker builder prune -f --keep-storage 10GB
-            # Deploy the app FIRST, on its own — building only `tower-finder`
+            # Deploy the app FIRST, on its own — building only `server`
             # means a broken Dockerfile.fleet can't abort the staging app deploy
             # (which would block the whole pipeline). Fleet is a separate step below.
-            docker compose up -d --build tower-finder
+            # --remove-orphans because this deploy renamed the compose
+            # service. container_name is pinned, so the container kept by the
+            # old service key is an orphan holding the exact name the new one
+            # needs, and compose leaves orphans alone by default: the create
+            # then fails with a name conflict and the stack does not come up.
+            # Verified on retina-test before this landed. It stays afterwards
+            # as the general guard for a removed or renamed service.
+            docker compose up -d --build --remove-orphans server
             # Wait for server to become healthy (up to 90s)
             for i in $(seq 1 18); do
-              if docker compose exec -T tower-finder \
+              if docker compose exec -T server \
                 python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
                 echo "Staging server healthy after ~$((i*5))s"
                 break
@@ -787,17 +794,24 @@ jobs:
             # cause, so a full wipe is redundant and only forced slow from-scratch
             # rebuilds. 10GB leaves ample headroom on both droplets (>60GB free).
             docker builder prune -f --keep-storage 10GB
-            # Deploy the app FIRST, on its own. Building only `tower-finder`
+            # Deploy the app FIRST, on its own. Building only `server`
             # here means a broken Dockerfile.fleet can't abort the production
             # app deploy. Production runs no fleet simulator (see the `sim`
-            # profile in docker-compose.prod.yml), so `tower-finder` is the
+            # profile in docker-compose.prod.yml), so `server` is the
             # whole of the production deploy; staging still builds both.
-            docker compose up -d --build tower-finder
+            # --remove-orphans because this deploy renamed the compose
+            # service. container_name is pinned, so the container kept by the
+            # old service key is an orphan holding the exact name the new one
+            # needs, and compose leaves orphans alone by default: the create
+            # then fails with a name conflict and the stack does not come up.
+            # Verified on retina-test before this landed. It stays afterwards
+            # as the general guard for a removed or renamed service.
+            docker compose up -d --build --remove-orphans server
 
             # Wait for backend to become healthy (up to 90s — matches staging
             # and the healthcheck start_period; a cold boot can need >60s).
             for i in $(seq 1 18); do
-              if docker compose exec -T tower-finder python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
+              if docker compose exec -T server python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
                 echo "Deploy successful (healthy after ~$((i*5))s)"
                 break
               fi
@@ -874,7 +888,7 @@ jobs:
             # pre-flights with the running stack untouched.
             #
             # Rolling back in that case would be actively harmful rather than
-            # merely pointless: tower-finder:rollback and the newest deploy-*
+            # merely pointless: retina-server:rollback and the newest deploy-*
             # tag still describe the PREVIOUS deploy's snapshot, so rollback.sh
             # would drag production back past a deploy that succeeded in order
             # to recover from one that never started.

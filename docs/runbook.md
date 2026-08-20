@@ -107,7 +107,7 @@ it; the container will not serve against a half-applied schema.
 To see where a droplet stands:
 
 ```bash
-ssh retina-prod 'cd /opt/retina-server && docker compose exec tower-finder \
+ssh retina-prod 'cd /opt/retina-server && docker compose exec server \
     sh -c "cd /app/backend && python3 -m alembic current"'
 ```
 
@@ -148,7 +148,7 @@ about the database.
 To roll back past a destructive revision, downgrade and then redeploy:
 
 ```bash
-ssh retina-prod 'cd /opt/retina-server && docker compose exec tower-finder \
+ssh retina-prod 'cd /opt/retina-server && docker compose exec server \
     sh -c "cd /app/backend && python3 -m alembic downgrade <revision>"'
 ```
 
@@ -267,7 +267,7 @@ A stale `blah2_bridge:<node_id>` means that node's `/api/detection` is unreachab
 The node list is `blah2_nodes.json` — url, rx, tx, fc and friends per node — read through the runtime-config overlay, so this is a config change with no rebuild:
 
 ```bash
-docker compose exec tower-finder vi /app/backend/data/runtime/blah2_nodes.json
+docker compose exec server vi /app/backend/data/runtime/blah2_nodes.json
 ```
 
 Restart the container afterwards; the list is read once, at startup.
@@ -548,9 +548,9 @@ at 107% CPU reporting `solver_latency_high` at rest. Naming `fleet` on the comma
 line *auto-enables its profile*, so the bounce command above is not inert on the
 prod droplet — it would silently put all 25 back. Do not run it there unless you
 intend exactly that, and if you do, undo it with `docker compose stop fleet`
-followed by `docker compose restart tower-finder` (stopping the container does not
+followed by `docker compose restart server` (stopping the container does not
 deregister the geometry it already registered).
-`--no-deps` is the important flag: `fleet` declares `depends_on: tower-finder`, so
+`--no-deps` is the important flag: `fleet` declares `depends_on: server`, so
 without it Compose would also rebuild and recreate the running app, turning a fleet
 bounce into a full redeploy and an outage. The host's `./.env` sets `COMPOSE_FILE`,
 so the bare `docker compose` above resolves to base + the production overlay.

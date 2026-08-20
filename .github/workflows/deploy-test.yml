@@ -174,7 +174,14 @@ jobs:
             pip3 install -e libs/retina-custody/ --break-system-packages --ignore-installed -q
             pip3 install -e libs/retina-simulation/ --break-system-packages -q
             docker builder prune -f --keep-storage 10GB
-            docker compose up -d --build tower-finder
+            # --remove-orphans because this deploy renamed the compose
+            # service. container_name is pinned, so the container kept by the
+            # old service key is an orphan holding the exact name the new one
+            # needs, and compose leaves orphans alone by default: the create
+            # then fails with a name conflict and the stack does not come up.
+            # Verified on retina-test before this landed. It stays afterwards
+            # as the general guard for a removed or renamed service.
+            docker compose up -d --build --remove-orphans server
 
             # ── Injection point 3 ─────────────────────────────────────────────
             # The containers have been replaced. This is the case auto-rollback
@@ -192,7 +199,7 @@ jobs:
             fi
 
             for i in $(seq 1 18); do
-              if docker compose exec -T tower-finder python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
+              if docker compose exec -T server python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
                 echo "Deploy successful (healthy after ~$((i*5))s)"
                 break
               fi

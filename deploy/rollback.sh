@@ -9,15 +9,15 @@
 # How it works:
 #   Before each deploy, the CI pipeline (or manual deploy) should call
 #   `deploy/pre-deploy.sh` which tags the current image as
-#   `tower-finder:rollback` and creates a git tag `deploy-<timestamp>`.
+#   `retina-server:rollback` and creates a git tag `deploy-<timestamp>`.
 #
 #   This script restores service from that saved image or a given git ref.
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/retina-server}"
-IMAGE_NAME="tower-finder"
-FLEET_IMAGE_NAME="tower-finder-fleet"
+IMAGE_NAME="retina-server"
+FLEET_IMAGE_NAME="retina-server-fleet"
 # No `-f` flags below: the host's ./.env sets COMPOSE_FILE to the shared base
 # plus that host's overlay (deploy/env.*.example), so `docker compose` here
 # resolves exactly what the deploy resolved. Passing docker-compose.yml alone
@@ -172,7 +172,7 @@ else
         # the retag is a harmless no-op — as is the "no rollback image" branch,
         # since pre-deploy.sh finds no fleet image to save there either.
         # Guarded because a box predating this change (or one where pre-deploy.sh
-        # found no running fleet) never captured tower-finder-fleet:rollback — in
+        # found no running fleet) never captured retina-server-fleet:rollback — in
         # that case roll the app back cleanly and leave the fleet image as-is.
         if docker image inspect "${FLEET_IMAGE_NAME}:rollback" >/dev/null 2>&1; then
             docker tag "${FLEET_IMAGE_NAME}:rollback" "${FLEET_IMAGE_NAME}:latest"
@@ -196,7 +196,7 @@ fi
 # ── Wait for health ──────────────────────────────────────────────────────────
 echo "Waiting for server to become healthy..."
 for i in $(seq 1 12); do
-    if docker compose exec -T tower-finder \
+    if docker compose exec -T server \
         python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
         if [ "$DB_NEEDS_DOWNGRADE" = 1 ]; then
             echo "Service back after ~$((i*5))s, but a database downgrade is outstanding."

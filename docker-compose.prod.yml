@@ -15,7 +15,7 @@
 # the same commit, so the divergence is a recorded decision rather than drift.
 
 services:
-  tower-finder:
+  server:
     container_name: retina-prod-server
     # Consumed by services/alerting.py, which otherwise sees the container id or
     # the service name (varies by Compose version), neither of which says which
@@ -101,7 +101,7 @@ services:
     # The sizing below is kept, not deleted, so the fleet can be brought back for
     # an afternoon without a PR:
     #   docker compose --profile sim up -d --build --no-deps fleet
-    #   docker compose restart tower-finder   # re-registers the synthetic nodes
+    #   docker compose restart server   # re-registers the synthetic nodes
     # Staging and test are unaffected and still run theirs by default.
     profiles: ["sim"]
     environment:
