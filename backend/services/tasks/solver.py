@@ -1843,8 +1843,19 @@ def _solver_worker_iteration(timeout: float = 1.0, q=None) -> bool:
 
 def _run_solver_worker():
     """Drain state.solver_queue and run solve_multinode. Runs as a daemon thread."""
+    # Deferred import: known_lane reuses this module's gates, record store and
+    # publication lock, so a top-of-file import here would be circular.
+    from services.tasks import known_lane
+
     while True:
         _solver_worker_iteration()
+        # Known-lane pass (identity-first claims → per-hex solves).  Ridden on
+        # the worker loop rather than its own thread so the solve compute stays
+        # on the threads that already own the solver locks and pool; mode-,
+        # interval- and concurrency-gated inside, and it never raises — a
+        # worker thread must survive any single bad pass (see the handler in
+        # _solver_worker_iteration for what happens when one doesn't).
+        known_lane.maybe_run_pass(_pool_solve_multinode)
 
 
 def start_solver_workers():
