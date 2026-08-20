@@ -227,7 +227,9 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
             ve, vn = _tag_velocity(tag)
             # The node correlated this fix against this frame, so the fix is
             # taken as current — no dead-reckoning, fix_ts_ms = frame time.
-            pred_d, pred_f = predict_observation(geo, lat, lon, (tag.get("alt_baro", 0) or 0) * FT_TO_M / 1000.0, ve, vn)
+            pred_d, pred_f = predict_observation(
+                geo, lat, lon, (tag.get("alt_baro", 0) or 0) * FT_TO_M / 1000.0, ve, vn
+            )
             fix = {
                 "lat": lat,
                 "lon": lon,

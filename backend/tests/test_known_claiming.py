@@ -268,9 +268,7 @@ class TestRegistryContract:
         geo = _register()
         ts = int(time.time() * 1000)
         _cache_state("shape1", ts, gs=100, track=90)
-        pd, pf = predict_observation(
-            geo, _LAT, _LON, _ALT_BARO_FT * FT_TO_M / 1000.0, 100 * 0.514444, 0.0
-        )
+        pd, pf = predict_observation(geo, _LAT, _LON, _ALT_BARO_FT * FT_TO_M / 1000.0, 100 * 0.514444, 0.0)
         kc.claim_known_targets(_NODE_ID, _frame(ts, [pd], [pf]))
 
         rec = state.known_claims["shape1"][-1]
