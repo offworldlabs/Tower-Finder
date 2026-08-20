@@ -133,7 +133,7 @@ def _reset_module_state():
         tcp_handler,
         track_gates,
     )
-    from services.tasks import analytics_refresh, solver
+    from services.tasks import analytics_refresh, known_lane, solver
 
     for mod in (
         state,
@@ -142,6 +142,7 @@ def _reset_module_state():
         track_gates,
         feed_helpers,
         solver,
+        known_lane,
         analytics_refresh,
         alerting,
         tcp_handler,
