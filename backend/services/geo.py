@@ -14,11 +14,14 @@ different values for kilometres-per-degree.  A position dead-reckoned in one
 module and compared against a gate in another disagreed by up to 0.3%.
 """
 
+import math
+
 from retina_analytics.constants import (  # noqa: F401  (re-exported surface)
     C_KM_US,
     KM_PER_DEG_LAT,
     M_PER_DEG_LAT,
     YAGI_BEAM_WIDTH_DEG,
+    YAGI_MAX_RANGE_KM,
     bearing_deg,
     bistatic_delay_us,
     bistatic_differential_km,
@@ -42,6 +45,7 @@ __all__ = [
     "M_PER_DEG_LAT",
     "R_EARTH_KM",
     "YAGI_BEAM_WIDTH_DEG",
+    "YAGI_MAX_RANGE_KM",
     "bearing_deg",
     "bistatic_delay_us",
     "bistatic_differential_km",
@@ -90,12 +94,52 @@ def node_beam_params(node_cfg: dict) -> dict:
     tx_lat = node_cfg.get("tx_lat")
     tx_lon = node_cfg.get("tx_lon")
 
-    if "beam_azimuth_deg" in node_cfg and node_cfg["beam_azimuth_deg"] is not None:
-        beam_az = resolve_beam_azimuth_deg(node_cfg, rx_lat, rx_lon, 0.0, 0.0)
+    # A usable explicit azimuth wins outright. A present-but-unusable one
+    # (NaN/inf/non-numeric) must resolve exactly as if it were absent, so its
+    # usability is checked locally rather than by handing
+    # resolve_beam_azimuth_deg a transmitter position: that helper always
+    # returns a bearing toward whichever tx it is given, and a fabricated
+    # (0.0, 0.0) stand-in for "no real tx here" silently pointed the fallback
+    # at Null Island instead of this node's actual baseline (or, correctly,
+    # nowhere at all when there is no baseline to point along).
+    explicit_az = node_cfg.get("beam_azimuth_deg")
+    try:
+        explicit_az = float(explicit_az) if explicit_az is not None else None
+    except (TypeError, ValueError):
+        explicit_az = None
+    if explicit_az is not None and not math.isfinite(explicit_az):
+        explicit_az = None
+
+    if explicit_az is not None:
+        beam_az = explicit_az
     elif tx_lat and tx_lon:
         beam_az = (bearing_deg(rx_lat, rx_lon, float(tx_lat), float(tx_lon)) + 90.0) % 360.0
     else:
         beam_az = None
+
+    # bool(float("nan")) is True, so a bare `or YAGI_BEAM_WIDTH_DEG` truthiness
+    # fallback (kept above for the null/zero cases it already handles
+    # correctly) lets a NaN or infinite width straight through. Every
+    # downstream comparison against it is then False (NaN comparisons always
+    # are), which fails the beam-membership test *open* instead of closed.
+    beam_width_deg = float(node_cfg.get("beam_width_deg") or YAGI_BEAM_WIDTH_DEG)
+    if not math.isfinite(beam_width_deg):
+        beam_width_deg = YAGI_BEAM_WIDTH_DEG
+
+    max_range_km = float(node_cfg.get("max_range_km") or YAGI_MAX_RANGE_KM)
+    if not math.isfinite(max_range_km):
+        max_range_km = YAGI_MAX_RANGE_KM
+
+    # Cast to float rather than passing the config value through raw: a
+    # numeric string ("0") is truthy where the equivalent float (0.0) is
+    # falsy, which flips which branch point_in_beam takes. Preserve None
+    # (absent/not configured); treat a non-finite result the same as
+    # None -- "no limit configured", not a limit of zero.
+    max_bistatic_range_km = node_cfg.get("max_bistatic_range_km")
+    if max_bistatic_range_km is not None:
+        max_bistatic_range_km = float(max_bistatic_range_km)
+        if not math.isfinite(max_bistatic_range_km):
+            max_bistatic_range_km = None
 
     return {
         "rx_lat": rx_lat,
@@ -103,9 +147,9 @@ def node_beam_params(node_cfg: dict) -> dict:
         "tx_lat": float(tx_lat) if tx_lat else None,
         "tx_lon": float(tx_lon) if tx_lon else None,
         "beam_azimuth_deg": beam_az,
-        "beam_width_deg": float(node_cfg.get("beam_width_deg") or YAGI_BEAM_WIDTH_DEG),
-        "max_range_km": float(node_cfg.get("max_range_km") or 50.0),
-        "max_bistatic_range_km": node_cfg.get("max_bistatic_range_km"),
+        "beam_width_deg": beam_width_deg,
+        "max_range_km": max_range_km,
+        "max_bistatic_range_km": max_bistatic_range_km,
     }
 
 
