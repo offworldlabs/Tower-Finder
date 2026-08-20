@@ -3,6 +3,8 @@
 import json
 import os
 
+import pytest
+
 os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
@@ -115,3 +117,123 @@ class TestParseUserFrequenciesEdgeCases:
         assert tower_ranking.parse_user_frequencies("  ") == []
         assert tower_ranking.parse_user_frequencies(None) == []
         assert tower_ranking.parse_user_frequencies("abc, 88.5, xyz") == [88.5]
+
+
+# ── Config validation + fail-soft reload ─────────────────────────────────────
+
+
+@pytest.fixture()
+def scratch_config(tmp_path):
+    """Point reload_config() at a scratch overlay, restoring the real one after.
+
+    Saves and restores the attribute directly rather than going through
+    monkeypatch: monkeypatch.undo() reverts every patch registered on the
+    per-test instance, which the fixture shares with the test function, so a
+    test that patches something of its own would have it torn down here.
+    """
+    real = tower_ranking._CONFIG_PATH
+    path = tmp_path / "tower_config.json"
+    tower_ranking._CONFIG_PATH = path
+    try:
+        yield path
+    finally:
+        tower_ranking._CONFIG_PATH = real
+        tower_ranking.reload_config()
+
+
+def _shipped_default() -> dict:
+    # The production helper, so the test cannot drift from what the code calls
+    # "the shipped default".
+    return tower_ranking._default_config()
+
+
+class TestApplyConfig:
+    def test_raises_on_a_shape_it_cannot_apply(self):
+        """PUT /api/config depends on this raising, to reject the write."""
+        with pytest.raises(KeyError):
+            tower_ranking.apply_config({"ranking": {"distance_classes": [{"label": "A", "min_km": 8}]}})
+
+    def test_failed_apply_leaves_the_previous_config_intact(self):
+        before = (tower_ranking.RX_ANTENNA_GAIN_DBI, list(tower_ranking.DISTANCE_CLASSES))
+
+        with pytest.raises(KeyError):
+            tower_ranking.apply_config(
+                {
+                    "receiver": {"rx_antenna_gain_dbi": 99.0},
+                    "ranking": {"distance_classes": [{"label": "A", "min_km": 8}]},
+                }
+            )
+
+        # The receiver gain is read before the distance classes are built, so an
+        # apply that assigned as it went would have taken 99.0 on its way out.
+        assert before == (tower_ranking.RX_ANTENNA_GAIN_DBI, tower_ranking.DISTANCE_CLASSES)
+
+    def test_default_sort_order_leads_with_coverage(self, scratch_config):
+        """A config with no sort_order of its own gets the coverage-first default.
+
+        services/tower_coverage.py populates coverage_area_added_km2 and this
+        default is what makes it count. Every config in the repo sets sort_order
+        explicitly, so nothing else exercises the default.
+        """
+        scratch_config.write_text("{}")
+
+        tower_ranking.reload_config()
+
+        assert tower_ranking.SORT_ORDER[0] == {"field": "coverage_area_added_km2", "ascending": False}
+
+
+class TestReloadConfigFailSoft:
+    """A bad overlay must degrade to defaults, not stop the process booting.
+
+    reload_config() runs at import and the overlay is a named docker volume,
+    so raising here is an outage that survives both restart and redeploy.
+    """
+
+    def test_malformed_config_falls_back_to_shipped_defaults(self, scratch_config):
+        scratch_config.write_text(json.dumps({"ranking": {"distance_classes": [{"label": "Ideal", "min_km": 8}]}}))
+
+        tower_ranking.reload_config()
+
+        expected = [dc["label"] for dc in _shipped_default()["ranking"]["distance_classes"]]
+        assert [dc[0] for dc in tower_ranking.DISTANCE_CLASSES] == expected
+
+    def test_invalid_json_falls_back_to_shipped_defaults(self, scratch_config):
+        scratch_config.write_text("{ not json")
+
+        tower_ranking.reload_config()
+
+        assert _shipped_default()["search"]["default_limit"] == tower_ranking.DEFAULT_LIMIT
+
+    def test_never_raises_without_shipped_defaults(self, scratch_config, monkeypatch):
+        """Last resort: no usable overlay and no shipped default, still boots."""
+        scratch_config.write_text("{ not json")
+        monkeypatch.setattr(tower_ranking, "_default_config", lambda: None)
+
+        tower_ranking.reload_config()
+
+        assert tower_ranking.DISTANCE_CLASSES == []
+
+    def test_fallback_records_a_reason(self, scratch_config):
+        scratch_config.write_text("{ not json")
+
+        tower_ranking.reload_config()
+
+        assert "JSONDecodeError" in tower_ranking.config_fallback_reason
+
+    def test_a_good_config_clears_the_reason(self, scratch_config):
+        scratch_config.write_text("{ not json")
+        tower_ranking.reload_config()
+
+        scratch_config.write_text("{}")
+        tower_ranking.reload_config()
+
+        assert tower_ranking.config_fallback_reason is None
+
+    def test_degraded_config_reaches_the_health_check(self, scratch_config):
+        """Otherwise the fallback is one ERROR line at boot and nothing else."""
+        from services.health import compute_health_issues
+
+        scratch_config.write_text("{ not json")
+        tower_ranking.reload_config()
+
+        assert "config_degraded" in {i["type"] for i in compute_health_issues()}

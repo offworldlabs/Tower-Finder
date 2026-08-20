@@ -3,8 +3,10 @@ import logging
 import math
 import re
 
-from core.runtime_config import migrate_defaults_into_runtime, runtime_path
+from core.runtime_config import default_source_path, migrate_defaults_into_runtime, runtime_path
 from services.geo import bearing_deg, haversine_km
+
+logger = logging.getLogger(__name__)
 
 FREQUENCY_MATCH_TOLERANCE_MHZ = 5.0  # ±5 MHz for user-measured frequency matching
 
@@ -12,41 +14,66 @@ FREQUENCY_MATCH_TOLERANCE_MHZ = 5.0  # ±5 MHz for user-measured frequency match
 _CONFIG_PATH = runtime_path("tower_config.json")
 
 
-def _load_config() -> dict:
-    # Self-heal: this module is imported at app startup BEFORE the lifespan
-    # hook runs, and also imported standalone by tests. If the runtime overlay
-    # hasn't been seeded yet, seed it now so the open() below finds a file.
-    if not _CONFIG_PATH.exists():
-        migrate_defaults_into_runtime()
-    with _CONFIG_PATH.open() as f:
+def _read_config(path) -> dict:
+    """Read and parse one config file. Raises OSError or ValueError on failure."""
+    with path.open() as f:
         return json.load(f)
 
 
-def reload_config():
-    """Re-read tower_config.json and update module-level settings."""
+def _load_config() -> dict:
+    # Self-heal: this module is imported at app startup BEFORE the lifespan
+    # hook runs, and also imported standalone by tests. If the runtime overlay
+    # hasn't been seeded yet, seed it now so the read below finds a file.
+    if not _CONFIG_PATH.exists():
+        migrate_defaults_into_runtime()
+    return _read_config(_CONFIG_PATH)
+
+
+def _default_config() -> dict | None:
+    """The shipped defaults as a dict, or None if no readable copy exists."""
+    source = default_source_path("tower_config.json")
+    if source is None:
+        return None
+    try:
+        return _read_config(source)
+    except (OSError, ValueError):
+        logger.error("tower_config: shipped default %s is unreadable", source, exc_info=True)
+        return None
+
+
+def apply_config(cfg: dict) -> None:
+    """Push a config dict into the module-level settings.
+
+    Raises on a shape this cannot handle. Every value is computed into a local
+    first and the globals are assigned only once all of them exist, so a config
+    that fails partway leaves the previous one intact rather than a half-applied
+    mix of old and new that concurrent requests would serve.
+
+    Callers that want a bad config to degrade rather than raise use
+    reload_config(); PUT /api/config calls this directly, because it needs the
+    failure in order to reject the write.
+    """
     global RX_ANTENNA_GAIN_DBI, SENSITIVITY_DBM
     global BROADCAST_BANDS, BAND_PRIORITY
     global DISTANCE_CLASSES, DISTANCE_PRIORITY, SORT_ORDER
     global DEFAULT_RADIUS_KM, DEFAULT_LIMIT
 
-    cfg = _load_config()
-
     rx = cfg.get("receiver", {})
-    RX_ANTENNA_GAIN_DBI = rx.get("rx_antenna_gain_dbi", 6.0)
-    SENSITIVITY_DBM = rx.get("sensitivity_dbm", -95.0)
+    rx_gain = rx.get("rx_antenna_gain_dbi", 6.0)
+    sensitivity = rx.get("sensitivity_dbm", -95.0)
 
-    BROADCAST_BANDS = {band: [tuple(r) for r in ranges] for band, ranges in cfg.get("broadcast_bands", {}).items()}
+    bands = {band: [tuple(r) for r in ranges] for band, ranges in cfg.get("broadcast_bands", {}).items()}
 
     ranking = cfg.get("ranking", {})
-    BAND_PRIORITY = ranking.get("band_priority", {"VHF": 0, "UHF": 1, "FM": 2})
+    band_priority = ranking.get("band_priority", {"VHF": 0, "UHF": 1, "FM": 2})
 
-    DISTANCE_CLASSES = []
+    distance_classes = []
     for dc in ranking.get("distance_classes", []):
         max_km = dc["max_km"] if dc["max_km"] is not None else float("inf")
-        DISTANCE_CLASSES.append((dc["label"], dc["min_km"], max_km))
+        distance_classes.append((dc["label"], dc["min_km"], max_km))
 
-    DISTANCE_PRIORITY = ranking.get("distance_priority", {})
-    SORT_ORDER = ranking.get(
+    distance_priority = ranking.get("distance_priority", {})
+    sort_order = ranking.get(
         "sort_order",
         [
             {"field": "coverage_area_added_km2", "ascending": False},
@@ -57,8 +84,72 @@ def reload_config():
     )
 
     search = cfg.get("search", {})
-    DEFAULT_RADIUS_KM = search.get("default_radius_km", 80)
-    DEFAULT_LIMIT = search.get("default_limit", 20)
+    radius_km = search.get("default_radius_km", 80)
+    limit = search.get("default_limit", 20)
+
+    # Nothing above this line touches module state, and nothing below it can fail.
+    RX_ANTENNA_GAIN_DBI = rx_gain
+    SENSITIVITY_DBM = sensitivity
+    BROADCAST_BANDS = bands
+    BAND_PRIORITY = band_priority
+    DISTANCE_CLASSES = distance_classes
+    DISTANCE_PRIORITY = distance_priority
+    SORT_ORDER = sort_order
+    DEFAULT_RADIUS_KM = radius_km
+    DEFAULT_LIMIT = limit
+
+
+# Set when reload_config() could not use the on-disk overlay and fell back to
+# defaults. compute_health_issues() reports it, so a degraded config shows up in
+# /api/health and the alerter rather than only in one ERROR line at boot.
+config_fallback_reason: str | None = None
+
+# The shapes a config file can be wrong in: unreadable (OSError), not JSON or a
+# bad value (ValueError), a section of the wrong type (TypeError/AttributeError),
+# or missing a key apply_config indexes directly (KeyError).
+_CONFIG_ERRORS = (OSError, ValueError, TypeError, KeyError, AttributeError)
+
+
+def reload_config() -> None:
+    """Re-read tower_config.json and update module-level settings.
+
+    Fail-soft. This runs at import, and the overlay it reads is a persistent
+    docker volume, so raising here turns one bad config into an outage that
+    survives restart and redeploy, recoverable only by hand inside the volume.
+    An unusable overlay is logged, recorded in config_fallback_reason for the
+    health check, and replaced by the shipped defaults: a degraded ranking
+    rather than a dead service.
+    """
+    global config_fallback_reason
+
+    try:
+        apply_config(_load_config())
+        config_fallback_reason = None
+        return
+    except _CONFIG_ERRORS as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        logger.error("tower_config: %s is unusable (%s), falling back to defaults", _CONFIG_PATH, reason)
+    except Exception as exc:
+        # Not a shape a config file can take, so this is a bug in apply_config
+        # rather than a bad config. Still fail soft, because this runs at
+        # import, but say which it is: the message above would send the reader
+        # off to audit a config file that is perfectly fine.
+        reason = f"unexpected {type(exc).__name__}: {exc}"
+        logger.critical("tower_config: loader failed unexpectedly, this is a bug and not a bad config", exc_info=True)
+
+    fallback = _default_config()
+    if fallback is not None:
+        try:
+            apply_config(fallback)
+            config_fallback_reason = reason
+            return
+        except _CONFIG_ERRORS:
+            logger.error("tower_config: the shipped defaults are unusable too", exc_info=True)
+
+    # Nothing usable anywhere: apply an empty config so every setting takes its
+    # in-code default and the process can at least start.
+    apply_config({})
+    config_fallback_reason = reason
 
 
 # Initialise on import
