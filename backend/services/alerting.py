@@ -6,6 +6,10 @@ configured URL whenever a critical condition is detected.
 Deduplicates alerts: same alert_type is not re-sent within ALERT_COOLDOWN_S
 seconds (default 300).
 
+Delivery is retried a bounded number of times on 5xx and transport errors,
+never on 4xx; see _fire() for why the distinction matters and why the
+cooldown is released only once the attempts are spent.
+
 Settings are read from the environment on each call rather than once at
 import. main.py calls load_dotenv() after its service imports, so an
 import-time read sees an empty environment on any start that does not
@@ -23,6 +27,7 @@ deploy of ours to blame.
 
 import logging
 import os
+import random
 import socket
 import threading
 import time
@@ -35,6 +40,14 @@ logger = logging.getLogger(__name__)
 _DEFAULT_COOLDOWN_S = 300.0
 _DEFAULT_FORMAT = "raw"
 _FORMATS = (_DEFAULT_FORMAT, "clickup_chat")
+
+# Delivery retry. Deliberately module constants rather than settings: the
+# values follow from the sink's observed failure shape, not from anything an
+# operator tunes per box, and every extra ALERT_* key is one more thing that
+# can be set wrong on one droplet and right on another.
+_MAX_DELIVERY_ATTEMPTS = 3
+_BACKOFF_BASE_S = 0.5
+_MAX_BACKOFF_S = 4.0
 
 _last_sent: dict[str, float] = {}
 _lock = threading.Lock()
@@ -84,6 +97,21 @@ def _webhook_format() -> str:
         logger.warning("unrecognised ALERT_WEBHOOK_FORMAT=%r, using default %r", raw, _DEFAULT_FORMAT)
         return _DEFAULT_FORMAT
     return raw
+
+
+def _backoff_delay_s(attempt: int) -> float:
+    """Seconds to wait after `attempt` (1-indexed) before the next one.
+
+    Exponential from _BACKOFF_BASE_S, capped at _MAX_BACKOFF_S, then jittered
+    across the upper half of that window. Jitter matters because every box
+    points its alerts at the same sink: a fixed schedule would line their
+    retries up into a burst at exactly the moment the sink is already
+    failing. The floor is half the window rather than zero so that a retry
+    cannot collapse into an immediate second POST, which is the same
+    thundering-herd problem in miniature.
+    """
+    window = min(_BACKOFF_BASE_S * (2 ** (attempt - 1)), _MAX_BACKOFF_S)
+    return random.uniform(window / 2, window)
 
 
 def _auth_headers() -> dict[str, str]:
@@ -230,20 +258,92 @@ def send_alert(alert_type: str, message: str, meta: dict | None = None) -> None:
         }
 
     def _fire():
-        try:
-            with httpx.Client(timeout=10.0) as client:
-                post_kwargs = {"json": body}
-                # An empty Authorization header is not the same as no header,
-                # and the existing raw sinks are called with no headers kwarg
-                # at all, so only add it when there is a header to send.
-                if headers:
-                    post_kwargs["headers"] = headers
-                resp = client.post(webhook_url, **post_kwargs)
-                if resp.status_code >= 400:
-                    logger.warning("Alert webhook returned %d for %s", resp.status_code, alert_type)
+        """Deliver the alert, retrying only what is worth retrying.
+
+        ClickUp's chat API returns intermittent 500s (about one delivery in
+        three, measured over 90 minutes on production, with no 429s
+        anywhere), so a single POST per alert loses that share outright. The
+        health monitor survives that, because its conditions are still true
+        at the next cycle and the alert recurs. mender_unreachable and
+        registration_held do not: both fire once, at the moment they matter,
+        and a channel that looks live while dropping a third of those is
+        worse than no channel at all.
+
+        A 4xx is never retried. It is a decision the server already made
+        about this token (401) or this body (400), so repeating the request
+        only multiplies the same failure against a sink we depend on.
+
+        The cooldown reservation is held for the whole sequence and released
+        exactly once, once the attempts are spent. Releasing per failed
+        attempt would let the next health cycle open a second delivery of
+        the same alert while this one is still retrying, which is how a 500
+        problem turns into a 429 problem.
+        """
+        for attempt in range(1, _MAX_DELIVERY_ATTEMPTS + 1):
+            final_attempt = attempt == _MAX_DELIVERY_ATTEMPTS
+            try:
+                with httpx.Client(timeout=10.0) as client:
+                    post_kwargs = {"json": body}
+                    # An empty Authorization header is not the same as no header,
+                    # and the existing raw sinks are called with no headers kwarg
+                    # at all, so only add it when there is a header to send.
+                    if headers:
+                        post_kwargs["headers"] = headers
+                    status = client.post(webhook_url, **post_kwargs).status_code
+
+                if status < 400:
+                    return
+                if status < 500:
+                    logger.error(
+                        "Alert webhook rejected %s with %d, not retrying "
+                        "(check ALERT_WEBHOOK_AUTH and the payload shape)",
+                        alert_type,
+                        status,
+                    )
                     _release_cooldown()
-        except Exception:
-            logger.warning("Alert webhook failed for %s", alert_type, exc_info=True)
-            _release_cooldown()
+                    return
+                if final_attempt:
+                    logger.error(
+                        "Alert webhook returned %d for %s on all %d attempts, alert dropped",
+                        status,
+                        alert_type,
+                        _MAX_DELIVERY_ATTEMPTS,
+                    )
+                    _release_cooldown()
+                    return
+                logger.warning(
+                    "Alert webhook returned %d for %s (attempt %d/%d), retrying",
+                    status,
+                    alert_type,
+                    attempt,
+                    _MAX_DELIVERY_ATTEMPTS,
+                )
+            except httpx.RequestError:
+                # The request never reached a handler that made a decision,
+                # so it is retriable for the same reason a 5xx is.
+                if final_attempt:
+                    logger.error(
+                        "Alert webhook unreachable for %s on all %d attempts, alert dropped",
+                        alert_type,
+                        _MAX_DELIVERY_ATTEMPTS,
+                        exc_info=True,
+                    )
+                    _release_cooldown()
+                    return
+                logger.warning(
+                    "Alert webhook unreachable for %s (attempt %d/%d), retrying",
+                    alert_type,
+                    attempt,
+                    _MAX_DELIVERY_ATTEMPTS,
+                )
+            except Exception:
+                # Not a transport failure: a fault in this path (a body that
+                # will not serialise, say) is deterministic, so retrying it
+                # just repeats the fault.
+                logger.error("Alert delivery failed for %s", alert_type, exc_info=True)
+                _release_cooldown()
+                return
+
+            time.sleep(_backoff_delay_s(attempt))
 
     threading.Thread(target=_fire, daemon=True).start()
