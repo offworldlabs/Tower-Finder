@@ -66,10 +66,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: backend/requirements-dev.txt
-      - run: pip install -r requirements-dev.txt
-      - run: pip install ../libs/retina-geolocator ../libs/retina-tracker ../libs/retina-custody ../libs/retina-simulation ../libs/retina-analytics
+      # Matches retina-geolocator, retina-custody and the rest of the org's
+      # Python CI: setup-python owns the interpreter, uv does the installing,
+      # `--system` puts packages in that interpreter so pytest and pre-commit
+      # stay on PATH exactly as before. setup-python's own `cache: pip` is gone
+      # with the last pip invocation that it served.
+      #
+      # No uv cache on purpose. It was tried: cold and warm both install in 2s
+      # and 3s, because uv is fast enough that there is nothing left for a cache
+      # to save, while the save and restore steps cost a few seconds of their
+      # own. Caching here would be ceremony.
+      - uses: astral-sh/setup-uv@v5
+      - run: uv pip install --system -r requirements-dev.txt
+      - run: uv pip install --system ../libs/retina-geolocator ../libs/retina-tracker ../libs/retina-custody ../libs/retina-simulation ../libs/retina-analytics
       # working-directory overrides the job default of `backend`: pre-commit
       # reads .pre-commit-config.yaml from the repo root. args: [backend] in
       # that config is what scopes both ops hooks.
