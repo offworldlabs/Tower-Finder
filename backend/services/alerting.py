@@ -6,9 +6,10 @@ configured URL whenever a critical condition is detected.
 Deduplicates alerts: same alert_type is not re-sent within ALERT_COOLDOWN_S
 seconds (default 300).
 
-Delivery is retried a bounded number of times on 5xx and transport errors,
-never on 4xx; see _fire() for why the distinction matters and why the
-cooldown is released only once the attempts are spent.
+Delivery is retried a bounded number of times on 5xx, on transport errors,
+and on the two transient 4xx (408 and 429, honouring Retry-After), but never
+on the 4xx that only an operator can clear. See _fire() for that split and
+for what each outcome does to the cooldown reservation.
 
 Settings are read from the environment on each call rather than once at
 import. main.py calls load_dotenv() after its service imports, so an
@@ -47,7 +48,25 @@ _FORMATS = (_DEFAULT_FORMAT, "clickup_chat")
 # can be set wrong on one droplet and right on another.
 _MAX_DELIVERY_ATTEMPTS = 3
 _BACKOFF_BASE_S = 0.5
-_MAX_BACKOFF_S = 4.0
+
+# 408 and 429 are the only 4xx that clear on their own. Every other 4xx is a
+# decision the server has already made about this token or this body, and is
+# terminal in the sense routes/node_responses.py gives the word for the API
+# we hand our own nodes: it needs an operator, so resending cannot help.
+_RETRIABLE_4XX = frozenset({408, 429})
+
+# Retry-After is honoured up to this bound. Past it the sink is asking for a
+# wait long enough that the alert would arrive stale anyway, and a daemon
+# thread sitting on the payload that long is the worse of the two failures.
+_MAX_RETRY_AFTER_S = 60.0
+
+# How long an alert type stays reserved after every attempt failed. A full
+# ALERT_COOLDOWN_S would buy silence on precisely the alert that just failed
+# to arrive, while reopening the slot outright would put the next attempt on
+# the health monitor's 30s cycle, so a failing sink would be retried more
+# often than a healthy one. That is the 500-becomes-429 amplification the
+# bounded retry exists to avoid, so the reopen sits between the two.
+_FAILURE_REOPEN_S = 60.0
 
 _last_sent: dict[str, float] = {}
 _lock = threading.Lock()
@@ -99,19 +118,60 @@ def _webhook_format() -> str:
     return raw
 
 
+def _sleep(seconds: float) -> None:
+    """Indirection over time.sleep so tests can observe the backoff schedule.
+
+    Patching time.sleep itself would replace it for every thread in the
+    process for the duration of a test, which makes an unrelated caller's
+    sleep look like one of ours.
+    """
+    time.sleep(seconds)
+
+
+def _backoff_window_s(attempt: int) -> float:
+    """Width of the backoff window after `attempt` (1-indexed).
+
+    Exponential from _BACKOFF_BASE_S. Exposed separately from the jitter
+    below so a test can pin the delay against the window it was drawn from
+    rather than against some looser constant.
+    """
+    return _BACKOFF_BASE_S * (2 ** (attempt - 1))
+
+
 def _backoff_delay_s(attempt: int) -> float:
     """Seconds to wait after `attempt` (1-indexed) before the next one.
 
-    Exponential from _BACKOFF_BASE_S, capped at _MAX_BACKOFF_S, then jittered
-    across the upper half of that window. Jitter matters because every box
-    points its alerts at the same sink: a fixed schedule would line their
-    retries up into a burst at exactly the moment the sink is already
-    failing. The floor is half the window rather than zero so that a retry
-    cannot collapse into an immediate second POST, which is the same
-    thundering-herd problem in miniature.
+    Jittered across the upper half of the attempt's window. Jitter matters
+    because every box points its alerts at the same sink: a fixed schedule
+    would line their retries up into a burst at exactly the moment the sink
+    is already failing. The floor is half the window rather than zero so
+    that a retry cannot collapse into an immediate second POST, which is the
+    same thundering-herd problem in miniature.
     """
-    window = min(_BACKOFF_BASE_S * (2 ** (attempt - 1)), _MAX_BACKOFF_S)
+    window = _backoff_window_s(attempt)
     return random.uniform(window / 2, window)
+
+
+def _retry_delay_s(attempt: int, retry_after: str | None) -> float:
+    """Backoff for `attempt`, or the sink's Retry-After when it asks longer.
+
+    A 429 carries the server's own answer to "when should I come back", and
+    ignoring it is how a rate-limited client stays rate-limited. Only the
+    delta-seconds form is read: the HTTP-date form is rare from JSON APIs,
+    and this runs on the failure path, where a malformed header must not be
+    able to raise. Anything unparseable, absent or non-positive falls back
+    to the backoff, and the value is never allowed to shorten it.
+    """
+    delay = _backoff_delay_s(attempt)
+    if not retry_after:
+        return delay
+    try:
+        requested = float(str(retry_after).strip())
+    except ValueError:
+        return delay
+    if requested <= 0:
+        return delay
+    return max(delay, min(requested, _MAX_RETRY_AFTER_S))
 
 
 def _auth_headers() -> dict[str, str]:
@@ -195,28 +255,31 @@ def send_alert(alert_type: str, message: str, meta: dict | None = None) -> None:
         # Stamped before the POST, not after, so that two concurrent callers
         # (the health monitor and a solver worker can both call send_alert)
         # cannot both pass the check above while one request is in flight.
-        # had_previous/previous are captured so a failed delivery can put
-        # the slot back exactly as it found it rather than just deleting it.
-        had_previous = alert_type in _last_sent
-        previous = _last_sent.get(alert_type)
         _last_sent[alert_type] = now
 
     meta = meta or {}
 
-    def _release_cooldown():
-        """Undo the reservation above on a failed delivery, so the next
-        occurrence of the same problem is not suppressed for the rest of the
-        cooldown window. Only releases the slot this call reserved: if a
-        newer send has since claimed it (the stored value is no longer
-        exactly `now`), that claim is left alone rather than clobbered.
+    def _reopen_after_failed_delivery():
+        """Bring the next send of this alert_type forward, after a delivery
+        that failed every attempt against a sink that may yet recover.
+
+        Leaving the full reservation would buy a whole ALERT_COOLDOWN_S of
+        silence on precisely the alert that failed to arrive. Clearing it
+        outright, which is what this did before retries existed, puts the
+        next attempt on the health monitor's 30s cycle, so a failing sink
+        gets hit more often than a healthy one. The slot is instead
+        backdated to expire _FAILURE_REOPEN_S from now, and never later than
+        a successful send would have left it, so a zero or short
+        ALERT_COOLDOWN_S cannot be lengthened by a failure.
+
+        Only rewrites the slot this call reserved: if a newer send has since
+        claimed it (the stored value is no longer exactly `now`), that claim
+        is left alone rather than clobbered.
         """
         with _lock:
             if _last_sent.get(alert_type) != now:
                 return
-            if had_previous:
-                _last_sent[alert_type] = previous
-            else:
-                del _last_sent[alert_type]
+            _last_sent[alert_type] = min(now, now - cooldown_s + _FAILURE_REOPEN_S)
 
     # Captured here, not re-read inside _fire: the thread runs later, and by
     # then the environment (or a test asserting against it) may have moved on.
@@ -269,81 +332,88 @@ def send_alert(alert_type: str, message: str, meta: dict | None = None) -> None:
         and a channel that looks live while dropping a third of those is
         worse than no channel at all.
 
-        A 4xx is never retried. It is a decision the server already made
-        about this token (401) or this body (400), so repeating the request
-        only multiplies the same failure against a sink we depend on.
+        What may be retried follows the same three-way split that
+        routes/node_responses.py hands our own nodes as `x-retry`. A 5xx or
+        a transport error is `backoff`: the request never reached a handler
+        that made a decision. A 429 or 408 is `retry-after`: transient, and
+        the response carries the sink's own answer to when to come back. Any
+        other 4xx is `never`: the server has decided about this token (401)
+        or this body (400), so resending multiplies one failure into three
+        against a sink we already depend on.
 
-        The cooldown reservation is held for the whole sequence and released
-        exactly once, once the attempts are spent. Releasing per failed
-        attempt would let the next health cycle open a second delivery of
-        the same alert while this one is still retrying, which is how a 500
-        problem turns into a 429 problem.
+        The cooldown reservation is held across the whole sequence rather
+        than dropped per failed attempt, so the next health cycle cannot
+        open a second delivery of the same alert while this one is still
+        retrying. What happens to it afterwards depends on why the delivery
+        failed: a terminal 4xx keeps it, because nothing will change until
+        an operator acts and re-reporting every cycle only floods the
+        channel this work exists to make trustworthy; an exhausted retriable
+        failure shortens it, because the sink may well be back before the
+        full window is out.
         """
-        for attempt in range(1, _MAX_DELIVERY_ATTEMPTS + 1):
-            final_attempt = attempt == _MAX_DELIVERY_ATTEMPTS
-            try:
-                with httpx.Client(timeout=10.0) as client:
-                    post_kwargs = {"json": body}
-                    # An empty Authorization header is not the same as no header,
-                    # and the existing raw sinks are called with no headers kwarg
-                    # at all, so only add it when there is a header to send.
-                    if headers:
-                        post_kwargs["headers"] = headers
-                    status = client.post(webhook_url, **post_kwargs).status_code
+        post_kwargs = {"json": body}
+        # An empty Authorization header is not the same as no header, and the
+        # existing raw sinks are called with no headers kwarg at all, so only
+        # add it when there is a header to send.
+        if headers:
+            post_kwargs["headers"] = headers
 
-                if status < 400:
-                    return
-                if status < 500:
-                    logger.error(
-                        "Alert webhook rejected %s with %d, not retrying "
-                        "(check ALERT_WEBHOOK_AUTH and the payload shape)",
+        try:
+            # One client for the whole sequence: a retry against a sink that
+            # is already struggling should reuse the connection rather than
+            # pay for a fresh pool and TLS handshake each time.
+            with httpx.Client(timeout=10.0) as client:
+                for attempt in range(1, _MAX_DELIVERY_ATTEMPTS + 1):
+                    final_attempt = attempt == _MAX_DELIVERY_ATTEMPTS
+                    exc = None
+                    try:
+                        resp = client.post(webhook_url, **post_kwargs)
+                        status = resp.status_code
+                        if status < 400:
+                            return
+                        reason = f"returned {status}"
+                        if status >= 500 or status in _RETRIABLE_4XX:
+                            delay = _retry_delay_s(attempt, resp.headers.get("Retry-After"))
+                        else:
+                            # Terminal: keep the reservation, so a stale token
+                            # is reported once a cooldown rather than once a
+                            # health cycle.
+                            logger.error(
+                                "Alert webhook %s for %s, not retrying "
+                                "(check ALERT_WEBHOOK_AUTH and the payload shape)",
+                                reason,
+                                alert_type,
+                            )
+                            return
+                    except httpx.RequestError as e:
+                        exc = e
+                        reason = "was unreachable"
+                        delay = _backoff_delay_s(attempt)
+
+                    if final_attempt:
+                        logger.error(
+                            "Alert webhook %s for %s on all %d attempts, alert dropped",
+                            reason,
+                            alert_type,
+                            _MAX_DELIVERY_ATTEMPTS,
+                            exc_info=exc,
+                        )
+                        _reopen_after_failed_delivery()
+                        return
+                    logger.warning(
+                        "Alert webhook %s for %s (attempt %d/%d), retrying",
+                        reason,
                         alert_type,
-                        status,
-                    )
-                    _release_cooldown()
-                    return
-                if final_attempt:
-                    logger.error(
-                        "Alert webhook returned %d for %s on all %d attempts, alert dropped",
-                        status,
-                        alert_type,
+                        attempt,
                         _MAX_DELIVERY_ATTEMPTS,
                     )
-                    _release_cooldown()
-                    return
-                logger.warning(
-                    "Alert webhook returned %d for %s (attempt %d/%d), retrying",
-                    status,
-                    alert_type,
-                    attempt,
-                    _MAX_DELIVERY_ATTEMPTS,
-                )
-            except httpx.RequestError:
-                # The request never reached a handler that made a decision,
-                # so it is retriable for the same reason a 5xx is.
-                if final_attempt:
-                    logger.error(
-                        "Alert webhook unreachable for %s on all %d attempts, alert dropped",
-                        alert_type,
-                        _MAX_DELIVERY_ATTEMPTS,
-                        exc_info=True,
-                    )
-                    _release_cooldown()
-                    return
-                logger.warning(
-                    "Alert webhook unreachable for %s (attempt %d/%d), retrying",
-                    alert_type,
-                    attempt,
-                    _MAX_DELIVERY_ATTEMPTS,
-                )
-            except Exception:
-                # Not a transport failure: a fault in this path (a body that
-                # will not serialise, say) is deterministic, so retrying it
-                # just repeats the fault.
-                logger.error("Alert delivery failed for %s", alert_type, exc_info=True)
-                _release_cooldown()
-                return
-
-            time.sleep(_backoff_delay_s(attempt))
+                    _sleep(delay)
+        except Exception:
+            # Not a transport failure: a fault anywhere else in this path (a
+            # body that will not serialise, say) is deterministic, so
+            # retrying it just repeats the fault. The sink itself is not
+            # implicated, so the slot reopens as for any other lost alert.
+            logger.error("Alert delivery failed for %s", alert_type, exc_info=True)
+            _reopen_after_failed_delivery()
 
     threading.Thread(target=_fire, daemon=True).start()
