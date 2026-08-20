@@ -166,9 +166,9 @@ coverage measures through `sys.settrace`, which is per execution context, so
 every line after an `await session.…` in a greenlet-backed path counts as unrun:
 `[tool.coverage.run]` in `backend/pyproject.toml` sets no `concurrency` to
 compensate. The async route modules are what this hits. sysmon measures through
-the PEP 669 interpreter-wide hooks instead, has no such blind spot, and is
-several times faster. Drop the variable and you get a slower run and a lower
-figure than CI reports for the same commit.
+the PEP 669 interpreter-wide hooks instead, has no such blind spot, and is more
+than twice as fast (in CI, 225s to 95s). Drop the variable and you get a slower
+run and a lower figure than CI reports for the same commit.
 
 `concurrency = ["thread", "greenlet"]` is the other way to close the gap, and on
 the module it was checked against it recovers the same lines, but it is more than
