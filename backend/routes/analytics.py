@@ -10,6 +10,7 @@ from fastapi.responses import Response
 from retina_analytics.trust import AdsReportEntry
 
 from core import state
+from services import node_bias
 
 _RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
 
@@ -28,6 +29,13 @@ async def radar_node_analytics(node_id: str):
     summary = state.node_analytics.get_node_summary(node_id)
     if summary.keys() == {"node_id"}:
         raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+    # Backend-computed bias estimate from claim residuals — same conditional
+    # shape as the manager's own blocks: present only once the node has
+    # residual history.  The trust block above already blends backend-fed
+    # samples (see its samples_by_provenance breakdown).
+    bias = node_bias.node_summary(node_id)
+    if bias is not None:
+        summary = {**summary, "node_bias": bias}
     return summary
 
 
@@ -223,17 +231,26 @@ async def radar_anomalies():
     all_types = log_type_counts + live_type_counts
     most_common = all_types.most_common(1)[0][0] if all_types else None
 
+    # Untrusted transponders (lying-hex demotions from claim residuals) ride
+    # on this payload rather than a new endpoint: a demoted hex IS an anomaly
+    # flag (node_bias also adds it to state.anomaly_hexes), so this is where
+    # its consumers already look.
+    untrusted = node_bias.untrusted_summary()
+
     payload = {
         "summary": {
             "active_count": len(active_hexes),
             "total_events": len(log_snapshot),
             "unique_hexes": len(unique_hexes),
             "most_common_type": most_common,
+            "untrusted_transponders": len(untrusted["untrusted_hexes"]),
         },
         "by_type": by_type,
         "timeline": timeline,
         "geographic_clusters": clusters[:50],
         "recent_events": log_snapshot,
+        "untrusted_hexes": untrusted["untrusted_hexes"],
+        "transponder_demotions": untrusted["demotions"],
     }
     return Response(
         content=orjson.dumps(payload, option=orjson.OPT_SERIALIZE_NUMPY),

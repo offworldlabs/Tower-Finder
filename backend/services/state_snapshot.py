@@ -42,10 +42,17 @@ def save_snapshot() -> None:
     for nid, ident in state.node_identities.items():
         identities[nid] = ident.to_dict()
 
+    from services import node_bias
+
     snapshot = {
         "saved_at": time.time(),
         "trust_scores": trust,
         "reputations": reps,
+        # Demoted transponders must survive the 60 s save cadence across a
+        # restart; the trust samples above already carry their provenance
+        # field via asdict().  Pre-node-bias snapshots simply lack this key,
+        # and restore treats that as a no-op.
+        "node_bias": node_bias.snapshot_state(),
         "accuracy_samples": list(state.accuracy_samples),
         "chain_entries": dict(state.chain_entries),
         "node_identities": identities,
@@ -279,6 +286,11 @@ def restore_snapshot() -> bool:
 
     # Anomaly log
     state.anomaly_log = snap.get("anomaly_log", [])
+
+    # Untrusted-transponder demotions (absent in older snapshots → no-op)
+    from services import node_bias
+
+    node_bias.restore_state(snap.get("node_bias"))
 
     # Simulation physics config
     _restore_simulation_config(snap)

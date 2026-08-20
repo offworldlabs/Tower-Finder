@@ -286,6 +286,14 @@ def _cross_validate_adsb_reports():
         for sample in ts_state.samples[-10:]:
             if not sample.adsb_hex:
                 continue
+            # Only samples carrying the node's own position claim can be
+            # cross-validated: backend-computed claim residuals store the hex
+            # for retraction but no fix (adsb_lat/lon are 0.0 placeholders),
+            # so haversine against external truth would read as a >10 km
+            # "mismatch" and penalize the node for a position it never
+            # reported.
+            if sample.provenance != "self_report":
+                continue
             ext = state.external_adsb_cache.get(sample.adsb_hex.lower())
             if ext is None:
                 continue
