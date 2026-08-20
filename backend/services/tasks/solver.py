@@ -1847,15 +1847,27 @@ def _run_solver_worker():
     # publication lock, so a top-of-file import here would be circular.
     from services.tasks import known_lane
 
+    # Armed once, at thread start: mode flags are boot-static in this codebase
+    # (FOV_MODE / ADSB_SEED_MODE / SOLVER_CONSENSUS_MODE are all read from env
+    # exactly once), and an off lane must cost the idle loop NOTHING — not
+    # even a cheap per-iteration call.  Under pytest every TestClient lifespan
+    # leaks another pair of these daemons into one coverage-traced process,
+    # and a traced call per daemon-second from 130+ of them convoyed on the
+    # coverage collector lock hard enough to stall test_mlat_history's
+    # trail-race stress test (~50 daemons caught inside the mode check in a
+    # single py-spy snapshot).
+    known_lane_armed = known_lane._mode() != "off"
     while True:
         _solver_worker_iteration()
-        # Known-lane pass (identity-first claims → per-hex solves).  Ridden on
-        # the worker loop rather than its own thread so the solve compute stays
-        # on the threads that already own the solver locks and pool; mode-,
-        # interval- and concurrency-gated inside, and it never raises — a
-        # worker thread must survive any single bad pass (see the handler in
-        # _solver_worker_iteration for what happens when one doesn't).
-        known_lane.maybe_run_pass(_pool_solve_multinode)
+        if known_lane_armed:
+            # Known-lane pass (identity-first claims → per-hex solves).
+            # Ridden on the worker loop rather than its own thread so the
+            # solve compute stays on the threads that already own the solver
+            # locks and pool; interval- and concurrency-gated inside, and it
+            # never raises — a worker thread must survive any single bad pass
+            # (see the handler in _solver_worker_iteration for what happens
+            # when one doesn't).
+            known_lane.maybe_run_pass(_pool_solve_multinode)
 
 
 def start_solver_workers():
