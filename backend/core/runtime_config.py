@@ -15,6 +15,7 @@ the source-defaults dir is read-only template-only.
 import logging
 import os
 import shutil
+import uuid
 from pathlib import Path
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -58,8 +59,14 @@ def write_runtime_file(path: Path, content: str) -> None:
     renaming it means a reader sees either the old content or the new, never a
     mix. The temp file is a sibling so the rename stays within one filesystem,
     which is what makes it atomic.
+
+    The temp name is unique per call, not just per target. Two endpoints write
+    tower_config.json, so with a shared name one caller's half-written temp file
+    could be renamed into place by the other, putting content on disk that
+    neither caller validated, and each caller's cleanup would delete the other's
+    file out from under it.
     """
-    tmp = path.with_name(f".{path.name}.tmp")
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         tmp.write_text(content)
         os.replace(tmp, path)
