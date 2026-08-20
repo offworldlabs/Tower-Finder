@@ -16,6 +16,13 @@ os.environ.setdefault("RETINA_ENV", "test")
 # and an unpicklable closure cannot be shipped to a pool child.  See the
 # _POOL_ENABLED comment in services/tasks/solver.py.
 os.environ.setdefault("SOLVER_POOL", "0")
+# No known-lane arming under pytest, for the same leaked-daemon reason: every
+# TestClient lifespan leaks solver worker threads that arm the known-lane hook
+# at thread start (_run_solver_worker), and with the shadow default those
+# daemons run passes concurrently with whatever test is asserting on
+# known_lane counters.  Tests that exercise the lane set the mode explicitly —
+# monkeypatch on core.state, or maybe_run_pass's mode argument.
+os.environ.setdefault("KNOWN_LANE_MODE", "off")
 # Needed so the /api/radar/detections auth guard is active in tests.
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 # The suite has no OAuth provider to log in against, so the route tests reach the
