@@ -167,7 +167,7 @@ const _mgCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane:
 // which tore down and recreated every dot and line twice a second.
 const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAircraftRef, groundTruthRef, smoothRef, nodesByIdRef }) {
   const map = useMap();
-  const markersRef = useRef(new Map());  // gtHex → { dot: L.circleMarker, line: L.polyline }
+  const markersRef = useRef(new Map());  // gtHex → { dot: L.circleMarker, line: L.polyline | null (arc-only track with no arc this frame) }
 
   useEffect(() => {
     ensureDebugPanes(map);
@@ -206,6 +206,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
         // not an estimate — so the honest error vector runs from GT to the
         // nearest point of the measured locus, not to the midpoint.
         let errKm;
+        let hasAnchor = true;
         if (ac.position_source === POSITION_SOURCE_ARC_ONLY) {
           const near = arcNearestPoint(
             ac, nodesByIdRef?.current?.[ac.node_id], gtLat, gtLon,
@@ -214,10 +215,31 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
             rLat = near.lat;
             rLon = near.lon;
             errKm = near.distKm;
+          } else {
+            // No arc geometry this frame (beam-gate suppression keeps the
+            // track entry but withholds its arc).  The arc is an arc-only
+            // track's ONLY map presence — it gets no plane marker — so the
+            // midpoint fallback drew a dashed error line ending at empty
+            // ground.  Keep the GT dot; there is nothing honest for a line
+            // to end at, so no line.
+            hasAnchor = false;
           }
         }
         if (errKm == null) errKm = distanceKm(gtLat, gtLon, rLat, rLon);
         const label = `${errKm.toFixed(1)} km`;
+
+        const makeLine = () => {
+          const line = L.polyline([[gtLat, gtLon], [rLat, rLon]], {
+            renderer: _mgCanvas,
+            interactive: false,
+            color: "#facc15",
+            weight: 1.5,
+            opacity: 0.6,
+            dashArray: "3 4",
+          });
+          line.bindTooltip(label, { permanent: true, direction: "center", className: "radar3-error-label" });
+          return line;
+        };
 
         seen.add(gtHex);
         let entry = markers.get(gtHex);
@@ -231,26 +253,28 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
             fillColor: "#22d3ee",
             fillOpacity: 0.8,
           });
-          const line = L.polyline([[gtLat, gtLon], [rLat, rLon]], {
-            renderer: _mgCanvas,
-            interactive: false,
-            color: "#facc15",
-            weight: 1.5,
-            opacity: 0.6,
-            dashArray: "3 4",
-          });
-          line.bindTooltip(label, { permanent: true, direction: "center", className: "radar3-error-label" });
           dot.addTo(map);
-          line.addTo(map);
+          const line = hasAnchor ? makeLine() : null;
+          line?.addTo(map);
           entry = { dot, line };
           markers.set(gtHex, entry);
         } else {
           entry.dot.setLatLng([gtLat, gtLon]);
-          entry.line.setLatLngs([[gtLat, gtLon], [rLat, rLon]]);
-          entry.line.setTooltipContent(label);
-          // A permanent tooltip is positioned once at open — walk it along
-          // with the line's midpoint or it stays where the line first drew.
-          entry.line.getTooltip()?.setLatLng([(gtLat + rLat) / 2, (gtLon + rLon) / 2]);
+          if (!hasAnchor) {
+            // Anchor lost since last tick — drop the line rather than leave
+            // it pointing at ground.
+            entry.line?.remove();
+            entry.line = null;
+          } else if (!entry.line) {
+            entry.line = makeLine();
+            entry.line.addTo(map);
+          } else {
+            entry.line.setLatLngs([[gtLat, gtLon], [rLat, rLon]]);
+            entry.line.setTooltipContent(label);
+            // A permanent tooltip is positioned once at open — walk it along
+            // with the line's midpoint or it stays where the line first drew.
+            entry.line.getTooltip()?.setLatLng([(gtLat + rLat) / 2, (gtLon + rLon) / 2]);
+          }
         }
       }
 
@@ -258,7 +282,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
       for (const [hex, entry] of markers) {
         if (!seen.has(hex)) {
           entry.dot.remove();
-          entry.line.remove();
+          entry.line?.remove();
           markers.delete(hex);
         }
       }
@@ -270,7 +294,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
       clearInterval(intervalId);
       for (const entry of markers.values()) {
         entry.dot.remove();
-        entry.line.remove();
+        entry.line?.remove();
       }
       markers.clear();
     };
