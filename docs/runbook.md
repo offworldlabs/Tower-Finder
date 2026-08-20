@@ -6,7 +6,7 @@
 
 ## Environments
 
-Three droplets. Each holds a gitignored `./.env` in `/opt/tower-finder` carrying
+Three droplets. Each holds a gitignored `./.env` in `/opt/retina-server` carrying
 `COMPOSE_FILE`, which selects that host's overlay, so a bare `docker compose up -d
 --build` / `logs` / `ps` resolves correctly on all three and every command below is
 identical everywhere.
@@ -37,7 +37,7 @@ purpose and is unchanged.
 `.github/workflows/deploy-test.yml` is a dispatch-only CI path that deploys a
 pushed ref by git, and exists so the production auto-rollback machinery can be
 exercised end to end without breaking production to do it. `pre-deploy.sh` and
-`rollback.sh` are both git-based, so it requires `/opt/tower-finder` there to be
+`rollback.sh` are both git-based, so it requires `/opt/retina-server` there to be
 a **git clone** — which is a change from this droplet's original rsync-only
 design, and worth understanding before you re-provision it.
 
@@ -81,14 +81,14 @@ design.
 ## Server basics
 
 Production unless stated otherwise. Every command in this document runs **on the
-droplet**, from `/opt/tower-finder`, unless it says otherwise. Connection details
+droplet**, from `/opt/retina-server`, unless it says otherwise. Connection details
 (addresses, key names, SSH aliases) are deliberately not recorded here: this repo
 is public, and the origin addresses sit behind Cloudflare precisely so they are not
 advertised. Get them from the DigitalOcean console or your own `~/.ssh/config`.
 
 | | |
 |---|---|
-| **Working dir** | `/opt/tower-finder` |
+| **Working dir** | `/opt/retina-server` |
 | **Logs** | `docker compose logs -f --tail=200` |
 | **Restart (no rebuild)** | `docker compose restart` |
 | **Rebuild and restart** | `docker compose up -d --build` (wait ~5 s before testing) |
@@ -107,7 +107,7 @@ it; the container will not serve against a half-applied schema.
 To see where a droplet stands:
 
 ```bash
-ssh retina-prod 'cd /opt/tower-finder && docker compose exec tower-finder \
+ssh retina-prod 'cd /opt/retina-server && docker compose exec tower-finder \
     sh -c "cd /app/backend && python3 -m alembic current"'
 ```
 
@@ -148,7 +148,7 @@ about the database.
 To roll back past a destructive revision, downgrade and then redeploy:
 
 ```bash
-ssh retina-prod 'cd /opt/tower-finder && docker compose exec tower-finder \
+ssh retina-prod 'cd /opt/retina-server && docker compose exec tower-finder \
     sh -c "cd /app/backend && python3 -m alembic downgrade <revision>"'
 ```
 
@@ -382,7 +382,7 @@ curl -sk https://localhost/api/test/dashboard | python3 -c \
 **Immediate mitigation:** None without code change. If tracker library was recently updated, rollback:
 ```bash
 # On server:
-cd /opt/tower-finder && pip show retina-tracker  # check installed version
+cd /opt/retina-server && pip show retina-tracker  # check installed version
 ```
 
 ---
@@ -443,7 +443,7 @@ Server will start with empty state if snapshot is corrupt. Trust scores and repu
 **Check R2 config:**
 ```bash
 # R2 credentials are in backend/.env — verify they're set:
-grep R2 /opt/tower-finder/backend/.env
+grep R2 /opt/retina-server/backend/.env
 ```
 
 Not an emergency. The local snapshot still runs every 60 s. Urgent only if combined with `snapshot_corrupt` (no local backup AND R2 backup stale).
@@ -457,7 +457,7 @@ Not an emergency. The local snapshot still runs every 60 s. Urgent only if combi
 
 **Check current usage:**
 ```bash
-df -h /opt/tower-finder/backend/coverage_data && du -sh /opt/tower-finder/backend/coverage_data/*
+df -h /opt/retina-server/backend/coverage_data && du -sh /opt/retina-server/backend/coverage_data/*
 ```
 
 **What to clean first:**
@@ -468,7 +468,7 @@ df -h /opt/tower-finder/backend/coverage_data && du -sh /opt/tower-finder/backen
 **If you need space immediately:**
 ```bash
 # Check archive files (oldest first)
-find /opt/tower-finder/backend/coverage_data -name "*.json.gz" | sort | head -20
+find /opt/retina-server/backend/coverage_data -name "*.json.gz" | sort | head -20
 ```
 
 > **Do not delete the `state_snapshot.json` or `state_snapshot.json.sha256` files** — those are the restore point. Delete archive `.json.gz` files instead.
@@ -482,7 +482,7 @@ find /opt/tower-finder/backend/coverage_data -name "*.json.gz" | sort | head -20
 
 **Check current memory:**
 ```bash
-cat /proc/$(docker compose -f /opt/tower-finder/docker-compose.yml top | grep uvicorn | awk "{print \$1}" | head -1)/status | grep VmRSS
+cat /proc/$(docker compose -f /opt/retina-server/docker-compose.yml top | grep uvicorn | awk "{print \$1}" | head -1)/status | grep VmRSS
 # Simpler:
 free -h && top -bn1 | head -10
 ```
@@ -507,7 +507,7 @@ If memory climbs back over 3 GB within an hour, there is a leak. File an issue w
 git add -A && git commit -m "..." && git push
 
 # Server
-cd /opt/tower-finder && git pull && docker compose up -d --build
+cd /opt/retina-server && git pull && docker compose up -d --build
 
 # After ~5 s, verify
 curl -sk https://localhost/api/health
@@ -517,28 +517,28 @@ curl -sk https://localhost/api/health
 
 ### Restart without deploying
 ```bash
-cd /opt/tower-finder && docker compose restart
+cd /opt/retina-server && docker compose restart
 ```
 
 ### Tail live logs
 ```bash
-cd /opt/tower-finder && docker compose logs -f --tail=100
+cd /opt/retina-server && docker compose logs -f --tail=100
 ```
 
 ### Check resource usage
 ```bash
 top -bn1 | head -20
-df -h /opt/tower-finder/backend/coverage_data
+df -h /opt/retina-server/backend/coverage_data
 ```
 
 ### Start / bounce the fleet simulator
-The fleet is a Compose service (`fleet` in `/opt/tower-finder/docker-compose.yml`,
+The fleet is a Compose service (`fleet` in `/opt/retina-server/docker-compose.yml`,
 `restart: unless-stopped`). On staging and test it starts automatically on deploy
 (CI `docker compose up -d --build`) and on reboot (docker is enabled) — you
 normally do NOT start it by hand. To manually bounce just the fleet (it loses its
 TCP connections and regenerates its nodes, taking up to a minute):
 ```bash
-cd /opt/tower-finder && docker compose up -d --build --force-recreate --no-deps fleet
+cd /opt/retina-server && docker compose up -d --build --force-recreate --no-deps fleet
 ```
 
 ⚠️ **Not on production.** Production runs no simulator: `docker-compose.prod.yml`

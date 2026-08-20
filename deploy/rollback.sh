@@ -15,7 +15,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-/opt/tower-finder}"
+APP_DIR="${APP_DIR:-/opt/retina-server}"
 IMAGE_NAME="tower-finder"
 FLEET_IMAGE_NAME="tower-finder-fleet"
 # No `-f` flags below: the host's ./.env sets COMPOSE_FILE to the shared base
