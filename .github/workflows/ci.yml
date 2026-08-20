@@ -93,10 +93,39 @@ jobs:
       # useful half. settrace measures per execution context, so lines resumed in
       # a greenlet after an `await session.…` counted as unrun: the async route
       # modules were being reported as less tested than they are. sys.monitoring
-      # is interpreter-global and sees them wherever they resume, recovering
-      # line-for-line what `concurrency = ["thread", "greenlet"]` recovers, at a
-      # tenth of that setting's cost. ONBOARDING, "Running tests", covers what
-      # this means for a local figure that does not match this one.
+      # is interpreter-global and sees them wherever they resume. Checked against
+      # `concurrency = ["thread", "greenlet"]` on routes/node_stream.py, the two
+      # recover the same lines, and sysmon does it at a fraction of that
+      # setting's cost. ONBOARDING, "Running tests", covers what this means for a
+      # local figure that does not match this one.
+      # When coverage cannot honour COVERAGE_CORE it warns and uses the C tracer
+      # anyway, and one warning is invisible among the hundreds pytest prints, so
+      # both the speed and the greenlet fix could regress with nothing failing.
+      # Enabling branch coverage is the realistic way to cause that before
+      # CPython 3.14, sys.monitoring having no branch events until then. Assert
+      # the core rather than assume it; the private _collector is what exposes
+      # which one is live.
+      - name: Coverage measures through sys.monitoring
+        env:
+          COVERAGE_CORE: sysmon
+        run: |
+          python - <<'PY'
+          import coverage
+
+          cov = coverage.Coverage()  # picks up [tool.coverage.run] from pyproject.toml
+          cov.start()
+          cov.stop()
+          core = cov._collector.tracer_name()
+          if core != "SysMonitor":
+              raise SystemExit(
+                  f"coverage chose the {core} core despite COVERAGE_CORE=sysmon. Most likely "
+                  "branch coverage is now on in [tool.coverage.run], which sys.monitoring "
+                  "cannot measure before CPython 3.14. Left alone, the step below would "
+                  "quietly return to the slower tracer and to under-reporting the async "
+                  "route modules."
+              )
+          print(f"coverage core: {core}")
+          PY
       - run: pytest tests/ -v --tb=short -m "not external"
         env:
           COVERAGE_CORE: sysmon

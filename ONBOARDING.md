@@ -144,7 +144,7 @@ uv pip install ../libs/retina-geolocator ../libs/retina-tracker \
 
 ```bash
 # backend
-cd backend && RETINA_ENV=test pytest
+cd backend && RETINA_ENV=test COVERAGE_CORE=sysmon pytest
 
 # frontend / dashboard
 cd frontend && npm run test && npm run typecheck && npm run lint
@@ -161,23 +161,18 @@ into `tail` loses the `N passed` and a passing-looking tail proves nothing.
 Two suites running at once, typically from two worktrees, give bogus route and
 health errors in whichever started second. Set the variable in one of them.
 
-Coverage under-reports locally, but not in CI. `[tool.coverage.run]` in
-`backend/pyproject.toml` sets no `concurrency`, so under coverage's default
-tracer every line after an `await session.…` in a greenlet-backed path counts as
-unrun; the async route modules are the ones this hits. CI sets
-`COVERAGE_CORE=sysmon` on the pytest step, which measures through the PEP 669
-interpreter-wide hooks instead and does not have the blind spot, so a local run
-reports a lower figure than the same commit does in CI.
+`COVERAGE_CORE=sysmon` above is not decoration, and CI sets it too. Without it,
+coverage measures through `sys.settrace`, which is per execution context, so
+every line after an `await session.…` in a greenlet-backed path counts as unrun:
+`[tool.coverage.run]` in `backend/pyproject.toml` sets no `concurrency` to
+compensate. The async route modules are what this hits. sysmon measures through
+the PEP 669 interpreter-wide hooks instead, has no such blind spot, and is
+several times faster. Drop the variable and you get a slower run and a lower
+figure than CI reports for the same commit.
 
-Export the same variable to match CI, and to go faster while you are at it:
-
-```bash
-cd backend && RETINA_ENV=test COVERAGE_CORE=sysmon pytest
-```
-
-`concurrency = ["thread", "greenlet"]` recovers the identical lines, so it
-remains correct, but it is more than ten times slower than sysmon and there is
-no longer a reason to reach for it.
+`concurrency = ["thread", "greenlet"]` is the other way to close the gap, and on
+the module it was checked against it recovers the same lines, but it is more than
+ten times slower than sysmon and there is no longer a reason to reach for it.
 
 ### Before you push
 
