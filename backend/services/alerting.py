@@ -8,8 +8,9 @@ seconds (default 300).
 
 Delivery is retried a bounded number of times on 5xx, on transport errors,
 and on the two transient 4xx (408 and 429, honouring Retry-After), but never
-on the 4xx that only an operator can clear. See _fire() for that split and
-for what each outcome does to the cooldown reservation.
+on an answer only an operator can clear: the remaining 4xx, and a 3xx, since
+redirects are not followed. See _fire() for that split and for what each
+outcome does to the cooldown reservation.
 
 Settings are read from the environment on each call rather than once at
 import. main.py calls load_dotenv() after its service imports, so an
@@ -60,15 +61,37 @@ _RETRIABLE_4XX = frozenset({408, 429})
 # thread sitting on the payload that long is the worse of the two failures.
 _MAX_RETRY_AFTER_S = 60.0
 
-# How long an alert type stays reserved after every attempt failed. A full
-# ALERT_COOLDOWN_S would buy silence on precisely the alert that just failed
-# to arrive, while reopening the slot outright would put the next attempt on
-# the health monitor's 30s cycle, so a failing sink would be retried more
-# often than a healthy one. That is the 500-becomes-429 amplification the
-# bounded retry exists to avoid, so the reopen sits between the two.
-_FAILURE_REOPEN_S = 60.0
+# Earliest the next send of an alert type may go after every attempt failed
+# against a sink that may yet recover.
+#
+# Sized so that retrying never costs the sink more than it did before
+# retries existed: _MAX_DELIVERY_ATTEMPTS posts per window, against one post
+# per health-monitor cycle (30s by default) previously, needs a window of at
+# least attempts x cycle to break even. Anything shorter means a failing
+# sink is hit harder than a healthy one, which is the 500-becomes-429
+# amplification the bounded retry is here to avoid. A full ALERT_COOLDOWN_S
+# would go too far the other way and buy silence on precisely the alert that
+# failed to arrive.
+_FAILURE_REOPEN_S = 90.0
 
 _last_sent: dict[str, float] = {}
+
+# Earliest wall-clock time a given alert type may be sent again, set when a
+# delivery failed every attempt. Held separately from _last_sent, and as an
+# absolute deadline rather than a backdated send time, so that it means the
+# same thing whatever ALERT_COOLDOWN_S is doing: the setting is read afresh
+# on every call, so a window derived from the value in force at failure time
+# would be reinterpreted against whatever value the next call happens to
+# read.
+_reopen_at: dict[str, float] = {}
+
+# Alert types with a delivery thread currently running. A retry sequence can
+# outlast its own cooldown (three 10s timeouts plus two Retry-After waits is
+# 150s against a 300s default, and ALERT_COOLDOWN_S is set per droplet), so
+# the reservation in _last_sent cannot by itself be relied on to stop the
+# next health cycle opening a second, concurrent delivery of the same alert.
+_in_flight: set[str] = set()
+
 _lock = threading.Lock()
 
 
@@ -76,6 +99,8 @@ def _reset_for_tests() -> None:
     """Restore this module's private state to boot values.  Tests only."""
     with _lock:
         _last_sent.clear()
+        _reopen_at.clear()
+        _in_flight.clear()
 
 
 def _webhook_url() -> str:
@@ -128,38 +153,33 @@ def _sleep(seconds: float) -> None:
     time.sleep(seconds)
 
 
-def _backoff_window_s(attempt: int) -> float:
-    """Width of the backoff window after `attempt` (1-indexed).
-
-    Exponential from _BACKOFF_BASE_S. Exposed separately from the jitter
-    below so a test can pin the delay against the window it was drawn from
-    rather than against some looser constant.
-    """
-    return _BACKOFF_BASE_S * (2 ** (attempt - 1))
-
-
 def _backoff_delay_s(attempt: int) -> float:
     """Seconds to wait after `attempt` (1-indexed) before the next one.
 
-    Jittered across the upper half of the attempt's window. Jitter matters
-    because every box points its alerts at the same sink: a fixed schedule
-    would line their retries up into a burst at exactly the moment the sink
-    is already failing. The floor is half the window rather than zero so
-    that a retry cannot collapse into an immediate second POST, which is the
-    same thundering-herd problem in miniature.
+    Exponential from _BACKOFF_BASE_S, jittered across the upper half of the
+    attempt's window. Jitter matters because every box points its alerts at
+    the same sink: a fixed schedule would line their retries up into a burst
+    at exactly the moment the sink is already failing. The floor is half the
+    window rather than zero so that a retry cannot collapse into an
+    immediate second POST, which is the same thundering-herd problem in
+    miniature.
     """
-    window = _backoff_window_s(attempt)
+    window = _BACKOFF_BASE_S * (2 ** (attempt - 1))
     return random.uniform(window / 2, window)
 
 
 def _retry_delay_s(attempt: int, retry_after: str | None) -> float:
     """Backoff for `attempt`, or the sink's Retry-After when it asks longer.
 
-    A 429 carries the server's own answer to "when should I come back", and
-    ignoring it is how a rate-limited client stays rate-limited. Only the
-    delta-seconds form is read: the HTTP-date form is rare from JSON APIs,
-    and this runs on the failure path, where a malformed header must not be
-    able to raise. Anything unparseable, absent or non-positive falls back
+    Applies to every retriable answer, not just the rate limit that motivated
+    it: a 503 during a maintenance window carries Retry-After as readily as a
+    429 does, and in both cases the server's own answer to "when should I come
+    back" beats our guess. Ignoring it is how a rate-limited client stays
+    rate-limited.
+
+    Only the delta-seconds form is read: the HTTP-date form is rare from JSON
+    APIs, and this runs on the failure path, where a malformed header must not
+    be able to raise. Anything unparseable, absent or non-positive falls back
     to the backoff, and the value is never allowed to shorten it.
     """
     delay = _backoff_delay_s(attempt)
@@ -252,34 +272,48 @@ def send_alert(alert_type: str, message: str, meta: dict | None = None) -> None:
         last = _last_sent.get(alert_type, 0)
         if now - last < cooldown_s:
             return
+        # A previous delivery failed every attempt and asked not to be
+        # followed too closely. Checked separately from the cooldown because
+        # it outranks it: a short ALERT_COOLDOWN_S must not be able to put a
+        # failing sink back under the load the retry exists to spare it.
+        if now < _reopen_at.get(alert_type, 0.0):
+            return
+        # A delivery for this type is still running, possibly still
+        # retrying. Its own reservation may already have aged out, so this
+        # is the check that actually keeps deliveries from overlapping.
+        if alert_type in _in_flight:
+            return
         # Stamped before the POST, not after, so that two concurrent callers
         # (the health monitor and a solver worker can both call send_alert)
         # cannot both pass the check above while one request is in flight.
         _last_sent[alert_type] = now
+        _reopen_at.pop(alert_type, None)
+        _in_flight.add(alert_type)
 
     meta = meta or {}
 
     def _reopen_after_failed_delivery():
-        """Bring the next send of this alert_type forward, after a delivery
-        that failed every attempt against a sink that may yet recover.
+        """Let this alert_type be sent again _FAILURE_REOPEN_S from now,
+        after a delivery that failed every attempt against a sink that may
+        yet recover.
 
-        Leaving the full reservation would buy a whole ALERT_COOLDOWN_S of
+        Keeping the full reservation would buy a whole ALERT_COOLDOWN_S of
         silence on precisely the alert that failed to arrive. Clearing it
         outright, which is what this did before retries existed, puts the
-        next attempt on the health monitor's 30s cycle, so a failing sink
-        gets hit more often than a healthy one. The slot is instead
-        backdated to expire _FAILURE_REOPEN_S from now, and never later than
-        a successful send would have left it, so a zero or short
-        ALERT_COOLDOWN_S cannot be lengthened by a failure.
+        next attempt on the health monitor's cycle, so a failing sink gets
+        hit harder than a healthy one. Recorded as an absolute deadline
+        rather than by backdating the reservation, so that it survives
+        ALERT_COOLDOWN_S changing between this failure and the next send.
 
-        Only rewrites the slot this call reserved: if a newer send has since
+        Only acts on the slot this call reserved: if a newer send has since
         claimed it (the stored value is no longer exactly `now`), that claim
         is left alone rather than clobbered.
         """
         with _lock:
             if _last_sent.get(alert_type) != now:
                 return
-            _last_sent[alert_type] = min(now, now - cooldown_s + _FAILURE_REOPEN_S)
+            del _last_sent[alert_type]
+            _reopen_at[alert_type] = now + _FAILURE_REOPEN_S
 
     # Captured here, not re-read inside _fire: the thread runs later, and by
     # then the environment (or a test asserting against it) may have moved on.
@@ -369,7 +403,7 @@ def send_alert(alert_type: str, message: str, meta: dict | None = None) -> None:
                     try:
                         resp = client.post(webhook_url, **post_kwargs)
                         status = resp.status_code
-                        if status < 400:
+                        if 200 <= status < 300:
                             return
                         reason = f"returned {status}"
                         if status >= 500 or status in _RETRIABLE_4XX:
@@ -378,11 +412,21 @@ def send_alert(alert_type: str, message: str, meta: dict | None = None) -> None:
                             # Terminal: keep the reservation, so a stale token
                             # is reported once a cooldown rather than once a
                             # health cycle.
+                            #
+                            # A 3xx lands here too. Redirects are deliberately
+                            # not followed (301/302/303 would turn the POST
+                            # into a GET and deliver nothing anyway), so a
+                            # redirecting URL means the alert went nowhere,
+                            # and treating < 400 as success would report that
+                            # as a healthy channel.
                             logger.error(
-                                "Alert webhook %s for %s, not retrying "
-                                "(check ALERT_WEBHOOK_AUTH and the payload shape)",
+                                "Alert webhook %s for %s, not retrying (%s)",
                                 reason,
                                 alert_type,
+                                "redirects are not followed, so nothing was delivered: "
+                                "point ALERT_WEBHOOK_URL at the final destination"
+                                if status < 400
+                                else "check ALERT_WEBHOOK_AUTH and the payload shape",
                             )
                             return
                     except httpx.RequestError as e:
@@ -415,5 +459,17 @@ def send_alert(alert_type: str, message: str, meta: dict | None = None) -> None:
             # implicated, so the slot reopens as for any other lost alert.
             logger.error("Alert delivery failed for %s", alert_type, exc_info=True)
             _reopen_after_failed_delivery()
+        finally:
+            with _lock:
+                _in_flight.discard(alert_type)
 
-    threading.Thread(target=_fire, daemon=True).start()
+    try:
+        threading.Thread(target=_fire, daemon=True).start()
+    except Exception:
+        # Thread creation itself failed, so nothing will ever clear the
+        # in-flight marker: leaving it set would silence this alert type for
+        # the rest of the process's life.
+        with _lock:
+            _in_flight.discard(alert_type)
+        logger.error("Could not start alert delivery thread for %s", alert_type, exc_info=True)
+        _reopen_after_failed_delivery()

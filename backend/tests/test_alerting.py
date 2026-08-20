@@ -44,14 +44,40 @@ def _fixed_hostname(monkeypatch):
     monkeypatch.setattr(_alerting.socket, "gethostname", lambda: "test-host")
 
 
+@pytest.fixture(autouse=True)
+def slept(monkeypatch):
+    """Record the backoff delays instead of sleeping them, and hand the
+    record to any test that wants to assert on the schedule.
+
+    Autouse so that no test can spend a real backoff by forgetting to ask
+    for it; requested by name where the delays themselves are the subject.
+    Patches services.alerting._sleep rather than time.sleep, so an unrelated
+    caller's sleep can never be mistaken for one of ours.
+    """
+    delays = []
+    monkeypatch.setattr(_alerting, "_sleep", delays.append)
+    return delays
+
+
+def _expected_backoff_window(attempt):
+    """The window services.alerting draws attempt `attempt`'s delay from.
+
+    Recomputed here rather than imported, so that the production module owes
+    the tests no seam of its own and a change to the schedule has to be made
+    deliberately in both places.
+    """
+    return _alerting._BACKOFF_BASE_S * (2 ** (attempt - 1))
+
+
 def _make_mock_client(status_code=200, raise_exc=None):
     """Build a context-manager-compatible httpx.Client mock."""
     mock_resp = MagicMock()
     mock_resp.status_code = status_code
-    # A real dict, not a MagicMock attribute: _retry_delay_s reads
-    # Retry-After off it, and a MagicMock would hand back a truthy stand-in
-    # that only fails to parse by accident.
-    mock_resp.headers = {}
+    # Real httpx.Headers, as the production call site sees: a MagicMock
+    # would hand back a truthy stand-in that only fails to parse by
+    # accident, and a plain dict would not model the case-insensitive
+    # lookup that lets a sink answer with a lowercased retry-after.
+    mock_resp.headers = httpx.Headers()
 
     mock_client = MagicMock()
     mock_client.__enter__ = lambda s: mock_client
@@ -962,9 +988,9 @@ class TestCooldownAfterFailedDelivery:
 
     def test_exhausted_retriable_failure_reopens_the_slot_early(self, monkeypatch):
         """A sink that 500s may well be back before the window is out, so
-        the slot is backdated to expire _FAILURE_REOPEN_S from now: far
-        short of a full cooldown of silence on an alert that never arrived,
-        and far longer than the health monitor's cycle.
+        the reservation gives way to an explicit deadline _FAILURE_REOPEN_S
+        out: far short of a full cooldown of silence on an alert that never
+        arrived, and far longer than the health monitor's cycle.
         """
         monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
         monkeypatch.setenv("ALERT_COOLDOWN_S", "3600")
@@ -974,33 +1000,64 @@ class TestCooldownAfterFailedDelivery:
         with (
             patch("services.alerting.httpx.Client", return_value=mock_client),
             patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
-            patch("services.alerting._sleep"),
         ):
             send_alert("mender_unreachable", "first")
 
-        expires_at = _alerting._last_sent["mender_unreachable"] + 3600
-        assert before + _alerting._FAILURE_REOPEN_S <= expires_at
-        assert expires_at <= time.time() + _alerting._FAILURE_REOPEN_S
+        assert "mender_unreachable" not in _alerting._last_sent
+        reopen_at = _alerting._reopen_at["mender_unreachable"]
+        assert before + _alerting._FAILURE_REOPEN_S <= reopen_at
+        assert reopen_at <= time.time() + _alerting._FAILURE_REOPEN_S
 
-    def test_a_failed_delivery_never_lengthens_a_short_cooldown(self, monkeypatch):
-        """The reopen is a floor on how soon the next send may go, not a
-        delay added to it. With ALERT_COOLDOWN_S already shorter than
-        _FAILURE_REOPEN_S, a failed delivery must leave the slot exactly
-        where a successful one would have, not push it into the future.
+    def test_the_reopen_deadline_outranks_a_shorter_cooldown(self, monkeypatch):
+        """The deadline is a floor on how soon the next send may go, and it
+        has to hold even when ALERT_COOLDOWN_S is shorter than it.
+
+        This reverses what this test asserted when the deadline was
+        implemented by backdating the reservation, where a short cooldown
+        won and the failed type was retried on the operator's schedule.
+        That is the amplification case: at a 5s cooldown it would put
+        _MAX_DELIVERY_ATTEMPTS posts every 5s onto a sink that is already
+        failing. Sparing the sink is the whole point, so the floor wins.
         """
         monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
         monkeypatch.setenv("ALERT_COOLDOWN_S", "5")
+        mock_client = _make_mock_client(status_code=500)
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("registration_held", "first")
+            send_alert("registration_held", "second")
+
+        assert mock_client.post.call_count == _alerting._MAX_DELIVERY_ATTEMPTS
+        assert _alerting._reopen_at["registration_held"] >= time.time()
+
+    def test_the_reopen_deadline_survives_a_cooldown_change(self, monkeypatch):
+        """The deadline is absolute, not a window back-computed from the
+        cooldown in force when the delivery failed. Settings are read afresh
+        on every call, so a backdated reservation would be reinterpreted
+        against whatever ALERT_COOLDOWN_S the next send happens to read: drop
+        an hour-long cooldown to 30s after a failure stamped against it and
+        the alert would stay suppressed for the rest of the hour.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setenv("ALERT_COOLDOWN_S", "3600")
         mock_client = _make_mock_client(status_code=500)
 
         before = time.time()
         with (
             patch("services.alerting.httpx.Client", return_value=mock_client),
             patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
-            patch("services.alerting._sleep"),
         ):
-            send_alert("registration_held", "msg")
+            send_alert("registration_held", "first")
 
-        assert before <= _alerting._last_sent["registration_held"] <= time.time()
+        monkeypatch.setenv("ALERT_COOLDOWN_S", "30")
+        # _FAILURE_REOPEN_S out from the send, not some fraction of the 3600s
+        # window that happened to be configured when it failed.
+        reopen_at = _alerting._reopen_at["registration_held"]
+        assert before + _alerting._FAILURE_REOPEN_S <= reopen_at
+        assert reopen_at <= time.time() + _alerting._FAILURE_REOPEN_S
 
     def test_failed_release_does_not_clobber_slot_claimed_by_later_send(self, monkeypatch):
         """Compare-and-restore: if a later send has already claimed the slot
@@ -1057,7 +1114,7 @@ def _make_sequenced_mock_client(*outcomes, response_headers=None):
             raise outcome
         resp = MagicMock()
         resp.status_code = outcome
-        resp.headers = dict(response_headers or {})
+        resp.headers = httpx.Headers(response_headers or {})
         return resp
 
     mock_client.post.side_effect = _post
@@ -1074,15 +1131,6 @@ class TestDeliveryRetry:
     `registration_held`: both fire once, at the moment they matter. See
     ClickUp 86cb5cuxr.
     """
-
-    @pytest.fixture(autouse=True)
-    def _no_real_backoff(self, monkeypatch):
-        """Record the backoff delays instead of sleeping them, so the retry
-        tests assert on the schedule without spending it. Tests that care
-        about the delays read `self.slept`.
-        """
-        self.slept = []
-        monkeypatch.setattr(_alerting, "_sleep", self.slept.append)
 
     def test_500_is_retried_and_the_alert_arrives(self, monkeypatch):
         """The headline case: a 500 on the first attempt must not lose the
@@ -1237,10 +1285,10 @@ class TestDeliveryRetry:
             send_alert("registration_held", "msg")
 
         assert claimed_during_attempt == [True] * _alerting._MAX_DELIVERY_ATTEMPTS
-        # Reopened rather than cleared: still reserved, but backdated so the
-        # window has only _FAILURE_REOPEN_S left to run.
-        expires_at = _alerting._last_sent["registration_held"] + 3600
-        assert expires_at <= time.time() + _alerting._FAILURE_REOPEN_S
+        # Reopened only once the attempts were spent: the reservation gives
+        # way to an explicit deadline _FAILURE_REOPEN_S out.
+        assert "registration_held" not in _alerting._last_sent
+        assert _alerting._reopen_at["registration_held"] <= time.time() + _alerting._FAILURE_REOPEN_S
 
     def test_exhausted_delivery_is_logged_at_error(self, monkeypatch, caplog):
         """An alert that never arrived is precisely the event nobody is
@@ -1295,7 +1343,7 @@ class TestDeliveryRetry:
 
         assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
 
-    def test_backoff_is_slept_between_attempts_but_not_after_the_last(self, monkeypatch):
+    def test_backoff_is_slept_between_attempts_but_not_after_the_last(self, monkeypatch, slept):
         """Backoff separates the attempts; sleeping after the final one
         would just delay the thread's exit for no benefit.
         """
@@ -1308,9 +1356,9 @@ class TestDeliveryRetry:
         ):
             send_alert("registration_held", "msg")
 
-        assert len(self.slept) == _alerting._MAX_DELIVERY_ATTEMPTS - 1
+        assert len(slept) == _alerting._MAX_DELIVERY_ATTEMPTS - 1
 
-    def test_backoff_delays_fall_inside_their_own_attempt_window(self, monkeypatch):
+    def test_backoff_delays_fall_inside_their_own_attempt_window(self, monkeypatch, slept):
         """Each delay is drawn from the upper half of that attempt's window,
         so jitter can produce neither a zero wait (which would make the
         retries a burst) nor one longer than the schedule intends.
@@ -1330,30 +1378,33 @@ class TestDeliveryRetry:
         ):
             send_alert("registration_held", "msg")
 
-        windows = [_alerting._backoff_window_s(attempt) for attempt in range(1, _alerting._MAX_DELIVERY_ATTEMPTS)]
-        assert len(self.slept) == len(windows)
-        assert all(window / 2 <= delay <= window for delay, window in zip(self.slept, windows))
+        windows = [_expected_backoff_window(attempt) for attempt in range(1, _alerting._MAX_DELIVERY_ATTEMPTS)]
+        assert len(slept) == len(windows)
+        assert all(window / 2 <= delay <= window for delay, window in zip(slept, windows))
 
-    def test_backoff_is_jittered_rather_than_a_fixed_schedule(self, monkeypatch):
+    def test_backoff_is_jittered_rather_than_a_fixed_schedule(self, monkeypatch, slept):
         """Every box running this alerter shares one sink, so a fixed
         schedule would line their retries up into a thundering herd exactly
         when the sink is already struggling.
         """
         monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
-        monkeypatch.setenv("ALERT_COOLDOWN_S", "0")
         mock_client = _make_sequenced_mock_client(500)
 
+        # A distinct alert type per send: each failed delivery sets a reopen
+        # deadline for its own type, which is the point of that mechanism, so
+        # repeating one type here would measure the suppression rather than
+        # the jitter.
         with (
             patch("services.alerting.httpx.Client", return_value=mock_client),
             patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
         ):
-            for _ in range(12):
-                send_alert("registration_held", "msg")
+            for i in range(12):
+                send_alert(f"registration_held_{i}", "msg")
 
-        first_delays = self.slept[0 :: _alerting._MAX_DELIVERY_ATTEMPTS - 1]
+        first_delays = slept[0 :: _alerting._MAX_DELIVERY_ATTEMPTS - 1]
         assert len(set(first_delays)) > 1
 
-    def test_successful_first_attempt_does_not_sleep(self, monkeypatch):
+    def test_successful_first_attempt_does_not_sleep(self, monkeypatch, slept):
         """The overwhelmingly common path must be exactly as fast as it was
         before retries existed.
         """
@@ -1366,7 +1417,7 @@ class TestDeliveryRetry:
         ):
             send_alert("registration_held", "msg")
 
-        assert self.slept == []
+        assert slept == []
 
 
 class TestTransient4xxAreRetried:
@@ -1380,11 +1431,6 @@ class TestTransient4xxAreRetried:
     the ticket named. Mirrors the x-retry taxonomy in
     routes/node_responses.py, where only a refused credential is terminal.
     """
-
-    @pytest.fixture(autouse=True)
-    def _no_real_backoff(self, monkeypatch):
-        self.slept = []
-        monkeypatch.setattr(_alerting, "_sleep", self.slept.append)
 
     def test_429_is_retried_and_the_alert_arrives(self, monkeypatch):
         """A rate limit is transient by definition: the sink is telling us
@@ -1431,7 +1477,7 @@ class TestTransient4xxAreRetried:
 
         mock_client.post.assert_called_once()
 
-    def test_retry_after_is_honoured_over_the_backoff(self, monkeypatch):
+    def test_retry_after_is_honoured_over_the_backoff(self, monkeypatch, slept):
         """The sink's own answer to "when should I come back" beats our
         guess. Ignoring it is how a rate-limited client stays rate-limited.
         """
@@ -1444,9 +1490,9 @@ class TestTransient4xxAreRetried:
         ):
             send_alert("registration_held", "msg")
 
-        assert self.slept == [7.0]
+        assert slept == [7.0]
 
-    def test_retry_after_is_capped(self, monkeypatch):
+    def test_retry_after_is_capped(self, monkeypatch, slept):
         """Past _MAX_RETRY_AFTER_S the sink is asking for a wait long enough
         that the alert would arrive stale, and a daemon thread sitting on
         the payload that long is the worse of the two failures.
@@ -1460,9 +1506,9 @@ class TestTransient4xxAreRetried:
         ):
             send_alert("registration_held", "msg")
 
-        assert self.slept == [_alerting._MAX_RETRY_AFTER_S]
+        assert slept == [_alerting._MAX_RETRY_AFTER_S]
 
-    def test_retry_after_never_shortens_the_backoff(self, monkeypatch):
+    def test_retry_after_never_shortens_the_backoff(self, monkeypatch, slept):
         """A sink that answers "come back in a millisecond" must not be able
         to turn the retry into an immediate second POST.
         """
@@ -1475,10 +1521,10 @@ class TestTransient4xxAreRetried:
         ):
             send_alert("registration_held", "msg")
 
-        window = _alerting._backoff_window_s(1)
-        assert window / 2 <= self.slept[0] <= window
+        window = _expected_backoff_window(1)
+        assert window / 2 <= slept[0] <= window
 
-    def test_malformed_retry_after_falls_back_to_the_backoff(self, monkeypatch):
+    def test_malformed_retry_after_falls_back_to_the_backoff(self, monkeypatch, slept):
         """This runs on the failure path, so an HTTP-date or any other
         unparseable value must not be able to raise out of it and turn a
         retriable failure into a lost alert.
@@ -1494,18 +1540,13 @@ class TestTransient4xxAreRetried:
         ):
             send_alert("registration_held", "msg")  # must not raise
 
-        window = _alerting._backoff_window_s(1)
+        window = _expected_backoff_window(1)
         assert mock_client.post.call_count == 2
-        assert window / 2 <= self.slept[0] <= window
+        assert window / 2 <= slept[0] <= window
 
 
 class TestDeliveryRetryDetails:
     """Behaviour of the retry sequence that the headline cases do not pin."""
-
-    @pytest.fixture(autouse=True)
-    def _no_real_backoff(self, monkeypatch):
-        self.slept = []
-        monkeypatch.setattr(_alerting, "_sleep", self.slept.append)
 
     def test_a_terminal_4xx_mid_sequence_stops_the_retries(self, monkeypatch):
         """The token expires between attempts: 500 then 401. The terminal
@@ -1606,3 +1647,238 @@ class TestDeliveryRetryDetails:
         with_traceback = [r for r in caplog.records if r.exc_info]
         assert len(with_traceback) == 1
         assert with_traceback[0].levelno >= logging.ERROR
+
+
+class TestRedirectsAreNotDelivered:
+    """httpx is not configured to follow redirects, and deliberately so:
+    301/302/303 turn a POST into a GET, so following one would deliver an
+    empty request rather than the alert.
+
+    That makes a 3xx a delivery failure, not a success. Treating anything
+    under 400 as delivered left a redirecting ALERT_WEBHOOK_URL discarding
+    every alert with nothing logged at any level, which is the same silent
+    loss the retry work exists to remove.
+    """
+
+    def test_a_redirect_is_not_counted_as_delivered(self, monkeypatch, caplog):
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        mock_client = _make_sequenced_mock_client(302)
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+            caplog.at_level(logging.DEBUG),
+        ):
+            send_alert("registration_held", "msg")
+
+        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert len(errors) == 1
+        assert "302" in errors[0].getMessage()
+
+    def test_a_redirect_names_the_url_rather_than_the_token(self, monkeypatch, caplog):
+        """The remedy for a redirect is to repoint ALERT_WEBHOOK_URL, so
+        sending an operator to check their credentials would be a wrong
+        steer on the one line they get.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        mock_client = _make_sequenced_mock_client(302)
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+            caplog.at_level(logging.DEBUG),
+        ):
+            send_alert("registration_held", "msg")
+
+        assert "ALERT_WEBHOOK_URL" in caplog.text
+        assert "ALERT_WEBHOOK_AUTH" not in caplog.text
+
+    def test_a_redirect_is_not_retried(self, monkeypatch):
+        """A redirect is a stable fact about the URL, so every attempt would
+        be answered the same way.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        mock_client = _make_sequenced_mock_client(301)
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("registration_held", "msg")
+
+        mock_client.post.assert_called_once()
+
+    def test_a_204_is_still_a_successful_delivery(self, monkeypatch, caplog):
+        """The success test narrowed from "under 400" to the 2xx range, so
+        the non-200 successes a webhook sink may answer with have to keep
+        counting as delivered.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setenv("ALERT_COOLDOWN_S", "3600")
+        mock_client = _make_sequenced_mock_client(204)
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+            caplog.at_level(logging.DEBUG),
+        ):
+            send_alert("registration_held", "msg")
+
+        mock_client.post.assert_called_once()
+        assert caplog.text == ""
+        assert "registration_held" in _alerting._last_sent
+
+
+class TestConcurrentDeliveryIsRefused:
+    """A retry sequence can outlast its own cooldown: three 10s timeouts plus
+    two Retry-After waits is 150s, against a 300s default that is set per
+    droplet and could be lower. The reservation in _last_sent therefore
+    cannot by itself stop the next health cycle opening a second, concurrent
+    delivery of the same alert, which is the load the retry exists to spare
+    a struggling sink.
+    """
+
+    def test_a_send_is_refused_while_the_same_type_is_still_in_flight(self, monkeypatch):
+        """Driven by having the first delivery's POST call send_alert again,
+        standing in for the next health cycle firing mid-sequence. The
+        cooldown is zeroed so that it cannot be what does the refusing, and
+        no reopen deadline exists yet because the delivery has not finished.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        monkeypatch.setenv("ALERT_COOLDOWN_S", "0")
+        attempts = []
+
+        def _post(*args, **kwargs):
+            attempts.append(1)
+            if len(attempts) == 1:
+                send_alert("registration_held", "the next health cycle")
+            resp = MagicMock()
+            resp.status_code = 500
+            resp.headers = httpx.Headers()
+            return resp
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = lambda s: mock_client
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post.side_effect = _post
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("registration_held", "msg")
+
+        assert len(attempts) == _alerting._MAX_DELIVERY_ATTEMPTS
+
+    def test_the_in_flight_marker_is_cleared_once_delivery_ends(self, monkeypatch):
+        """Otherwise one delivery silences its alert type for the rest of
+        the process's life.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        mock_client = _make_sequenced_mock_client(200)
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("registration_held", "msg")
+
+        assert _alerting._in_flight == set()
+
+    def test_the_in_flight_marker_is_cleared_after_a_failed_delivery(self, monkeypatch):
+        """The failure path runs through its own error handling and reopen,
+        so it is the one most likely to leak the marker.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        mock_client = _make_sequenced_mock_client(RuntimeError("bug"))
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("registration_held", "msg")
+
+        assert _alerting._in_flight == set()
+
+    def test_a_different_alert_type_is_not_blocked(self, monkeypatch):
+        """The guard is per alert type. registration_held must not be held
+        up because some unrelated health alert is mid-retry: it fires once,
+        at the moment it matters.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        seen = []
+
+        def _post(*args, **kwargs):
+            seen.append(kwargs["json"])
+            if len(seen) == 1:
+                send_alert("registration_held", "node taken over")
+            resp = MagicMock()
+            resp.status_code = 500
+            resp.headers = httpx.Headers()
+            return resp
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = lambda s: mock_client
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post.side_effect = _post
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("solver_latency_high", "msg")
+
+        assert any(body["alert_type"] == "registration_held" for body in seen)
+
+
+class TestRetryCostsTheSinkNoMoreThanBefore:
+    """The retry must not leave a failing sink under more load than it was
+    under before the retry existed, which is the 500-becomes-429 case the
+    ticket named (86cb5cuxr).
+    """
+
+    def test_the_reopen_window_covers_a_full_sequence_of_attempts(self):
+        """Against a dead sink the old code sent one POST per health-monitor
+        cycle. The new code sends _MAX_DELIVERY_ATTEMPTS per reopen window,
+        so the window has to be at least attempts x cycle for that to be no
+        worse. At a 60s window and the 30s default cycle it would be half
+        again the old rate, which is why this is pinned rather than left to
+        the constants looking reasonable.
+        """
+        from services.tasks.health_monitor import HEALTH_MONITOR_INTERVAL_S
+
+        old_rate = 1 / HEALTH_MONITOR_INTERVAL_S
+        new_rate = _alerting._MAX_DELIVERY_ATTEMPTS / _alerting._FAILURE_REOPEN_S
+        assert new_rate <= old_rate
+
+    def test_retry_after_is_honoured_on_a_5xx_too(self, monkeypatch, slept):
+        """A 503 during a maintenance window carries Retry-After as readily
+        as a 429 does, and the code path is shared, so narrowing the header
+        read to the 4xx set would go unnoticed without this.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        mock_client = _make_sequenced_mock_client(503, 200, response_headers={"Retry-After": "9"})
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("registration_held", "msg")
+
+        assert slept == [9.0]
+
+    def test_a_lowercased_retry_after_is_honoured(self, monkeypatch, slept):
+        """HTTP/2 lowercases header names, and httpx.Headers is
+        case-insensitive, so the sink's casing must not decide whether its
+        Retry-After is read.
+        """
+        monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
+        mock_client = _make_sequenced_mock_client(429, 200, response_headers={"retry-after": "8"})
+
+        with (
+            patch("services.alerting.httpx.Client", return_value=mock_client),
+            patch("services.alerting.threading.Thread", side_effect=_make_sync_thread()),
+        ):
+            send_alert("registration_held", "msg")
+
+        assert slept == [8.0]
