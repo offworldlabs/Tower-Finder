@@ -162,10 +162,12 @@ they're in the logs and the webhook payloads.
 | `ALERT_COOLDOWN_S` | `300` | Per-alert-type re-notify cooldown |
 | `ALERT_WEBHOOK_AUTH` | _(unset)_ | Sent verbatim as the `Authorization` header when set |
 | `ALERT_WEBHOOK_FORMAT` | `raw` | Payload shape: `raw` or `clickup_chat` |
+| `ALERT_ENVIRONMENT` | _(unset → `unknown`)_ | Labels each alert's `environment` field |
 | `HEARTBEAT_URL` | _(unset → disabled)_ | External dead-man's-switch ping target |
 | `HEARTBEAT_INTERVAL_S` | `60` | Heartbeat ping period |
 | `HEALTH_MONITOR_INTERVAL_S` | `30` | Health evaluation period |
 | `NODE_DROPOUT_THRESHOLD` | `0.8` | Active/peak node ratio below which dropout fires |
+| `HIGH_MISS_RATE_THRESHOLD` | `0.98` | Fleet-average miss rate above which `high_miss_rate` fires |
 
 ## Deferred (needs real infrastructure)
 
