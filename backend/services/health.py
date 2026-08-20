@@ -27,6 +27,26 @@ WARNING = "warning"
 
 _NODE_DROPOUT_THRESHOLD = float(os.getenv("NODE_DROPOUT_THRESHOLD", "0.8"))
 
+# Fleet-average miss rate above which the network counts as blind.
+#
+# Deliberately above the band the network reports when it is working. The
+# rate scores ADS-B aircraft inside a node's *theoretical* beam wedge against
+# what its tracker actually detected, and for passive bistatic radar that
+# wedge is a much larger set than what is physically detectable: low RCS,
+# poor bistatic geometry, terrain and receiver sensitivity all put aircraft
+# in the wedge that no node could see. So the rate has a high floor set by
+# physics and siting rather than by health. Production reported 72-94%
+# throughout, on a 27-node synthetic fleet and on the three real nodes that
+# replaced it, flapping across the old 0.7 and costing a fire-and-resolve
+# pair each crossing.
+#
+# This keeps the check as a tripwire for a network that has actually gone
+# blind. It is not a fix: no absolute threshold can be, because the floor
+# moves with traffic, time of day and which nodes are up and where they
+# point. Replacing the measure with one that tracks a node against its own
+# history is ClickUp 86cb81gkn.
+_HIGH_MISS_RATE_THRESHOLD = float(os.getenv("HIGH_MISS_RATE_THRESHOLD", "0.95"))
+
 # Critical pipeline tasks and the max age (s) of their last success before stale.
 _CRITICAL_TASKS = {"frame_processor": 20, "analytics_refresh": 120, "aircraft_flush": 15}
 
@@ -125,13 +145,14 @@ def compute_health_issues() -> list[dict]:
     except Exception:
         logging.debug("health probe failed", exc_info=True)
 
-    # Fleet-wide miss rate (avg >70% = network effectively blind)
+    # Fleet-wide miss rate (see _HIGH_MISS_RATE_THRESHOLD for what it measures
+    # and why the boundary sits where it does)
     try:
         if state.latest_missed_detections:
             rates = [v["miss_rate"] for v in state.latest_missed_detections.values() if v.get("in_range", 0) > 0]
             if rates:
                 avg = sum(rates) / len(rates)
-                if avg > 0.7:
+                if avg > _HIGH_MISS_RATE_THRESHOLD:
                     add("high_miss_rate", WARNING, f"High miss rate ({avg:.0%})")
     except Exception:
         logging.debug("health probe failed", exc_info=True)

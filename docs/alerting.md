@@ -110,6 +110,22 @@ Each issue carries a severity in the alert payload's `meta`:
 Route critical → a paging channel and warning → a quieter channel in your
 webhook receiver (e.g. Slack workflow rules).
 
+## Thresholds
+
+Most are constants in `services/health.py`. Two are settings, because the
+right value depends on the box: `NODE_DROPOUT_THRESHOLD` (default 0.8) and
+`HIGH_MISS_RATE_THRESHOLD` (default 0.95).
+
+`high_miss_rate` needs care when reading it. The rate counts ADS-B aircraft
+inside a node's theoretical beam wedge that the node's tracker did not
+detect, and for passive bistatic radar that wedge is a much larger set than
+what is physically detectable, so the rate has a high floor set by siting and
+physics rather than by health. Production reports 72-94% when it is working.
+The threshold sits above that band so the check is a tripwire for a network
+that has genuinely gone blind, rather than a running commentary; it is a
+stopgap, and replacing the measure with one that tracks a node against its
+own history is tracked in ClickUp 86cb81gkn.
+
 ## Health endpoint
 
 `GET /api/health`
