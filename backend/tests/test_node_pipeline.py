@@ -22,6 +22,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import core.users
 from core import state
 from core.nodes import Node, NodeConfig
+from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
+from services.frame_processor import get_or_create_node_pipeline
 from services.node_pipeline import (
     prime_pipeline,
     prime_pipeline_at_startup,
@@ -164,6 +166,50 @@ async def test_re_registering_picks_up_the_new_active_configuration(node_session
 
     assert state.connected_nodes[NODE_ID]["config"]["rx_lat"] == 52.5
     assert state.node_associator.node_geometries[NODE_ID].rx_lat == 52.5
+
+
+async def test_re_registering_evicts_the_cached_pipeline_so_the_next_frame_sees_the_new_geometry(node_session):
+    """86cb7jd84: get_or_create_node_pipeline builds a node's PassiveRadarPipeline
+    once and caches it in state.node_pipelines forever; nothing evicted it when
+    the node's configuration changed. This branch made that config the carrier
+    of antenna geometry (beam_azimuth_deg/beam_width_deg/max_range_km), which
+    services.aircraft_feed reads straight off the cached pipeline to gate and
+    draw the map arcs — so a corrected aim reached the associator immediately
+    but the map kept the old sector until the process restarted.
+
+    A `test-` id, not the shared `node` fixture's real-hardware-shaped one:
+    this only needs a node with a configuration row, and register_with_pipeline
+    does not care what the id looks like.
+    """
+    node_id = "test-v1-geometry-swap"
+    node = await _seed(node_session, node_id, beam_azimuth_deg=90.0, beam_width_deg=60.0, max_range_km=80.0)
+    await register_with_pipeline(node_session, node)
+    default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+
+    # Stand in for "a frame already arrived for this node": the factory builds
+    # and caches a pipeline from whatever config is active right now.
+    old_pipeline = get_or_create_node_pipeline(node_id, default)
+    assert old_pipeline.config["beam_azimuth_deg"] == pytest.approx(90.0)
+
+    first = (await node_session.execute(select(NodeConfig).where(NodeConfig.node_id == node_id))).scalars().one()
+    first.superseded_at = datetime.now(UTC)
+    node_session.add(
+        NodeConfig(
+            node_id=node_id,
+            version=2,
+            **{**_CONFIG_DEFAULTS, "beam_azimuth_deg": 210.0, "beam_width_deg": 25.0, "max_range_km": 140.0},
+        )
+    )
+    await node_session.flush()
+
+    await register_with_pipeline(node_session, node)
+
+    # The next frame's pipeline must be built from the new row, not the one
+    # cached above — no process restart, no waiting for the disconnect TTL.
+    new_pipeline = get_or_create_node_pipeline(node_id, default)
+    assert new_pipeline.config["beam_azimuth_deg"] == pytest.approx(210.0)
+    assert new_pipeline.config["beam_width_deg"] == pytest.approx(25.0)
+    assert new_pipeline.config["max_range_km"] == pytest.approx(140.0)
 
 
 async def test_a_node_with_no_active_configuration_cannot_be_registered(node_session):

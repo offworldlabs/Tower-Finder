@@ -72,6 +72,12 @@ async def register_with_pipeline(session: AsyncSession, node: Node) -> None:
             "is_synthetic": False,
             "capabilities": {"adsb_report": True},
         }
+    # A live node's pipeline (if it has one yet) was built from whichever
+    # config was active when it was first created; nothing else refreshes it,
+    # so a config replacement must evict it here or the antenna geometry the
+    # map and solver use lags until the node disconnects for 2 h. See
+    # evict_pipeline's docstring — a no-op for a fresh registration.
+    node_registration.evict_pipeline(node.node_id)
     await node_registration.register_node(node.node_id, config)
     logger.info("node_api: registered %s with the pipeline", node.node_id)
 
