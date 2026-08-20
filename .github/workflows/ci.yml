@@ -82,7 +82,24 @@ jobs:
         env:
           RETINA_ENV: dev
         run: python -m scripts.generate_openapi --check
+      # coverage.py's default C tracer hooks sys.settrace, which fires per line
+      # executed and drops the frame out of CPython's specialising fast paths;
+      # sysmon is the PEP 669 backend, which disables each location once it has
+      # been seen, so a line costs once rather than once per execution. This is
+      # the longest job in the run by several minutes and every deploy waits on
+      # it, so the tracing overhead is worth reclaiming.
+      #
+      # It also raises the reported total by about a point, and that is the more
+      # useful half. settrace measures per execution context, so lines resumed in
+      # a greenlet after an `await session.…` counted as unrun: the async route
+      # modules were being reported as less tested than they are. sys.monitoring
+      # is interpreter-global and sees them wherever they resume, recovering
+      # line-for-line what `concurrency = ["thread", "greenlet"]` recovers, at a
+      # tenth of that setting's cost. ONBOARDING, "Running tests", covers what
+      # this means for a local figure that does not match this one.
       - run: pytest tests/ -v --tb=short -m "not external"
+        env:
+          COVERAGE_CORE: sysmon
 
   frontend-build:
     runs-on: ubuntu-latest

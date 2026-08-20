@@ -161,10 +161,23 @@ into `tail` loses the `N passed` and a passing-looking tail proves nothing.
 Two suites running at once, typically from two worktrees, give bogus route and
 health errors in whichever started second. Set the variable in one of them.
 
-Coverage under-reports. `[tool.coverage.run]` in `backend/pyproject.toml` sets no
-`concurrency`, so every line after an `await session.…` in a greenlet-backed path
-counts as unrun. Before concluding a module is untested, re-measure with
-`concurrency = ["thread", "greenlet"]`; the figure can move by tens of percent.
+Coverage under-reports locally, but not in CI. `[tool.coverage.run]` in
+`backend/pyproject.toml` sets no `concurrency`, so under coverage's default
+tracer every line after an `await session.…` in a greenlet-backed path counts as
+unrun; the async route modules are the ones this hits. CI sets
+`COVERAGE_CORE=sysmon` on the pytest step, which measures through the PEP 669
+interpreter-wide hooks instead and does not have the blind spot, so a local run
+reports a lower figure than the same commit does in CI.
+
+Export the same variable to match CI, and to go faster while you are at it:
+
+```bash
+cd backend && RETINA_ENV=test COVERAGE_CORE=sysmon pytest
+```
+
+`concurrency = ["thread", "greenlet"]` recovers the identical lines, so it
+remains correct, but it is more than ten times slower than sysmon and there is
+no longer a reason to reach for it.
 
 ### Before you push
 
