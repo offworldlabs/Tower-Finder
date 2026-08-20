@@ -46,6 +46,50 @@ Three layers, in order of what they catch:
    300s), so an ongoing problem re-notifies at most every 5 minutes. A
    `resolved:<type>` alert is sent once when a condition clears.
 
+   Delivery is retried up to three times, with jittered exponential backoff
+   between attempts. The retry exists because ClickUp's chat API returns
+   intermittent 500s (roughly one delivery in three, measured on production,
+   with no 429s), which the health monitor survives, its conditions being
+   still true at the next cycle, but `mender_unreachable` and
+   `registration_held` do not, since both fire once at the moment they
+   matter.
+
+   What may be retried follows the same three-way split this repo hands its
+   own nodes as `x-retry` (see `routes/node_responses.py`):
+
+   | Outcome | Treatment |
+   |---|---|
+   | 2xx | Delivered |
+   | 3xx | Terminal. Redirects are not followed, since 301/302/303 turn the POST into a GET and would deliver nothing, so a redirecting URL means the alert went nowhere |
+   | 5xx, transport error | Retry with backoff: the request never reached a handler that made a decision |
+   | 429, 408 | Retry, honouring `Retry-After` over the backoff when it asks for longer (delta-seconds only, capped at `_MAX_RETRY_AFTER_S`) |
+   | any other 4xx | Terminal. The sink has decided about this token (401) or this body (400), so resending multiplies one failure into three |
+
+   `Retry-After` is honoured on any retriable answer, not only the 4xx pair:
+   a 503 in a maintenance window carries it as readily as a 429 does.
+
+   Only one delivery per `alert_type` runs at a time. The cooldown
+   reservation alone cannot guarantee that, because a retry sequence can
+   outlast a short `ALERT_COOLDOWN_S`, so an in-flight marker does it
+   directly: the next health cycle will not open a second delivery of an
+   alert that is still being retried.
+
+   What happens to the reservation afterwards depends on why the delivery
+   failed. A terminal 4xx or 3xx keeps it: nothing will change until an
+   operator acts, and re-reporting every cycle only floods the channel. An
+   exhausted retriable failure replaces it with an explicit deadline
+   `_FAILURE_REOPEN_S` out, since the sink may be back well before the full
+   window is out, but a dropped alert must not buy a full `ALERT_COOLDOWN_S`
+   of silence either. That constant is sized so a failing sink is never
+   asked to carry more than it did before retries existed: three attempts
+   per window against one per `HEALTH_MONITOR_INTERVAL_S` before, so the
+   window has to cover a whole sequence of attempts.
+
+   A delivery that fails every attempt, and any terminal answer, is logged at
+   `error`; the individual retriable failures are logged at `warning`. All
+   of them keep the `Alert webhook returned <code>` wording, which is what
+   the droplet logs are grepped for when counting delivery failures.
+
 3. **Dead-man's-switch (external).** `services/tasks/heartbeat.py` pings
    `HEARTBEAT_URL` every `HEARTBEAT_INTERVAL_S` (default 60s). Point it at a
    free [Healthchecks.io](https://healthchecks.io) check. The external service
