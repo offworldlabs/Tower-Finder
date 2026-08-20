@@ -9,7 +9,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-/opt/tower-finder}"
+APP_DIR="${APP_DIR:-/opt/retina-server}"
 IMAGE_NAME="tower-finder"
 COMPOSE_SERVICE="tower-finder"
 FLEET_IMAGE_NAME="tower-finder-fleet"

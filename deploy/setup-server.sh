@@ -122,7 +122,7 @@ systemctl enable --now docker
 echo ""
 echo "→ Deploying Tower Finder..."
 
-APP_DIR="${APP_DIR:-/opt/tower-finder}"
+APP_DIR="${APP_DIR:-/opt/retina-server}"
 
 if [ -d "$APP_DIR/.git" ]; then
     echo "  Repo exists, pulling latest..."
