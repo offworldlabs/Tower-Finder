@@ -11,6 +11,7 @@ Covers the branches that are not exercised by test_towers_routes.py:
   - node_dropout
 """
 
+import logging
 import os
 
 import orjson
@@ -106,16 +107,18 @@ class TestHealthDegradedBranches:
             state.latest_accuracy_bytes = orig
 
     def test_high_miss_rate(self, client):
-        # Rates raised from 0.8/0.9 when _HIGH_MISS_RATE_THRESHOLD moved to
-        # 0.95: an 0.85 fleet average is inside the band the network reports
-        # when it is working, so it no longer degrades and cannot exercise
-        # this branch. See TestMissRateThreshold for the boundary itself.
+        # Rates raised from 0.8/0.9 when the miss-rate boundary moved to 0.98:
+        # an 0.85 fleet average is inside the band the network reports when it
+        # is working, so it no longer degrades and cannot exercise this
+        # branch. Set well clear of the boundary rather than just past it, so
+        # this test is about the branch and not about the number. See
+        # TestMissRateThreshold for the boundary itself.
         orig = dict(state.latest_missed_detections)
         state.latest_missed_detections.clear()
         state.latest_missed_detections.update(
             {
-                "n1": {"in_range": 10, "miss_rate": 0.97},
-                "n2": {"in_range": 20, "miss_rate": 0.99},
+                "n1": {"in_range": 10, "miss_rate": 1.0},
+                "n2": {"in_range": 20, "miss_rate": 1.0},
             }
         )
         try:
@@ -179,6 +182,7 @@ class TestMissRateThreshold:
         network looks like when it is working.
         """
         assert "high_miss_rate" not in self._types([0.72, 0.85, 0.94])
+        assert "high_miss_rate" not in self._types([0.94, 0.94, 0.94])
 
     def test_a_blind_network_is_still_degraded(self):
         """The check is kept rather than deleted so that a fleet seeing
@@ -190,7 +194,7 @@ class TestMissRateThreshold:
         comfortable distance from it, so a change to the comparison shows up
         here.
         """
-        monkeypatch.setattr(health, "_HIGH_MISS_RATE_THRESHOLD", 0.95)
+        monkeypatch.setenv("HIGH_MISS_RATE_THRESHOLD", "0.95")
         assert "high_miss_rate" not in self._types([0.95])
         assert "high_miss_rate" in self._types([0.96])
 
@@ -201,7 +205,7 @@ class TestMissRateThreshold:
         NODE_DROPOUT_THRESHOLD, the health threshold that is already a
         setting.
         """
-        monkeypatch.setattr(health, "_HIGH_MISS_RATE_THRESHOLD", 0.5)
+        monkeypatch.setenv("HIGH_MISS_RATE_THRESHOLD", "0.5")
         assert "high_miss_rate" in self._types([0.6])
 
     def test_nodes_with_nothing_in_range_do_not_drag_the_average_down(self):
@@ -225,3 +229,46 @@ class TestMissRateThreshold:
             state.latest_missed_detections.update(orig)
 
         assert "high_miss_rate" in types
+
+
+class TestThresholdSettings:
+    """Both health thresholds are settings, and `compute_health_issues` backs
+    the container's liveness probe, so neither may be able to stop the server
+    or silently do nothing.
+    """
+
+    def test_a_malformed_value_falls_back_instead_of_raising(self, monkeypatch, caplog):
+        """Read at import, `float()` on a stray value took the whole server
+        down at boot rather than degrading one check, and documenting the key
+        in .env.example is an invitation to that typo.
+        """
+        monkeypatch.setenv("HIGH_MISS_RATE_THRESHOLD", "very high")
+        with caplog.at_level(logging.WARNING):
+            assert health._threshold("HIGH_MISS_RATE_THRESHOLD", 0.98) == 0.98
+        assert "very high" in caplog.text
+
+    def test_an_unset_value_uses_the_default(self, monkeypatch):
+        monkeypatch.delenv("HIGH_MISS_RATE_THRESHOLD", raising=False)
+        assert health._threshold("HIGH_MISS_RATE_THRESHOLD", 0.98) == 0.98
+
+    def test_whitespace_is_treated_as_unset(self, monkeypatch):
+        """A key left blank in .env.example arrives as an empty string, and
+        `float("")` raises like any other unparseable value."""
+        monkeypatch.setenv("HIGH_MISS_RATE_THRESHOLD", "   ")
+        assert health._threshold("HIGH_MISS_RATE_THRESHOLD", 0.98) == 0.98
+
+    def test_the_setting_is_read_per_call_not_once_at_import(self, monkeypatch):
+        """main.py calls load_dotenv() after its service imports, so a value
+        read at import is not there yet on any start that does not already
+        carry it: a setting given only in backend/.env would do nothing.
+        """
+        monkeypatch.setenv("HIGH_MISS_RATE_THRESHOLD", "0.10")
+        assert health._threshold("HIGH_MISS_RATE_THRESHOLD", 0.98) == 0.10
+        monkeypatch.setenv("HIGH_MISS_RATE_THRESHOLD", "0.20")
+        assert health._threshold("HIGH_MISS_RATE_THRESHOLD", 0.98) == 0.20
+
+    def test_node_dropout_threshold_is_read_the_same_way(self, monkeypatch):
+        """The older of the two settings, which had both faults before this
+        helper existed."""
+        monkeypatch.setenv("NODE_DROPOUT_THRESHOLD", "not-a-number")
+        assert health._threshold("NODE_DROPOUT_THRESHOLD", 0.8) == 0.8

@@ -402,8 +402,16 @@ Check `/api/radar/analytics` for per-node data. If specific nodes have bad calib
 
 ### `high_miss_rate`
 
-**Trigger:** Average per-node miss rate > 70% across nodes that have aircraft in range.  
-**What it means:** Most aircraft that should be detectable aren't being detected. Either node configs have wrong beam geometry, or the association logic has a threshold issue.
+**Trigger:** Average per-node miss rate above `HIGH_MISS_RATE_THRESHOLD` (default 0.98) across nodes that have aircraft in range.  
+**What it means:** The network is seeing almost nothing. This is a tripwire, not a measure of how well the fleet is doing.
+
+**Read the number correctly before acting on it.** The miss rate counts ADS-B
+aircraft inside a node's *theoretical* beam wedge that its tracker did not
+detect, and for passive bistatic radar that wedge is a much larger set than
+what is physically detectable: low RCS, poor bistatic geometry, terrain and
+receiver sensitivity all put aircraft in the wedge no node could see. A high
+reading is the normal operating point. Production reports 72-94% when it is
+working, so this alert means a reading well outside even that.
 
 **Check per-node miss rates:**
 ```bash
@@ -412,9 +420,18 @@ curl -sk https://localhost/api/admin/leaderboard | python3 -c \
 ```
 
 **Common causes:**
-1. Beam config too narrow — nodes not covering the claimed area
-2. `_point_in_beam()` check too strict relative to actual node geometry
-3. `_ASSOC_MIN_INTERVAL_S` too high preventing re-association (was 300 s, now 30 s)
+1. Ingest has stopped — check `stale_task:*` and `no_active_tracks`, which will
+   usually be firing alongside if the pipeline is the problem
+2. Nodes are connected but not detecting — compare the per-node rates above; a
+   fleet-wide 98% is a pipeline or ADS-B problem, one node at 100% is that node
+3. Beam config wrong after a config push — a node aimed at empty sky has every
+   aircraft in its claimed wedge and none in reality
+
+A reading that sits just above the threshold, rather than near 100%, is more
+likely the threshold being wrong than the network being blind: the floor moves
+with traffic, time of day and which nodes are up. See `docs/alerting.md`, and
+ClickUp 86cb81gkn for replacing the measure with one that tracks a node against
+its own history.
 
 ---
 

@@ -114,7 +114,9 @@ webhook receiver (e.g. Slack workflow rules).
 
 Most are constants in `services/health.py`. Two are settings, because the
 right value depends on the box: `NODE_DROPOUT_THRESHOLD` (default 0.8) and
-`HIGH_MISS_RATE_THRESHOLD` (default 0.95).
+`HIGH_MISS_RATE_THRESHOLD` (default 0.98). Both are read per call and fall
+back to their default on a value that does not parse, so a stray entry
+degrades one check rather than stopping the server booting.
 
 `high_miss_rate` needs care when reading it. The rate counts ADS-B aircraft
 inside a node's theoretical beam wedge that the node's tracker did not

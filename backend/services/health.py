@@ -25,7 +25,7 @@ from core import state
 CRITICAL = "critical"
 WARNING = "warning"
 
-_NODE_DROPOUT_THRESHOLD = float(os.getenv("NODE_DROPOUT_THRESHOLD", "0.8"))
+_DEFAULT_NODE_DROPOUT_THRESHOLD = 0.8
 
 # Fleet-average miss rate above which the network counts as blind.
 #
@@ -40,12 +40,41 @@ _NODE_DROPOUT_THRESHOLD = float(os.getenv("NODE_DROPOUT_THRESHOLD", "0.8"))
 # replaced it, flapping across the old 0.7 and costing a fire-and-resolve
 # pair each crossing.
 #
-# This keeps the check as a tripwire for a network that has actually gone
-# blind. It is not a fix: no absolute threshold can be, because the floor
-# moves with traffic, time of day and which nodes are up and where they
-# point. Replacing the measure with one that tracks a node against its own
-# history is ClickUp 86cb81gkn.
-_HIGH_MISS_RATE_THRESHOLD = float(os.getenv("HIGH_MISS_RATE_THRESHOLD", "0.95"))
+# Set clear of that band rather than just past it: the worst reading on
+# record is 94%, so a boundary at 0.95 would leave one point of headroom and
+# go on flapping on a bad day. What is left is a tripwire for a network that
+# has actually gone blind, which is a reading near 100%.
+#
+# It is not a fix: no absolute threshold can be, because the floor moves with
+# traffic, time of day and which nodes are up and where they point.
+# Replacing the measure with one that tracks a node against its own history
+# is ClickUp 86cb81gkn.
+_DEFAULT_HIGH_MISS_RATE_THRESHOLD = 0.98
+
+
+def _threshold(name: str, default: float) -> float:
+    """Read a threshold setting, falling back to `default` if it is unusable.
+
+    Read on each call rather than once at import, for the reason
+    services/alerting.py gives at length: main.py calls load_dotenv() after
+    its service imports, so an import-time read sees an empty environment on
+    any start that does not already carry the variables. A value set only in
+    backend/.env would silently do nothing, which is worse than not offering
+    the setting at all.
+
+    Never raises. compute_health_issues() backs the container's liveness
+    probe, and float() on a stray value read at import would take the server
+    down at boot rather than degrade a single check.
+    """
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logging.warning("malformed %s=%r, using default %s", name, raw, default)
+        return default
+
 
 # Critical pipeline tasks and the max age (s) of their last success before stale.
 _CRITICAL_TASKS = {"frame_processor": 20, "analytics_refresh": 120, "aircraft_flush": 15}
@@ -104,7 +133,8 @@ def compute_health_issues() -> list[dict]:
     # Node dropout (active < 80% of peak)
     with state.connected_nodes_lock:
         active_nodes = sum(1 for n in state.connected_nodes.values() if n.get("status") != "disconnected")
-    if state.peak_connected_nodes > 10 and active_nodes < state.peak_connected_nodes * _NODE_DROPOUT_THRESHOLD:
+    node_dropout_threshold = _threshold("NODE_DROPOUT_THRESHOLD", _DEFAULT_NODE_DROPOUT_THRESHOLD)
+    if state.peak_connected_nodes > 10 and active_nodes < state.peak_connected_nodes * node_dropout_threshold:
         add("node_dropout", CRITICAL, f"Node dropout: {active_nodes}/{state.peak_connected_nodes} active")
 
     # Zero tracks after warmup (pipeline failure)
@@ -145,14 +175,14 @@ def compute_health_issues() -> list[dict]:
     except Exception:
         logging.debug("health probe failed", exc_info=True)
 
-    # Fleet-wide miss rate (see _HIGH_MISS_RATE_THRESHOLD for what it measures
-    # and why the boundary sits where it does)
+    # Fleet-wide miss rate (see _DEFAULT_HIGH_MISS_RATE_THRESHOLD for what it
+    # measures and why the boundary sits where it does)
     try:
         if state.latest_missed_detections:
             rates = [v["miss_rate"] for v in state.latest_missed_detections.values() if v.get("in_range", 0) > 0]
             if rates:
                 avg = sum(rates) / len(rates)
-                if avg > _HIGH_MISS_RATE_THRESHOLD:
+                if avg > _threshold("HIGH_MISS_RATE_THRESHOLD", _DEFAULT_HIGH_MISS_RATE_THRESHOLD):
                     add("high_miss_rate", WARNING, f"High miss rate ({avg:.0%})")
     except Exception:
         logging.debug("health probe failed", exc_info=True)
