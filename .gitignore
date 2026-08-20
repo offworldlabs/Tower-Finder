@@ -49,9 +49,15 @@ frontend/test-results/.last-run.json
 /local-livemap-*.png
 /postdeploy-*.png
 
-# Auto-generated backend runtime state + python coverage artefacts
+# Auto-generated backend runtime state + python coverage artefacts.
+# .coverage.* covers pytest-cov's parallel-mode fragments
+# (.coverage.<host>.<pid>.<rand>) — one of those slipped into 3b4267f
+# because only the bare filename was ignored, and every subsequent test
+# run's coverage-combine deleted it again, leaving a permanent phantom
+# deletion in git status.
 backend/data/runtime/
 .coverage
+.coverage.*
 
 # local testmap runner (justfile) pids/logs
 .testmap-run/
