@@ -69,18 +69,28 @@ def write_runtime_file(path: Path, content: str) -> None:
     name would have been reused by the next write; that is accepted, because an
     unreadable config is worse than a stray file.
 
-    The content is flushed to disk before the rename. Without that the rename is
-    still atomic, but it can publish a file whose bytes have not landed, so a
-    power loss leaves a config that is present, empty, and unusable, which is
-    the failure this function exists to prevent.
+    The content is flushed to disk before the rename, and the directory after it.
+    Without the first, the rename can publish a file whose bytes have not landed,
+    so a power loss leaves a config that is present, empty and unusable, which is
+    the failure this function exists to prevent. Without the second, the rename
+    itself may not survive, which is less serious (the reader still sees the old
+    file rather than a broken one) but leaves the write silently undone.
+
+    The encoding is pinned because the matching read pins it too, and the locale
+    inside a container is often C, where the default is ASCII.
     """
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        with tmp.open("w") as f:
+        with tmp.open("w", encoding="utf-8") as f:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
     finally:
         tmp.unlink(missing_ok=True)
 

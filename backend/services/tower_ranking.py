@@ -15,8 +15,13 @@ _CONFIG_PATH = runtime_path("tower_config.json")
 
 
 def _read_config(path) -> dict:
-    """Read and parse one config file. Raises OSError or ValueError on failure."""
-    with path.open() as f:
+    """Read and parse one config file. Raises OSError or ValueError on failure.
+
+    The encoding is pinned rather than left to the locale: these files are
+    edited by hand inside a container whose locale is often C, where the
+    default is ASCII and any non-ASCII byte in the file would fail to decode.
+    """
+    with path.open(encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -236,10 +241,43 @@ def apply_config(cfg: dict) -> None:
 # /api/health and the alerter rather than only in one ERROR line at boot.
 config_fallback_reason: str | None = None
 
-# The shapes a config file can be wrong in: unreadable (OSError), not JSON or a
-# bad value (ValueError), a section of the wrong type (TypeError/AttributeError),
-# or missing a key apply_config indexes directly (KeyError).
-_CONFIG_ERRORS = (OSError, ValueError, TypeError, KeyError, AttributeError)
+# How reading a config file fails: absent or unreadable (OSError), not JSON or
+# not decodable (ValueError). Anything beyond these two reaches apply_config
+# only after validate_config has passed the config, so it is a bug in this
+# module rather than a fault in the file.
+_CONFIG_ERRORS = (OSError, ValueError)
+
+
+def _apply_candidate(load) -> str | None:
+    """Load, validate and apply one config source. Returns why it failed, or None.
+
+    Never raises. reload_config() runs at import, so the only useful outcome of
+    a failure is a reason to log before moving on to the next source; letting
+    one escape would be the outage this whole path exists to avoid.
+
+    Validating here, and not only on write, is what lets a config that is
+    applicable but broken be rejected. PUT /api/config cannot be the only gate:
+    the overlay is a docker volume, so the configs that matter most are the ones
+    edited by hand inside it, which never pass through the endpoint at all.
+    """
+    try:
+        cfg = load()
+        if cfg is None:
+            return "no config available"
+        error = validate_config(cfg)
+        if error:
+            return error
+        apply_config(cfg)
+        return None
+    except _CONFIG_ERRORS as exc:
+        return f"{type(exc).__name__}: {exc}"
+    except Exception as exc:
+        # Not a shape a config file can take, so this is a bug in validate_config
+        # or apply_config rather than a bad config. Say which: the caller's
+        # message would otherwise send the reader off to audit a file that is
+        # perfectly fine.
+        logger.critical("tower_config: applying a config failed unexpectedly, this is a bug", exc_info=True)
+        return f"unexpected {type(exc).__name__}: {exc}"
 
 
 def reload_config() -> None:
@@ -251,38 +289,31 @@ def reload_config() -> None:
     An unusable overlay is logged, recorded in config_fallback_reason for the
     health check, and replaced by the shipped defaults: a degraded ranking
     rather than a dead service.
+
+    Every apply goes through _apply_candidate, so no failure escapes. If none of
+    the sources can be applied, the settings already in effect stay, which on
+    first import are the in-code defaults seeded below.
     """
     global config_fallback_reason
 
-    try:
-        apply_config(_load_config())
+    reason = _apply_candidate(_load_config)
+    if reason is None:
         config_fallback_reason = None
         return
-    except _CONFIG_ERRORS as exc:
-        reason = f"{type(exc).__name__}: {exc}"
-        logger.error("tower_config: %s is unusable (%s), falling back to defaults", _CONFIG_PATH, reason)
-    except Exception as exc:
-        # Not a shape a config file can take, so this is a bug in apply_config
-        # rather than a bad config. Still fail soft, because this runs at
-        # import, but say which it is: the message above would send the reader
-        # off to audit a config file that is perfectly fine.
-        reason = f"unexpected {type(exc).__name__}: {exc}"
-        logger.critical("tower_config: loader failed unexpectedly, this is a bug and not a bad config", exc_info=True)
+    logger.error("tower_config: %s is unusable (%s), falling back to defaults", _CONFIG_PATH, reason)
 
-    fallback = _default_config()
-    if fallback is not None:
-        try:
-            apply_config(fallback)
-            config_fallback_reason = reason
-            return
-        except _CONFIG_ERRORS:
-            logger.error("tower_config: the shipped defaults are unusable too", exc_info=True)
+    if _apply_candidate(_default_config) is None:
+        config_fallback_reason = reason
+        return
 
-    # Nothing usable anywhere: apply an empty config so every setting takes its
-    # in-code default and the process can at least start.
-    apply_config({})
+    logger.error("tower_config: the shipped defaults are unusable too, keeping the settings already in effect")
     config_fallback_reason = reason
 
+
+# Seed every setting from the in-code defaults before any file is read, so they
+# all exist whatever happens next. apply_config({}) takes no input that can
+# vary, so unlike the calls inside reload_config() it cannot fail on data.
+apply_config({})
 
 # Initialise on import
 reload_config()
@@ -574,8 +605,9 @@ def process_and_rank(
         if has_user_freqs:
             parts.append(0 if t.get("frequency_matched") else 1)
         for rule in SORT_ORDER:
-            # Fields are constrained to _SORTABLE_FIELDS on write, which is what
-            # keeps the negation below from meeting a string.
+            # Fields are constrained to _SORTABLE_FIELDS both on write and on
+            # load, which is what keeps the negation below from meeting a
+            # string. Loosening either gate reintroduces that crash.
             field = rule["field"]
             asc = rule.get("ascending", True)
             if field == "band_priority":

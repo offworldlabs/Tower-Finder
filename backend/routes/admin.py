@@ -420,8 +420,10 @@ async def update_node_config(body: ConfigUpdate, _admin=Depends(require_admin)):
     ts = int(time.time())
     if fp.exists():
         history_fp = _CONFIG_DIR / f"nodes_{ts}.json"
-        history_fp.write_text(fp.read_text())
-    fp.write_text(json.dumps(body.config, indent=2))
+        write_runtime_file(history_fp, fp.read_text(encoding="utf-8"))
+    # Atomic for the same reason as the tower config below: this is a runtime
+    # overlay in the same volume, and a truncated one outlives the request.
+    write_runtime_file(fp, json.dumps(body.config, indent=2))
     log_event("config", "Node config updated", "info")
     return {"status": "ok", "saved_at": ts}
 
@@ -446,7 +448,7 @@ async def update_tower_config(body: ConfigUpdate, _admin=Depends(require_admin))
     ts = int(time.time())
     if fp.exists():
         history_fp = _CONFIG_DIR / f"towers_{ts}.json"
-        history_fp.write_text(fp.read_text())
+        write_runtime_file(history_fp, fp.read_text(encoding="utf-8"))
     # Atomic: services/tower_ranking reads this file at import, so a reader must
     # never catch it half-written.
     write_runtime_file(fp, json.dumps(body.config, indent=2))

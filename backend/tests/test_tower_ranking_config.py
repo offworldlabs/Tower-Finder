@@ -122,15 +122,33 @@ class TestParseUserFrequenciesEdgeCases:
 # ── Config validation + fail-soft reload ─────────────────────────────────────
 
 
+# Everything reload_config()/apply_config() assign, so a fixture can put the
+# module back exactly as it found it.
+_CONFIG_GLOBALS = (
+    "RX_ANTENNA_GAIN_DBI",
+    "SENSITIVITY_DBM",
+    "BROADCAST_BANDS",
+    "BAND_PRIORITY",
+    "DISTANCE_CLASSES",
+    "DISTANCE_PRIORITY",
+    "SORT_ORDER",
+    "DEFAULT_RADIUS_KM",
+    "DEFAULT_LIMIT",
+    "config_fallback_reason",
+)
+
+
 @pytest.fixture()
 def scratch_config(tmp_path):
     """Point reload_config() at a scratch overlay, restoring the real one after.
 
-    Saves and restores the attribute directly rather than going through
-    monkeypatch: monkeypatch.undo() reverts every patch registered on the
-    per-test instance, which the fixture shares with the test function, so a
-    test that patches something of its own would have it torn down here.
+    Restores by putting the saved values back rather than by calling
+    reload_config(): a fixture's teardown runs before pytest unwinds the test's
+    own monkeypatches, so reloading here would do so through whatever the test
+    had patched. Saving and restoring the attributes directly depends on
+    nothing the test can have replaced.
     """
+    saved = {name: getattr(tower_ranking, name) for name in _CONFIG_GLOBALS}
     real = tower_ranking._CONFIG_PATH
     path = tmp_path / "tower_config.json"
     tower_ranking._CONFIG_PATH = path
@@ -138,7 +156,8 @@ def scratch_config(tmp_path):
         yield path
     finally:
         tower_ranking._CONFIG_PATH = real
-        tower_ranking.reload_config()
+        for name, value in saved.items():
+            setattr(tower_ranking, name, value)
 
 
 def _shipped_default() -> dict:
@@ -257,6 +276,40 @@ class TestApplyConfig:
         assert tower_ranking.SORT_ORDER[0] == {"field": "coverage_area_added_km2", "ascending": False}
 
 
+class TestReloadConfigNeverRaises:
+    """reload_config() runs at import, so nothing it calls may escape it."""
+
+    def test_a_bug_in_apply_config_does_not_kill_startup(self, scratch_config, monkeypatch):
+        # The fallback re-applies a config through the same apply_config that
+        # just failed, so an unprotected second call turns any bug in it into a
+        # failed import: the outage the fail-soft path exists to prevent.
+        scratch_config.write_text("{}")
+
+        def _boom(cfg):
+            raise ZeroDivisionError("bug in apply")
+
+        monkeypatch.setattr(tower_ranking, "apply_config", _boom)
+
+        tower_ranking.reload_config()
+
+        assert "ZeroDivisionError" in tower_ranking.config_fallback_reason
+
+    def test_an_invalid_config_on_disk_is_rejected_on_load(self, scratch_config):
+        """Validation cannot be a write-time gate only.
+
+        The overlay is a docker volume, so the configs that matter most are the
+        ones edited by hand inside it, which never pass through the endpoint.
+        This one applies without raising and then breaks every search, because
+        _sort_key() negates a descending value.
+        """
+        scratch_config.write_text(json.dumps({"ranking": {"sort_order": [{"field": "callsign", "ascending": False}]}}))
+
+        tower_ranking.reload_config()
+
+        assert tower_ranking.SORT_ORDER[0]["field"] == "coverage_area_added_km2"
+        assert "callsign" in tower_ranking.config_fallback_reason
+
+
 class TestReloadConfigFailSoft:
     """A bad overlay must degrade to defaults, not stop the process booting.
 
@@ -279,14 +332,22 @@ class TestReloadConfigFailSoft:
 
         assert _shipped_default()["search"]["default_limit"] == tower_ranking.DEFAULT_LIMIT
 
-    def test_never_raises_without_shipped_defaults(self, scratch_config, monkeypatch):
-        """Last resort: no usable overlay and no shipped default, still boots."""
+    def test_keeps_working_settings_when_nothing_can_be_loaded(self, scratch_config, monkeypatch):
+        """Last resort: no usable overlay and no shipped default, still boots.
+
+        The settings already in effect stay rather than being reset, because a
+        stale but working ranking beats an empty one. On first import those are
+        the in-code defaults seeded before any file is read.
+        """
+        before = list(tower_ranking.DISTANCE_CLASSES)
+        assert before, "fixture should start from a loaded config"
         scratch_config.write_text("{ not json")
         monkeypatch.setattr(tower_ranking, "_default_config", lambda: None)
 
         tower_ranking.reload_config()
 
-        assert tower_ranking.DISTANCE_CLASSES == []
+        assert before == tower_ranking.DISTANCE_CLASSES
+        assert "JSONDecodeError" in tower_ranking.config_fallback_reason
 
     def test_fallback_records_a_reason(self, scratch_config):
         scratch_config.write_text("{ not json")

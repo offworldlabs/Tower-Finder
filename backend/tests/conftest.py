@@ -451,3 +451,19 @@ async def registered_node(node_session):
     await node_pipeline.register_with_pipeline(node_session, node)
     await node_session.commit()
     return token, _NODE_ID
+
+
+@pytest.fixture(autouse=True)
+def _clear_config_fallback():
+    """Start every test with the tower config reported as healthy.
+
+    services/health.py reads tower_ranking.config_fallback_reason, so a test
+    that exercises the fail-soft path would otherwise leave an unrelated file's
+    `compute_health_issues() == []` assertion failing, with nothing at that
+    assertion to explain why.
+    """
+    from services import tower_ranking
+
+    tower_ranking.config_fallback_reason = None
+    yield
+    tower_ranking.config_fallback_reason = None

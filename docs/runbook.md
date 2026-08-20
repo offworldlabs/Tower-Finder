@@ -216,6 +216,27 @@ curl -sk https://localhost/api/admin/metrics | python3 -m json.tool
 
 ---
 
+### `config_degraded` (sub-check of `health_degraded`)
+
+**Trigger:** `tower_config.json` could not be read, parsed or validated, so the process is running on the shipped defaults.
+**What it means:** the config on disk is **not** the config in effect. `GET /api/config` returns the file, which is the one being ignored, so the two disagree until this is fixed. Tower ranking still works; it just uses the defaults that ship with the image.
+
+The alert message carries the reason, e.g. `tower_config.json unusable, running on defaults (KeyError: 'max_km')`, or a validation message naming the field.
+
+**Check what the process actually loaded:**
+```bash
+docker compose logs backend | grep tower_config
+```
+
+**Common causes:**
+1. The overlay was edited by hand inside the volume and is no longer valid. The endpoints validate on write, so a config that arrives this way is the usual source.
+2. A field was renamed or removed in an image upgrade while the volume kept the old file. The volume survives `docker compose up -d --build`, so a redeploy does not clear it.
+3. The file is not readable, or not UTF-8.
+
+**Fix:** correct the file in the volume, then either `PUT /api/config` with a valid body (which validates before writing) or restart the service. The alert clears once a config loads cleanly.
+
+---
+
 ### `frame_queue_saturated` (sub-check of `health_degraded`)
 
 **Trigger:** `frame_queue` depth > 90% of max (default max: 10 000).  
