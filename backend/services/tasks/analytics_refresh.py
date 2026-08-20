@@ -10,16 +10,12 @@ import time
 import numpy as np
 import orjson
 
-from config.constants import (
-    ANALYTICS_REFRESH_INTERVAL_S,
-    YAGI_BEAM_WIDTH_DEG,
-    YAGI_MAX_RANGE_KM,
-)
+from config.constants import ANALYTICS_REFRESH_INTERVAL_S
 from config.constants import (
     DELAY_MATCH_THRESHOLD_US as _DELAY_MATCH_THRESHOLD_US,
 )
 from core import state
-from services.geo import bearing_deg, bistatic_delay_us, haversine_km, point_in_beam
+from services.geo import bearing_deg, bistatic_delay_us, haversine_km, node_beam_params, point_in_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
 
@@ -347,8 +343,11 @@ def _bistatic_angle_deg(
 
 
 # Was a byte-for-byte duplicate of frame_processor's, which was itself a copy
-# of the library's.  Aliased rather than renamed at the ~12 call sites below
-# because tests import it from this module by name.
+# of the library's.  The beam-azimuth derivation below now resolves through
+# geo.node_beam_params instead of calling this directly, so only the FOV
+# bearing lookup still uses it; kept under this name (rather than inlined or
+# renamed) because tests/test_analytics_refresh_helpers.py imports it from
+# this module by name.
 _bearing_deg = bearing_deg
 
 
@@ -469,20 +468,19 @@ def _refresh_missed_detections(nodes_snapshot: list):
         if not all((rx_lat, rx_lon, tx_lat, tx_lon)):
             continue
 
-        beam_width = float(cfg.get("beam_width_deg") or YAGI_BEAM_WIDTH_DEG)
-        max_range = float(cfg.get("max_range_km") or YAGI_MAX_RANGE_KM)
-        beam_azimuth = cfg.get("beam_azimuth_deg")
-        if beam_azimuth is None:
-            # Default: Yagi sits perpendicular to the RX→TX baseline, so the
-            # boresight is rotated +90° from the direct RX→TX bearing.
-            # Nodes with a different antenna orientation should set beam_azimuth_deg
-            # explicitly in their config to avoid incorrect missed-detection counts.
-            beam_azimuth = (_bearing_deg(rx_lat, rx_lon, tx_lat, tx_lon) + 90.0) % 360.0
+        # Resolved the same way every module resolves it: explicit aim, else
+        # broadside off the RX→TX baseline (Yagi sits perpendicular to it),
+        # else omnidirectional; width falls back to the shared YAGI default.
+        # tx_lat/tx_lon are already known truthy from the `all(...)` check
+        # above, so beam_azimuth can't come back None here.
+        params = node_beam_params(cfg)
+        beam_width = params["beam_width_deg"]
+        max_range = params["max_range_km"]
+        beam_azimuth = params["beam_azimuth_deg"]
 
         # Score against the same range rule the node detects under; see
         # _aircraft_in_beam. Absent key → monostatic, unchanged for hardware.
-        max_bistatic = cfg.get("max_bistatic_range_km")
-        max_bistatic = float(max_bistatic) if max_bistatic is not None else None
+        max_bistatic = params["max_bistatic_range_km"]
 
         # FOV_MODE active only: score in_range against the learned FOV
         # instead of the theoretical wedge — off and shadow keep today's
