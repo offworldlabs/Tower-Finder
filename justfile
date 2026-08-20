@@ -268,7 +268,7 @@ logs:
 # learns what the infrastructure is called or where it lives. Set RETINA_TEST_HOST
 # to whatever your own ~/.ssh/config calls it.
 host_test := env_var_or_default("RETINA_TEST_HOST", "retina-test")
-app_test  := env_var_or_default("RETINA_TEST_APP_DIR", "/opt/tower-finder")
+app_test  := env_var_or_default("RETINA_TEST_APP_DIR", "/opt/retina-server")
 
 # rsync the working tree to retina-test and rebuild the stack there
 deploy-test:
