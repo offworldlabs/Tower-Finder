@@ -418,8 +418,8 @@ class TestSliceAAbsence:
         assert _run(_stub_solve()) == 0
         assert state.known_lane_attempts == 0
 
-    def test_absent_mode_reads_as_off(self):
-        assert not hasattr(state, "KNOWN_LANE_MODE")
+    def test_absent_mode_reads_as_off(self, monkeypatch):
+        monkeypatch.delattr(state, "KNOWN_LANE_MODE")
         assert known_lane._mode() == "off"
         state.known_claims = {HEX: deque(_mk_claims(["node_a", "node_b"]))}
         assert known_lane.run_known_lane_pass(_stub_solve(), NODE_CFGS) == 0
@@ -446,9 +446,10 @@ class TestMaybeRunPass:
         known_lane.maybe_run_pass(_stub_solve(), mode="off")
         assert state.known_lane_attempts == 0
 
-    def test_live_flag_absent_is_a_noop(self):
-        """What the leaked worker daemons see on this branch: no flag, no
-        pass, no side effects."""
+    def test_live_flag_absent_is_a_noop(self, monkeypatch):
+        """Defensive read: a tree without KNOWN_LANE_MODE (or a rollback that
+        drops it) must leave the worker hook inert — no pass, no side effects."""
+        monkeypatch.delattr(state, "KNOWN_LANE_MODE")
         _install(_mk_claims(["node_a", "node_b"]))
         known_lane.maybe_run_pass(_stub_solve())
         assert state.known_lane_attempts == 0

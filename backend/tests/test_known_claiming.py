@@ -306,9 +306,17 @@ class TestRegistryContract:
 
 
 class TestNodeBiasHook:
-    def test_missing_module_degrades_silently(self):
-        """services.node_bias lands in a sibling slice — in this tree the
-        import fails, and claiming must proceed without it, once."""
+    def test_missing_module_degrades_silently(self, monkeypatch):
+        """services.node_bias is optional at import time — a tree without it
+        (or a rollback that drops it) must claim normally, and the ImportError
+        verdict must be cached once.  Its presence in THIS tree means absence
+        has to be simulated: None in sys.modules makes the import raise, and
+        the package attribute (bound by conftest's reset imports) must go too
+        or `from services import node_bias` never reaches the import system."""
+        import services
+
+        monkeypatch.delattr(services, "node_bias")
+        monkeypatch.setitem(sys.modules, "services.node_bias", None)
         kc._reset_for_tests()
         _register()
         ts = int(time.time() * 1000)
