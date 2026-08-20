@@ -149,7 +149,20 @@ jobs:
       # recover the same lines, and sysmon does it at a fraction of that
       # setting's cost. ONBOARDING, "Running tests", covers what this means for a
       # local figure that does not match this one.
-      - run: pytest tests/ -v --tb=short -m "not external"
+      # -n 2 matches the runner's two vCPUs. `worksteal` rather than the default
+      # `load` scheduler, and this is the whole difference between the change
+      # being worth making and not: `load` deals the tests out up front, and
+      # this suite is uneven enough that one worker finished while the other
+      # still had two thirds of the run left, for a gain in the low tens of
+      # seconds. `worksteal` rebalances as workers free up and roughly halves
+      # the suite. Anyone benchmarking `-n 2` on its own will measure the
+      # disappointing number and conclude xdist does not suit this suite.
+      #
+      # On the command line rather than in pyproject's addopts, so a local
+      # `pytest` stays serial: -x stops at a different place under xdist and
+      # --pdb cannot attach to a worker, and both are wanted more often when
+      # debugging than the speed is.
+      - run: pytest tests/ -v --tb=short -m "not external" -n 2 --dist worksteal
 
   frontend-build:
     runs-on: ubuntu-latest

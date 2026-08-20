@@ -1,8 +1,5 @@
 """Tests for detection archive storage module."""
 
-import os
-import shutil
-
 import pytest
 
 from services.storage import archive_detections, list_archived_files, read_archived_file
@@ -10,19 +7,20 @@ from services.storage import archive_detections, list_archived_files, read_archi
 
 class TestArchiveStorage:
     @pytest.fixture(autouse=True)
-    def cleanup_archive(self):
-        """Remove test node data after each test."""
-        yield
-        archive_dir = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
-            "coverage_data",
-            "archive",
-        )
-        if os.path.exists(archive_dir):
-            for child in os.listdir(archive_dir):
-                p = os.path.join(archive_dir, child)
-                if os.path.isdir(p):
-                    shutil.rmtree(p)
+    def isolated_archive(self, monkeypatch, tmp_path):
+        """Point the archive at a per-test directory.
+
+        These tests used to write into the real backend/coverage_data/archive
+        and delete every subdirectory of it afterwards. That is shared between
+        concurrent suite runs, so one run's cleanup deletes another's parquet
+        files mid-write, which surfaces as a FileNotFoundError from
+        list_archived_files in whichever run loses. Two worktrees at once
+        reproduces it; xdist workers would too. tmp_path is per test and pytest
+        disposes of it, so nothing has to be torn down by hand. Matches
+        test_storage_listing.py and test_parquet_writer.py, which already do
+        this.
+        """
+        monkeypatch.setattr("services.storage._LOCAL_ARCHIVE_DIR", str(tmp_path))
 
     def test_archive_returns_key(self):
         key = archive_detections(

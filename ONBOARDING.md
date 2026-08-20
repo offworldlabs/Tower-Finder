@@ -157,9 +157,18 @@ Trust pytest's **exit status**, not the tail of its output. The warnings block
 and the coverage footer both print after the summary line, so piping the run
 into `tail` loses the `N passed` and a passing-looking tail proves nothing.
 
-`RADAR_TCP_PORT` defaults to `3012` (`backend/main.py`) and the suite binds it.
-Two suites running at once, typically from two worktrees, give bogus route and
-health errors in whichever started second. Set the variable in one of them.
+Two suites can now run at once, from two worktrees, without interfering. They
+could not before: `backend/main.py` binds `RADAR_TCP_PORT` (default `3012`) in
+the app lifespan, and `tests/test_storage.py` wrote into the shared
+`backend/coverage_data/archive` and deleted its contents afterwards, so a second
+run got bogus route and health errors from the port and the occasional
+`FileNotFoundError` from the archive. `tests/conftest.py` now asks the kernel
+for an ephemeral port, and those tests use `tmp_path`. The database path has
+been per-pid for longer, for the same reason.
+
+This is also what lets CI run the suite under `pytest-xdist`; see the comment on
+the pytest step in `.github/workflows/ci.yml` for why it passes
+`--dist worksteal` and why the flags are not in `addopts`.
 
 `COVERAGE_CORE=sysmon` above is not decoration, and CI sets it too. Without it,
 coverage measures through `sys.settrace`, which is per execution context, so
