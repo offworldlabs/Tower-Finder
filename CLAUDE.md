@@ -24,3 +24,9 @@ FastAPI backend and React front-ends for the RETINA passive-radar network.
   accounts in anything committed here.
 - **Configuration lives in `backend/.env`**, which is gitignored. Add new keys to
   `backend/.env.example` so the list stays current.
+- **Verify on the live map after deploying.** Green tests do not cover the
+  compose/env/frontend seams. After any change ships to an environment, open
+  that environment's map surface in a real browser — `test-map.retina.fm` for
+  the test droplet, `testmap.retina.fm` for staging (Claude: use the Chrome
+  browser tools) — and confirm the map renders, aircraft and solves appear,
+  and the change behaves as intended before calling the deploy done.
