@@ -305,9 +305,11 @@ def send_alert(alert_type: str, message: str, meta: dict | None = None) -> None:
         rather than by backdating the reservation, so that it survives
         ALERT_COOLDOWN_S changing between this failure and the next send.
 
-        Only acts on the slot this call reserved: if a newer send has since
-        claimed it (the stored value is no longer exactly `now`), that claim
-        is left alone rather than clobbered.
+        Only acts on the slot this call reserved, leaving anything else
+        alone. That must stay true independently of _in_flight: the two
+        guards are what make the reopen safe, and _in_flight is the weaker
+        of them, being a whole-delivery lock that a later change could
+        narrow or drop without any signal that this reopen depended on it.
         """
         with _lock:
             if _last_sent.get(alert_type) != now:

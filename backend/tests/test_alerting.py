@@ -1060,12 +1060,14 @@ class TestCooldownAfterFailedDelivery:
         assert reopen_at <= time.time() + _alerting._FAILURE_REOPEN_S
 
     def test_failed_release_does_not_clobber_slot_claimed_by_later_send(self, monkeypatch):
-        """Compare-and-restore: if a later send has already claimed the slot
-        by the time an earlier, failing send tries to release it, the
-        earlier release must leave the newer value alone. Exercised
-        deterministically (no real threads) by having the mocked POST itself
-        overwrite _last_sent before raising, simulating a second caller
-        claiming the slot while the first call's request is in flight.
+        """A failing send must leave a slot it does not own alone, rather
+        than reopening someone else's reservation.
+
+        The in-flight guard should stop a second send ever claiming the slot
+        mid-delivery, so this drives the state directly rather than through
+        send_alert: it pins the reopen's own precondition, which has to hold
+        whatever _in_flight is doing, and not the reachability of the race
+        through today's call path.
         """
         monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://test-hook/alert")
         monkeypatch.setenv("ALERT_COOLDOWN_S", "3600")
