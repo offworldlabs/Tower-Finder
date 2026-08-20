@@ -29,7 +29,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          # The review skill reaches for `git diff <base>...HEAD` first and falls
+          # back to `git diff HEAD~1`; both want history a depth-1 clone does not
+          # have. Reviews were reaching for it, failing, and giving up before
+          # posting anything, which reads on the PR as a review with no findings.
+          fetch-depth: 0
 
       - name: Run Claude Code Review
         id: claude-review
@@ -40,7 +44,11 @@ jobs:
           plugins: 'code-review@claude-code-plugins'
           track_progress: true
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          # The git entries are read-only history commands the review skill is
+          # written around: without them it burns its turns on denied calls and
+          # stops before posting. Nothing here can mutate the repository, and
+          # the GitHub App is barred from touching workflow files regardless.
           claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git blame:*)"
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
