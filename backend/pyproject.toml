@@ -8,6 +8,14 @@ addopts = [
     "--cov-fail-under=55",
     "-q",
 ]
+# A per-test ceiling, so a runaway test fails in seconds and names itself
+# instead of consuming the CI job's whole 20 minute budget in silence. The cap
+# is deliberately far above any real test (the slowest is about 11s) because
+# its job is to catch pathology, not to police normal variation. thread method
+# so the failure carries a stack dump of where the test was stuck.
+timeout = 120
+timeout_method = "thread"
+
 asyncio_mode = "auto"
 markers = [
     "external: requires external API (open-meteo.com)",
