@@ -41,6 +41,95 @@ def _default_config() -> dict | None:
         return None
 
 
+def _is_number(value) -> bool:
+    # bool subclasses int, but a JSON true where a number belongs is a mistake.
+    #
+    # NaN and ±Infinity are rejected too. json.loads accepts those bare literals,
+    # and every comparison against NaN is False, so an unfiltered NaN passes each
+    # range check below and is persisted. It surfaces much later and far from
+    # here: DEFAULT_LIMIT = nan makes towers[:effective_limit] raise TypeError on
+    # every search, and a NaN distance-class bound silently matches nothing.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value)
+
+
+def validate_config(cfg: dict) -> str | None:
+    """Return an error message if the tower config is unusable, else None.
+
+    Covers exactly what apply_config() consumes, so anything accepted here can
+    be applied without raising. Every section is optional — each has a default
+    below — but a section that is present must have the right shape. Same
+    contract as _validate_node_config in services/tcp_handler.py, which guards
+    the TCP path; the shapes differ because that one validates a node's config
+    and this one the server's.
+    """
+    if not isinstance(cfg, dict):
+        return f"config must be an object, got {type(cfg).__name__}"
+
+    for section in ("receiver", "ranking", "search", "broadcast_bands"):
+        value = cfg.get(section)
+        if value is not None and not isinstance(value, dict):
+            return f"{section} must be an object, got {type(value).__name__}"
+
+    receiver = cfg.get("receiver", {})
+    for key in ("rx_antenna_gain_dbi", "sensitivity_dbm"):
+        if key in receiver and not _is_number(receiver[key]):
+            return f"receiver.{key} must be a number, got {receiver[key]!r}"
+
+    for band, ranges in cfg.get("broadcast_bands", {}).items():
+        if not isinstance(ranges, list):
+            return f"broadcast_bands.{band} must be a list of [low, high] pairs"
+        for r in ranges:
+            if not isinstance(r, list) or len(r) != 2 or not all(_is_number(v) for v in r):
+                return f"broadcast_bands.{band} entry must be a [low, high] pair of numbers, got {r!r}"
+            if r[0] >= r[1]:
+                return f"broadcast_bands.{band} range is not ascending: {r!r}"
+
+    ranking = cfg.get("ranking", {})
+    for key in ("band_priority", "distance_priority"):
+        if key in ranking and not isinstance(ranking[key], dict):
+            return f"ranking.{key} must be an object, got {type(ranking[key]).__name__}"
+
+    classes = ranking.get("distance_classes")
+    if classes is not None:
+        if not isinstance(classes, list):
+            return f"ranking.distance_classes must be a list, got {type(classes).__name__}"
+        for i, dc in enumerate(classes):
+            if not isinstance(dc, dict):
+                return f"ranking.distance_classes[{i}] must be an object, got {type(dc).__name__}"
+            # apply_config() indexes these three directly rather than .get()ing
+            # them, which is what turned a wrong-shape PUT into a failed startup.
+            for key in ("label", "min_km", "max_km"):
+                if key not in dc:
+                    return f"ranking.distance_classes[{i}] is missing {key}"
+            if not isinstance(dc["label"], str) or not dc["label"]:
+                return f"ranking.distance_classes[{i}].label must be a non-empty string"
+            if not _is_number(dc["min_km"]):
+                return f"ranking.distance_classes[{i}].min_km must be a number, got {dc['min_km']!r}"
+            # max_km is nullable: the last class is open-ended.
+            if dc["max_km"] is not None:
+                if not _is_number(dc["max_km"]):
+                    return f"ranking.distance_classes[{i}].max_km must be a number or null, got {dc['max_km']!r}"
+                if dc["max_km"] <= dc["min_km"]:
+                    return f"ranking.distance_classes[{i}] has max_km <= min_km"
+
+    sort_order = ranking.get("sort_order")
+    if sort_order is not None:
+        if not isinstance(sort_order, list):
+            return f"ranking.sort_order must be a list, got {type(sort_order).__name__}"
+        for i, rule in enumerate(sort_order):
+            if not isinstance(rule, dict) or "field" not in rule:
+                return f"ranking.sort_order[{i}] must be an object with a field key"
+
+    search = cfg.get("search", {})
+    for key in ("default_radius_km", "default_limit"):
+        if key in search and (not _is_number(search[key]) or search[key] <= 0):
+            return f"search.{key} must be a positive number, got {search[key]!r}"
+
+    return None
+
+
 def apply_config(cfg: dict) -> None:
     """Push a config dict into the module-level settings.
 

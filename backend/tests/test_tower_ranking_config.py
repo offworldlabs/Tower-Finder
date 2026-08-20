@@ -147,6 +147,51 @@ def _shipped_default() -> dict:
     return tower_ranking._default_config()
 
 
+class TestValidateConfig:
+    def test_shipped_default_is_valid(self):
+        assert tower_ranking.validate_config(_shipped_default()) is None
+
+    def test_empty_config_is_valid(self):
+        # Every section is optional — apply_config() has a default for each.
+        assert tower_ranking.validate_config({}) is None
+
+    def test_distance_class_missing_max_km_rejected(self):
+        cfg = {"ranking": {"distance_classes": [{"label": "Ideal", "min_km": 8}]}}
+        assert "max_km" in tower_ranking.validate_config(cfg)
+
+    def test_open_ended_distance_class_accepted(self):
+        # A null max_km is the final open-ended class; apply maps it to inf.
+        cfg = {"ranking": {"distance_classes": [{"label": "Far", "min_km": 60, "max_km": None}]}}
+        assert tower_ranking.validate_config(cfg) is None
+
+    def test_non_numeric_min_km_rejected(self):
+        cfg = {"ranking": {"distance_classes": [{"label": "Ideal", "min_km": "eight", "max_km": 30}]}}
+        assert tower_ranking.validate_config(cfg) is not None
+
+    def test_non_object_section_rejected(self):
+        assert tower_ranking.validate_config({"receiver": "6 dBi"}) is not None
+
+    def test_broadcast_band_range_must_be_a_pair(self):
+        assert tower_ranking.validate_config({"broadcast_bands": {"FM": [[88.0]]}}) is not None
+
+    def test_nan_rejected(self):
+        # json.loads accepts the bare NaN literal, and every comparison against
+        # NaN is False, so an unguarded NaN slips past each range check and is
+        # persisted. DEFAULT_LIMIT = nan then makes every search raise TypeError.
+        cfg = json.loads('{"search": {"default_limit": NaN}}')
+        assert tower_ranking.validate_config(cfg) is not None
+
+    def test_infinity_rejected(self):
+        cfg = json.loads('{"receiver": {"sensitivity_dbm": -Infinity}}')
+        assert tower_ranking.validate_config(cfg) is not None
+
+    def test_nan_distance_bound_rejected(self):
+        # max_km <= min_km is False when either side is NaN, so the ordering
+        # check cannot catch this one on its own.
+        cfg = json.loads('{"ranking": {"distance_classes": [{"label": "A", "min_km": NaN, "max_km": 10}]}}')
+        assert tower_ranking.validate_config(cfg) is not None
+
+
 class TestApplyConfig:
     def test_raises_on_a_shape_it_cannot_apply(self):
         """PUT /api/config depends on this raising, to reject the write."""

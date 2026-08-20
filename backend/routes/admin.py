@@ -429,6 +429,16 @@ async def update_node_config(body: ConfigUpdate, _admin=Depends(require_admin)):
 @router.put("/config/towers")
 async def update_tower_config(body: ConfigUpdate, _admin=Depends(require_admin)):
     global _towers_config_cache
+    # Same file as PUT /api/config, so the same gate applies. This handler does
+    # not reload, which makes an unusable config worse here than there: it sits
+    # on disk until a restart tries to load it, long after the operator who
+    # wrote it has gone.
+    from services.tower_ranking import validate_config
+
+    error = validate_config(body.config)
+    if error:
+        raise HTTPException(status_code=400, detail=f"Invalid config: {error}")
+
     _towers_config_cache = None  # invalidate live cache
     fp = runtime_path("tower_config.json")
     fp.parent.mkdir(parents=True, exist_ok=True)

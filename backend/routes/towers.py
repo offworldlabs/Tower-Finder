@@ -16,9 +16,10 @@ from services.tower_ranking import (
     _CONFIG_PATH,
     DEFAULT_LIMIT,
     DEFAULT_RADIUS_KM,
+    apply_config,
     parse_user_frequencies,
     process_and_rank,
-    reload_config,
+    validate_config,
 )
 
 router = APIRouter()
@@ -219,9 +220,27 @@ async def update_config(body: dict, _admin=Depends(require_admin)):
     raw = json.dumps(body)
     if len(raw) > 1_000_000:
         raise HTTPException(status_code=413, detail="Config too large (max 1 MB)")
+
+    # Validate it, prove it applies, and only then write it. _CONFIG_PATH lives
+    # in a persistent docker volume and reload_config() runs at import, so a
+    # config that reaches disk without applying cleanly outlives both a restart
+    # and a redeploy, recoverable only by hand inside the volume. Writing last
+    # means the file only ever holds a config the running process has accepted,
+    # so there is no rollback to get wrong.
+    error = validate_config(body)
+    if error:
+        raise HTTPException(status_code=400, detail=f"Invalid config: {error}")
+
+    try:
+        apply_config(body)
+    except Exception as exc:
+        # validate_config has a gap. apply_config is all-or-nothing and the file
+        # is still untouched, so the running config is unchanged.
+        logging.exception("Config passed validation but would not apply")
+        raise HTTPException(status_code=400, detail=f"Config could not be applied: {exc}") from exc
+
     with open(_CONFIG_PATH, "w") as f:
         f.write(json.dumps(body, indent=2))
-    reload_config()
     return {"status": "updated"}
 
 
