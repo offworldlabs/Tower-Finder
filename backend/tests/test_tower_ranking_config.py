@@ -174,6 +174,30 @@ class TestValidateConfig:
     def test_broadcast_band_range_must_be_a_pair(self):
         assert tower_ranking.validate_config({"broadcast_bands": {"FM": [[88.0]]}}) is not None
 
+    def test_sort_order_field_must_be_sortable(self):
+        # _sort_key() negates a descending value, so a string field raises
+        # TypeError on every search: the same "valid shape, breaks at request
+        # time" fault as an unguarded NaN.
+        cfg = {"ranking": {"sort_order": [{"field": "callsign", "ascending": False}]}}
+        assert tower_ranking.validate_config(cfg) is not None
+
+    def test_sort_order_rejects_an_unknown_field(self):
+        cfg = {"ranking": {"sort_order": [{"field": "recieved_power_dbm"}]}}
+        assert "must be one of" in tower_ranking.validate_config(cfg)
+
+    def test_sort_order_ascending_must_be_a_bool(self):
+        cfg = {"ranking": {"sort_order": [{"field": "distance_km", "ascending": "false"}]}}
+        assert tower_ranking.validate_config(cfg) is not None
+
+    def test_sort_order_accepts_the_shipped_fields(self):
+        cfg = {"ranking": {"sort_order": _shipped_default()["ranking"]["sort_order"]}}
+        assert tower_ranking.validate_config(cfg) is None
+
+    def test_every_sortable_field_is_accepted(self):
+        for field in tower_ranking._SORTABLE_FIELDS:
+            cfg = {"ranking": {"sort_order": [{"field": field, "ascending": False}]}}
+            assert tower_ranking.validate_config(cfg) is None, field
+
     def test_nan_rejected(self):
         # json.loads accepts the bare NaN literal, and every comparison against
         # NaN is False, so an unguarded NaN slips past each range check and is

@@ -54,6 +54,31 @@ def _is_number(value) -> bool:
     return math.isfinite(value)
 
 
+# Fields a ranking.sort_order rule may name. _sort_key() negates the value when
+# a rule is descending and puts it in a tuple that towers are sorted on, so a
+# field only belongs here if it resolves to a real number for every tower.
+# band_priority and distance_priority are special-cased there and always do; the
+# rest are numeric keys of the tower dict built in process_and_rank(), plus
+# coverage_area_added_km2, which services/tower_coverage.py adds. Deliberately
+# absent: the string fields (callsign, name, state, band, bearing_cardinal,
+# distance_class, licence_*), and antenna_height_m, which is None whenever the
+# upstream record omits it.
+_SORTABLE_FIELDS = frozenset(
+    {
+        "band_priority",
+        "distance_priority",
+        "coverage_area_added_km2",
+        "received_power_dbm",
+        "distance_km",
+        "bearing_deg",
+        "frequency_mhz",
+        "eirp_dbm",
+        "latitude",
+        "longitude",
+    }
+)
+
+
 def validate_config(cfg: dict) -> str | None:
     """Return an error message if the tower config is unusable, else None.
 
@@ -121,6 +146,14 @@ def validate_config(cfg: dict) -> str | None:
         for i, rule in enumerate(sort_order):
             if not isinstance(rule, dict) or "field" not in rule:
                 return f"ranking.sort_order[{i}] must be an object with a field key"
+            # A field that is not sortable is not merely ignored: _sort_key()
+            # negates a descending value, so naming a string field raises
+            # TypeError on every search once this config is live.
+            if rule["field"] not in _SORTABLE_FIELDS:
+                allowed = ", ".join(sorted(_SORTABLE_FIELDS))
+                return f"ranking.sort_order[{i}].field must be one of {allowed}, got {rule['field']!r}"
+            if "ascending" in rule and not isinstance(rule["ascending"], bool):
+                return f"ranking.sort_order[{i}].ascending must be true or false, got {rule['ascending']!r}"
 
     search = cfg.get("search", {})
     for key in ("default_radius_km", "default_limit"):
@@ -531,6 +564,8 @@ def process_and_rank(
         if has_user_freqs:
             parts.append(0 if t.get("frequency_matched") else 1)
         for rule in SORT_ORDER:
+            # Fields are constrained to _SORTABLE_FIELDS on write, which is what
+            # keeps the negation below from meeting a string.
             field = rule["field"]
             asc = rule.get("ascending", True)
             if field == "band_priority":
