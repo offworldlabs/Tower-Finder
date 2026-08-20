@@ -70,15 +70,13 @@ jobs:
       # Python CI: setup-python owns the interpreter, uv does the installing,
       # `--system` puts packages in that interpreter so pytest and pre-commit
       # stay on PATH exactly as before. setup-python's own `cache: pip` is gone
-      # with the last pip invocation; uv caches instead, keyed on the two
-      # requirements files, which is what takes the install from tens of seconds
-      # to about one.
+      # with the last pip invocation that it served.
+      #
+      # No uv cache on purpose. It was tried: cold and warm both install in 2s
+      # and 3s, because uv is fast enough that there is nothing left for a cache
+      # to save, while the save and restore steps cost a few seconds of their
+      # own. Caching here would be ceremony.
       - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: |
-            backend/requirements.txt
-            backend/requirements-dev.txt
       - run: uv pip install --system -r requirements-dev.txt
       - run: uv pip install --system ../libs/retina-geolocator ../libs/retina-tracker ../libs/retina-custody ../libs/retina-simulation ../libs/retina-analytics
       # working-directory overrides the job default of `backend`: pre-commit
