@@ -64,11 +64,22 @@ def write_runtime_file(path: Path, content: str) -> None:
     tower_config.json, so with a shared name one caller's half-written temp file
     could be renamed into place by the other, putting content on disk that
     neither caller validated, and each caller's cleanup would delete the other's
-    file out from under it.
+    file out from under it. The cost of a unique name is that a process killed
+    between the write and the rename leaves an orphan behind, where a shared
+    name would have been reused by the next write; that is accepted, because an
+    unreadable config is worse than a stray file.
+
+    The content is flushed to disk before the rename. Without that the rename is
+    still atomic, but it can publish a file whose bytes have not landed, so a
+    power loss leaves a config that is present, empty, and unusable, which is
+    the failure this function exists to prevent.
     """
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        tmp.write_text(content)
+        with tmp.open("w") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)

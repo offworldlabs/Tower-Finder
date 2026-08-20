@@ -59,10 +59,14 @@ def _is_number(value) -> bool:
 # field only belongs here if it resolves to a real number for every tower.
 # band_priority and distance_priority are special-cased there and always do; the
 # rest are numeric keys of the tower dict built in process_and_rank(), plus
-# coverage_area_added_km2, which services/tower_coverage.py adds. Deliberately
+# coverage_area_added_km2, which services/tower_coverage.py adds, and
+# frequency_matched, which is always a bool and so negates cleanly. Deliberately
 # absent: the string fields (callsign, name, state, band, bearing_cardinal,
 # distance_class, licence_*), and antenna_height_m, which is None whenever the
-# upstream record omits it.
+# upstream record omits it and breaks the sort in either direction.
+#
+# Adding a numeric field to the tower dict means adding it here too, or a config
+# naming it is rejected.
 _SORTABLE_FIELDS = frozenset(
     {
         "band_priority",
@@ -73,6 +77,7 @@ _SORTABLE_FIELDS = frozenset(
         "bearing_deg",
         "frequency_mhz",
         "eirp_dbm",
+        "frequency_matched",
         "latitude",
         "longitude",
     }
@@ -146,6 +151,11 @@ def validate_config(cfg: dict) -> str | None:
         for i, rule in enumerate(sort_order):
             if not isinstance(rule, dict) or "field" not in rule:
                 return f"ranking.sort_order[{i}] must be an object with a field key"
+            # The type check has to come first: an unhashable value such as a
+            # list makes the membership test below raise, and a validator that
+            # raises turns a 400 into a 500.
+            if not isinstance(rule["field"], str):
+                return f"ranking.sort_order[{i}].field must be a string, got {rule['field']!r}"
             # A field that is not sortable is not merely ignored: _sort_key()
             # negates a descending value, so naming a string field raises
             # TypeError on every search once this config is live.

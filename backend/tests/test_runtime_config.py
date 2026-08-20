@@ -2,6 +2,8 @@
 
 import os
 
+import pytest
+
 from core.runtime_config import write_runtime_file
 
 
@@ -49,10 +51,8 @@ class TestWriteRuntimeFile:
         target = tmp_path / "tower_config.json"
         target.write_text("old")
 
-        try:
-            write_runtime_file(target, None)  # TypeError inside write_text
-        except TypeError:
-            pass
+        with pytest.raises(TypeError):
+            write_runtime_file(target, None)
 
         assert target.read_text() == "old"
         assert [p.name for p in tmp_path.iterdir()] == ["tower_config.json"]

@@ -181,6 +181,12 @@ class TestValidateConfig:
         cfg = {"ranking": {"sort_order": [{"field": "callsign", "ascending": False}]}}
         assert tower_ranking.validate_config(cfg) is not None
 
+    def test_sort_order_field_must_be_a_string(self):
+        # An unhashable value makes the allowlist membership test raise, which
+        # would turn the 400 this function exists to produce into a 500.
+        cfg = {"ranking": {"sort_order": [{"field": []}]}}
+        assert "must be a string" in tower_ranking.validate_config(cfg)
+
     def test_sort_order_rejects_an_unknown_field(self):
         cfg = {"ranking": {"sort_order": [{"field": "recieved_power_dbm"}]}}
         assert "must be one of" in tower_ranking.validate_config(cfg)
