@@ -367,7 +367,7 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
     )
 
 
-def run_known_lane_pass(solve_fn, node_cfgs: dict | None = None) -> int:
+def run_known_lane_pass(solve_fn, node_cfgs: dict | None = None, mode: str | None = None) -> int:
     """One full pass over state.known_claims; returns the attempt count.
 
     A hex is attempted when it has fresh, uncontested claims from >= 2
@@ -376,8 +376,18 @@ def run_known_lane_pass(solve_fn, node_cfgs: dict | None = None) -> int:
     registry is free, and calling this more often than claims arrive costs a
     scan, never a solve.  Defensive throughout: the registry belongs to
     slice A and may be absent, empty, or mid-write.
+
+    ``mode`` overrides state.KNOWN_LANE_MODE for this pass (None reads the
+    live flag).  Tests need the override, not convenience: the live flag is
+    shared with every solver worker daemon leaked into the process by a
+    TestClient lifespan, and arming it globally would let a daemon's own
+    maybe_run_pass race the test's pass for the per-hex dedup window — the
+    same reason _solver_worker_iteration takes a private queue.
     """
-    mode = _mode()
+    if mode is None:
+        mode = _mode()
+    elif mode not in ("off", "shadow", "binding"):
+        mode = "off"
     if mode == "off":
         return 0
     claims_by_hex = getattr(state, "known_claims", None)
@@ -418,18 +428,20 @@ def run_known_lane_pass(solve_fn, node_cfgs: dict | None = None) -> int:
     return attempts
 
 
-def maybe_run_pass(solve_fn) -> None:
+def maybe_run_pass(solve_fn, mode: str | None = None) -> None:
     """Interval- and mode-gated pass entry point for the solver worker loop.
 
     Must never raise: it runs on the solver worker threads, and an escaped
     exception here would kill queue draining exactly the way the 2026-08-08
     trail-race outage did.  The try-lock means concurrent workers skip
     rather than queue, and the interval check lives under the same lock so
-    two workers cannot both pass it in the same window.
+    two workers cannot both pass it in the same window.  ``mode`` is the
+    same test-only override run_known_lane_pass documents; the worker loop
+    always passes nothing and reads the live flag.
     """
     global _last_pass_ts
     try:
-        if _mode() == "off":
+        if (mode if mode is not None else _mode()) == "off":
             return
         if not _PASS_LOCK.acquire(blocking=False):
             return
@@ -438,7 +450,7 @@ def maybe_run_pass(solve_fn) -> None:
             if now - _last_pass_ts < _PASS_MIN_INTERVAL_S:
                 return
             _last_pass_ts = now
-            run_known_lane_pass(solve_fn)
+            run_known_lane_pass(solve_fn, mode=mode)
         finally:
             _PASS_LOCK.release()
     except Exception:

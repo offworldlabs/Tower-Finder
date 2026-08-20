@@ -79,18 +79,26 @@ _SENTINEL = object()
 
 @pytest.fixture(autouse=True)
 def _known_lane_state():
-    """Install the slice-A contract directly on state, and restore whatever
-    was (or was not) there afterward — save/restore rather than delattr so
-    these tests keep passing unchanged once slice A declares the real
-    attributes in core/state.py."""
+    """Install the slice-A claims registry directly on state, and restore
+    whatever was (or was not) there afterward — save/restore rather than
+    delattr so these tests keep passing unchanged once slice A declares the
+    real attributes in core/state.py.
+
+    Deliberately does NOT arm state.KNOWN_LANE_MODE: TestClient lifespans
+    leak solver worker daemons into this process (see test_solver_worker's
+    private-queue rationale), and every one of them polls maybe_run_pass
+    against the live flag — arming it here would let a daemon race these
+    tests for the per-hex dedup window.  Tests pass the mode explicitly
+    instead; only the live-flag-semantics tests set the attribute, and only
+    to values the lane reads as off.
+    """
     prev_claims = getattr(state, "known_claims", _SENTINEL)
     prev_mode = getattr(state, "KNOWN_LANE_MODE", _SENTINEL)
     state.known_claims = {}
-    state.KNOWN_LANE_MODE = "shadow"
     yield
     for name, prev in (("known_claims", prev_claims), ("KNOWN_LANE_MODE", prev_mode)):
         if prev is _SENTINEL:
-            # A test may already have deleted it (TestSliceAAbsence does).
+            # A test may have deleted or never set it.
             if hasattr(state, name):
                 delattr(state, name)
         else:
@@ -162,6 +170,10 @@ def _stub_solve(lat_off=0.0, lon_off=0.0, success=True):
     return fn
 
 
+def _run(solve_fn, mode="shadow"):
+    return known_lane.run_known_lane_pass(solve_fn, NODE_CFGS, mode=mode)
+
+
 def _known_records():
     return [r for r in state.mlat_solve_history if r.get("known_lane")]
 
@@ -171,7 +183,7 @@ class TestRealSolve:
 
     def test_two_node_claims_solve_and_truth_match(self):
         _install(_mk_claims(["node_a", "node_b"]))
-        attempts = known_lane.run_known_lane_pass(solve_multinode, NODE_CFGS)
+        attempts = _run(solve_multinode)
 
         assert attempts == 1
         assert state.known_lane_attempts == 1
@@ -198,7 +210,7 @@ class TestRealSolve:
 
     def test_three_node_claims_solve_and_tag_n_nodes(self):
         _install(_mk_claims(["node_a", "node_b", "node_c"]))
-        attempts = known_lane.run_known_lane_pass(solve_multinode, NODE_CFGS)
+        attempts = _run(solve_multinode)
 
         assert attempts == 1
         assert state.known_lane_truth_match == 1
@@ -215,7 +227,7 @@ class TestClassification:
         pipeline's gate used to delete."""
         _install(_mk_claims(["node_a", "node_b"]))
         # ~5.6 km north of truth — well past _MAX_DISPLACEMENT_KM.
-        known_lane.run_known_lane_pass(_stub_solve(lat_off=0.05), NODE_CFGS)
+        _run(_stub_solve(lat_off=0.05))
 
         assert state.known_lane_ghost == 1
         assert state.known_lane_truth_match == 0
@@ -227,9 +239,8 @@ class TestClassification:
         assert rec["published"] is False
 
     def test_ghost_is_never_published_even_in_binding(self):
-        state.KNOWN_LANE_MODE = "binding"
         _install(_mk_claims(["node_a", "node_b"]))
-        known_lane.run_known_lane_pass(_stub_solve(lat_off=0.05), NODE_CFGS)
+        _run(_stub_solve(lat_off=0.05), mode="binding")
 
         assert state.known_lane_ghost == 1
         assert state.known_lane_published == 0
@@ -237,7 +248,7 @@ class TestClassification:
 
     def test_unconverged_solve_records_but_never_samples(self):
         _install(_mk_claims(["node_a", "node_b"]))
-        known_lane.run_known_lane_pass(_stub_solve(success=False), NODE_CFGS)
+        _run(_stub_solve(success=False))
 
         assert state.known_lane_no_converge == 1
         assert not state.accuracy_samples
@@ -250,7 +261,7 @@ class TestClassification:
         def boom(s_in, cfgs):
             raise ValueError("boom")
 
-        attempts = known_lane.run_known_lane_pass(boom, NODE_CFGS)
+        attempts = _run(boom)
         assert attempts == 1
         assert state.known_lane_no_converge == 1
         (rec,) = _known_records()
@@ -261,6 +272,7 @@ class TestModeGating:
     def test_off_mode_does_nothing_at_all(self):
         state.KNOWN_LANE_MODE = "off"
         _install(_mk_claims(["node_a", "node_b"]))
+        # No mode override: this is the live-flag read the worker loop uses.
         attempts = known_lane.run_known_lane_pass(_stub_solve(), NODE_CFGS)
 
         assert attempts == 0
@@ -268,14 +280,18 @@ class TestModeGating:
         assert not state.accuracy_samples
         assert not _known_records()
 
-    def test_unrecognised_mode_falls_back_to_off(self):
+    def test_unrecognised_live_mode_falls_back_to_off(self):
         state.KNOWN_LANE_MODE = "banana"
         _install(_mk_claims(["node_a", "node_b"]))
         assert known_lane.run_known_lane_pass(_stub_solve(), NODE_CFGS) == 0
 
+    def test_unrecognised_override_falls_back_to_off(self):
+        _install(_mk_claims(["node_a", "node_b"]))
+        assert _run(_stub_solve(), mode="banana") == 0
+
     def test_shadow_records_but_publishes_nothing(self):
         _install(_mk_claims(["node_a", "node_b"]))
-        known_lane.run_known_lane_pass(_stub_solve(), NODE_CFGS)
+        _run(_stub_solve())
 
         assert state.known_lane_truth_match == 1
         assert state.known_lane_published == 0
@@ -286,9 +302,8 @@ class TestModeGating:
         assert rec["solve_key"] is None
 
     def test_binding_publishes_under_the_hex(self):
-        state.KNOWN_LANE_MODE = "binding"
         _install(_mk_claims(["node_a", "node_b"]))
-        known_lane.run_known_lane_pass(_stub_solve(), NODE_CFGS)
+        _run(_stub_solve(), mode="binding")
 
         assert state.known_lane_published == 1
         key = f"mn-adsb-{HEX}"
@@ -307,7 +322,6 @@ class TestModeGating:
         """Same key as the regular tagged path (mn-adsb-*), so a known-lane
         publish replaces the regular pipeline's output for that hex rather
         than coexisting with it."""
-        state.KNOWN_LANE_MODE = "binding"
         key = f"mn-adsb-{HEX}"
         state.multinode_tracks[key] = {
             "lat": 1.0,
@@ -318,7 +332,7 @@ class TestModeGating:
             "anomaly_types": ["supersonic"],
         }
         _install(_mk_claims(["node_a", "node_b"]))
-        known_lane.run_known_lane_pass(_stub_solve(), NODE_CFGS)
+        _run(_stub_solve(), mode="binding")
 
         entry = state.multinode_tracks[key]
         assert entry["lat"] != 1.0
@@ -333,19 +347,19 @@ class TestClaimSelection:
     def test_stale_claims_produce_no_attempt(self):
         stale_ms = int(time.time() * 1000) - int((known_lane._CLAIM_MAX_AGE_S + 5.0) * 1000)
         _install(_mk_claims(["node_a", "node_b"], ts_ms=stale_ms))
-        assert known_lane.run_known_lane_pass(_stub_solve(), NODE_CFGS) == 0
+        assert _run(_stub_solve()) == 0
         assert state.known_lane_attempts == 0
 
     def test_single_node_claims_produce_no_attempt(self):
         _install(_mk_claims(["node_a"]))
-        assert known_lane.run_known_lane_pass(_stub_solve(), NODE_CFGS) == 0
+        assert _run(_stub_solve()) == 0
         assert state.known_lane_attempts == 0
 
     def test_contested_claims_are_skipped(self):
         _install(_mk_claims(["node_a"], contested=True))
         _install(_mk_claims(["node_b"]))
         # node_a's only claim is contested → one usable node → no attempt.
-        assert known_lane.run_known_lane_pass(_stub_solve(), NODE_CFGS) == 0
+        assert _run(_stub_solve()) == 0
 
     def test_incompatible_timestamps_drop_the_lagging_node(self):
         now_ms = int(time.time() * 1000)
@@ -353,7 +367,7 @@ class TestClaimSelection:
         _install(_mk_claims(["node_a"], ts_ms=now_ms))
         _install(_mk_claims(["node_b"], ts_ms=lag_ms))
         # Both fresh, but too far apart to be one epoch → no attempt.
-        assert known_lane.run_known_lane_pass(_stub_solve(), NODE_CFGS) == 0
+        assert _run(_stub_solve()) == 0
 
     def test_newest_claim_per_node_wins(self):
         now_ms = int(time.time() * 1000)
@@ -365,34 +379,34 @@ class TestClaimSelection:
             seen["ts"] = s_in["timestamp_ms"]
             return {"success": False}
 
-        known_lane.run_known_lane_pass(capture, NODE_CFGS)
+        _run(capture)
         assert seen["ts"] == now_ms
 
     def test_unchanged_registry_is_not_resolved_twice(self):
         _install(_mk_claims(["node_a", "node_b"]))
-        assert known_lane.run_known_lane_pass(_stub_solve(), NODE_CFGS) == 1
-        assert known_lane.run_known_lane_pass(_stub_solve(), NODE_CFGS) == 0
+        assert _run(_stub_solve()) == 1
+        assert _run(_stub_solve()) == 0
         assert state.known_lane_attempts == 1
 
     def test_a_newer_claim_reopens_the_hex(self):
         now_ms = int(time.time() * 1000)
         _install(_mk_claims(["node_a", "node_b"], ts_ms=now_ms - 2000))
-        assert known_lane.run_known_lane_pass(_stub_solve(), NODE_CFGS) == 1
+        assert _run(_stub_solve()) == 1
         _install(_mk_claims(["node_a", "node_b"], ts_ms=now_ms))
-        assert known_lane.run_known_lane_pass(_stub_solve(), NODE_CFGS) == 1
+        assert _run(_stub_solve()) == 1
         assert state.known_lane_attempts == 2
 
     def test_malformed_claim_entries_are_survived(self):
         _install([None, {"node_id": "node_a"}, {"ts_ms": "not-a-number", "node_id": "x"}])
         _install(_mk_claims(["node_a", "node_b"]))
-        assert known_lane.run_known_lane_pass(_stub_solve(), NODE_CFGS) == 1
+        assert _run(_stub_solve()) == 1
 
     def test_missing_adsb_fix_produces_no_attempt(self):
         claims = _mk_claims(["node_a", "node_b"])
         for c in claims:
             c["adsb_fix"] = None
         _install(claims)
-        assert known_lane.run_known_lane_pass(_stub_solve(), NODE_CFGS) == 0
+        assert _run(_stub_solve()) == 0
 
 
 class TestSliceAAbsence:
@@ -401,11 +415,11 @@ class TestSliceAAbsence:
 
     def test_absent_known_claims_is_a_noop(self):
         delattr(state, "known_claims")  # fixture restores
-        assert known_lane.run_known_lane_pass(_stub_solve(), NODE_CFGS) == 0
+        assert _run(_stub_solve()) == 0
         assert state.known_lane_attempts == 0
 
     def test_absent_mode_reads_as_off(self):
-        delattr(state, "KNOWN_LANE_MODE")  # fixture restores
+        assert not hasattr(state, "KNOWN_LANE_MODE")
         assert known_lane._mode() == "off"
         state.known_claims = {HEX: deque(_mk_claims(["node_a", "node_b"]))}
         assert known_lane.run_known_lane_pass(_stub_solve(), NODE_CFGS) == 0
@@ -416,24 +430,30 @@ class TestMaybeRunPass:
 
     def test_interval_gate_holds_between_passes(self):
         _install(_mk_claims(["node_a", "node_b"]))
-        known_lane.maybe_run_pass(_stub_solve())
+        known_lane.maybe_run_pass(_stub_solve(), mode="shadow")
         assert state.known_lane_attempts == 1
         # A newer claim arrives, but the pass interval has not elapsed.
         _install(_mk_claims(["node_a", "node_b"], ts_ms=int(time.time() * 1000) + 10))
-        known_lane.maybe_run_pass(_stub_solve())
+        known_lane.maybe_run_pass(_stub_solve(), mode="shadow")
         assert state.known_lane_attempts == 1
         # Force the interval open (tests only) — now it runs.
         known_lane._last_pass_ts = 0.0
-        known_lane.maybe_run_pass(_stub_solve())
+        known_lane.maybe_run_pass(_stub_solve(), mode="shadow")
         assert state.known_lane_attempts == 2
 
-    def test_off_mode_returns_without_touching_the_lock(self):
-        state.KNOWN_LANE_MODE = "off"
+    def test_off_mode_returns_before_the_lock(self):
+        _install(_mk_claims(["node_a", "node_b"]))
+        known_lane.maybe_run_pass(_stub_solve(), mode="off")
+        assert state.known_lane_attempts == 0
+
+    def test_live_flag_absent_is_a_noop(self):
+        """What the leaked worker daemons see on this branch: no flag, no
+        pass, no side effects."""
         _install(_mk_claims(["node_a", "node_b"]))
         known_lane.maybe_run_pass(_stub_solve())
         assert state.known_lane_attempts == 0
 
     def test_never_raises_even_on_a_garbage_registry(self):
         state.known_claims = "not-a-dict"
-        known_lane.maybe_run_pass(_stub_solve())  # must not raise
+        known_lane.maybe_run_pass(_stub_solve(), mode="shadow")  # must not raise
         assert state.known_lane_attempts == 0
