@@ -118,6 +118,14 @@ CAL_FIX_DETECTION_SKEW_S = 2.0
 # signature (withhold it).
 ADSB_VIEW_TAG_FRESH_N = 3
 
+# ── Known-target claiming (KNOWN_LANE_MODE) ──────────────────────────────────
+# How long a hex stays in state.known_claims after its last claim.  2x the
+# 60 s the ADS-B cache itself ages at (feed_gc): once the cache entry is gone
+# no new claim can form for the hex, but the trust path reads a hex's residual
+# *trend* out of the registry, and pruning on the cache's own horizon would
+# wipe that history mid-assessment on a brief feed dropout.
+KNOWN_CLAIMS_STALE_S = 120.0
+
 # ── Default antenna parameters ───────────────────────────────────────────────
 YAGI_BEAM_WIDTH_DEG = 42.0  # Half-power beamwidth (°) of the fleet Yagis
 YAGI_MAX_RANGE_KM = 50.0  # Default Yagi max range (km)

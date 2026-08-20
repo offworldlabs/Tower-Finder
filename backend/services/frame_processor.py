@@ -25,6 +25,7 @@ from services.geo import (
     valid_latlon,
 )
 from services.id_utils import normalize_hex_key as _normalize_hex_key
+from services.known_claiming import claim_known_targets, strip_claimed_detections
 from services.storage import archive_detections
 
 # ── Archive batching ──────────────────────────────────────────────────────────
@@ -320,26 +321,42 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # collapses the candidate count from Na x Nb detections to Ta x Tb tracks,
     # and supplies the time history the constant-velocity fit needs.
     _t3 = time.thread_time()
+    # Known-target claiming (KNOWN_LANE_MODE) — the identity-first stage.
+    # Runs BEFORE the seeding block below so a node-supplied frame["adsb"]
+    # is still distinguishable from anything the backend attaches, and
+    # BEFORE the tracker so binding mode can keep claimed detections out of
+    # the dark lane entirely (the tracker is the dark pool's front door —
+    # a detection it never sees cannot become a tracklet, cannot pair, and
+    # cannot cross-pair into a phantom solve).  _pframe is what the dark
+    # lane processes from here down; the original frame is untouched, so
+    # the archive and the ADS-B cache extraction below still see everything
+    # the node sent.
+    _pframe = frame
+    if state.KNOWN_LANE_MODE != "off" and frame.get("delay"):
+        _claimed = claim_known_targets(node_id, frame)
+        if _claimed and state.KNOWN_LANE_MODE == "binding":
+            _pframe = strip_claimed_detections(frame, _claimed)
+            state.bump_counter("known_claims_bound", len(_claimed))
     # Predictive ADS-B tagging for a node with no receiver of its own.
     # Never overwrites a node-provided list — the node's own correlation is
     # authoritative, and an absent list is the only case where the backend
     # fills in.  Active-only: attaching feeds the tracker's own ADS-B
     # association directly, so there is no inert way to shadow this.
-    if state.ADSB_SEED_MODE == "active" and not frame.get("adsb"):
+    if state.ADSB_SEED_MODE == "active" and not _pframe.get("adsb"):
         _geo = state.node_associator.node_geometries.get(node_id)
         if _geo is not None:
             _tags = associate_detections_to_adsb(
                 _geo,
-                frame.get("delay", []),
-                frame.get("doppler", []),
+                _pframe.get("delay", []),
+                _pframe.get("doppler", []),
                 state._adsb_for_seeding(),
-                frame.get("timestamp", 0),
+                _pframe.get("timestamp", 0),
             )
             if _tags is not None:
-                frame["adsb"] = _tags
+                _pframe["adsb"] = _tags
                 state.bump_counter("adsb_seed_frames_autotagged")
     pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
-    pipeline.process_frame(frame)
+    pipeline.process_frame(_pframe)
     _d_pipeline = time.thread_time() - _t3
 
     _t2 = time.thread_time()

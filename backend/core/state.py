@@ -57,6 +57,22 @@ ADSB_SEED_MODE = os.getenv("ADSB_SEED_MODE", "off").lower()
 if ADSB_SEED_MODE not in ("off", "shadow", "active"):
     ADSB_SEED_MODE = "off"
 
+# Known-target claiming lane (see services/known_claiming.py).  The acting
+# value is "binding" rather than the "active" every other mode flag uses:
+# a claim *binds* a detection to a transponder identity and removes it from
+# the dark pool — naming the mode after the mechanism keeps "is this claim
+# binding?" answerable by reading the flag.  Default "shadow", unlike its
+# siblings' "off": shadow is downstream-inert by construction (claims are
+# recorded, nothing is excluded), and the known_claims registry it feeds is
+# the interface the known-lane solver and the per-node trust residuals are
+# built on — defaulting off would ship both consumers blind.  For the same
+# reason an unrecognised value falls back to "shadow" (this flag's own
+# default), not "off": the degradation target is "the flag was never set",
+# and here that is shadow.
+KNOWN_LANE_MODE = os.getenv("KNOWN_LANE_MODE", "shadow").lower()
+if KNOWN_LANE_MODE not in ("off", "shadow", "binding"):
+    KNOWN_LANE_MODE = "shadow"
+
 node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR, fov_mode=FOV_MODE)
 
 
@@ -226,6 +242,29 @@ mlat_solve_history: deque = deque(maxlen=MLAT_HISTORY_MAX)
 # ── ADS-B positions reported inside detection frames ──────────────────────────
 adsb_aircraft: dict[str, dict] = {}
 
+# ── Known-target claims registry (KNOWN_LANE_MODE) ────────────────────────────
+# Written by services/known_claiming.py once per frame; the interface between
+# the claiming stage, the known-lane solver, and the per-node trust residuals.
+# Keyed by normalize_hex_key'd ICAO hex; each deque holds per-detection claim
+# records, newest last:
+#   {"node_id": str, "delay_us": float, "doppler_hz": float,
+#    "pred_delay_us": float, "pred_doppler_hz": float, "ts_ms": int,
+#    "adsb_fix": {lat, lon, alt_baro, gs, track, fix_ts_ms},
+#    "contested": bool}
+# Both the measured and the predicted observation are carried: the known-lane
+# solver consumes the measured values, the trust path consumes
+# measured-minus-predicted, and neither can recompute the prediction later —
+# it was made against a dead-reckoned fix that is gone by then.
+# Unlocked, same discipline as adsb_aircraft above: frame workers append via
+# setdefault (atomic under the GIL, and deque.append is too), readers snapshot
+# with list(...); a racing reader loses at worst the newest claim to its next
+# poll, never a corrupted record.  Stale hexes are pruned by
+# feed_gc.prune_stale_stores alongside the other per-hex stores.
+# maxlen 64 ≈ one minute of claims from a couple of nodes at observed frame
+# cadence — enough history for a residual trend, bounded per hex.
+KNOWN_CLAIMS_PER_HEX_MAX = 64
+known_claims: dict[str, deque] = {}
+
 # ── Track history: rolling position buffer per aircraft hex ───────────────────
 track_histories: dict[str, deque] = {}
 
@@ -326,6 +365,16 @@ solver_failures: int = 0
 # node reported no list of its own) — see frame_processor.process_one_frame's
 # predictive-tagging block.
 adsb_seed_frames_autotagged: int = 0
+# Known-lane claiming (KNOWN_LANE_MODE) — see services/known_claiming.py.
+# made counts every claim recorded (shadow AND binding); contentions the
+# subset whose detection also gated against an established dark global's
+# projection (claimed anyway, flagged "contested"); bound the detections
+# binding mode actually removed from the dark pool.  bound stays zero in
+# shadow by construction, so made > 0 with bound == 0 is the shadow-soak
+# signature.
+known_claims_made: int = 0
+known_claim_contentions: int = 0
+known_claims_bound: int = 0
 # n=2 solves withheld from the map because their track pairing has not (yet)
 # passed the constant-velocity fit.  Counted separately from solver_failures:
 # the solve succeeded, it simply has not earned publication, and a real target
@@ -513,6 +562,7 @@ def _reset_for_tests() -> None:
     global latest_storage_bytes, simulation_config
     global frames_dropped, frames_processed, solver_successes, solver_failures
     global adsb_seed_frames_autotagged
+    global known_claims_made, known_claim_contentions, known_claims_bound
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
     global solver_queue_drops, solver_stale_drops, mn_superseded, solver_trimmed
     global solver_consensus_selected, solver_consensus_filtered
@@ -534,6 +584,7 @@ def _reset_for_tests() -> None:
         active_geo_aircraft,
         multinode_tracks,
         adsb_aircraft,
+        known_claims,
         track_histories,
         track_last_emit,
         track_gate_hold,
@@ -590,6 +641,7 @@ def _reset_for_tests() -> None:
         frames_dropped = frames_processed = 0
         solver_successes = solver_failures = n2_unconfirmed = 0
         adsb_seed_frames_autotagged = 0
+        known_claims_made = known_claim_contentions = known_claims_bound = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
         solver_stale_drops = 0
         mn_superseded = 0

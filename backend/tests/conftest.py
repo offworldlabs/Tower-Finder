@@ -128,6 +128,7 @@ def _reset_module_state():
         alerting,
         feed_helpers,
         frame_processor,
+        known_claiming,
         tcp_handler,
         track_gates,
     )
@@ -143,6 +144,7 @@ def _reset_module_state():
         analytics_refresh,
         alerting,
         tcp_handler,
+        known_claiming,
     ):
         mod._reset_for_tests()
     yield

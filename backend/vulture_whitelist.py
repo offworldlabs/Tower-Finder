@@ -188,6 +188,12 @@ rollback_safety
 # services/frame_processor.py, which vulture cannot resolve to this name.
 adsb_seed_frames_autotagged
 
+# Same string-keyed bump_counter shape, from services/known_claiming.py and
+# frame_processor's binding-mode block.
+known_claims_made
+known_claim_contentions
+known_claims_bound
+
 
 # ── Framework attributes (previously CI --ignore-names) ───────────────────────
 # Moved out of the vulture invocation so the reason lives with the name.

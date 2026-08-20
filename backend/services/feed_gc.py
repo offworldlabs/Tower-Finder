@@ -5,7 +5,7 @@ output, run once per feed build.  Bounds memory and keeps
 resolve_ground_truth_hex's O(N) scans cheap.
 """
 
-from config.constants import GT_DISPLAY_STALE_S, TRAIL_STALE_S
+from config.constants import GT_DISPLAY_STALE_S, KNOWN_CLAIMS_STALE_S, TRAIL_STALE_S
 from core import state
 
 
@@ -22,6 +22,18 @@ def prune_stale_stores(now: float) -> None:
             stale_adsb.append(hex_code)
     for k in stale_adsb:
         state.adsb_aircraft.pop(k, None)
+
+    # 4a. Known-lane claims: a hex not claimed within KNOWN_CLAIMS_STALE_S
+    # has left coverage or lost its feed — either way the adsb_aircraft
+    # aging above guarantees no new claim can form, so only the bounded
+    # residual-history window (see the constant's rationale) keeps it here.
+    stale_claims = [
+        h
+        for h, dq in list(state.known_claims.items())
+        if not dq or (now - dq[-1]["ts_ms"] / 1000.0) > KNOWN_CLAIMS_STALE_S
+    ]
+    for h in stale_claims:
+        state.known_claims.pop(h, None)
 
     # 4b. Prune stale ground-truth trails and track histories to bound
     # memory and keep resolve_ground_truth_hex O(N) scans cheap.
