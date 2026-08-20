@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from clients.fcc import fetch_fcc_broadcast_systems
 from clients.maprad import fetch_broadcast_systems
+from core.runtime_config import write_runtime_file
 from core.users import require_admin
 from services.health import compute_health_issues
 from services.tower_ranking import (
@@ -19,6 +20,7 @@ from services.tower_ranking import (
     apply_config,
     parse_user_frequencies,
     process_and_rank,
+    reload_config,
     validate_config,
 )
 
@@ -239,8 +241,14 @@ async def update_config(body: dict, _admin=Depends(require_admin)):
         logging.exception("Config passed validation but would not apply")
         raise HTTPException(status_code=400, detail=f"Config could not be applied: {exc}") from exc
 
-    with open(_CONFIG_PATH, "w") as f:
-        f.write(json.dumps(body, indent=2))
+    try:
+        write_runtime_file(_CONFIG_PATH, json.dumps(body, indent=2))
+    except OSError as exc:
+        # The process has already taken this config but the file has not. Put
+        # the two back in step by re-reading whatever is actually on disk.
+        logging.exception("Config applied but could not be written")
+        reload_config()
+        raise HTTPException(status_code=500, detail=f"Config could not be written: {exc}") from exc
     return {"status": "updated"}
 
 

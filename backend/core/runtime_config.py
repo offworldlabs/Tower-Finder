@@ -13,6 +13,7 @@ the source-defaults dir is read-only template-only.
 """
 
 import logging
+import os
 import shutil
 from pathlib import Path
 
@@ -46,6 +47,24 @@ def default_source_path(name: str) -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+def write_runtime_file(path: Path, content: str) -> None:
+    """Write a runtime config file atomically.
+
+    A plain open(path, "w") truncates before it writes, so a reader arriving
+    mid-write sees an empty or partial file, and a crash or a full disk leaves
+    one on disk for the next boot to choke on. Writing a sibling temp file and
+    renaming it means a reader sees either the old content or the new, never a
+    mix. The temp file is a sibling so the rename stays within one filesystem,
+    which is what makes it atomic.
+    """
+    tmp = path.with_name(f".{path.name}.tmp")
+    try:
+        tmp.write_text(content)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def migrate_defaults_into_runtime() -> None:

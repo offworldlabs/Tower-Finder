@@ -36,7 +36,7 @@ from core.auth import (
     revoke_invite,
     set_node_owner,
 )
-from core.runtime_config import runtime_path
+from core.runtime_config import runtime_path, write_runtime_file
 from core.task_registry import get_stale_tasks
 from core.users import (
     User,
@@ -447,7 +447,9 @@ async def update_tower_config(body: ConfigUpdate, _admin=Depends(require_admin))
     if fp.exists():
         history_fp = _CONFIG_DIR / f"towers_{ts}.json"
         history_fp.write_text(fp.read_text())
-    fp.write_text(json.dumps(body.config, indent=2))
+    # Atomic: services/tower_ranking reads this file at import, so a reader must
+    # never catch it half-written.
+    write_runtime_file(fp, json.dumps(body.config, indent=2))
     log_event("config", "Tower config updated", "info")
     return {"status": "ok", "saved_at": ts}
 

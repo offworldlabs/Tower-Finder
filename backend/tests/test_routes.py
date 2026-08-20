@@ -354,6 +354,14 @@ class TestConfigValidation:
         assert "could not be applied" in r.json()["detail"]
         assert isolated_config.read_text() == before
 
+    def test_write_leaves_no_temp_file_behind(self, client, isolated_config):
+        good = json.loads(isolated_config.read_text())
+
+        r = client.put("/api/config", json=good)
+
+        assert r.status_code == 200
+        assert list(isolated_config.parent.glob(".*.tmp")) == []
+
 
 # ── Elevation ─────────────────────────────────────────────────────────────────
 
