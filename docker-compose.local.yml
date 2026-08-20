@@ -24,9 +24,9 @@
 # Requires Docker Compose >= 2.24 for the !reset / !override merge tags.
 
 services:
-  tower-finder:
+  server:
     container_name: retina-local-server
-    # The base pins tower-finder:latest for the rollback tooling on the droplets.
+    # The base pins retina-server:latest for the rollback tooling on the droplets.
     # Reset it so a laptop build cannot collide with a tag the deploy scripts key
     # on, and gets Compose's implicit per-project name instead.
     image: !reset null

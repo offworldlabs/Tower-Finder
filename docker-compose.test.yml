@@ -19,14 +19,14 @@
 # that matters.
 
 services:
-  tower-finder:
+  server:
     container_name: retina-test-server
     # Consumed by services/alerting.py, which otherwise sees the container id or
     # the service name (varies by Compose version), neither of which says which
     # droplet raised an alert.
     hostname: retina-test
     # No TCP ingest, for the same reason staging closes it: there are no real
-    # receiver nodes here, and the fleet reaches the server as tower-finder:3012
+    # receiver nodes here, and the fleet reaches the server as server:3012
     # over the compose network rather than via the host port. Publishing it would
     # be pure exposure — and RETINA_ENV=test silences the missing-RADAR_NODE_TOKEN
     # warning, so anything on the internet could register itself as a node.

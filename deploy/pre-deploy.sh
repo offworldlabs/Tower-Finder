@@ -2,7 +2,7 @@
 # ── Pre-Deploy Snapshot ──────────────────────────────────────────────────────
 # Run BEFORE each deploy to save rollback points.
 #
-# 1. Tags the current running Docker image as `tower-finder:rollback`
+# 1. Tags the current running Docker image as `retina-server:rollback`
 # 2. Creates a git tag `deploy-<YYYYMMDD-HHMMSS>` on the current commit
 #
 # Usage: deploy/pre-deploy.sh
@@ -10,9 +10,9 @@
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/retina-server}"
-IMAGE_NAME="tower-finder"
-COMPOSE_SERVICE="tower-finder"
-FLEET_IMAGE_NAME="tower-finder-fleet"
+IMAGE_NAME="retina-server"
+COMPOSE_SERVICE="server"
+FLEET_IMAGE_NAME="retina-server-fleet"
 FLEET_SERVICE="fleet"
 
 cd "$APP_DIR"

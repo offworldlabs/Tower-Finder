@@ -17,15 +17,15 @@
 # overlay. deploy/check-env-parity.sh enforces that in CI.
 
 services:
-  tower-finder:
+  server:
     build: .
     # Pin an explicit image name so it is stable and independent of the Compose
     # project (directory) name. deploy/pre-deploy.sh + deploy/rollback.sh key the
-    # rollback on `tower-finder:latest`; without this, Compose builds an
-    # auto-named `<dir>-tower-finder` image and the rollback tag is never the one
+    # rollback on `retina-server:latest`; without this, Compose builds an
+    # auto-named `<dir>-server` image and the rollback tag is never the one
     # Compose actually runs, so `rollback.sh` silently restarts the bad build.
     # In the base so staging is rollback-capable on the same terms as prod.
-    image: tower-finder:latest
+    image: retina-server:latest
     ports:
       - "80:80"
       - "443:443"
@@ -109,13 +109,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.fleet
-    # Pin an explicit image name (mirrors the app's `image: tower-finder:latest`)
+    # Pin an explicit image name (mirrors the app's `image: retina-server:latest`)
     # so pre-deploy/rollback can save + retag a stable fleet image. Without this
     # Compose auto-names it `<dir>-fleet` and a rollback would leave the fleet on
     # the bad deploy's build while only the app reverted.
-    image: tower-finder-fleet:latest
+    image: retina-server-fleet:latest
     depends_on:
-      tower-finder:
+      server:
         condition: service_healthy
     # RADAR_API_KEY comes from backend/.env (the same file the app loads). The
     # backend enforces X-API-Key on its ingest whenever it has the key set
@@ -128,13 +128,13 @@ services:
     env_file:
       - backend/.env
     environment:
-      - FLEET_HOST=tower-finder
+      - FLEET_HOST=server
       - FLEET_PORT=3012
       - FLEET_VALIDATE=false
       # HTTP base URL for live ADS-B / ground-truth pushes (the moving "truth"
       # tracks). Must point at the server over the compose network, not the
       # fleet's own localhost. Reaches uvicorn directly (UVICORN_HOST=0.0.0.0).
-      - FLEET_VALIDATION_URL=http://tower-finder:8000
+      - FLEET_VALIDATION_URL=http://server:8000
       - FLEET_SEED=42
     restart: unless-stopped
     logging:

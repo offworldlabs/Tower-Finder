@@ -21,7 +21,7 @@ that any wiring regression between layers is immediately visible.
 
 Rollback note
 ─────────────
-`deploy/rollback.sh`  — rolls back to the saved Docker image (tower-finder:rollback)
+`deploy/rollback.sh`  — rolls back to the saved Docker image (retina-server:rollback)
                         or to a specific git ref: `deploy/rollback.sh <tag|commit>`
 `deploy/pre-deploy.sh` — saves the current image + creates a git tag.
                          Called by CI before every deploy; also safe to run manually.

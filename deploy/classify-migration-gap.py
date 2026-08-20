@@ -144,7 +144,7 @@ def classify(target_ref: str) -> tuple[str, bool]:
         verdict = (
             "  The restored code will query a schema that no longer matches. Downgrade\n"
             "  before trusting this rollback:\n"
-            "    docker compose exec tower-finder \\\n"
+            "    docker compose exec server \\\n"
             f'        sh -c "cd /app/backend && python3 -m alembic downgrade {_revision_of(restored[-1])}"'
         )
 
