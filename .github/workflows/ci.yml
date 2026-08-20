@@ -53,6 +53,12 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    # Job-wide rather than on the pytest step alone, so the step below that
+    # asserts the core and the step that relies on it cannot end up reading
+    # different environments: a guard that sets its own is no guard at all.
+    # Steps that never invoke coverage are indifferent to it.
+    env:
+      COVERAGE_CORE: sysmon
     steps:
       - uses: actions/checkout@v4
         with:
@@ -82,6 +88,58 @@ jobs:
         env:
           RETINA_ENV: dev
         run: python -m scripts.generate_openapi --check
+      # When coverage cannot honour COVERAGE_CORE it warns and uses the C tracer
+      # anyway, and one warning is invisible among the hundreds pytest prints, so
+      # both the speed and the greenlet fix below could regress with nothing
+      # failing. Enabling branch coverage is the realistic way to cause that
+      # before CPython 3.14, sys.monitoring having no branch events until then.
+      # Assert the core rather than assume it. Nothing public reports which core
+      # is live, hence the private _collector; if a coverage bump moves it, say
+      # so plainly rather than failing every PR on a bare AttributeError.
+      - name: Coverage measures through sys.monitoring
+        run: |
+          python - <<'PY'
+          import coverage
+
+          cov = coverage.Coverage()  # picks up [tool.coverage.run] from pyproject.toml
+          cov.start()
+          cov.stop()
+          try:
+              core = cov._collector.tracer_name()
+          except AttributeError as exc:
+              raise SystemExit(
+                  f"cannot tell which coverage core is live ({exc}). This check reads a "
+                  f"private attribute and coverage {coverage.__version__} appears to have "
+                  "moved it, so the check needs updating; the pytest step's measurement is "
+                  "not necessarily wrong."
+              ) from exc
+          if core != "SysMonitor":
+              raise SystemExit(
+                  f"coverage chose the {core} core despite COVERAGE_CORE=sysmon. Most likely "
+                  "branch coverage is now on in [tool.coverage.run], which sys.monitoring "
+                  "cannot measure before CPython 3.14. Left alone, the step below would "
+                  "quietly return to the slower tracer and to under-reporting the async "
+                  "route modules."
+              )
+          print(f"coverage core: {core}")
+          PY
+      # COVERAGE_CORE=sysmon, set job-wide above, is what makes this step quick.
+      # coverage.py's default C tracer hooks sys.settrace, which fires per line
+      # executed and drops the frame out of CPython's specialising fast paths;
+      # sysmon is the PEP 669 backend, which disables each location once it has
+      # been seen, so a line costs once rather than once per execution. This is
+      # the longest job in the run by several minutes and every deploy waits on
+      # it, so the tracing overhead is worth reclaiming.
+      #
+      # It also raises the reported total by about a point, and that is the more
+      # useful half. settrace measures per execution context, so lines resumed in
+      # a greenlet after an `await session.…` counted as unrun: the async route
+      # modules were being reported as less tested than they are. sys.monitoring
+      # is interpreter-global and sees them wherever they resume. Checked against
+      # `concurrency = ["thread", "greenlet"]` on routes/node_stream.py, the two
+      # recover the same lines, and sysmon does it at a fraction of that
+      # setting's cost. ONBOARDING, "Running tests", covers what this means for a
+      # local figure that does not match this one.
       - run: pytest tests/ -v --tb=short -m "not external"
 
   frontend-build:
