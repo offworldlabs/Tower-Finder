@@ -39,7 +39,7 @@ env:
   # deploy/rollback.sh cd to an APP_DIR of their own and would otherwise fall
   # back to a default still naming the old directory, snapshotting and rolling
   # back a tree nothing is served from.
-  APP_DIR: /opt/tower-finder
+  APP_DIR: /opt/retina-server
 
 jobs:
   # A separate job rather than a first step of the deploy, so a missing secret
