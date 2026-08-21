@@ -1,16 +1,19 @@
 # ── Stage 1: Build frontend ──────────────────────────────────────────────────
 FROM node:20-alpine AS frontend-build
 WORKDIR /app/frontend
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm install --no-audit --no-fund
+COPY frontend/package.json frontend/package-lock.json ./
+# `npm ci` with the same flags CI's frontend-build job uses, so the bundle that
+# ships is built from the tree CI tested. `npm install` would be free to
+# re-resolve and rewrite the lockfile.
+RUN npm ci --legacy-peer-deps --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run build
 
 # ── Stage 1b: Build dashboard ───────────────────────────────────────────────
 FROM node:20-alpine AS dashboard-build
 WORKDIR /app/dashboard
-COPY dashboard/package.json dashboard/package-lock.json* ./
-RUN npm install --no-audit --no-fund
+COPY dashboard/package.json dashboard/package-lock.json ./
+RUN npm ci --legacy-peer-deps --no-audit --no-fund
 COPY dashboard/ ./
 RUN npm run build
 
