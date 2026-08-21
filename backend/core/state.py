@@ -346,6 +346,15 @@ solver_queue_drops: int = 0
 # just drained too slowly).
 solver_stale_drops: int = 0
 
+# Candidates dequeued and skipped because every single-node track they carry
+# was already solved within _SOLVER_RESOLVE_INTERVAL_S at no fewer nodes (see
+# solver.py's _claim_resolve_slot).  Association is per-node and rate-limited
+# per node, so one aircraft arrives as one candidate per node that can see it;
+# this counts the copies that were never worth solving.  High against
+# solver_successes is normal and is the mechanism working — it is
+# solver_stale_drops that means work was lost.
+solver_resolve_skips: int = 0
+
 # Multinode entries removed because a later solve shared a source single-node
 # track under a different track key (the 6 km match in multinode_key_decision
 # missed).  One aircraft is one set of source tracks, so the earlier entry is
@@ -514,7 +523,8 @@ def _reset_for_tests() -> None:
     global frames_dropped, frames_processed, solver_successes, solver_failures
     global adsb_seed_frames_autotagged
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
-    global solver_queue_drops, solver_stale_drops, mn_superseded, solver_trimmed
+    global solver_queue_drops, solver_stale_drops, solver_resolve_skips
+    global mn_superseded, solver_trimmed
     global solver_consensus_selected, solver_consensus_filtered
     global solver_consensus_fallback, solver_consensus_shadow
     global solver_anchor_hits, solver_anchor_fallbacks, solver_anchored_published
@@ -592,6 +602,7 @@ def _reset_for_tests() -> None:
         adsb_seed_frames_autotagged = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
         solver_stale_drops = 0
+        solver_resolve_skips = 0
         mn_superseded = 0
         solver_trimmed = 0
         solver_consensus_selected = solver_consensus_filtered = 0

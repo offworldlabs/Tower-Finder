@@ -180,6 +180,7 @@ class TestConsensusAndCounters:
         state.n2_unconfirmed = 1
         state.solver_trimmed = 3
         state.solver_stale_drops = 4
+        state.solver_resolve_skips = 12
         state.solver_queue_drops = 6
         state.solver_consensus_selected = 7
         state.solver_consensus_filtered = 8
@@ -193,6 +194,7 @@ class TestConsensusAndCounters:
             "n2_unconfirmed": 1,
             "solver_trimmed": 3,
             "stale_drops": 4,
+            "resolve_skips": 12,
             "queue_drops": 6,
             "worker_errors": 0,
             "vel_untrusted_published": 11,

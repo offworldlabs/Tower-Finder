@@ -193,6 +193,11 @@ def _build_dashboard_data() -> bytes:
                 # here with queue_drops at 0 means the drain rate collapsed,
                 # not the queue size.
                 "stale_drops": state.solver_stale_drops,
+                # Duplicate candidates for an aircraft already solved this
+                # window (see solver.py's _claim_resolve_slot).  Read it
+                # against stale_drops: skips are work correctly not done,
+                # stale drops are work lost.
+                "resolve_skips": state.solver_resolve_skips,
                 # Multinode entries replaced because a later solve consumed
                 # the same source tracks under a new key (fragmented re-solve).
                 "mn_superseded": state.mn_superseded,
@@ -901,6 +906,7 @@ def _solver_window_stats(minutes: float) -> dict:
             "n2_unconfirmed": state.n2_unconfirmed,
             "solver_trimmed": state.solver_trimmed,
             "stale_drops": state.solver_stale_drops,
+            "resolve_skips": state.solver_resolve_skips,
             "queue_drops": state.solver_queue_drops,
             "worker_errors": state.solver_worker_errors,
             "vel_untrusted_published": state.solver_vel_untrusted_published,
