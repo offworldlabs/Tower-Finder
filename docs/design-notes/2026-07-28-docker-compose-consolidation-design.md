@@ -1,7 +1,7 @@
 # Docker Compose consolidation
 
 Date: 2026-07-28
-Repo: Tower-Finder
+Repo: retina-server
 Status: design, awaiting review
 
 ## Problem
@@ -132,7 +132,7 @@ which is prod, minus certs and with test-env auth, on port 8080.
   laptop docker stack now runs the prod fleet shape, `testmap` is redundant with `prod`;
   remove the `testmap` profile, leaving `local` (dense dev stream) and `prod` (sourced
   from `docker-compose.yml`).
-- `Tower-Finder/CLAUDE.md` "Running locally": update the two commands from the
+- `retina-server/CLAUDE.md` "Running locally": update the two commands from the
   `-f docker-compose.test.yml -f docker-compose.local.yml` pair to the new single
   override, and drop the stale "tar1090 UI after a rebuild is browser cache" note (it
   described the now-removed nginx-test path).

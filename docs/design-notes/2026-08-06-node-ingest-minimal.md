@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Working directory for all commands is `~/owl/Tower-Finder`.
+- Working directory for all commands is `~/owl/retina-server`.
 - Branch first, off the default branch.
 - Stage the named paths per task. This clone carries unrelated working-tree cruft (dirty submodule pointers under `libs/`, local data files); never `git add -A`.
 - Tests: `cd backend && uv run pytest tests/ -q`, or `uv run --directory backend pytest tests/ -q` from the
@@ -156,7 +156,7 @@ Until this is set, every alert in the design returns quietly and any test assert
 - [ ] **Step 7: Lint and commit**
 
 ```bash
-cd ~/owl/Tower-Finder
+cd ~/owl/retina-server
 uv run --directory backend ruff check . && uv run --directory backend ruff format .
 git add backend/core/users.py backend/tests/test_auth_bypass.py
 git commit -m "fix(auth): staging authenticates like production
@@ -339,7 +339,7 @@ In `backend/tests/conftest.py`, a fixture yielding an `AsyncSession` against a p
 - [ ] **Step 6: Run tests, lint, commit**
 
 ```bash
-cd ~/owl/Tower-Finder
+cd ~/owl/retina-server
 uv run --directory backend pytest tests/test_node_models.py tests/test_migrations.py -v --no-cov
 uv run --directory backend ruff check . && uv run --directory backend ruff format .
 git add backend/core/nodes.py backend/migrations/versions/0002_nodes.py backend/tests/test_node_models.py backend/tests/conftest.py
@@ -521,7 +521,7 @@ Add an exception handler on the router so `HTTPException(401)` renders `{"error"
 - [ ] **Step 5: Run tests, lint, commit**
 
 ```bash
-cd ~/owl/Tower-Finder
+cd ~/owl/retina-server
 uv run --directory backend pytest tests/test_node_auth.py -v --no-cov
 uv run --directory backend ruff check . && uv run --directory backend ruff format .
 git add backend/services/node_auth.py backend/tests/test_node_auth.py
@@ -756,7 +756,7 @@ async def register_node(request: RegisterRequest, session: AsyncSession = Depend
 - [ ] **Step 6: Run tests, lint, commit**
 
 ```bash
-cd ~/owl/Tower-Finder
+cd ~/owl/retina-server
 uv run --directory backend pytest tests/test_node_register.py -v --no-cov
 uv run --directory backend ruff check . && uv run --directory backend ruff format .
 git add backend/routes/nodes.py backend/routes/node_schemas.py backend/main.py backend/tests/test_node_register.py backend/tests/conftest.py
@@ -897,7 +897,7 @@ async def put_config(payload: dict[str, Any], node_id: str = Depends(bearer_node
 - [ ] **Step 4: Run tests, lint, commit**
 
 ```bash
-cd ~/owl/Tower-Finder
+cd ~/owl/retina-server
 uv run --directory backend pytest tests/test_node_config_endpoint.py -v --no-cov
 uv run --directory backend ruff check . && uv run --directory backend ruff format .
 git add backend/routes/nodes.py backend/tests/test_node_config_endpoint.py
@@ -1052,7 +1052,7 @@ def submit_frame(node_id: str, frame: dict) -> bool:
 - [ ] **Step 4: Run tests, lint, commit**
 
 ```bash
-cd ~/owl/Tower-Finder
+cd ~/owl/retina-server
 uv run --directory backend pytest tests/test_node_pipeline.py -v --no-cov
 uv run --directory backend ruff check . && uv run --directory backend ruff format .
 git add backend/services/node_pipeline.py backend/tests/test_node_pipeline.py
@@ -1194,7 +1194,7 @@ Heartbeat: stamp `nodes.last_seen_at` and `node_tokens.last_used_at`, update `st
 - [ ] **Step 7: Run the whole suite, lint, commit**
 
 ```bash
-cd ~/owl/Tower-Finder
+cd ~/owl/retina-server
 uv run --directory backend pytest tests/ -q
 uv run --directory backend ruff check . && uv run --directory backend ruff format .
 git add backend/routes/nodes.py backend/routes/node_schemas.py backend/services/node_rate_limits.py backend/main.py backend/tests/test_node_streaming.py
@@ -1296,7 +1296,7 @@ Check before applying whether anything reaches the droplet directly on 80 or 443
 - [ ] **Step 7: Repeat on prod, then commit**
 
 ```bash
-cd ~/owl/Tower-Finder
+cd ~/owl/retina-server
 git add deploy/nginx/snippets/cloudflare.conf deploy/nginx/nginx.conf.template deploy/setup-server.sh
 git commit -m "feat(deploy): make the origin reachable only through Cloudflare
 
