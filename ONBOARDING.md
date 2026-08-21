@@ -1,4 +1,4 @@
-# RETINA / Tower-Finder — developer onboarding
+# retina-server — developer onboarding
 
 Welcome. This repo powers RETINA, a passive-radar system: a network of receiver
 nodes detect aircraft by listening to reflections of broadcast transmitters
@@ -60,7 +60,7 @@ Clone with submodules, then set up backend and front-ends.
 
 ```bash
 git clone --recursive https://github.com/offworldlabs/retina-server.git
-cd Tower-Finder
+cd retina-server
 # already cloned without --recursive?
 git submodule update --init --recursive
 ```
