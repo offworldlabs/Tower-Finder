@@ -50,6 +50,25 @@ _COVERAGE_DIGEST_QUANT_KM = 2.0
 _COVERAGE_RECHECK_MIN_S = 150.0
 _COVERAGE_NEXT_CHECK: dict[str, float] = {}
 
+# Nodes whose digest has moved but whose grids have not been rebuilt yet:
+# node_id -> the digest that must be committed when the rebuild runs.  Insertion
+# ordered, drained from the front, and a re-trip of an already-queued node
+# refreshes its digest without moving it to the back — so a node whose coverage
+# moves every cycle cannot starve one whose coverage moved once.
+_COVERAGE_PENDING: dict[str, tuple] = {}
+
+# Nodes rebuilt per coverage cycle.  Each is a full neighbour-set rebuild — 51
+# pair grids on the 52-node test deployment — so this, not the trigger rate, is
+# what bounds a cycle's cost.  Measured on that fleet: 0.64 s median per node
+# rebuild after the grid restructure in retina-analytics, against a 30 s cycle.
+_COVERAGE_MAX_NODES_PER_CYCLE = 3
+COVERAGE_REFRESH_INTERVAL_S = 30.0
+
+_coverage_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="coverage-bg",
+)
+
 
 # ── Disappearance detector (FOV_MODE shadow/active) ─────────────────────────
 #
@@ -185,16 +204,17 @@ def _refresh_disappearance_detector(
             memory.pop(hex_code, None)
 
 
-def _refresh_coverage_constraints() -> int:
-    """Rebuild overlap grids for nodes whose observed coverage has changed.
+def _scan_coverage_constraints() -> int:
+    """Queue nodes whose observed coverage has changed.  Returns queue depth.
 
-    Runs on the analytics cadence, not the frame path: each rebuild costs one
-    grid computation per neighbour.  Only acts when a node's constraint digest
-    moves a 2 km bucket, re-checked at most every _COVERAGE_RECHECK_MIN_S per
-    node, so a settled fleet pays nothing and an accumulating one pays a
-    bounded rate instead of a rebuild per calibration point.
+    Only queues when a node's constraint digest moves a 2 km bucket, re-checked
+    at most every _COVERAGE_RECHECK_MIN_S per node, so a settled fleet pays
+    nothing and an accumulating one queues at a bounded rate instead of once per
+    calibration point.
+
+    Cheap by construction — a digest compare per node — so it stays on the
+    scanning side of the split and only the rebuild is budgeted.
     """
-    rebuilt = 0
     now = time.monotonic()
     for node_id in list(state.node_associator.node_geometries):
         if node_id in _COVERAGE_DIGESTS and now < _COVERAGE_NEXT_CHECK.get(node_id, 0.0):
@@ -205,7 +225,29 @@ def _refresh_coverage_constraints() -> int:
         _COVERAGE_NEXT_CHECK[node_id] = now + _COVERAGE_RECHECK_MIN_S
         digest = _quantize_digest(digest)
         if _COVERAGE_DIGESTS.get(node_id) == digest:
+            _COVERAGE_PENDING.pop(node_id, None)  # moved back before its turn came
             continue
+        # Assignment, not re-insertion: an already-queued node keeps its place
+        # so the drain stays fair (see _COVERAGE_PENDING).
+        _COVERAGE_PENDING[node_id] = digest
+    return len(_COVERAGE_PENDING)
+
+
+def _drain_coverage_rebuilds(max_nodes: int = _COVERAGE_MAX_NODES_PER_CYCLE) -> int:
+    """Rebuild overlap grids for up to *max_nodes* queued nodes.  Returns the count.
+
+    Each rebuild costs one grid computation per neighbour, so this is the
+    expensive half and the only half that needs bounding.  Nodes past the budget
+    stay queued and are taken first next cycle — the queue is drained from the
+    front — which trades constraint convergence latency for a cycle time that
+    cannot run away with the fleet size.
+    """
+    rebuilt = 0
+    for _ in range(max_nodes):
+        if not _COVERAGE_PENDING:
+            break
+        node_id, digest = next(iter(_COVERAGE_PENDING.items()))
+        del _COVERAGE_PENDING[node_id]
         # Record before rebuilding: a failure mid-rebuild should not spin.
         _COVERAGE_DIGESTS[node_id] = digest
         pairs = state.node_associator.rebuild_zones_for(node_id)
@@ -213,6 +255,16 @@ def _refresh_coverage_constraints() -> int:
             rebuilt += 1
             state.coverage_rebuild_nodes += 1
             state.coverage_rebuilds += pairs
+    return rebuilt
+
+
+def _refresh_coverage_constraints(max_nodes: int = _COVERAGE_MAX_NODES_PER_CYCLE) -> int:
+    """One coverage cycle: scan every node's digest, then drain the budget."""
+    _scan_coverage_constraints()
+    rebuilt = _drain_coverage_rebuilds(max_nodes)
+    # Published after the drain so the gauge reads what is still owed, not what
+    # was owed before this cycle worked on it.
+    state.coverage_rebuild_backlog = len(_COVERAGE_PENDING)
     return rebuilt
 
 
@@ -303,12 +355,6 @@ def _refresh_analytics_and_nodes():
         _refresh_mlat_verification()
     except Exception:
         logging.exception("_refresh_mlat_verification failed")
-
-    # Overlap grids follow a coverage polygon that has tightened
-    try:
-        _refresh_coverage_constraints()
-    except Exception:
-        logging.exception("_refresh_coverage_constraints failed")
 
     # Synthetic chain-of-custody entries for connected nodes that lack them
     _ensure_custody_data()
@@ -1691,3 +1737,28 @@ async def analytics_refresh_task():
             state.task_error_counts["analytics_refresh"] += 1
             logging.exception("Analytics refresh failed")
         await asyncio.sleep(ANALYTICS_REFRESH_INTERVAL_S)
+
+
+async def coverage_constraints_task():
+    """Rebuild overlap grids on their own cadence and their own thread.
+
+    Split out of analytics_refresh because a rebuild is the one piece of that
+    job whose cost scales with the fleet: on the 52-node test deployment a
+    cycle that rebuilt any node ran 106-153 s against analytics_refresh's 120 s
+    health budget, while a cycle that rebuilt none ran 30 s.  Sharing an
+    executor meant a rebuild backlog read as a dead pipeline.
+
+    Its own executor, not just its own task: _analytics_executor is
+    single-threaded, so running here off the same one would serialise straight
+    back into the same stall.
+    """
+    loop = asyncio.get_event_loop()
+    await asyncio.sleep(5)
+    while True:
+        try:
+            await loop.run_in_executor(_coverage_executor, _refresh_coverage_constraints)
+            state.task_last_success["coverage_constraints"] = time.time()
+        except Exception:
+            state.task_error_counts["coverage_constraints"] += 1
+            logging.exception("Coverage constraint refresh failed")
+        await asyncio.sleep(COVERAGE_REFRESH_INTERVAL_S)

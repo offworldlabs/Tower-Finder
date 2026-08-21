@@ -22,6 +22,7 @@ os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
 from core import state  # noqa: E402
 from main import app  # noqa: E402
+from services.health import compute_health_issues  # noqa: E402
 
 
 @pytest.fixture()
@@ -37,6 +38,28 @@ def _assert_degraded(r):
 
 
 class TestHealthDegradedBranches:
+    def test_coverage_rebuild_backlog(self, client):
+        """A budgeted rebuild falling behind is a warning, not a stale task.
+
+        coverage_constraints is deliberately not in _CRITICAL_TASKS — it is
+        allowed to defer — so the backlog gauge is the only thing that can say
+        the budget is too small for the fleet.
+        """
+        state.coverage_rebuild_backlog = 999
+        try:
+            _assert_degraded(client.get("/api/health"))
+        finally:
+            state.coverage_rebuild_backlog = 0
+
+    def test_coverage_rebuild_backlog_within_budget_is_healthy(self):
+        """/api/health never exposes issue types, so assert on the source."""
+        state.coverage_rebuild_backlog = 1
+        try:
+            types = {i["type"] for i in compute_health_issues()}
+            assert "coverage_rebuild_backlog" not in types
+        finally:
+            state.coverage_rebuild_backlog = 0
+
     def test_solver_queue_drops(self, client):
         state.solver_queue_drops = 5
         try:

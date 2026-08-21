@@ -441,6 +441,7 @@ class TestCoverageConstraintRefresh:
     def setup_method(self):
         analytics_refresh._COVERAGE_DIGESTS.clear()
         analytics_refresh._COVERAGE_NEXT_CHECK.clear()
+        analytics_refresh._COVERAGE_PENDING.clear()
 
     def _stub(self, monkeypatch, digests, rebuilt_calls):
         # Most tests exercise the digest comparison, not the recheck floor;
@@ -525,6 +526,149 @@ class TestCoverageConstraintRefresh:
         digests["n1"] = (10.0, None)  # polygon appears
         assert analytics_refresh._refresh_coverage_constraints() == 1
         assert calls == ["n1"]
+
+
+class TestCoverageRebuildBudget:
+    """A cycle's cost is bounded by the rebuild budget, not by the trigger rate.
+
+    The trigger bound (digest bucket + recheck floor, TestCoverageConstraintRefresh)
+    limits how often a node rebuilds; it says nothing about how many nodes rebuild
+    in the same cycle.  On the 52-node test deployment each trigger is a 51-pair
+    rebuild, and cycles where two or three landed together ran 106-153 s against
+    analytics_refresh's 120 s health budget.  These pin the budget and the
+    round-robin backlog that carries the excess.
+    """
+
+    def setup_method(self):
+        analytics_refresh._COVERAGE_DIGESTS.clear()
+        analytics_refresh._COVERAGE_NEXT_CHECK.clear()
+        analytics_refresh._COVERAGE_PENDING.clear()
+        state.coverage_rebuild_backlog = 0
+
+    def _stub(self, monkeypatch, digests, calls):
+        monkeypatch.setattr(analytics_refresh, "_COVERAGE_RECHECK_MIN_S", 0.0)
+
+        class _Assoc:
+            node_geometries = dict.fromkeys(digests)
+
+            def rebuild_zones_for(self, node_id):
+                calls.append(node_id)
+                return 3
+
+        class _Analytics:
+            def coverage_digest(self, node_id):
+                return digests.get(node_id)
+
+        monkeypatch.setattr(analytics_refresh.state, "node_associator", _Assoc())
+        monkeypatch.setattr(analytics_refresh.state, "node_analytics", _Analytics())
+        return digests
+
+    def test_a_cycle_rebuilds_at_most_the_budget(self, monkeypatch):
+        calls = []
+        self._stub(monkeypatch, {f"n{i}": (float(i) * 10, None) for i in range(5)}, calls)
+        assert analytics_refresh._refresh_coverage_constraints(max_nodes=2) == 2
+        assert len(calls) == 2
+
+    def test_the_excess_is_carried_and_drained_in_order(self, monkeypatch):
+        calls = []
+        self._stub(monkeypatch, {f"n{i}": (float(i) * 10, None) for i in range(5)}, calls)
+        analytics_refresh._refresh_coverage_constraints(max_nodes=2)
+        analytics_refresh._refresh_coverage_constraints(max_nodes=2)
+        analytics_refresh._refresh_coverage_constraints(max_nodes=2)
+        # Every node rebuilt exactly once, in the order the scan first saw them.
+        assert calls == ["n0", "n1", "n2", "n3", "n4"]
+        assert analytics_refresh._COVERAGE_PENDING == {}
+
+    def test_a_deferred_node_commits_its_digest_only_when_it_rebuilds(self, monkeypatch):
+        calls = []
+        digests = self._stub(monkeypatch, {"n0": (10.0, None), "n1": (20.0, None)}, calls)
+        analytics_refresh._refresh_coverage_constraints(max_nodes=1)
+        assert calls == ["n0"]
+        # n1 was queued, not rebuilt: recording its digest at scan time would
+        # lose the change entirely if the queue were dropped.
+        assert "n1" not in analytics_refresh._COVERAGE_DIGESTS
+        assert "n1" in analytics_refresh._COVERAGE_PENDING
+        digests["n1"] = (99.0, None)  # moved again while queued
+        analytics_refresh._refresh_coverage_constraints(max_nodes=1)
+        assert calls == ["n0", "n1"]
+        # The digest committed is the latest one, so the next scan sees no change.
+        assert analytics_refresh._refresh_coverage_constraints(max_nodes=1) == 0
+
+    def test_a_requeued_node_does_not_lose_its_place(self, monkeypatch):
+        calls = []
+        digests = self._stub(monkeypatch, {f"n{i}": (float(i) * 10, None) for i in range(3)}, calls)
+        analytics_refresh._refresh_coverage_constraints(max_nodes=0)  # scan only
+        digests["n0"] = (500.0, None)  # n0 trips again before its turn comes
+        analytics_refresh._refresh_coverage_constraints(max_nodes=1)
+        # n0 keeps the front of the queue rather than being sent to the back,
+        # so a node whose coverage moves every cycle cannot starve the others.
+        assert calls == ["n0"]
+
+    def test_a_node_that_moves_back_before_its_turn_is_dequeued(self, monkeypatch):
+        calls = []
+        digests = self._stub(monkeypatch, {"n0": (10.0, None), "n1": (20.0, None)}, calls)
+        analytics_refresh._refresh_coverage_constraints(max_nodes=2)
+        calls.clear()
+        digests["n0"] = (90.0, None)
+        analytics_refresh._refresh_coverage_constraints(max_nodes=0)  # scan only
+        assert "n0" in analytics_refresh._COVERAGE_PENDING
+        digests["n0"] = (10.0, None)  # back to the digest its grids were built under
+        analytics_refresh._refresh_coverage_constraints(max_nodes=2)
+        assert calls == []
+
+    def test_the_backlog_gauge_reports_what_is_still_owed(self, monkeypatch):
+        calls = []
+        self._stub(monkeypatch, {f"n{i}": (float(i) * 10, None) for i in range(5)}, calls)
+        analytics_refresh._refresh_coverage_constraints(max_nodes=2)
+        assert state.coverage_rebuild_backlog == 3
+        analytics_refresh._refresh_coverage_constraints(max_nodes=3)
+        assert state.coverage_rebuild_backlog == 0
+
+
+class TestCoverageRebuildIsOffTheAnalyticsJob:
+    """analytics_refresh's last_success must not wait on a grid rebuild.
+
+    The two shared one single-threaded executor, so a rebuild backlog read as a
+    dead analytics pipeline: stale_task:analytics_refresh at 274 s against a
+    120 s budget while the snapshot serialisation itself was healthy.
+    """
+
+    def test_refresh_analytics_and_nodes_does_not_rebuild_grids(self, monkeypatch):
+        called = []
+        monkeypatch.setattr(
+            analytics_refresh,
+            "_refresh_coverage_constraints",
+            lambda *a, **k: called.append(1),
+        )
+        for name in (
+            "_refresh_accuracy_stats",
+            "_refresh_missed_detections",
+            "_refresh_mlat_verification",
+            "_ensure_custody_data",
+            "_evict_stale_pipelines",
+            "_refresh_node_verification",
+        ):
+            monkeypatch.setattr(analytics_refresh, name, lambda *a, **k: None)
+
+        class _Analytics:
+            def get_all_summaries(self):
+                return {}
+
+            def get_cross_node_analysis(self):
+                return {}
+
+        class _Assoc:
+            node_geometries = {}
+
+            def get_overlap_summary(self):
+                return []
+
+        monkeypatch.setattr(analytics_refresh.state, "node_analytics", _Analytics())
+        monkeypatch.setattr(analytics_refresh.state, "node_associator", _Assoc())
+        monkeypatch.setattr(analytics_refresh.state, "connected_nodes", {})
+
+        analytics_refresh._refresh_analytics_and_nodes()
+        assert called == []
 
 
 class TestQuantizeDigestTupleFormat:

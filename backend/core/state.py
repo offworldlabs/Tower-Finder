@@ -338,6 +338,12 @@ n2_unconfirmed: int = 0
 # constraint is not reaching the grids.
 coverage_rebuilds: int = 0
 coverage_rebuild_nodes: int = 0
+# Nodes whose coverage digest has moved but whose grids are still queued behind
+# the per-cycle rebuild budget.  A gauge, not a counter: it is the depth right
+# now, and a depth that never returns to zero means the budget is below the
+# fleet's trigger rate — constraints are then converging slower than the
+# coverage they follow, which no rebuild counter can show.
+coverage_rebuild_backlog: int = 0
 solver_queue_drops: int = 0
 # Queue items discarded unsolved because they aged past _SOLVER_MAX_QUEUE_AGE_S
 # waiting for a worker.  Was only a DEBUG log, which staging does not emit —
@@ -523,6 +529,7 @@ def _reset_for_tests() -> None:
     global frames_dropped, frames_processed, solver_successes, solver_failures
     global adsb_seed_frames_autotagged
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
+    global coverage_rebuild_backlog
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
     global mn_superseded, solver_trimmed
     global solver_consensus_selected, solver_consensus_filtered
@@ -601,6 +608,7 @@ def _reset_for_tests() -> None:
         solver_successes = solver_failures = n2_unconfirmed = 0
         adsb_seed_frames_autotagged = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
+        coverage_rebuild_backlog = 0
         solver_stale_drops = 0
         solver_resolve_skips = 0
         mn_superseded = 0
