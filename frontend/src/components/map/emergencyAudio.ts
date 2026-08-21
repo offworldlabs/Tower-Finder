@@ -3,7 +3,7 @@
  * files needed. A short two-tone beep plays once per (hex, squawk) so the
  * same aircraft doesn't re-alert on every frame.
  *
- * Tower-Finder watches: 7500 (hijack), 7600 (radio fail), 7700 (general
+ * RETINA watches: 7500 (hijack), 7600 (radio fail), 7700 (general
  * emergency).
  */
 

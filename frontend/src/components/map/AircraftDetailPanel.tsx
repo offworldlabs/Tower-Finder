@@ -39,7 +39,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
       }
     }
     const csv = trailToCsv(ac.hex, ac.flight, rows);
-    downloadCsv(`tower-finder-trail-${ac.hex}-${Date.now()}.csv`, csv);
+    downloadCsv(`retina-trail-${ac.hex}-${Date.now()}.csv`, csv);
     toast(`Exported ${rows.length} points`, { tone: "success" });
   };
 

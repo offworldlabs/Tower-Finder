@@ -1466,7 +1466,7 @@ export default function LiveAircraftMap() {
 
   const exportAllTrails = useCallback(() => {
     const csv = trailsToBulkCsv(radarAircraft || [], trailsRef.current || {});
-    downloadCsv(`tower-finder-trails-${Date.now()}.csv`, csv);
+    downloadCsv(`retina-trails-${Date.now()}.csv`, csv);
     toast(`Exported ${radarAircraft?.length || 0} aircraft`, { tone: "success" });
   }, [radarAircraft, trailsRef]);
 
