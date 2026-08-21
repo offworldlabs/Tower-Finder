@@ -105,7 +105,7 @@ Each issue carries a severity in the alert payload's `meta`:
   `no_active_tracks`.
 - **warning** — degraded but serving: `solver_queue_drops`,
   `solver_queue_high`, `solver_latency_high`, `anomaly_flood`,
-  `solver_accuracy_degraded`, `high_miss_rate`.
+  `solver_accuracy_degraded`, `high_miss_rate`, `config_degraded`.
 
 Route critical → a paging channel and warning → a quieter channel in your
 webhook receiver (e.g. Slack workflow rules).

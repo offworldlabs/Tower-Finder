@@ -3,8 +3,10 @@ import logging
 import math
 import re
 
-from core.runtime_config import migrate_defaults_into_runtime, runtime_path
+from core.runtime_config import default_source_path, migrate_defaults_into_runtime, runtime_path
 from services.geo import bearing_deg, haversine_km
+
+logger = logging.getLogger(__name__)
 
 FREQUENCY_MATCH_TOLERANCE_MHZ = 5.0  # ±5 MHz for user-measured frequency matching
 
@@ -12,54 +14,368 @@ FREQUENCY_MATCH_TOLERANCE_MHZ = 5.0  # ±5 MHz for user-measured frequency match
 _CONFIG_PATH = runtime_path("tower_config.json")
 
 
-def _load_config() -> dict:
-    # Self-heal: this module is imported at app startup BEFORE the lifespan
-    # hook runs, and also imported standalone by tests. If the runtime overlay
-    # hasn't been seeded yet, seed it now so the open() below finds a file.
-    if not _CONFIG_PATH.exists():
-        migrate_defaults_into_runtime()
-    with _CONFIG_PATH.open() as f:
+def _read_config(path) -> dict:
+    """Read and parse one config file. Raises OSError or ValueError on failure.
+
+    The encoding is pinned rather than left to the locale: these files are
+    edited by hand inside a container whose locale is often C, where the
+    default is ASCII and any non-ASCII byte in the file would fail to decode.
+    """
+    with path.open(encoding="utf-8") as f:
         return json.load(f)
 
 
-def reload_config():
-    """Re-read tower_config.json and update module-level settings."""
+def _load_config() -> dict:
+    # Self-heal: this module is imported at app startup BEFORE the lifespan
+    # hook runs, and also imported standalone by tests. If the runtime overlay
+    # hasn't been seeded yet, seed it now so the read below finds a file.
+    if not _CONFIG_PATH.exists():
+        migrate_defaults_into_runtime()
+    return _read_config(_CONFIG_PATH)
+
+
+def _default_config() -> dict | None:
+    """The shipped defaults as a dict, or None if no readable copy exists."""
+    source = default_source_path("tower_config.json")
+    if source is None:
+        return None
+    try:
+        return _read_config(source)
+    except (OSError, ValueError):
+        logger.error("tower_config: shipped default %s is unreadable", source, exc_info=True)
+        return None
+
+
+def _is_number(value) -> bool:
+    # bool subclasses int, but a JSON true where a number belongs is a mistake.
+    #
+    # NaN and ±Infinity are rejected too. json.loads accepts those bare literals,
+    # and every comparison against NaN is False, so an unfiltered NaN passes each
+    # range check below and is persisted. It surfaces much later and far from
+    # here: DEFAULT_LIMIT = nan makes towers[:effective_limit] raise TypeError on
+    # every search, and a NaN distance-class bound silently matches nothing.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value)
+
+
+# Everything a search consumes as a number has to be one, and three separate
+# parts of the config feed that: the fields a sort_order rule names, the values
+# in the band_priority and distance_priority tables, and search.default_limit.
+# _sort_key() puts the first two into a tuple it sorts on and negates them for a
+# descending rule, and default_limit ends up as a slice bound. A string, a null
+# or a fractional number in any of those places passes every structural check
+# and then raises TypeError on every search, far from the config that caused it.
+# validate_config() checks all four together, below, for that one reason.
+#
+# Fields a ranking.sort_order rule may name: a field belongs here only if it
+# resolves to a real number for every tower.
+# band_priority and distance_priority are special-cased there and always do; the
+# rest are numeric keys of the tower dict built in process_and_rank(), plus
+# coverage_area_added_km2, which services/tower_coverage.py adds, and
+# frequency_matched, which is always a bool and so negates cleanly. Deliberately
+# absent: the string fields (callsign, name, state, band, bearing_cardinal,
+# distance_class, licence_*), and antenna_height_m, which is None whenever the
+# upstream record omits it and breaks the sort in either direction.
+#
+# Adding a numeric field to the tower dict means adding it here too, or a config
+# naming it is rejected.
+_SORTABLE_FIELDS = frozenset(
+    {
+        "band_priority",
+        "distance_priority",
+        "coverage_area_added_km2",
+        "received_power_dbm",
+        "distance_km",
+        "bearing_deg",
+        "frequency_mhz",
+        "eirp_dbm",
+        "frequency_matched",
+        "latitude",
+        "longitude",
+    }
+)
+
+
+def validate_config(cfg: dict) -> str | None:
+    """Return an error message if the tower config is unusable, else None.
+
+    Covers exactly what apply_config() consumes, so anything accepted here can
+    be applied without raising. Every section is optional — each has a default
+    below — but a section that is present must have the right shape. Same
+    contract as _validate_node_config in services/tcp_handler.py, which guards
+    the TCP path; the shapes differ because that one validates a node's config
+    and this one the server's.
+    """
+    if not isinstance(cfg, dict):
+        return f"config must be an object, got {type(cfg).__name__}"
+
+    for section in ("receiver", "ranking", "search", "broadcast_bands"):
+        value = cfg.get(section)
+        if value is not None and not isinstance(value, dict):
+            return f"{section} must be an object, got {type(value).__name__}"
+
+    receiver = cfg.get("receiver", {})
+    for key in ("rx_antenna_gain_dbi", "sensitivity_dbm"):
+        if key in receiver and not _is_number(receiver[key]):
+            return f"receiver.{key} must be a number, got {receiver[key]!r}"
+
+    for band, ranges in cfg.get("broadcast_bands", {}).items():
+        if not isinstance(ranges, list):
+            return f"broadcast_bands.{band} must be a list of [low, high] pairs"
+        for r in ranges:
+            if not isinstance(r, list) or len(r) != 2 or not all(_is_number(v) for v in r):
+                return f"broadcast_bands.{band} entry must be a [low, high] pair of numbers, got {r!r}"
+            if r[0] >= r[1]:
+                return f"broadcast_bands.{band} range is not ascending: {r!r}"
+
+    ranking = cfg.get("ranking", {})
+    for key in ("band_priority", "distance_priority"):
+        table = ranking.get(key)
+        if table is None:
+            continue
+        if not isinstance(table, dict):
+            return f"ranking.{key} must be an object, got {type(table).__name__}"
+        # _sort_key() reads these straight into the sort tuple, alongside the
+        # literal 99 it falls back to, so a non-numeric value here is compared
+        # against an int and raises rather than sorting oddly.
+        for name, priority in table.items():
+            if not _is_number(priority):
+                return f"ranking.{key}[{name!r}] must be a number, got {priority!r}"
+
+    classes = ranking.get("distance_classes")
+    if classes is not None:
+        if not isinstance(classes, list):
+            return f"ranking.distance_classes must be a list, got {type(classes).__name__}"
+        for i, dc in enumerate(classes):
+            if not isinstance(dc, dict):
+                return f"ranking.distance_classes[{i}] must be an object, got {type(dc).__name__}"
+            # apply_config() indexes these three directly rather than .get()ing
+            # them, which is what turned a wrong-shape PUT into a failed startup.
+            for key in ("label", "min_km", "max_km"):
+                if key not in dc:
+                    return f"ranking.distance_classes[{i}] is missing {key}"
+            if not isinstance(dc["label"], str) or not dc["label"]:
+                return f"ranking.distance_classes[{i}].label must be a non-empty string"
+            if not _is_number(dc["min_km"]):
+                return f"ranking.distance_classes[{i}].min_km must be a number, got {dc['min_km']!r}"
+            # max_km is nullable: the last class is open-ended.
+            if dc["max_km"] is not None:
+                if not _is_number(dc["max_km"]):
+                    return f"ranking.distance_classes[{i}].max_km must be a number or null, got {dc['max_km']!r}"
+                if dc["max_km"] <= dc["min_km"]:
+                    return f"ranking.distance_classes[{i}] has max_km <= min_km"
+
+    sort_order = ranking.get("sort_order")
+    if sort_order is not None:
+        if not isinstance(sort_order, list):
+            return f"ranking.sort_order must be a list, got {type(sort_order).__name__}"
+        for i, rule in enumerate(sort_order):
+            if not isinstance(rule, dict) or "field" not in rule:
+                return f"ranking.sort_order[{i}] must be an object with a field key"
+            # The type check has to come first: an unhashable value such as a
+            # list makes the membership test below raise, and a validator that
+            # raises turns a 400 into a 500.
+            if not isinstance(rule["field"], str):
+                return f"ranking.sort_order[{i}].field must be a string, got {rule['field']!r}"
+            # A field that is not sortable is not merely ignored: _sort_key()
+            # negates a descending value, so naming a string field raises
+            # TypeError on every search once this config is live.
+            if rule["field"] not in _SORTABLE_FIELDS:
+                allowed = ", ".join(sorted(_SORTABLE_FIELDS))
+                return f"ranking.sort_order[{i}].field must be one of {allowed}, got {rule['field']!r}"
+            if "ascending" in rule and not isinstance(rule["ascending"], bool):
+                return f"ranking.sort_order[{i}].ascending must be true or false, got {rule['ascending']!r}"
+
+    search = cfg.get("search", {})
+    if "default_radius_km" in search:
+        radius = search["default_radius_km"]
+        if not _is_number(radius) or radius <= 0:
+            return f"search.default_radius_km must be a positive number, got {radius!r}"
+    if "default_limit" in search:
+        limit = search["default_limit"]
+        # Stricter than a radius: this one is used as a slice bound, and
+        # towers[:20.5] raises TypeError however positive 20.5 is.
+        if not _is_number(limit) or isinstance(limit, float) or limit <= 0:
+            return f"search.default_limit must be a positive whole number, got {limit!r}"
+
+    return None
+
+
+# The settings apply_config() assigns, plus the fallback reason reload_config()
+# records. Anything added to either must be added here, or the test suite stops
+# putting it back between tests and one test's config silently becomes the next
+# one's. tests/test_tower_ranking_config.py fails loudly if this drifts.
+CONFIG_SETTINGS = (
+    "RX_ANTENNA_GAIN_DBI",
+    "SENSITIVITY_DBM",
+    "BROADCAST_BANDS",
+    "BAND_PRIORITY",
+    "DISTANCE_CLASSES",
+    "DISTANCE_PRIORITY",
+    "SORT_ORDER",
+    "DEFAULT_RADIUS_KM",
+    "DEFAULT_LIMIT",
+    "config_fallback_reason",
+)
+
+
+def apply_config(cfg: dict) -> None:
+    """Push a config dict into the module-level settings.
+
+    Raises on a shape this cannot handle. Every value is computed into a local
+    first and the globals are assigned only once all of them exist, so a config
+    that fails partway leaves the previous one intact rather than a half-applied
+    mix of old and new that concurrent requests would serve.
+
+    Callers that want a bad config to degrade rather than raise use
+    reload_config(); PUT /api/config calls this directly, because it needs the
+    failure in order to reject the write.
+    """
     global RX_ANTENNA_GAIN_DBI, SENSITIVITY_DBM
     global BROADCAST_BANDS, BAND_PRIORITY
     global DISTANCE_CLASSES, DISTANCE_PRIORITY, SORT_ORDER
     global DEFAULT_RADIUS_KM, DEFAULT_LIMIT
 
-    cfg = _load_config()
-
     rx = cfg.get("receiver", {})
-    RX_ANTENNA_GAIN_DBI = rx.get("rx_antenna_gain_dbi", 6.0)
-    SENSITIVITY_DBM = rx.get("sensitivity_dbm", -95.0)
+    rx_gain = rx.get("rx_antenna_gain_dbi", 6.0)
+    sensitivity = rx.get("sensitivity_dbm", -95.0)
 
-    BROADCAST_BANDS = {band: [tuple(r) for r in ranges] for band, ranges in cfg.get("broadcast_bands", {}).items()}
+    bands = {band: [tuple(r) for r in ranges] for band, ranges in cfg.get("broadcast_bands", {}).items()}
 
+    # The tables and rules below are copied rather than referenced: PUT
+    # /api/config applies the parsed request body itself, so assigning the
+    # objects nested inside it would let anything the handler does to that body
+    # afterwards rewrite live ranking state.
     ranking = cfg.get("ranking", {})
-    BAND_PRIORITY = ranking.get("band_priority", {"VHF": 0, "UHF": 1, "FM": 2})
+    band_priority = dict(ranking.get("band_priority", {"VHF": 0, "UHF": 1, "FM": 2}))
 
-    DISTANCE_CLASSES = []
+    distance_classes = []
     for dc in ranking.get("distance_classes", []):
         max_km = dc["max_km"] if dc["max_km"] is not None else float("inf")
-        DISTANCE_CLASSES.append((dc["label"], dc["min_km"], max_km))
+        distance_classes.append((dc["label"], dc["min_km"], max_km))
 
-    DISTANCE_PRIORITY = ranking.get("distance_priority", {})
-    SORT_ORDER = ranking.get(
-        "sort_order",
-        [
-            {"field": "coverage_area_added_km2", "ascending": False},
-            {"field": "band_priority", "ascending": True},
-            {"field": "distance_priority", "ascending": True},
-            {"field": "received_power_dbm", "ascending": False},
-        ],
-    )
+    distance_priority = dict(ranking.get("distance_priority", {}))
+    sort_order = [
+        dict(rule)
+        for rule in ranking.get(
+            "sort_order",
+            [
+                {"field": "coverage_area_added_km2", "ascending": False},
+                {"field": "band_priority", "ascending": True},
+                {"field": "distance_priority", "ascending": True},
+                {"field": "received_power_dbm", "ascending": False},
+            ],
+        )
+    ]
 
     search = cfg.get("search", {})
-    DEFAULT_RADIUS_KM = search.get("default_radius_km", 80)
-    DEFAULT_LIMIT = search.get("default_limit", 20)
+    radius_km = search.get("default_radius_km", 80)
+    limit = search.get("default_limit", 20)
 
+    # Nothing above this line touches module state, and nothing below it can fail.
+    RX_ANTENNA_GAIN_DBI = rx_gain
+    SENSITIVITY_DBM = sensitivity
+    BROADCAST_BANDS = bands
+    BAND_PRIORITY = band_priority
+    DISTANCE_CLASSES = distance_classes
+    DISTANCE_PRIORITY = distance_priority
+    SORT_ORDER = sort_order
+    DEFAULT_RADIUS_KM = radius_km
+    DEFAULT_LIMIT = limit
+
+
+# Set when reload_config() could not use the on-disk overlay. It carries both
+# why the overlay failed and which settings are running instead, because the
+# latter is not always the shipped defaults: if those fail too, the settings
+# already in effect stay. compute_health_issues() renders it after
+# "tower_config.json unusable, ", so it reads as the tail of that sentence.
+config_fallback_reason: str | None = None
+
+# How reading a config file fails: absent or unreadable (OSError), not JSON or
+# not decodable (ValueError). Anything beyond these two reaches apply_config
+# only after validate_config has passed the config, so it is a bug in this
+# module rather than a fault in the file.
+_CONFIG_ERRORS = (OSError, ValueError)
+
+
+def _apply_candidate(load) -> str | None:
+    """Load, validate and apply one config source. Returns why it failed, or None.
+
+    Never raises. reload_config() runs at import, so the only useful outcome of
+    a failure is a reason to log before moving on to the next source; letting
+    one escape would be the outage this whole path exists to avoid.
+
+    Validating here, and not only on write, is what lets a config that is
+    applicable but broken be rejected. PUT /api/config cannot be the only gate:
+    the overlay is a docker volume, so the configs that matter most are the ones
+    edited by hand inside it, which never pass through the endpoint at all.
+    """
+    try:
+        cfg = load()
+        if cfg is None:
+            return "no config available"
+        error = validate_config(cfg)
+        if error:
+            return error
+        apply_config(cfg)
+        return None
+    except _CONFIG_ERRORS as exc:
+        return f"{type(exc).__name__}: {exc}"
+    except Exception as exc:
+        # Not a shape a config file can take, so this is a bug in validate_config
+        # or apply_config rather than a bad config. Say which: the caller's
+        # message would otherwise send the reader off to audit a file that is
+        # perfectly fine.
+        logger.critical("tower_config: applying a config failed unexpectedly, this is a bug", exc_info=True)
+        return f"unexpected {type(exc).__name__}: {exc}"
+
+
+def reload_config() -> None:
+    """Re-read tower_config.json and update module-level settings.
+
+    Fail-soft. This runs at import, and the overlay it reads is a persistent
+    docker volume, so raising here turns one bad config into an outage that
+    survives restart and redeploy, recoverable only by hand inside the volume.
+    An unusable overlay is logged, recorded in config_fallback_reason for the
+    health check, and replaced by the shipped defaults: a degraded ranking
+    rather than a dead service.
+
+    Every apply goes through _apply_candidate, so no failure escapes. If none of
+    the sources can be applied, the settings already in effect stay, which on
+    first import are the in-code defaults seeded below.
+    """
+    global config_fallback_reason
+
+    reason = _apply_candidate(_load_config)
+    if reason is None:
+        config_fallback_reason = None
+        return
+    logger.error("tower_config: %s is unusable (%s), falling back to defaults", _CONFIG_PATH, reason)
+
+    default_reason = _apply_candidate(_default_config)
+    if default_reason is None:
+        config_fallback_reason = f"running on defaults ({reason})"
+        return
+
+    # _default_config() logs only for OSError and ValueError, so without the
+    # reason here a validation failure of the shipped defaults leaves no
+    # diagnostic anywhere, and it is the one failure an operator cannot inspect
+    # from outside: the file is inside the image.
+    logger.error(
+        "tower_config: the shipped defaults are unusable too (%s), keeping the settings already in effect",
+        default_reason,
+    )
+    config_fallback_reason = (
+        f"the shipped defaults are unusable too ({default_reason}), "
+        f"keeping the settings already in effect (overlay: {reason})"
+    )
+
+
+# Seed every setting from the in-code defaults before any file is read, so they
+# all exist whatever happens next. apply_config({}) takes no input that can
+# vary, so unlike the calls inside reload_config() it cannot fail on data.
+apply_config({})
 
 # Initialise on import
 reload_config()
@@ -351,6 +667,11 @@ def process_and_rank(
         if has_user_freqs:
             parts.append(0 if t.get("frequency_matched") else 1)
         for rule in SORT_ORDER:
+            # Everything this builds a sort tuple from is constrained to a
+            # number by validate_config, on write and on load: the field named
+            # here, and the BAND_PRIORITY and DISTANCE_PRIORITY values read
+            # below. Loosening any of those gates reintroduces a TypeError on
+            # every search.
             field = rule["field"]
             asc = rule.get("ascending", True)
             if field == "band_priority":

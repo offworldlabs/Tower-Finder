@@ -13,7 +13,9 @@ the source-defaults dir is read-only template-only.
 """
 
 import logging
+import os
 import shutil
+import uuid
 from pathlib import Path
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -46,6 +48,51 @@ def default_source_path(name: str) -> Path | None:
         if candidate.exists():
             return candidate
     return None
+
+
+def write_runtime_file(path: Path, content: str) -> None:
+    """Write a runtime config file atomically.
+
+    A plain open(path, "w") truncates before it writes, so a reader arriving
+    mid-write sees an empty or partial file, and a crash or a full disk leaves
+    one on disk for the next boot to choke on. Writing a sibling temp file and
+    renaming it means a reader sees either the old content or the new, never a
+    mix. The temp file is a sibling so the rename stays within one filesystem,
+    which is what makes it atomic.
+
+    The temp name is unique per call, not just per target. Two endpoints write
+    tower_config.json, so with a shared name one caller's half-written temp file
+    could be renamed into place by the other, putting content on disk that
+    neither caller validated, and each caller's cleanup would delete the other's
+    file out from under it. The cost of a unique name is that a process killed
+    between the write and the rename leaves an orphan behind, where a shared
+    name would have been reused by the next write; that is accepted, because an
+    unreadable config is worse than a stray file.
+
+    The content is flushed to disk before the rename, and the directory after it.
+    Without the first, the rename can publish a file whose bytes have not landed,
+    so a power loss leaves a config that is present, empty and unusable, which is
+    the failure this function exists to prevent. Without the second, the rename
+    itself may not survive, which is less serious (the reader still sees the old
+    file rather than a broken one) but leaves the write silently undone.
+
+    The encoding is pinned because the matching read pins it too, and the locale
+    inside a container is often C, where the default is ASCII.
+    """
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def migrate_defaults_into_runtime() -> None:

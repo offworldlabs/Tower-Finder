@@ -460,3 +460,33 @@ async def registered_node(node_session):
     await node_pipeline.register_with_pipeline(node_session, node)
     await node_session.commit()
     return token, _NODE_ID
+
+
+@pytest.fixture(autouse=True)
+def _restore_tower_config():
+    """Put every tower_ranking config setting back after each test.
+
+    apply_config() assigns the whole ranking configuration and reload_config()
+    the fallback reason, so a test that calls either without a fixture of its
+    own hands its config to every test that follows in the same worker, where
+    the failure lands far from its cause.
+
+    config_fallback_reason is cleared on the way in as well: services/health.py
+    reads it, another file asserts `compute_health_issues() == []`, and a module
+    imported at collection time can leave a reason behind before any fixture has
+    run.
+    """
+    from services import tower_ranking
+
+    saved = {name: getattr(tower_ranking, name) for name in tower_ranking.CONFIG_SETTINGS}
+    # Cleared going in and left cleared coming out, rather than restored: a
+    # module imported at collection time can leave a reason behind before any
+    # fixture has run, and putting it back afterwards would hand it to whatever
+    # inspects state between tests.
+    saved["config_fallback_reason"] = None
+    tower_ranking.config_fallback_reason = None
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            setattr(tower_ranking, name, value)

@@ -1,5 +1,6 @@
 """Tests for admin API routes — events, users, config, storage, leaderboard, metrics."""
 
+import json
 import os
 import time
 
@@ -88,6 +89,50 @@ class TestConfig:
         r = client.get("/api/admin/config/history")
         assert r.status_code == 200
         assert isinstance(r.json(), list)
+
+
+class TestTowerConfigValidation:
+    """PUT /admin/config/towers writes the same file as PUT /api/config.
+
+    It has no reload of its own, so an unusable config written here sat on
+    disk unnoticed until the next restart tried to load it and failed.
+    """
+
+    @pytest.fixture()
+    def isolated_tower_config(self, tmp_path, monkeypatch):
+        import routes.admin as admin_mod
+        from core.runtime_config import runtime_path
+        from services import tower_ranking
+
+        path = tmp_path / "tower_config.json"
+        path.write_text(tower_ranking._CONFIG_PATH.read_text())
+        monkeypatch.setattr(
+            admin_mod,
+            "runtime_path",
+            lambda name: path if name == "tower_config.json" else runtime_path(name),
+        )
+        # Keep the history copies out of the developer's config_history dir.
+        monkeypatch.setattr(admin_mod, "_CONFIG_DIR", tmp_path / "config_history")
+        return path
+
+    def test_rejects_invalid_tower_config(self, client, isolated_tower_config):
+        before = isolated_tower_config.read_text()
+        bad = json.loads(before)
+        del bad["ranking"]["distance_classes"][0]["max_km"]
+
+        r = client.put("/api/admin/config/towers", json={"config": bad})
+
+        assert r.status_code == 400
+        assert isolated_tower_config.read_text() == before
+
+    def test_accepts_a_valid_tower_config(self, client, isolated_tower_config):
+        good = json.loads(isolated_tower_config.read_text())
+        good["search"]["default_radius_km"] = 55
+
+        r = client.put("/api/admin/config/towers", json={"config": good})
+
+        assert r.status_code == 200
+        assert json.loads(isolated_tower_config.read_text())["search"]["default_radius_km"] == 55
 
 
 # ── Storage ───────────────────────────────────────────────────────────────────
