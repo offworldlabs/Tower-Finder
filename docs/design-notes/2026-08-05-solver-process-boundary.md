@@ -1084,7 +1084,7 @@ ps -o pid,ppid,%cpu,rss,command -g $(pgrep -f "uvicorn main:app" | head -1)
 Compare against the same four on the commit before Task 4. The expectation from the profile is
 that total CPU rises above one core, which is the point of the exercise, while flush cadence
 falls towards the 1.0 s loop-sleep floor. Write them into
-`tower-finder-server-optimisations.md` under a new "Measured (2026-08-05)" heading. If flush
+`retina-server-optimisations.md` under a new "Measured (2026-08-05)" heading. If flush
 cadence has not moved, stop and say so rather than proceeding: it would mean the residual is
 not where the earlier profile put it.
 
@@ -1125,7 +1125,7 @@ Named so that a reader does not take their absence for an oversight.
   GIL-holding, and it becomes the next contention once the solve leaves. Task 5's measurement
   is what will show whether that matters at 50 nodes.
 - **Arc building.** The other pure-Python GIL holder, in the flush path rather than the ingest
-  path. It has its own options recorded in `tower-finder-server-optimisations.md`.
+  path. It has its own options recorded in `retina-server-optimisations.md`.
 - **Backpressure on a full queue.** Today a full `solver_queue` increments a drop counter, which
   is right for a TCP producer that is not waiting and wrong for an HTTP node that is. The 429
   with `Retry-After` belongs with the endpoint that returns it, in step 2.
