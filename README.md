@@ -36,7 +36,7 @@ libs/             Git submodules
 ### Clone (with submodules)
 
 ```bash
-git clone --recursive https://github.com/offworldlabs/Tower-Finder.git
+git clone --recursive https://github.com/offworldlabs/retina-server.git
 cd Tower-Finder
 
 # If already cloned without --recursive:
