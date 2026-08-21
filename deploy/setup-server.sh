@@ -1,5 +1,5 @@
 #!/bin/bash
-# ── Tower Finder: Full Server Setup + Security Hardening ──────────────────────
+# ── retina-server: Full Server Setup + Security Hardening ──────────────────────
 # Run this on a fresh Ubuntu 24.04 DigitalOcean droplet as root.
 #
 # Usage:
@@ -43,7 +43,7 @@ esac
 hostnamectl set-hostname "retina-${RETINA_TARGET_ENV}"
 
 echo "══════════════════════════════════════════════════"
-echo "  Tower Finder — Server Setup & Hardening"
+echo "  retina-server — Server Setup & Hardening"
 echo "  Target environment: ${RETINA_TARGET_ENV}"
 echo "══════════════════════════════════════════════════"
 
@@ -120,7 +120,7 @@ systemctl enable --now docker
 
 # ── 4. Deploy application ────────────────────────────────────────────────────
 echo ""
-echo "→ Deploying Tower Finder..."
+echo "→ Deploying retina-server..."
 
 APP_DIR="${APP_DIR:-/opt/retina-server}"
 

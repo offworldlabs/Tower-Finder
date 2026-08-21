@@ -1,4 +1,4 @@
-# Tower-Finder
+# retina-server
 
 FastAPI backend and React front-ends for the RETINA passive-radar network.
 

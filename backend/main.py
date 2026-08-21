@@ -1,4 +1,4 @@
-"""Tower Finder API — slim app factory.
+"""retina-server API — slim app factory.
 
 All business logic lives in dedicated packages:
   core/       – shared mutable state
@@ -266,7 +266,7 @@ class LimitUploadSize(BaseHTTPMiddleware):
 # scripts/generate_openapi.py, so there is one copy of it rather than a document
 # beside the schema that can disagree with the routes. See routes/nodes.py.
 app = FastAPI(
-    title="Tower Finder API",
+    title="retina-server API",
     description=API_DESCRIPTION,
     openapi_tags=NODE_API_TAGS,
     lifespan=lifespan,

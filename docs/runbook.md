@@ -218,10 +218,20 @@ curl -sk https://localhost/api/admin/metrics | python3 -m json.tool
 
 ### `config_degraded` (sub-check of `health_degraded`)
 
-**Trigger:** `tower_config.json` could not be read, parsed or validated, so the process is running on the shipped defaults.  
-**What it means:** the config on disk is **not** the config in effect. `GET /api/config` returns the file, which is the one being ignored, so the two disagree until this is fixed. Tower ranking still works; it just uses the defaults that ship with the image.
+**Trigger:** `tower_config.json` could not be read, parsed or validated, so the process is running on something other than the file on disk.  
+**What it means:** the config on disk is **not** the config in effect. `GET /api/config` returns the file, which is the one being ignored, so the two disagree until this is fixed. Tower ranking still works, on whichever config the alert names.
 
-The alert message carries the reason, e.g. `tower_config.json unusable, running on defaults (KeyError: 'max_km')`, or a validation message naming the field.
+The alert carries the reason and says what is in effect, which is one of two things:
+
+- `tower_config.json unusable, running on defaults (KeyError: 'max_km')` — the overlay was rejected and the
+  defaults that ship with the image were applied. The reason in brackets is why the overlay was rejected.
+- `tower_config.json unusable, the shipped defaults are unusable too (...), keeping the settings already in
+  effect (overlay: ...)` — both were rejected, so nothing changed: the process is still on whatever it last
+  loaded, which after a live reload is the operator's own previous config and only at startup is the in-code
+  defaults. Two reasons are given, the defaults' first and the overlay's in the tail.
+
+The second is the rarer and the more serious: a config shipped inside the image was rejected, so it cannot be
+inspected or corrected from the droplet. Treat it as an image or validator problem, not an operator one.
 
 **Check what the process actually loaded:**
 ```bash

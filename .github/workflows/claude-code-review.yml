@@ -40,7 +40,97 @@ jobs:
           plugins: 'code-review@claude-code-plugins'
           track_progress: true
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          # The review skill fans out to subagents, which the Agent tool runs in
+          # the background by default: the parent dispatches, stops, and is woken
+          # by a task notification when they finish. That loop does not exist
+          # here. Headless, the turn ending is the process exiting, so a parent
+          # that backgrounds the fan-out takes the run down with its agents still
+          # working and the review unwritten. Tell it where it is running, since
+          # nothing else does. Foreground dispatch costs no parallelism: agents
+          # launched together in one message still run concurrently.
           claude_args: |
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --append-system-prompt "This is a headless CI job with no interactive loop. When your turn ends the process exits, killing any subagent still running and discarding its work, and no task notification will ever reach you. Dispatch subagents with run_in_background: false so their results return inside your turn; several agents launched in a single message still run concurrently. Do not end your turn while dispatched work is outstanding, or while any item on your progress checklist is still unticked."
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
+
+      # The instruction above is a nudge, not a guarantee, and nothing else here
+      # notices: the action reports success whenever the model's turn ends without
+      # an API error, and a turn that ends having posted no review is not an
+      # error. So the stall described above stays possible, and stays silent.
+      # Seven of thirty-five runs sampled on 2026-08-20, before that instruction
+      # existed, ended that way (#199, #201, #204, #206), each leaving its
+      # progress checklist part-ticked.
+      #
+      # Read that checklist back, because an unfinished review is otherwise
+      # indistinguishable from a clean one. This depends on track_progress above:
+      # the checklist is the only thing separating "did not finish" from
+      # "finished and found nothing", since a review that finds nothing also
+      # posts no findings (step 6 of the skill stops when nothing scores 80+).
+      - name: Assert the review completed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          # The action refuses to run when this file differs from the copy on the
+          # default branch, which stops a pull request rewriting its own reviewer
+          # to reach the secrets. It skips, reports success, and reviews nothing.
+          # Without this, the check below would fail every pull request that edits
+          # this workflow, over a review that was never allowed to happen. Mirror
+          # the action's own condition, comparing blob hashes, rather than reading
+          # its log for a phrase that will change.
+          base=$(gh api "repos/${REPO}/contents/.github/workflows/claude-code-review.yml?ref=${DEFAULT_BRANCH}" --jq .sha 2>/dev/null || true)
+          here=$(git hash-object .github/workflows/claude-code-review.yml)
+          if [ -n "${base}" ] && [ "${base}" != "${here}" ]; then
+            echo "::notice::This pull request edits the review workflow, so the action skipped itself and no review ran. That is its guard against a pull request editing its own reviewer, not a fault in this change. Reviews resume on the pull requests that follow this one onto ${DEFAULT_BRANCH}, and this one needs reviewing by hand."
+            exit 0
+          fi
+
+          gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            --jq '[.[] | {body: .body, url: .html_url}]' > "${RUNNER_TEMP}/comments.json"
+          python - <<'PY'
+          import json
+          import os
+          import re
+
+          run_id = os.environ["GITHUB_RUN_ID"]
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "comments.json")) as fh:
+              comments = json.load(fh)
+
+          # The action appends a "View job" link naming its own run before the step
+          # returns, which is what ties a comment to this run rather than to an
+          # earlier review of the same pull request.
+          marker = f"/actions/runs/{run_id}"
+          mine = [c for c in comments if marker in (c["body"] or "")]
+
+          if not mine:
+              raise SystemExit(
+                  f"::error::The review posted no comment for run {run_id}. Every review is "
+                  "expected to leave a progress comment linking back to its own job, so either "
+                  "it failed before posting anything, or track_progress is no longer set on the "
+                  "step above and this check can no longer tell a finished review from an "
+                  "abandoned one."
+              )
+
+          # Only ever one, but prefer the newest if the action's format ever changes.
+          body = mine[-1]["body"]
+          # Findings quote code, and a quoted checklist is not this run's checklist.
+          # A review of this check would otherwise fail on its own example.
+          prose = re.sub(r"```.*?```", "", body, flags=re.DOTALL)
+          unticked = re.findall(r"^\s*- \[ \] .*$", prose, re.MULTILINE)
+          if unticked:
+              todo = "\n".join(unticked)
+              print(f"Progress comment: {mine[-1]['url']}")
+              print(f"Unfinished:\n{todo}")
+              raise SystemExit(
+                  f"::error::The review stopped partway and left {len(unticked)} step(s) "
+                  "unfinished, so this pull request has not been reviewed. Re-run the job. "
+                  "This is usually the review skill's subagents being dispatched to the "
+                  "background and the run ending underneath them; a re-run generally picks a "
+                  "different path and completes."
+              )
+
+          print(f"Review completed: {mine[-1]['url']}")
+          PY

@@ -19,7 +19,7 @@ the parent, where they run today.
 
 ## Global Constraints
 
-- Working directory for all commands is `~/owl/Tower-Finder`.
+- Working directory for all commands is `~/owl/retina-server`.
 - Branch first. The checkout is currently on `chore/compose-consolidation`, which is unrelated
   in-flight work; start from a fresh branch off the default rather than committing onto it.
 - Stage the named paths per task. This clone carries unrelated working-tree cruft (dirty
@@ -363,7 +363,7 @@ moved but its behaviour did not.
 - [ ] **Step 7: Lint**
 
 ```bash
-cd ~/owl/Tower-Finder && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
+cd ~/owl/retina-server && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
 ```
 
 - [ ] **Step 8: Commit**
@@ -501,7 +501,7 @@ exercise the solve end to end and would catch a config the beam gate can no long
 - [ ] **Step 6: Lint and commit**
 
 ```bash
-cd ~/owl/Tower-Finder && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
+cd ~/owl/retina-server && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
 git add backend/services/frame_processor.py backend/tests/test_frame_processor.py
 git commit -m "perf(solver): attach only contributing node configs to a candidate
 
@@ -748,7 +748,7 @@ argument.
 - [ ] **Step 6: Lint and commit**
 
 ```bash
-cd ~/owl/Tower-Finder && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
+cd ~/owl/retina-server && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
 git add backend/services/solver_pool.py backend/core/state.py backend/tests/test_solver_pool.py
 git commit -m "feat(solver): add a spawn-context worker pool for the solve
 
@@ -955,7 +955,7 @@ docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --build
 Then confirm the solve genuinely left the uvicorn process:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.test.yml exec tower-finder ps -eo pid,ppid,rss,comm
+docker compose -f docker-compose.yml -f docker-compose.test.yml exec server ps -eo pid,ppid,rss,comm
 ```
 
 Expected: `SOLVER_WORKERS` (default 2) child python processes under the uvicorn pid. Then check
@@ -971,7 +971,7 @@ Expected: `successes` rising over successive calls, `queue_drops` not climbing. 
 - [ ] **Step 8: Lint and commit**
 
 ```bash
-cd ~/owl/Tower-Finder && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
+cd ~/owl/retina-server && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
 git add backend/services/tasks/solver.py backend/main.py backend/tests/test_solver_worker.py
 git commit -m "feat(solver): run the solve in worker processes
 
@@ -1084,7 +1084,7 @@ ps -o pid,ppid,%cpu,rss,command -g $(pgrep -f "uvicorn main:app" | head -1)
 Compare against the same four on the commit before Task 4. The expectation from the profile is
 that total CPU rises above one core, which is the point of the exercise, while flush cadence
 falls towards the 1.0 s loop-sleep floor. Write them into
-`tower-finder-server-optimisations.md` under a new "Measured (2026-08-05)" heading. If flush
+`retina-server-optimisations.md` under a new "Measured (2026-08-05)" heading. If flush
 cadence has not moved, stop and say so rather than proceeding: it would mean the residual is
 not where the earlier profile put it.
 
@@ -1102,7 +1102,7 @@ true and now has a second reason, the ADR's per-process caches.
 - [ ] **Step 8: Lint and commit**
 
 ```bash
-cd ~/owl/Tower-Finder && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
+cd ~/owl/retina-server && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
 git add backend/routes/admin.py backend/services/health.py backend/tests/test_admin_routes.py docs/architecture.md deploy/start.sh
 git commit -m "feat(solver): surface pool health, and document the process model
 
@@ -1125,7 +1125,7 @@ Named so that a reader does not take their absence for an oversight.
   GIL-holding, and it becomes the next contention once the solve leaves. Task 5's measurement
   is what will show whether that matters at 50 nodes.
 - **Arc building.** The other pure-Python GIL holder, in the flush path rather than the ingest
-  path. It has its own options recorded in `tower-finder-server-optimisations.md`.
+  path. It has its own options recorded in `retina-server-optimisations.md`.
 - **Backpressure on a full queue.** Today a full `solver_queue` increments a drop counter, which
   is right for a TCP producer that is not waiting and wrong for an HTTP node that is. The 429
   with `Retry-After` belongs with the endpoint that returns it, in step 2.

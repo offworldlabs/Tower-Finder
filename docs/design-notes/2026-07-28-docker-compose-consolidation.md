@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Collapse Tower-Finder's four standalone Compose files into one prod base plus thin per-environment overrides, leaving a single container entrypoint and a single UI, so the laptop stack faithfully mirrors production.
+**Goal:** Collapse retina-server's four standalone Compose files into one prod base plus thin per-environment overrides, leaving a single container entrypoint and a single UI, so the laptop stack faithfully mirrors production.
 
 **Architecture:** `docker-compose.yml` (production) becomes the base that a bare `docker compose up` reads. Staging and the laptop stack become thin overrides layered on it via `docker compose -f docker-compose.yml -f <override>.yml`, so they inherit the base and cannot drift. The legacy `start-test.sh` entrypoint and the tar1090 static-HTML UI (`nginx-test.conf`, `tar1090/html`) are removed; the tar1090 JSON data format and its API routes are untouched.
 
@@ -56,7 +56,7 @@
 
 Run:
 ```bash
-cd ~/owl/Tower-Finder
+cd ~/owl/retina-server
 docker compose -f docker-compose.yml config | grep -A1 FRAME_WORKERS || echo "FRAME_WORKERS not in compose (comes from .env)"
 ```
 Expected: not present in compose output (today it lives only in `backend/.env`).
@@ -406,7 +406,7 @@ With `start.sh` generalised (Task 2) and the laptop stack moved onto it (Task 3)
 
 Run:
 ```bash
-cd ~/owl/Tower-Finder
+cd ~/owl/retina-server
 grep -rn 'start-test\|nginx-test\.conf\|deploy-test-network' \
   --include='*.yml' --include='*.sh' --include='*.md' --include='Dockerfile*' --include='justfile' . | grep -v node_modules
 ```
@@ -446,7 +446,7 @@ RUN chmod +x /app/deploy/start.sh
 
 Run:
 ```bash
-docker build -t tower-finder:consolidation-check .
+docker build -t retina-server:consolidation-check .
 ```
 Expected: build succeeds. No error about a missing `tar1090/html` build-context path or a missing `start-test.sh` chmod target.
 
@@ -482,7 +482,7 @@ routes are untouched."
 
 Run:
 ```bash
-cd ~/owl/Tower-Finder
+cd ~/owl/retina-server
 docker compose -f docker-compose.staging.yml config > /tmp/staging-before.yaml && echo "snapshot saved"
 ```
 Expected: `snapshot saved`. This is the reference the thinned override must reproduce.
@@ -556,10 +556,10 @@ services:
       - FLEET_MAX_RANGE_KM=0
       - FLEET_CONCURRENCY=10
       - FLEET_CONNECT_RETRIES=10
-      - FLEET_HOST=tower-finder
+      - FLEET_HOST=server
       - FLEET_PORT=3012
       - FLEET_VALIDATE=false
-      - FLEET_VALIDATION_URL=http://tower-finder:8000
+      - FLEET_VALIDATION_URL=http://server:8000
       - FLEET_SEED=42
     deploy:
       resources:
@@ -712,7 +712,7 @@ Expected: `?? CLAUDE.md` (untracked), not staged.
 
 Run:
 ```bash
-cd ~/owl/Tower-Finder
+cd ~/owl/retina-server
 grep -rn 'start-test\.sh\|nginx-test\.conf\|deploy-test-network\|docker-compose\.local\.yml' \
   --include='*.yml' --include='*.yaml' --include='*.sh' --include='*.md' --include='Dockerfile*' --include='justfile' . \
   | grep -v node_modules | grep -v 'docs/superpowers/'
@@ -735,9 +735,9 @@ Expected: exactly `docker-compose.yml`, `docker-compose.staging.yml`, `docker-co
 Run: `deploy/tests/test_nginx_profile.sh`
 Expected: `PASS: nginx-profile selection`.
 
-- [ ] **Step 4: Update REPO_MAP.md if this changed Tower-Finder's described role**
+- [ ] **Step 4: Update REPO_MAP.md if this changed retina-server's described role**
 
-The consolidation does not change Tower-Finder's cross-repo role, so `../REPO_MAP.md` likely needs no edit. Confirm by checking whether it enumerates the compose files:
+The consolidation does not change retina-server's cross-repo role, so `../REPO_MAP.md` likely needs no edit. Confirm by checking whether it enumerates the compose files:
 ```bash
 grep -n 'docker-compose\|start-test\|tar1090' ~/owl/REPO_MAP.md || echo "no compose detail in REPO_MAP; nothing to update"
 ```
