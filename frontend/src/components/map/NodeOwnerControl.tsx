@@ -9,10 +9,6 @@ import { API_BASE } from "./constants";
         the map to a server-authenticated feed of just their own nodes. ── */
 
 const boxStyle = {
-  position: "absolute",
-  top: 12,
-  right: 12,
-  zIndex: 1000,
   background: "rgba(2, 6, 23, 0.88)",
   color: "#e2e8f0",
   border: "1px solid #1e293b",
