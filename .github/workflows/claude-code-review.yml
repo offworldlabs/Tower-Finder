@@ -40,23 +40,30 @@ jobs:
           plugins: 'code-review@claude-code-plugins'
           track_progress: true
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          # The review skill fans out to subagents, which the Agent tool runs in
+          # the background by default: the parent dispatches, stops, and is woken
+          # by a task notification when they finish. That loop does not exist
+          # here. Headless, the turn ending is the process exiting, so a parent
+          # that backgrounds the fan-out takes the run down with its agents still
+          # working and the review unwritten. Tell it where it is running, since
+          # nothing else does. Foreground dispatch costs no parallelism: agents
+          # launched together in one message still run concurrently.
           claude_args: |
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --append-system-prompt "This is a headless CI job with no interactive loop. When your turn ends the process exits, killing any subagent still running and discarding its work, and no task notification will ever reach you. Dispatch subagents with run_in_background: false so their results return inside your turn; several agents launched in a single message still run concurrently. Do not end your turn while dispatched work is outstanding, or while any item on your progress checklist is still unticked."
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
 
-      # The action reports success whenever the model's turn ends without an API
-      # error, and a turn that ends having posted no review is not an error. The
-      # review skill fans out to subagents, which the Agent tool runs in the
-      # background by default; the parent is meant to be woken by a task
-      # notification. Run headless, there is nothing to wake it, so when the model
-      # dispatches the fan-out rather than blocking on it, the turn ends, the run
-      # exits green, and the review is never written. Seven of thirty-five runs
-      # sampled on 2026-08-20 ended that way (#199, #201, #204, #206), each
-      # leaving its progress checklist part-ticked.
+      # The instruction above is a nudge, not a guarantee, and nothing else here
+      # notices: the action reports success whenever the model's turn ends without
+      # an API error, and a turn that ends having posted no review is not an
+      # error. So the stall described above stays possible, and stays silent.
+      # Seven of thirty-five runs sampled on 2026-08-20, before that instruction
+      # existed, ended that way (#199, #201, #204, #206), each leaving its
+      # progress checklist part-ticked.
       #
-      # This reads that checklist back, because an unfinished review is otherwise
-      # indistinguishable from a clean one. It depends on track_progress above:
+      # Read that checklist back, because an unfinished review is otherwise
+      # indistinguishable from a clean one. This depends on track_progress above:
       # the checklist is the only thing separating "did not finish" from
       # "finished and found nothing", since a review that finds nothing also
       # posts no findings (step 6 of the skill stops when nothing scores 80+).
