@@ -1656,17 +1656,26 @@ export default function LiveAircraftMap() {
         />
 
         <div className="live-map-area">
-          <NodeOwnerControl
-            user={user}
-            ownedCount={ownedNodeIds.length}
-            ownerOnly={ownerOnly}
-            loading={authLoading}
-            onToggle={(on) => {
-              setOwnerOnly(on);
-              // Refit to the user's nodes when entering owner mode.
-              if (on) setFocusNonce((n) => n + 1);
-            }}
-          />
+          <div className="live-map-top-right-stack">
+            <NodeOwnerControl
+              user={user}
+              ownedCount={ownedNodeIds.length}
+              ownerOnly={ownerOnly}
+              loading={authLoading}
+              onToggle={(on) => {
+                setOwnerOnly(on);
+                // Refit to the user's nodes when entering owner mode.
+                if (on) setFocusNonce((n) => n + 1);
+              }}
+            />
+            <StatsOverlay
+              aircraft={radarAircraft}
+              truth={showGroundTruth ? truthOnlyAircraft : []}
+              anomalyCount={anomalyCount}
+              visible={showStats}
+              onToggle={() => setShowStats((v) => !v)}
+            />
+          </div>
           {showFilters && (
             <div style={{
               position: "absolute", top: 12, left: 52, zIndex: 1000,
@@ -2058,13 +2067,6 @@ export default function LiveAircraftMap() {
             )}
           </MapContainer>
 
-          <StatsOverlay
-            aircraft={radarAircraft}
-            truth={showGroundTruth ? truthOnlyAircraft : []}
-            anomalyCount={anomalyCount}
-            visible={showStats}
-            onToggle={() => setShowStats((v) => !v)}
-          />
           <ShortcutHelp visible={showShortcutHelp} onClose={() => setShowShortcutHelp(false)} />
 
           {selectedAc && (

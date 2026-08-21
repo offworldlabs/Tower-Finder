@@ -56,10 +56,6 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
   }, [aircraft, truth]);
 
   const containerStyle: React.CSSProperties = {
-    position: "absolute",
-    top: 12,
-    right: 12,
-    zIndex: 1000,
     background: "rgba(2, 6, 23, 0.92)",
     color: "#e2e8f0",
     border: "1px solid #1e293b",
