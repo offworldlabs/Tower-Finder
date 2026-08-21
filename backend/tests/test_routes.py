@@ -253,14 +253,14 @@ def isolated_config(tmp_path):
     regression would corrupt the workspace on its way to reporting itself.
     routes.towers binds _CONFIG_PATH at import, so both references must move.
 
-    Restores by putting the saved values back rather than through monkeypatch,
-    whose undo() would revert the test's own patches, and rather than by calling
-    reload_config(), which teardown would run through whatever the test patched.
+    Only the paths: the autouse fixture in conftest puts the settings themselves
+    back after every test. Restores by assignment rather than through
+    monkeypatch, whose undo() would revert the test's own patches, and rather
+    than by calling reload_config(), which teardown would run through whatever
+    the test patched.
     """
     from services import tower_ranking
-    from tests.test_tower_ranking_config import _CONFIG_GLOBALS
 
-    saved = {name: getattr(tower_ranking, name) for name in _CONFIG_GLOBALS}
     path = tmp_path / "tower_config.json"
     path.write_text(_CONFIG_PATH.read_text())
     towers_mod._CONFIG_PATH = path
@@ -270,8 +270,6 @@ def isolated_config(tmp_path):
     finally:
         towers_mod._CONFIG_PATH = _CONFIG_PATH
         tower_ranking._CONFIG_PATH = _CONFIG_PATH
-        for name, value in saved.items():
-            setattr(tower_ranking, name, value)
 
 
 class TestConfigValidation:

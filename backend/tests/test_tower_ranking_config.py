@@ -1,6 +1,9 @@
 """Additional tower_ranking tests — reload_config + parse_geom edge cases."""
 
+import dis
+import inspect
 import json
+import logging
 import os
 
 import pytest
@@ -122,33 +125,16 @@ class TestParseUserFrequenciesEdgeCases:
 # ── Config validation + fail-soft reload ─────────────────────────────────────
 
 
-# Everything reload_config()/apply_config() assign, so a fixture can put the
-# module back exactly as it found it.
-_CONFIG_GLOBALS = (
-    "RX_ANTENNA_GAIN_DBI",
-    "SENSITIVITY_DBM",
-    "BROADCAST_BANDS",
-    "BAND_PRIORITY",
-    "DISTANCE_CLASSES",
-    "DISTANCE_PRIORITY",
-    "SORT_ORDER",
-    "DEFAULT_RADIUS_KM",
-    "DEFAULT_LIMIT",
-    "config_fallback_reason",
-)
-
-
 @pytest.fixture()
 def scratch_config(tmp_path):
     """Point reload_config() at a scratch overlay, restoring the real one after.
 
-    Restores by putting the saved values back rather than by calling
-    reload_config(): a fixture's teardown runs before pytest unwinds the test's
-    own monkeypatches, so reloading here would do so through whatever the test
-    had patched. Saving and restoring the attributes directly depends on
-    nothing the test can have replaced.
+    Only the path: the autouse fixture in conftest puts the settings themselves
+    back after every test. Restores by assignment rather than by calling
+    reload_config(), because a fixture's teardown runs before pytest unwinds the
+    test's own monkeypatches and reloading here would do so through whatever the
+    test had patched.
     """
-    saved = {name: getattr(tower_ranking, name) for name in _CONFIG_GLOBALS}
     real = tower_ranking._CONFIG_PATH
     path = tmp_path / "tower_config.json"
     tower_ranking._CONFIG_PATH = path
@@ -156,14 +142,48 @@ def scratch_config(tmp_path):
         yield path
     finally:
         tower_ranking._CONFIG_PATH = real
-        for name, value in saved.items():
-            setattr(tower_ranking, name, value)
 
 
 def _shipped_default() -> dict:
     # The production helper, so the test cannot drift from what the code calls
     # "the shipped default".
     return tower_ranking._default_config()
+
+
+def _config_degraded_message() -> str:
+    """The sentence an operator reads in the alert, rendered as health.py does."""
+    from services.health import compute_health_issues
+
+    issues = compute_health_issues()
+    for issue in issues:
+        if issue["type"] == "config_degraded":
+            return issue["message"]
+    # The alert going missing is the regression these tests exist to catch, so
+    # say that, rather than letting a bare StopIteration point at a generator.
+    raise AssertionError(f"no config_degraded issue; health reported {[i['type'] for i in issues]}")
+
+
+class TestConfigSettings:
+    def test_lists_every_module_global_assigned_at_runtime(self):
+        """A name missing here is module state that leaks between tests.
+
+        Deliberately wider than the config: any global a function assigns
+        outlives the test that triggered it, so anything new must be listed
+        whether or not it is a setting. The leak is silent and lands in
+        whichever test runs next, so the introspection belongs in an assertion,
+        where getting it wrong fails loudly, rather than in the fixture, where
+        it would quietly restore less.
+        """
+        assigned = {
+            instruction.argval
+            for obj in vars(tower_ranking).values()
+            if inspect.isfunction(obj) and obj.__module__ == tower_ranking.__name__
+            for instruction in dis.get_instructions(obj)
+            if instruction.opname == "STORE_GLOBAL"
+        }
+
+        assert assigned, "no module globals found; the detection below has broken, not the list"
+        assert assigned == set(tower_ranking.CONFIG_SETTINGS)
 
 
 class TestValidateConfig:
@@ -285,6 +305,33 @@ class TestApplyConfig:
         # apply that assigned as it went would have taken 99.0 on its way out.
         assert before == (tower_ranking.RX_ANTENNA_GAIN_DBI, tower_ranking.DISTANCE_CLASSES)
 
+    def test_applied_config_does_not_alias_the_caller(self):
+        """PUT /api/config applies the parsed request body itself.
+
+        Assigning the objects nested inside it would leave live ranking state
+        aliasing that body, for anything the handler does to it afterwards to
+        rewrite the settings a search in flight is reading.
+        """
+        body = {
+            "ranking": {
+                "band_priority": {"FM": 0},
+                "distance_priority": {"Ideal": 0},
+                "sort_order": [{"field": "distance_km", "ascending": True}],
+            }
+        }
+
+        tower_ranking.apply_config(body)
+
+        ranking = body["ranking"]
+        ranking["band_priority"]["FM"] = 99
+        ranking["distance_priority"]["Ideal"] = 99
+        ranking["sort_order"][0]["ascending"] = False
+        ranking["sort_order"].append({"field": "eirp_dbm", "ascending": False})
+
+        assert tower_ranking.BAND_PRIORITY == {"FM": 0}
+        assert tower_ranking.DISTANCE_PRIORITY == {"Ideal": 0}
+        assert tower_ranking.SORT_ORDER == [{"field": "distance_km", "ascending": True}]
+
     def test_default_sort_order_leads_with_coverage(self, scratch_config):
         """A config with no sort_order of its own gets the coverage-first default.
 
@@ -396,3 +443,48 @@ class TestReloadConfigFailSoft:
         tower_ranking.reload_config()
 
         assert "config_degraded" in {i["type"] for i in compute_health_issues()}
+
+    def test_health_message_names_the_defaults_when_they_apply(self, scratch_config):
+        scratch_config.write_text("{ not json")
+
+        tower_ranking.reload_config()
+
+        assert _config_degraded_message().startswith("tower_config.json unusable, running on defaults (")
+
+    def test_health_message_does_not_claim_defaults_when_they_failed_too(self, scratch_config, monkeypatch):
+        """The alert has to say which settings are actually in effect.
+
+        On this branch they are whatever loaded last, which on a live reload is
+        the operator's own config. Told their tuning had been discarded for the
+        defaults, they would re-apply a config that was never dropped.
+        """
+        scratch_config.write_text("{ not json")
+        monkeypatch.setattr(tower_ranking, "_default_config", lambda: None)
+
+        tower_ranking.reload_config()
+
+        message = _config_degraded_message()
+        assert "running on defaults" not in message
+        assert "keeping the settings already in effect" in message
+
+    def test_records_why_the_shipped_defaults_were_rejected(self, scratch_config, monkeypatch, caplog):
+        """A validation failure of the defaults has no other diagnostic.
+
+        _default_config() logs only for OSError and ValueError, and the file is
+        inside the image, so without the reason here an operator has nothing to
+        read and no way to read the file either.
+        """
+        scratch_config.write_text("{ not json")
+        monkeypatch.setattr(
+            tower_ranking,
+            "_default_config",
+            lambda: {"ranking": {"sort_order": [{"field": "callsign", "ascending": False}]}},
+        )
+
+        with caplog.at_level(logging.ERROR, logger="services.tower_ranking"):
+            tower_ranking.reload_config()
+
+        # Both reasons: the overlay's, and the defaults' own.
+        assert "JSONDecodeError" in tower_ranking.config_fallback_reason
+        assert "callsign" in tower_ranking.config_fallback_reason
+        assert any("callsign" in r.getMessage() for r in caplog.records)

@@ -218,7 +218,7 @@ curl -sk https://localhost/api/admin/metrics | python3 -m json.tool
 
 ### `config_degraded` (sub-check of `health_degraded`)
 
-**Trigger:** `tower_config.json` could not be read, parsed or validated, so the process is running on the shipped defaults.
+**Trigger:** `tower_config.json` could not be read, parsed or validated, so the process is running on the shipped defaults.  
 **What it means:** the config on disk is **not** the config in effect. `GET /api/config` returns the file, which is the one being ignored, so the two disagree until this is fixed. Tower ranking still works; it just uses the defaults that ship with the image.
 
 The alert message carries the reason, e.g. `tower_config.json unusable, running on defaults (KeyError: 'max_km')`, or a validation message naming the field.

@@ -100,14 +100,16 @@ def compute_health_issues() -> list[dict]:
         if last is not None and (now - last) > max_age_s:
             add(f"stale_task:{task}", CRITICAL, f"Task {task} stale ({now - last:.0f}s since last success)")
 
-    # Tower config could not be loaded and the process is running on defaults.
-    # Without this the fallback is visible only as one ERROR line at boot, while
-    # GET /api/config keeps echoing the file the operator wrote.
+    # Tower config could not be loaded, so the file on disk is not the config in
+    # effect. The reason names what is running instead rather than this message
+    # assuming the defaults, which do not always apply. Without this the
+    # fallback is visible only as one ERROR line at boot, while GET /api/config
+    # keeps echoing the file the operator wrote.
     if tower_ranking.config_fallback_reason:
         add(
             "config_degraded",
             WARNING,
-            f"tower_config.json unusable, running on defaults ({tower_ranking.config_fallback_reason})",
+            f"tower_config.json unusable, {tower_ranking.config_fallback_reason}",
         )
 
     # Solver queue drops (solver can't keep up)

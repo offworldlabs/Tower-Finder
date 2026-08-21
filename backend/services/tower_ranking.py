@@ -202,6 +202,24 @@ def validate_config(cfg: dict) -> str | None:
     return None
 
 
+# The settings apply_config() assigns, plus the fallback reason reload_config()
+# records. Anything added to either must be added here, or the test suite stops
+# putting it back between tests and one test's config silently becomes the next
+# one's. tests/test_tower_ranking_config.py fails loudly if this drifts.
+CONFIG_SETTINGS = (
+    "RX_ANTENNA_GAIN_DBI",
+    "SENSITIVITY_DBM",
+    "BROADCAST_BANDS",
+    "BAND_PRIORITY",
+    "DISTANCE_CLASSES",
+    "DISTANCE_PRIORITY",
+    "SORT_ORDER",
+    "DEFAULT_RADIUS_KM",
+    "DEFAULT_LIMIT",
+    "config_fallback_reason",
+)
+
+
 def apply_config(cfg: dict) -> None:
     """Push a config dict into the module-level settings.
 
@@ -225,24 +243,31 @@ def apply_config(cfg: dict) -> None:
 
     bands = {band: [tuple(r) for r in ranges] for band, ranges in cfg.get("broadcast_bands", {}).items()}
 
+    # The tables and rules below are copied rather than referenced: PUT
+    # /api/config applies the parsed request body itself, so assigning the
+    # objects nested inside it would let anything the handler does to that body
+    # afterwards rewrite live ranking state.
     ranking = cfg.get("ranking", {})
-    band_priority = ranking.get("band_priority", {"VHF": 0, "UHF": 1, "FM": 2})
+    band_priority = dict(ranking.get("band_priority", {"VHF": 0, "UHF": 1, "FM": 2}))
 
     distance_classes = []
     for dc in ranking.get("distance_classes", []):
         max_km = dc["max_km"] if dc["max_km"] is not None else float("inf")
         distance_classes.append((dc["label"], dc["min_km"], max_km))
 
-    distance_priority = ranking.get("distance_priority", {})
-    sort_order = ranking.get(
-        "sort_order",
-        [
-            {"field": "coverage_area_added_km2", "ascending": False},
-            {"field": "band_priority", "ascending": True},
-            {"field": "distance_priority", "ascending": True},
-            {"field": "received_power_dbm", "ascending": False},
-        ],
-    )
+    distance_priority = dict(ranking.get("distance_priority", {}))
+    sort_order = [
+        dict(rule)
+        for rule in ranking.get(
+            "sort_order",
+            [
+                {"field": "coverage_area_added_km2", "ascending": False},
+                {"field": "band_priority", "ascending": True},
+                {"field": "distance_priority", "ascending": True},
+                {"field": "received_power_dbm", "ascending": False},
+            ],
+        )
+    ]
 
     search = cfg.get("search", {})
     radius_km = search.get("default_radius_km", 80)
@@ -260,9 +285,11 @@ def apply_config(cfg: dict) -> None:
     DEFAULT_LIMIT = limit
 
 
-# Set when reload_config() could not use the on-disk overlay and fell back to
-# defaults. compute_health_issues() reports it, so a degraded config shows up in
-# /api/health and the alerter rather than only in one ERROR line at boot.
+# Set when reload_config() could not use the on-disk overlay. It carries both
+# why the overlay failed and which settings are running instead, because the
+# latter is not always the shipped defaults: if those fail too, the settings
+# already in effect stay. compute_health_issues() renders it after
+# "tower_config.json unusable, ", so it reads as the tail of that sentence.
 config_fallback_reason: str | None = None
 
 # How reading a config file fails: absent or unreadable (OSError), not JSON or
@@ -326,12 +353,23 @@ def reload_config() -> None:
         return
     logger.error("tower_config: %s is unusable (%s), falling back to defaults", _CONFIG_PATH, reason)
 
-    if _apply_candidate(_default_config) is None:
-        config_fallback_reason = reason
+    default_reason = _apply_candidate(_default_config)
+    if default_reason is None:
+        config_fallback_reason = f"running on defaults ({reason})"
         return
 
-    logger.error("tower_config: the shipped defaults are unusable too, keeping the settings already in effect")
-    config_fallback_reason = reason
+    # _default_config() logs only for OSError and ValueError, so without the
+    # reason here a validation failure of the shipped defaults leaves no
+    # diagnostic anywhere, and it is the one failure an operator cannot inspect
+    # from outside: the file is inside the image.
+    logger.error(
+        "tower_config: the shipped defaults are unusable too (%s), keeping the settings already in effect",
+        default_reason,
+    )
+    config_fallback_reason = (
+        f"the shipped defaults are unusable too ({default_reason}), "
+        f"keeping the settings already in effect (overlay: {reason})"
+    )
 
 
 # Seed every setting from the in-code defaults before any file is read, so they
