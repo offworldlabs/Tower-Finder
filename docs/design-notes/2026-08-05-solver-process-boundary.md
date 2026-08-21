@@ -19,7 +19,7 @@ the parent, where they run today.
 
 ## Global Constraints
 
-- Working directory for all commands is `~/owl/Tower-Finder`.
+- Working directory for all commands is `~/owl/retina-server`.
 - Branch first. The checkout is currently on `chore/compose-consolidation`, which is unrelated
   in-flight work; start from a fresh branch off the default rather than committing onto it.
 - Stage the named paths per task. This clone carries unrelated working-tree cruft (dirty
@@ -363,7 +363,7 @@ moved but its behaviour did not.
 - [ ] **Step 7: Lint**
 
 ```bash
-cd ~/owl/Tower-Finder && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
+cd ~/owl/retina-server && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
 ```
 
 - [ ] **Step 8: Commit**
@@ -501,7 +501,7 @@ exercise the solve end to end and would catch a config the beam gate can no long
 - [ ] **Step 6: Lint and commit**
 
 ```bash
-cd ~/owl/Tower-Finder && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
+cd ~/owl/retina-server && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
 git add backend/services/frame_processor.py backend/tests/test_frame_processor.py
 git commit -m "perf(solver): attach only contributing node configs to a candidate
 
@@ -748,7 +748,7 @@ argument.
 - [ ] **Step 6: Lint and commit**
 
 ```bash
-cd ~/owl/Tower-Finder && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
+cd ~/owl/retina-server && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
 git add backend/services/solver_pool.py backend/core/state.py backend/tests/test_solver_pool.py
 git commit -m "feat(solver): add a spawn-context worker pool for the solve
 
@@ -971,7 +971,7 @@ Expected: `successes` rising over successive calls, `queue_drops` not climbing. 
 - [ ] **Step 8: Lint and commit**
 
 ```bash
-cd ~/owl/Tower-Finder && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
+cd ~/owl/retina-server && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
 git add backend/services/tasks/solver.py backend/main.py backend/tests/test_solver_worker.py
 git commit -m "feat(solver): run the solve in worker processes
 
@@ -1102,7 +1102,7 @@ true and now has a second reason, the ADR's per-process caches.
 - [ ] **Step 8: Lint and commit**
 
 ```bash
-cd ~/owl/Tower-Finder && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
+cd ~/owl/retina-server && backend/.venv/bin/ruff check backend/ && backend/.venv/bin/ruff format backend/
 git add backend/routes/admin.py backend/services/health.py backend/tests/test_admin_routes.py docs/architecture.md deploy/start.sh
 git commit -m "feat(solver): surface pool health, and document the process model
 
