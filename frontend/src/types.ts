@@ -1,5 +1,5 @@
 /* ------------------------------------------------------------------ */
-/*  Shared API response types — Tower Finder frontend                 */
+/*  Shared API response types — RETINA frontend                       */
 /* ------------------------------------------------------------------ */
 
 import type { ArcBufferEntry } from "./components/map/arcBuffer";

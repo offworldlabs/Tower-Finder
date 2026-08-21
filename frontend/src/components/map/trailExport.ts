@@ -32,7 +32,7 @@ export function trailToCsv(
   rows: number[][],
 ): string {
   const header = [
-    `# Tower-Finder trail export`,
+    `# RETINA trail export`,
     `# hex=${hex}`,
     `# callsign=${(callsign || "").trim()}`,
     `# exported_at=${new Date().toISOString()}`,
@@ -57,7 +57,7 @@ export function trailsToBulkCsv(
   trails: Record<string, number[][]>,
 ): string {
   const header = [
-    `# Tower-Finder bulk trail export`,
+    `# RETINA bulk trail export`,
     `# exported_at=${new Date().toISOString()}`,
     `# aircraft=${aircraft.length}`,
     `# columns: timestamp_iso,hex,callsign,lat,lon,alt_ft`,
