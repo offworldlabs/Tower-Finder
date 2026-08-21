@@ -130,12 +130,15 @@ drive a local backend with synthetic frames, see
 ### Working in a git worktree
 
 A fresh worktree has empty `libs/` directories and no venv of its own. Build one
-the way CI does, or pytest fails at conftest import on a missing `sqlalchemy`
-after silently creating an empty `.venv`:
+the way CI does, or pytest fails at conftest import on a missing `sqlalchemy`.
+
+`uv venv` first is not optional: `uv pip install` does not create an environment,
+it refuses with `No virtual environment found` and installs nothing.
 
 ```bash
 git submodule update --init
-cd backend && uv pip install -r requirements-dev.txt
+cd backend && uv venv --python 3.12 .venv
+uv pip install -r requirements-dev.txt
 uv pip install ../libs/retina-geolocator ../libs/retina-tracker \
   ../libs/retina-custody ../libs/retina-simulation ../libs/retina-analytics
 ```
