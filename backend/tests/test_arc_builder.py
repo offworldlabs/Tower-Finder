@@ -213,6 +213,36 @@ class TestBuildSingleNodeArc:
 
             assert mean_range(arc_large) > mean_range(arc_small)
 
+    def test_nan_beam_width_does_not_poison_the_arc_with_nan_points(self):
+        """node_beam_params used to return a NaN beam_width_deg unchanged
+        (bool(float('nan')) is True, so the `or YAGI_BEAM_WIDTH_DEG`
+        truthiness fallback never fired). Every comparison against that NaN
+        is False, so both the beam-membership check and the
+        _differential_at(hi, ...) skip check failed open: verified by hand
+        that the old code returned a full 37-point arc of [nan, nan] pairs
+        instead of None -- orjson serialises those as [null, null] straight
+        to the map with no server-side error."""
+        cfg = {**_NODE_CFG, "beam_width_deg": float("nan")}
+        track = _FakeTrack(delay_us=80.0)
+        arc = _build_single_node_arc(track, cfg)
+        assert arc is None or all(math.isfinite(p[0]) and math.isfinite(p[1]) for p in arc)
+
+    def test_non_finite_max_bistatic_defers_to_configured_max_range(self):
+        """A non-finite max_bistatic_range_km must be treated as absent (the
+        same fix as the beam-width/max-range defaults above), and this
+        function must see that through node_beam_params rather than
+        re-deriving its own cast from node_cfg directly -- otherwise a node
+        with no bistatic limit configured draws an arc reaching well past
+        its own declared max_range_km. Verified by hand: with max_range_km
+        capped at 10 km, the pre-fix code (NaN treated as a real, if
+        useless, bistatic value) still produced a 37-point arc reaching
+        ~48 km, derived from the differential/baseline formula rather than
+        the node's configured range."""
+        cfg = {**_NODE_CFG, "max_range_km": 10.0, "max_bistatic_range_km": float("nan")}
+        track = _FakeTrack(delay_us=80.0)
+        arc = _build_single_node_arc(track, cfg)
+        assert arc is None
+
 
 # ─── New contract: arc spans the entire detection area ───────────────────────
 

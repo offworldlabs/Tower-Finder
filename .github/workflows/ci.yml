@@ -41,7 +41,7 @@ env:
   # deploy/rollback.sh cd to an APP_DIR of their own and would otherwise fall
   # back to a default still naming the old directory, snapshotting and rolling
   # back a tree nothing is served from.
-  APP_DIR: /opt/tower-finder
+  APP_DIR: /opt/retina-server
 
 jobs:
   backend-tests:
@@ -53,6 +53,12 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    # Job-wide rather than on the pytest step alone, so the step below that
+    # asserts the core and the step that relies on it cannot end up reading
+    # different environments: a guard that sets its own is no guard at all.
+    # Steps that never invoke coverage are indifferent to it.
+    env:
+      COVERAGE_CORE: sysmon
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,10 +66,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: backend/requirements-dev.txt
-      - run: pip install -r requirements-dev.txt
-      - run: pip install ../libs/retina-geolocator ../libs/retina-tracker ../libs/retina-custody ../libs/retina-simulation ../libs/retina-analytics
+      # Matches retina-geolocator, retina-custody and the rest of the org's
+      # Python CI: setup-python owns the interpreter, uv does the installing,
+      # `--system` puts packages in that interpreter so pytest and pre-commit
+      # stay on PATH exactly as before. setup-python's own `cache: pip` is gone
+      # with the last pip invocation that it served.
+      #
+      # No uv cache on purpose. It was tried: cold and warm both install in 2s
+      # and 3s, because uv is fast enough that there is nothing left for a cache
+      # to save, while the save and restore steps cost a few seconds of their
+      # own. Caching here would be ceremony.
+      - uses: astral-sh/setup-uv@v5
+      - run: uv pip install --system -r requirements-dev.txt
+      - run: uv pip install --system ../libs/retina-geolocator ../libs/retina-tracker ../libs/retina-custody ../libs/retina-simulation ../libs/retina-analytics
       # working-directory overrides the job default of `backend`: pre-commit
       # reads .pre-commit-config.yaml from the repo root. args: [backend] in
       # that config is what scopes both ops hooks.
@@ -82,7 +97,72 @@ jobs:
         env:
           RETINA_ENV: dev
         run: python -m scripts.generate_openapi --check
-      - run: pytest tests/ -v --tb=short -m "not external"
+      # When coverage cannot honour COVERAGE_CORE it warns and uses the C tracer
+      # anyway, and one warning is invisible among the hundreds pytest prints, so
+      # both the speed and the greenlet fix below could regress with nothing
+      # failing. Enabling branch coverage is the realistic way to cause that
+      # before CPython 3.14, sys.monitoring having no branch events until then.
+      # Assert the core rather than assume it. Nothing public reports which core
+      # is live, hence the private _collector; if a coverage bump moves it, say
+      # so plainly rather than failing every PR on a bare AttributeError.
+      - name: Coverage measures through sys.monitoring
+        run: |
+          python - <<'PY'
+          import coverage
+
+          cov = coverage.Coverage()  # picks up [tool.coverage.run] from pyproject.toml
+          cov.start()
+          cov.stop()
+          try:
+              core = cov._collector.tracer_name()
+          except AttributeError as exc:
+              raise SystemExit(
+                  f"cannot tell which coverage core is live ({exc}). This check reads a "
+                  f"private attribute and coverage {coverage.__version__} appears to have "
+                  "moved it, so the check needs updating; the pytest step's measurement is "
+                  "not necessarily wrong."
+              ) from exc
+          if core != "SysMonitor":
+              raise SystemExit(
+                  f"coverage chose the {core} core despite COVERAGE_CORE=sysmon. Most likely "
+                  "branch coverage is now on in [tool.coverage.run], which sys.monitoring "
+                  "cannot measure before CPython 3.14. Left alone, the step below would "
+                  "quietly return to the slower tracer and to under-reporting the async "
+                  "route modules."
+              )
+          print(f"coverage core: {core}")
+          PY
+      # COVERAGE_CORE=sysmon, set job-wide above, is what makes this step quick.
+      # coverage.py's default C tracer hooks sys.settrace, which fires per line
+      # executed and drops the frame out of CPython's specialising fast paths;
+      # sysmon is the PEP 669 backend, which disables each location once it has
+      # been seen, so a line costs once rather than once per execution. This is
+      # the longest job in the run by several minutes and every deploy waits on
+      # it, so the tracing overhead is worth reclaiming.
+      #
+      # It also raises the reported total by about a point, and that is the more
+      # useful half. settrace measures per execution context, so lines resumed in
+      # a greenlet after an `await session.…` counted as unrun: the async route
+      # modules were being reported as less tested than they are. sys.monitoring
+      # is interpreter-global and sees them wherever they resume. Checked against
+      # `concurrency = ["thread", "greenlet"]` on routes/node_stream.py, the two
+      # recover the same lines, and sysmon does it at a fraction of that
+      # setting's cost. ONBOARDING, "Running tests", covers what this means for a
+      # local figure that does not match this one.
+      # -n 2 matches the runner's two vCPUs. `worksteal` rather than the default
+      # `load` scheduler, and this is the whole difference between the change
+      # being worth making and not: `load` deals the tests out up front, and
+      # this suite is uneven enough that one worker finished while the other
+      # still had two thirds of the run left, for a gain in the low tens of
+      # seconds. `worksteal` rebalances as workers free up and roughly halves
+      # the suite. Anyone benchmarking `-n 2` on its own will measure the
+      # disappointing number and conclude xdist does not suit this suite.
+      #
+      # On the command line rather than in pyproject's addopts, so a local
+      # `pytest` stays serial: -x stops at a different place under xdist and
+      # --pdb cannot attach to a worker, and both are wanted more often when
+      # debugging than the speed is.
+      - run: pytest tests/ -v --tb=short -m "not external" -n 2 --dist worksteal
 
   frontend-build:
     runs-on: ubuntu-latest
@@ -138,7 +218,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - run: docker build -t tower-finder:ci .
+      - run: docker build -t retina-server:ci .
 
   env-parity:
     name: Staging/production parity
@@ -433,13 +513,20 @@ jobs:
             # cache reused); the disk pre-flight now catches that root cause, so a
             # full wipe is redundant and only forced slow from-scratch rebuilds.
             docker builder prune -f --keep-storage 10GB
-            # Deploy the app FIRST, on its own — building only `tower-finder`
+            # Deploy the app FIRST, on its own — building only `server`
             # means a broken Dockerfile.fleet can't abort the staging app deploy
             # (which would block the whole pipeline). Fleet is a separate step below.
-            docker compose up -d --build tower-finder
+            # --remove-orphans because this deploy renamed the compose
+            # service. container_name is pinned, so the container kept by the
+            # old service key is an orphan holding the exact name the new one
+            # needs, and compose leaves orphans alone by default: the create
+            # then fails with a name conflict and the stack does not come up.
+            # Verified on retina-test before this landed. It stays afterwards
+            # as the general guard for a removed or renamed service.
+            docker compose up -d --build --remove-orphans server
             # Wait for server to become healthy (up to 90s)
             for i in $(seq 1 18); do
-              if docker compose exec -T tower-finder \
+              if docker compose exec -T server \
                 python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
                 echo "Staging server healthy after ~$((i*5))s"
                 break
@@ -720,17 +807,24 @@ jobs:
             # cause, so a full wipe is redundant and only forced slow from-scratch
             # rebuilds. 10GB leaves ample headroom on both droplets (>60GB free).
             docker builder prune -f --keep-storage 10GB
-            # Deploy the app FIRST, on its own. Building only `tower-finder`
+            # Deploy the app FIRST, on its own. Building only `server`
             # here means a broken Dockerfile.fleet can't abort the production
             # app deploy. Production runs no fleet simulator (see the `sim`
-            # profile in docker-compose.prod.yml), so `tower-finder` is the
+            # profile in docker-compose.prod.yml), so `server` is the
             # whole of the production deploy; staging still builds both.
-            docker compose up -d --build tower-finder
+            # --remove-orphans because this deploy renamed the compose
+            # service. container_name is pinned, so the container kept by the
+            # old service key is an orphan holding the exact name the new one
+            # needs, and compose leaves orphans alone by default: the create
+            # then fails with a name conflict and the stack does not come up.
+            # Verified on retina-test before this landed. It stays afterwards
+            # as the general guard for a removed or renamed service.
+            docker compose up -d --build --remove-orphans server
 
             # Wait for backend to become healthy (up to 90s — matches staging
             # and the healthcheck start_period; a cold boot can need >60s).
             for i in $(seq 1 18); do
-              if docker compose exec -T tower-finder python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
+              if docker compose exec -T server python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
                 echo "Deploy successful (healthy after ~$((i*5))s)"
                 break
               fi
@@ -807,7 +901,7 @@ jobs:
             # pre-flights with the running stack untouched.
             #
             # Rolling back in that case would be actively harmful rather than
-            # merely pointless: tower-finder:rollback and the newest deploy-*
+            # merely pointless: retina-server:rollback and the newest deploy-*
             # tag still describe the PREVIOUS deploy's snapshot, so rollback.sh
             # would drag production back past a deploy that succeeded in order
             # to recover from one that never started.

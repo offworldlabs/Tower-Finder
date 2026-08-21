@@ -23,6 +23,15 @@ os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 # explicit opt-in and no longer follows from RETINA_ENV=test, so ask for it here.
 # Set before core.users is imported: AUTH_BYPASS is derived once, at import.
 os.environ.setdefault("AUTH_ALLOW_ANONYMOUS_ADMIN", "1")
+# main.py binds RADAR_TCP_PORT in the app lifespan, and the fourteen test files
+# using `with TestClient(app)` run that lifespan, so every process running the
+# suite tries to bind the same port. Port 0 asks the kernel for a free one
+# instead, which is safe because nothing reads the value back: RADAR_TCP_PORT is
+# read once in main.py and used only to bind. This is what lets xdist workers
+# run in parallel, and it retires the two-worktrees-at-once clash ONBOARDING
+# describes under "Running tests" for the same underlying reason as the
+# per-pid database path below.
+os.environ["RADAR_TCP_PORT"] = "0"
 # The arc-ux sim-ingest tests exercise routes main.py now mounts only behind
 # this flag (the compose overlays all set it); the mount-gate test itself spawns
 # child interpreters with an explicit env, so this parent-process default does

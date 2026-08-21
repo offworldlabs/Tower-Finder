@@ -5,6 +5,7 @@ state.mlat_solve_history so an individual map marker's solves can be looked
 up by its mn<sha256[:10]> hex and checked after the fact.
 """
 
+import sys
 import time
 from collections import deque
 
@@ -236,6 +237,14 @@ class TestTrailSnapshotRace:
         stop = threading.Event()
 
         def _appender():
+            # Untraced deliberately. coverage serialises every traced line on a
+            # single data_lock, and this loop is hot enough that tracing it
+            # starved the whole process: CI stacks showed most threads parked in
+            # coverage.collector.lock_data while this one held it. That made a
+            # single _nearest_gt call unboundedly slow, which no between-
+            # iterations deadline can bound. The loop is test scaffolding and
+            # carries nothing worth measuring.
+            sys.settrace(None)
             i = 0
             while not stop.is_set():
                 trail.append([LAT + i * 1e-5, LON, 9000.0, now + i * 1e-3])
@@ -243,12 +252,34 @@ class TestTrailSnapshotRace:
 
         t = threading.Thread(target=_appender, daemon=True)
         t.start()
+        # Bounded on both axes, whichever is reached first. 2000 iterations is
+        # what reproduced the original race, and an unloaded machine still runs
+        # all of them well inside the deadline. The appender never yields,
+        # though, so on a contended runner the same 2000 iterations cost
+        # minutes rather than seconds: this test was measured at 19.66s locally
+        # and 17m57s on CI, which alone exceeded the job's 20 minute cap and
+        # silently withheld every deploy from main. The deadline caps that
+        # without weakening the race, which is a function of appends landing
+        # mid-iteration rather than of any particular iteration count.
+        deadline = time.monotonic() + 30.0
+        completed = 0
         try:
             for _ in range(2000):
+                if time.monotonic() >= deadline:
+                    break
                 solver_mod._nearest_gt(LAT, LON, now)
+                completed += 1
         finally:
             stop.set()
             t.join(timeout=5.0)
+
+        # Guards a vacuous pass: a misconfigured deadline would otherwise let
+        # the loop exit having raced nothing at all, and the test would still
+        # look green. Deliberately not a "few hundred" floor, because the slow
+        # runners this deadline exists for are exactly the ones that could not
+        # meet it, and a bound that fails on the machines it protects is worse
+        # than the stall it replaces.
+        assert completed > 0
 
 
 class TestGtIdentityBinding:

@@ -374,13 +374,13 @@ deploy-test:
     echo "→ waiting for health..."
     healthy=no
     for _ in $(seq 1 24); do
-        if ssh "{{host_test}}" "cd {{app_test}} && docker compose exec -T tower-finder python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/api/health\")'" >/dev/null 2>&1; then
+        if ssh "{{host_test}}" "cd {{app_test}} && docker compose exec -T server python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/api/health\")'" >/dev/null 2>&1; then
             healthy=yes; break
         fi
         sleep 5
     done
     if [ "$healthy" != yes ]; then
-        echo "  ✗ not healthy after 120s — inspect: just deploy-test-logs tower-finder"
+        echo "  ✗ not healthy after 120s — inspect: just deploy-test-logs server"
         exit 1
     fi
     echo "  ✓ healthy"
@@ -401,7 +401,7 @@ deploy-test-status:
     # inside a double-quoted remote command — one level of escaping, no heredoc
     # (just indents every recipe line, so a heredoc terminator never closes).
     echo "── fleet ──"
-    ssh "{{host_test}}" "cd {{app_test}} && docker compose exec -T tower-finder python3 -c 'import json,urllib.request; d=json.load(urllib.request.urlopen(\"http://localhost:8000/api/radar/nodes\")); n=d[\"nodes\"]; print(\"  nodes:\", len(n), \"total,\", sum(1 for v in n.values() if v.get(\"is_synthetic\")), \"synthetic,\", d.get(\"connected\"), \"connected\")'" 2>/dev/null || echo "  (nodes endpoint unreachable)"
+    ssh "{{host_test}}" "cd {{app_test}} && docker compose exec -T server python3 -c 'import json,urllib.request; d=json.load(urllib.request.urlopen(\"http://localhost:8000/api/radar/nodes\")); n=d[\"nodes\"]; print(\"  nodes:\", len(n), \"total,\", sum(1 for v in n.values() if v.get(\"is_synthetic\")), \"synthetic,\", d.get(\"connected\"), \"connected\")'" 2>/dev/null || echo "  (nodes endpoint unreachable)"
 
 # Tail retina-test's container logs (Ctrl-C to stop; the stack keeps running)
 deploy-test-logs service="":

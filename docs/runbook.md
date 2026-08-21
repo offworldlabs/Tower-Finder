@@ -6,7 +6,7 @@
 
 ## Environments
 
-Three droplets. Each holds a gitignored `./.env` in `/opt/tower-finder` carrying
+Three droplets. Each holds a gitignored `./.env` in `/opt/retina-server` carrying
 `COMPOSE_FILE`, which selects that host's overlay, so a bare `docker compose up -d
 --build` / `logs` / `ps` resolves correctly on all three and every command below is
 identical everywhere.
@@ -37,7 +37,7 @@ purpose and is unchanged.
 `.github/workflows/deploy-test.yml` is a dispatch-only CI path that deploys a
 pushed ref by git, and exists so the production auto-rollback machinery can be
 exercised end to end without breaking production to do it. `pre-deploy.sh` and
-`rollback.sh` are both git-based, so it requires `/opt/tower-finder` there to be
+`rollback.sh` are both git-based, so it requires `/opt/retina-server` there to be
 a **git clone** — which is a change from this droplet's original rsync-only
 design, and worth understanding before you re-provision it.
 
@@ -81,14 +81,14 @@ design.
 ## Server basics
 
 Production unless stated otherwise. Every command in this document runs **on the
-droplet**, from `/opt/tower-finder`, unless it says otherwise. Connection details
+droplet**, from `/opt/retina-server`, unless it says otherwise. Connection details
 (addresses, key names, SSH aliases) are deliberately not recorded here: this repo
 is public, and the origin addresses sit behind Cloudflare precisely so they are not
 advertised. Get them from the DigitalOcean console or your own `~/.ssh/config`.
 
 | | |
 |---|---|
-| **Working dir** | `/opt/tower-finder` |
+| **Working dir** | `/opt/retina-server` |
 | **Logs** | `docker compose logs -f --tail=200` |
 | **Restart (no rebuild)** | `docker compose restart` |
 | **Rebuild and restart** | `docker compose up -d --build` (wait ~5 s before testing) |
@@ -107,7 +107,7 @@ it; the container will not serve against a half-applied schema.
 To see where a droplet stands:
 
 ```bash
-ssh retina-prod 'cd /opt/tower-finder && docker compose exec tower-finder \
+ssh retina-prod 'cd /opt/retina-server && docker compose exec server \
     sh -c "cd /app/backend && python3 -m alembic current"'
 ```
 
@@ -148,7 +148,7 @@ about the database.
 To roll back past a destructive revision, downgrade and then redeploy:
 
 ```bash
-ssh retina-prod 'cd /opt/tower-finder && docker compose exec tower-finder \
+ssh retina-prod 'cd /opt/retina-server && docker compose exec server \
     sh -c "cd /app/backend && python3 -m alembic downgrade <revision>"'
 ```
 
@@ -288,7 +288,7 @@ A stale `blah2_bridge:<node_id>` means that node's `/api/detection` is unreachab
 The node list is `blah2_nodes.json` — url, rx, tx, fc and friends per node — read through the runtime-config overlay, so this is a config change with no rebuild:
 
 ```bash
-docker compose exec tower-finder vi /app/backend/data/runtime/blah2_nodes.json
+docker compose exec server vi /app/backend/data/runtime/blah2_nodes.json
 ```
 
 Restart the container afterwards; the list is read once, at startup.
@@ -403,7 +403,7 @@ curl -sk https://localhost/api/test/dashboard | python3 -c \
 **Immediate mitigation:** None without code change. If tracker library was recently updated, rollback:
 ```bash
 # On server:
-cd /opt/tower-finder && pip show retina-tracker  # check installed version
+cd /opt/retina-server && pip show retina-tracker  # check installed version
 ```
 
 ---
@@ -423,8 +423,16 @@ Check `/api/radar/analytics` for per-node data. If specific nodes have bad calib
 
 ### `high_miss_rate`
 
-**Trigger:** Average per-node miss rate > 70% across nodes that have aircraft in range.  
-**What it means:** Most aircraft that should be detectable aren't being detected. Either node configs have wrong beam geometry, or the association logic has a threshold issue.
+**Trigger:** Average per-node miss rate above `HIGH_MISS_RATE_THRESHOLD` (default 0.98) across nodes that have aircraft in range.  
+**What it means:** The network is seeing almost nothing. This is a tripwire, not a measure of how well the fleet is doing.
+
+**Read the number correctly before acting on it.** The miss rate counts ADS-B
+aircraft inside a node's *theoretical* beam wedge that its tracker did not
+detect, and for passive bistatic radar that wedge is a much larger set than
+what is physically detectable: low RCS, poor bistatic geometry, terrain and
+receiver sensitivity all put aircraft in the wedge no node could see. A high
+reading is the normal operating point. Production reports 72-94% when it is
+working, so this alert means a reading well outside even that.
 
 **Check per-node miss rates:**
 ```bash
@@ -433,9 +441,18 @@ curl -sk https://localhost/api/admin/leaderboard | python3 -c \
 ```
 
 **Common causes:**
-1. Beam config too narrow — nodes not covering the claimed area
-2. `_point_in_beam()` check too strict relative to actual node geometry
-3. `_ASSOC_MIN_INTERVAL_S` too high preventing re-association (was 300 s, now 30 s)
+1. Ingest has stopped — check `stale_task:*` and `no_active_tracks`, which will
+   usually be firing alongside if the pipeline is the problem
+2. Nodes are connected but not detecting — compare the per-node rates above; a
+   fleet-wide 98% is a pipeline or ADS-B problem, one node at 100% is that node
+3. Beam config wrong after a config push — a node aimed at empty sky has every
+   aircraft in its claimed wedge and none in reality
+
+A reading that sits just above the threshold, rather than near 100%, is more
+likely the threshold being wrong than the network being blind: the floor moves
+with traffic, time of day and which nodes are up. See `docs/alerting.md`, and
+ClickUp 86cb81gkn for replacing the measure with one that tracks a node against
+its own history.
 
 ---
 
@@ -464,7 +481,7 @@ Server will start with empty state if snapshot is corrupt. Trust scores and repu
 **Check R2 config:**
 ```bash
 # R2 credentials are in backend/.env — verify they're set:
-grep R2 /opt/tower-finder/backend/.env
+grep R2 /opt/retina-server/backend/.env
 ```
 
 Not an emergency. The local snapshot still runs every 60 s. Urgent only if combined with `snapshot_corrupt` (no local backup AND R2 backup stale).
@@ -478,7 +495,7 @@ Not an emergency. The local snapshot still runs every 60 s. Urgent only if combi
 
 **Check current usage:**
 ```bash
-df -h /opt/tower-finder/backend/coverage_data && du -sh /opt/tower-finder/backend/coverage_data/*
+df -h /opt/retina-server/backend/coverage_data && du -sh /opt/retina-server/backend/coverage_data/*
 ```
 
 **What to clean first:**
@@ -489,7 +506,7 @@ df -h /opt/tower-finder/backend/coverage_data && du -sh /opt/tower-finder/backen
 **If you need space immediately:**
 ```bash
 # Check archive files (oldest first)
-find /opt/tower-finder/backend/coverage_data -name "*.json.gz" | sort | head -20
+find /opt/retina-server/backend/coverage_data -name "*.json.gz" | sort | head -20
 ```
 
 > **Do not delete the `state_snapshot.json` or `state_snapshot.json.sha256` files** — those are the restore point. Delete archive `.json.gz` files instead.
@@ -503,7 +520,7 @@ find /opt/tower-finder/backend/coverage_data -name "*.json.gz" | sort | head -20
 
 **Check current memory:**
 ```bash
-cat /proc/$(docker compose -f /opt/tower-finder/docker-compose.yml top | grep uvicorn | awk "{print \$1}" | head -1)/status | grep VmRSS
+cat /proc/$(docker compose -f /opt/retina-server/docker-compose.yml top | grep uvicorn | awk "{print \$1}" | head -1)/status | grep VmRSS
 # Simpler:
 free -h && top -bn1 | head -10
 ```
@@ -528,7 +545,7 @@ If memory climbs back over 3 GB within an hour, there is a leak. File an issue w
 git add -A && git commit -m "..." && git push
 
 # Server
-cd /opt/tower-finder && git pull && docker compose up -d --build
+cd /opt/retina-server && git pull && docker compose up -d --build
 
 # After ~5 s, verify
 curl -sk https://localhost/api/health
@@ -538,28 +555,28 @@ curl -sk https://localhost/api/health
 
 ### Restart without deploying
 ```bash
-cd /opt/tower-finder && docker compose restart
+cd /opt/retina-server && docker compose restart
 ```
 
 ### Tail live logs
 ```bash
-cd /opt/tower-finder && docker compose logs -f --tail=100
+cd /opt/retina-server && docker compose logs -f --tail=100
 ```
 
 ### Check resource usage
 ```bash
 top -bn1 | head -20
-df -h /opt/tower-finder/backend/coverage_data
+df -h /opt/retina-server/backend/coverage_data
 ```
 
 ### Start / bounce the fleet simulator
-The fleet is a Compose service (`fleet` in `/opt/tower-finder/docker-compose.yml`,
+The fleet is a Compose service (`fleet` in `/opt/retina-server/docker-compose.yml`,
 `restart: unless-stopped`). On staging and test it starts automatically on deploy
 (CI `docker compose up -d --build`) and on reboot (docker is enabled) — you
 normally do NOT start it by hand. To manually bounce just the fleet (it loses its
 TCP connections and regenerates its nodes, taking up to a minute):
 ```bash
-cd /opt/tower-finder && docker compose up -d --build --force-recreate --no-deps fleet
+cd /opt/retina-server && docker compose up -d --build --force-recreate --no-deps fleet
 ```
 
 ⚠️ **Not on production.** Production runs no simulator: `docker-compose.prod.yml`
@@ -569,9 +586,9 @@ at 107% CPU reporting `solver_latency_high` at rest. Naming `fleet` on the comma
 line *auto-enables its profile*, so the bounce command above is not inert on the
 prod droplet — it would silently put all 25 back. Do not run it there unless you
 intend exactly that, and if you do, undo it with `docker compose stop fleet`
-followed by `docker compose restart tower-finder` (stopping the container does not
+followed by `docker compose restart server` (stopping the container does not
 deregister the geometry it already registered).
-`--no-deps` is the important flag: `fleet` declares `depends_on: tower-finder`, so
+`--no-deps` is the important flag: `fleet` declares `depends_on: server`, so
 without it Compose would also rebuild and recreate the running app, turning a fleet
 bounce into a full redeploy and an outage. The host's `./.env` sets `COMPOSE_FILE`,
 so the bare `docker compose` above resolves to base + the production overlay.

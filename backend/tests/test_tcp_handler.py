@@ -226,6 +226,87 @@ class TestHandshake:
         state.connected_nodes.pop("synth-test-1", None)
 
 
+class TestConfigReplacementEvictsCachedPipeline:
+    """86cb7jd84: the CONFIG handshake also fires on every reconnect, so a node
+    that reconnects with different antenna geometry must not leave its
+    already-built PassiveRadarPipeline pinned to whatever geometry it was
+    first built with.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _cleanup_state(self):
+        yield
+        state.connected_nodes.pop("test-geom-tcp", None)
+        state.node_pipelines.pop("test-geom-tcp", None)
+
+    def _make_config_with_geometry(
+        self, node_id: str, *, beam_azimuth_deg: float, beam_width_deg: float, max_range_km: float, config_hash: str
+    ) -> bytes:
+        return _msg(
+            {
+                "type": "CONFIG",
+                "node_id": node_id,
+                "config_hash": config_hash,
+                "is_synthetic": False,
+                "config": {
+                    "node_id": node_id,
+                    "rx_lat": 33.94,
+                    "rx_lon": -84.65,
+                    "rx_alt_ft": 950,
+                    "tx_lat": 33.76,
+                    "tx_lon": -84.33,
+                    "tx_alt_ft": 1600,
+                    "beam_azimuth_deg": beam_azimuth_deg,
+                    "beam_width_deg": beam_width_deg,
+                    "max_range_km": max_range_km,
+                },
+                "capabilities": {"adsb_report": True},
+            }
+        )
+
+    def test_a_reconnect_config_rebuilds_the_pipeline_with_the_new_geometry(self):
+        from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
+        from services.frame_processor import get_or_create_node_pipeline
+
+        node_id = "test-geom-tcp"
+        reader = MockStreamReader(
+            [
+                _make_hello(node_id),
+                self._make_config_with_geometry(
+                    node_id, beam_azimuth_deg=90.0, beam_width_deg=60.0, max_range_km=80.0, config_hash="geo-a"
+                ),
+                b"",
+            ]
+        )
+        asyncio.run(handle_tcp_client(reader, MockStreamWriter()))
+
+        default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        # Stand in for "a frame already arrived for this node": the factory
+        # builds and caches a pipeline from whatever config is active now.
+        old_pipeline = get_or_create_node_pipeline(node_id, default)
+        assert old_pipeline.config["beam_azimuth_deg"] == pytest.approx(90.0)
+
+        # Reconnect with different antenna geometry — a real node re-sends
+        # CONFIG on every reconnect, not only on its first connection.
+        reader2 = MockStreamReader(
+            [
+                _make_hello(node_id),
+                self._make_config_with_geometry(
+                    node_id, beam_azimuth_deg=270.0, beam_width_deg=15.0, max_range_km=120.0, config_hash="geo-b"
+                ),
+                b"",
+            ]
+        )
+        asyncio.run(handle_tcp_client(reader2, MockStreamWriter()))
+
+        # The next frame's pipeline must be built from the new config, not the
+        # one cached above — no process restart, no disconnect TTL wait.
+        new_pipeline = get_or_create_node_pipeline(node_id, default)
+        assert new_pipeline.config["beam_azimuth_deg"] == pytest.approx(270.0)
+        assert new_pipeline.config["beam_width_deg"] == pytest.approx(15.0)
+        assert new_pipeline.config["max_range_km"] == pytest.approx(120.0)
+
+
 class TestEnqueueDetection:
     @pytest.fixture(autouse=True)
     def _drain_queue(self):

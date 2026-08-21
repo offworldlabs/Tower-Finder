@@ -70,16 +70,16 @@ ALLOWED_DIVERGENCE = (
     # Different droplet sizes.
     r"^services\.[^.]+\.deploy\.resources\.limits\.(cpus|memory)$",
     # Which environment this is, and the hostnames that follow from it.
-    r"^services\.tower-finder\.environment\.RETINA_ENV$",
+    r"^services\.server\.environment\.RETINA_ENV$",
     # The name a droplet gives itself in an alert, which is a different question
     # from RETINA_ENV above and so a different variable. RETINA_ENV picks which
     # backend guards apply, and staging and test both answer `test` to that
     # during the build-out (ClickUp 86cb1emcx), so it cannot tell an alert's
     # origin apart. See services/alerting.py.
-    r"^services\.tower-finder\.environment\.ALERT_ENVIRONMENT$",
-    r"^services\.tower-finder\.environment\.CORS_ORIGINS$",
-    r"^services\.tower-finder\.environment\.CSP_CONNECT_SRC$",
-    r"^services\.tower-finder\.environment\.HOST_[A-Z_]+$",
+    r"^services\.server\.environment\.ALERT_ENVIRONMENT$",
+    r"^services\.server\.environment\.CORS_ORIGINS$",
+    r"^services\.server\.environment\.CSP_CONNECT_SRC$",
+    r"^services\.server\.environment\.HOST_[A-Z_]+$",
     # AUTH_ALLOW_ANONYMOUS_ADMIN and SYNTHETIC_FLEET_ENABLED are deliberately
     # absent from this list: each is set to the same value in every environment,
     # so a difference is drift rather than a decision, and CI should fail if one
@@ -89,7 +89,7 @@ ALLOWED_DIVERGENCE = (
     # has none and closes it, so the two legitimately differ here. Recorded rather
     # than silently allowed: if staging ever needs node ingest, it should be
     # opened deliberately and this entry revisited.
-    r"^services\.tower-finder\.ports(\..*)?$",
+    r"^services\.server\.ports(\..*)?$",
     # The whole fleet service, not just its FLEET_* scale knobs. Production runs
     # no simulator at all (docker-compose.prod.yml puts it behind an unenabled
     # `sim` profile), so it drops out of the merged prod config entirely and
@@ -101,7 +101,7 @@ ALLOWED_DIVERGENCE = (
     r"^services\.fleet(\..*)?$",
     # Production alone joins the external edge network that fronts
     # tower-finder-service; staging has no such stack.
-    r"^services\.tower-finder\.networks(\..*)?$",
+    r"^services\.server\.networks(\..*)?$",
     r"^networks(\..*)?$",
     # Compose records the file list it was assembled from.
     r"^name$",
@@ -215,7 +215,7 @@ def render(env_values: dict[str, str], out_path: Path) -> str:
 def check_nginx(tmp: Path) -> list[str]:
     rendered = {}
     for env, overlay in OVERLAYS.items():
-        service_env = compose_config(overlay)["services"]["tower-finder"]["environment"]
+        service_env = compose_config(overlay)["services"]["server"]["environment"]
         values = {k: service_env[k] for k in HOST_VARS}
         # Pass TLS_ENABLED through when the overlay sets it, so the render below
         # reflects what the environment would actually serve. Without this the

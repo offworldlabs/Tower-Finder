@@ -244,6 +244,7 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                         continue
                     is_synth = msg.get("is_synthetic", is_synthetic_node(node_id))
                     _was_disconnected = state.connected_nodes.get(node_id, {}).get("status") == "disconnected"
+                    _config_changed = state.connected_nodes.get(node_id, {}).get("config") != config_payload
                     with state.connected_nodes_lock:
                         state.connected_nodes[node_id] = {
                             "config_hash": config_hash,
@@ -259,6 +260,16 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                             1 for n in state.connected_nodes.values() if n.get("status") != "disconnected"
                         )
                         state.peak_connected_nodes = max(state.peak_connected_nodes, active_count)
+                    if _config_changed:
+                        # This handshake also runs on every reconnect, most of
+                        # which resend the same config — that must not reset
+                        # the node's in-flight tracker state. Only a config
+                        # that actually moved evicts the cached pipeline, or a
+                        # corrected aim or beam width would never reach the
+                        # map until the node went 2 h without reconnecting.
+                        # See evict_pipeline's docstring — a no-op for a node
+                        # with nothing cached yet.
+                        node_registration.evict_pipeline(node_id)
                     logging.info("Radar TCP: CONFIG from %s (hash=%s, synthetic=%s)", node_id, config_hash, is_synth)
                     if _was_disconnected:
                         _log_event(

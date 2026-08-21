@@ -268,3 +268,87 @@ class TestReputationEvaluations:
         assert "blocked" in s
         assert "n_penalties" in s
         assert "recent_penalties" in s
+
+
+# ── Missed-detections beam geometry ───────────────────────────────────────────
+
+
+class TestMissedDetectionsHonoursConfiguredBeamWidth:
+    """_refresh_missed_detections re-derived beam width/range/azimuth inline
+    instead of going through geo.node_beam_params like every other module, and
+    defaulted width to YAGI_BEAM_WIDTH_DEG while track_gates defaulted to a
+    bare 41.0 literal: one node was a different antenna to each module. Pin
+    that a genuinely wide, aimed beam still counts an aircraft a narrower beam
+    would have excluded, so a local default can't silently creep back in."""
+
+    def test_wide_beam_node_counts_an_aircraft_a_narrow_beam_would_miss(self):
+        import time
+
+        from core import state
+        from services.tasks.analytics_refresh import _refresh_missed_detections
+
+        # A node aimed north (beam_azimuth_deg=0) with a genuine 140-degree
+        # beam. The aircraft sits ~47 deg off boresight: inside 140/2=70 but
+        # outside a 41/2=20.5 beam, so this fails if the derivation ever falls
+        # back to a narrower local default instead of the node's real width.
+        cfg = {
+            "rx_lat": 34.0,
+            "rx_lon": -82.0,
+            "tx_lat": 33.0,
+            "tx_lon": -82.0,
+            "beam_azimuth_deg": 0.0,
+            "beam_width_deg": 140.0,
+            "max_range_km": 200.0,
+        }
+        state.connected_nodes["test-wide-beam"] = {"status": "active", "config": cfg}
+        state.adsb_aircraft["abc123"] = {
+            "lat": 34.23,
+            "lon": -81.70,
+            "last_seen_ms": int(time.time() * 1000),
+        }
+        snapshot = list(state.connected_nodes.items())
+        _refresh_missed_detections(snapshot)
+        assert state.latest_missed_detections["test-wide-beam"]["in_range"] == 1
+
+    def test_default_width_follows_the_shared_constant_not_a_local_copy(self, monkeypatch):
+        """The test above only proves an explicit, present beam_width_deg is
+        honoured. For such a value the old inline `or YAGI_BEAM_WIDTH_DEG` and
+        node_beam_params's identical fallback always agreed (both read the same
+        41.0), so it cannot tell the shared resolver apart from a hardcoded
+        copy of the same default. This one can: patch geo.YAGI_BEAM_WIDTH_DEG,
+        the name node_beam_params actually reads at call time (services.geo
+        binds it at import time, so patching retina_analytics.constants's own
+        copy afterwards would not reach node_beam_params at all), and omit
+        beam_width_deg from the config so the default is what decides. Code
+        still reading a hardcoded 41 -- or importing YAGI_BEAM_WIDTH_DEG
+        straight from config.constants, a second, separately-patched copy of
+        the same name -- would ignore the patch and miss."""
+        import time
+
+        from core import state
+        from services import geo
+        from services.tasks.analytics_refresh import _refresh_missed_detections
+
+        monkeypatch.setattr(geo, "YAGI_BEAM_WIDTH_DEG", 77.0)
+
+        # Aircraft ~30 deg off a due-north boresight, ~40 km out: inside a
+        # patched 77-degree beam (+-38.5) but outside the old 41-degree one
+        # (+-20.5). Position computed via geo.offset_latlon, not guessed.
+        cfg = {
+            "rx_lat": 34.0,
+            "rx_lon": -82.0,
+            "tx_lat": 33.0,
+            "tx_lon": -82.0,
+            "beam_azimuth_deg": 0.0,
+            "max_range_km": 200.0,
+            # beam_width_deg intentionally omitted: the patched default decides.
+        }
+        state.connected_nodes["test-default-width"] = {"status": "active", "config": cfg}
+        state.adsb_aircraft["def456"] = {
+            "lat": 34.311534,
+            "lon": -81.783044,
+            "last_seen_ms": int(time.time() * 1000),
+        }
+        snapshot = list(state.connected_nodes.items())
+        _refresh_missed_detections(snapshot)
+        assert state.latest_missed_detections["test-default-width"]["in_range"] == 1

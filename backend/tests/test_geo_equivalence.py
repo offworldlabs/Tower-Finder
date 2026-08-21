@@ -170,3 +170,142 @@ class TestInNodeBeam:
     def test_an_explicit_aim_wins_over_broadside(self):
         cfg = {"rx_lat": 34.85, "rx_lon": -82.40, "tx_lat": 34.90, "tx_lon": -82.30, "beam_azimuth_deg": 123.0}
         assert geo.node_beam_params(cfg)["beam_azimuth_deg"] == 123.0
+
+
+class TestNodeBeamParamsMalformedInput:
+    """node_beam_params is the single authority for a node's beam geometry;
+    a review after routing track_gates/analytics_refresh through it found
+    three ways malformed config could reach that authority undetected.
+    These pin the fixed behaviour for malformed input specifically --
+    TestInNodeBeam above (and the randomised sweep in TestPrimitives) already
+    cover well-formed input and must stay byte-identical."""
+
+    _RX = (34.85, -82.40)
+    _TX = (34.90, -82.30)
+
+    def test_nan_azimuth_with_tx_falls_back_to_real_broadside_not_null_island(self):
+        """A present-but-unusable explicit azimuth used to be handed to
+        resolve_beam_azimuth_deg with a fabricated (0.0, 0.0) transmitter
+        position, so the broadside fallback pointed at Null Island instead
+        of this node's real TX. Verified by hand: the buggy output is
+        184.36 deg (bearing toward 0,0 from this RX); the real broadside,
+        toward the node's actual TX, is 148.61 deg."""
+        cfg = {
+            "rx_lat": self._RX[0],
+            "rx_lon": self._RX[1],
+            "tx_lat": self._TX[0],
+            "tx_lon": self._TX[1],
+            "beam_azimuth_deg": float("nan"),
+            "max_range_km": 200.0,
+        }
+        expected = (geo.bearing_deg(*self._RX, *self._TX) + 90.0) % 360.0
+        assert geo.node_beam_params(cfg)["beam_azimuth_deg"] == pytest.approx(expected)
+
+    def test_nan_azimuth_without_tx_falls_back_to_none_not_a_fabricated_bearing(self):
+        """With no usable TX either, there is no real baseline to point
+        broadside along -- the resolved azimuth must be None
+        (omnidirectional, callers skip the bearing test), the same as if
+        beam_azimuth_deg were absent, and never a bearing computed against a
+        made-up transmitter position."""
+        cfg = {
+            "rx_lat": self._RX[0],
+            "rx_lon": self._RX[1],
+            "beam_azimuth_deg": float("nan"),
+            "max_range_km": 200.0,
+        }
+        assert geo.node_beam_params(cfg)["beam_azimuth_deg"] is None
+
+    @pytest.mark.parametrize("bad_az", [float("nan"), float("inf"), float("-inf"), "not-a-number"])
+    def test_various_malformed_azimuths_all_fall_back_the_same_way(self, bad_az):
+        """NaN, +-inf and non-numeric strings are all "unusable" by the same
+        rule resolve_beam_azimuth_deg itself uses -- they must all resolve
+        to the real-broadside fallback identically, not just the one shape
+        (NaN) the test above exercises."""
+        cfg = {
+            "rx_lat": self._RX[0],
+            "rx_lon": self._RX[1],
+            "tx_lat": self._TX[0],
+            "tx_lon": self._TX[1],
+            "beam_azimuth_deg": bad_az,
+            "max_range_km": 200.0,
+        }
+        expected = (geo.bearing_deg(*self._RX, *self._TX) + 90.0) % 360.0
+        assert geo.node_beam_params(cfg)["beam_azimuth_deg"] == pytest.approx(expected)
+
+    def test_nan_beam_width_falls_back_to_the_shared_default(self):
+        """bool(float('nan')) is True, so the existing `or YAGI_BEAM_WIDTH_DEG`
+        truthiness fallback (which already catches None/0 correctly) lets a
+        NaN width straight through. Every downstream comparison against it
+        is then False (NaN comparisons always are), which fails the
+        beam-membership test open instead of closed."""
+        cfg = {
+            "rx_lat": self._RX[0],
+            "rx_lon": self._RX[1],
+            "tx_lat": self._TX[0],
+            "tx_lon": self._TX[1],
+            "beam_width_deg": float("nan"),
+        }
+        assert geo.node_beam_params(cfg)["beam_width_deg"] == geo.YAGI_BEAM_WIDTH_DEG
+
+    def test_infinite_max_range_km_falls_back_to_the_default(self):
+        """Same shape as beam_width_deg immediately above it in node_beam_params.
+        Asserted against the named geo.YAGI_MAX_RANGE_KM constant, not a bare
+        50.0 literal, so this also pins that the fallback reads the shared
+        constant rather than a value that happens to agree with it today."""
+        cfg = {
+            "rx_lat": self._RX[0],
+            "rx_lon": self._RX[1],
+            "tx_lat": self._TX[0],
+            "tx_lon": self._TX[1],
+            "max_range_km": float("inf"),
+        }
+        assert geo.node_beam_params(cfg)["max_range_km"] == geo.YAGI_MAX_RANGE_KM
+
+    def test_string_zero_max_bistatic_range_is_cast_to_a_falsy_float(self):
+        """max_bistatic_range_km used to be returned raw. The string "0" is
+        truthy where the float 0.0 is falsy, which flips which branch
+        point_in_beam takes on it (see the next test for the consequence)."""
+        cfg = {
+            "rx_lat": self._RX[0],
+            "rx_lon": self._RX[1],
+            "tx_lat": self._TX[0],
+            "tx_lon": self._TX[1],
+            "max_bistatic_range_km": "0",
+        }
+        out = geo.node_beam_params(cfg)["max_bistatic_range_km"]
+        assert out == 0.0
+        assert isinstance(out, float)
+
+    def test_string_zero_max_bistatic_no_longer_causes_a_false_miss(self):
+        """Concrete consequence of the cast above: an aircraft dead-centre of
+        the beam, 8 km out (well inside both max_range_km and any real
+        bistatic limit) was rejected because point_in_beam's
+        `reach > float(max_bistatic_range_km)` is `reach > 0.0`, true for
+        any positive reach, once the truthy string "0" routes it into the
+        bistatic branch instead of the monostatic one. Target placed via
+        geo.offset_latlon along the broadside bearing and verified by hand
+        before writing the assertion."""
+        cfg = {
+            "rx_lat": self._RX[0],
+            "rx_lon": self._RX[1],
+            "tx_lat": self._TX[0],
+            "tx_lon": self._TX[1],
+            "max_range_km": 200.0,
+            "max_bistatic_range_km": "0",
+        }
+        target_lat, target_lon = 34.78858355163946, -82.3543377559043
+        assert geo.in_node_beam(target_lat, target_lon, cfg) is True
+
+    def test_non_finite_max_bistatic_range_km_is_treated_as_absent(self):
+        """Non-finite should mean the same as not-configured, not propagate
+        as a real (if useless) limit -- see TestBuildSingleNodeArc's
+        max-bistatic test in test_arc_builder.py for why that distinction
+        has a real downstream effect via track_gates.py."""
+        cfg = {
+            "rx_lat": self._RX[0],
+            "rx_lon": self._RX[1],
+            "tx_lat": self._TX[0],
+            "tx_lon": self._TX[1],
+            "max_bistatic_range_km": float("nan"),
+        }
+        assert geo.node_beam_params(cfg)["max_bistatic_range_km"] is None
