@@ -6,6 +6,8 @@
 # Hub is already a build-time dependency through the base images, so this adds
 # no new one.
 
+ARG UV_VERSION=0.12.5
+
 # ── Stage 1: Build frontend ──────────────────────────────────────────────────
 FROM node:20-alpine AS frontend-build
 WORKDIR /app/frontend
@@ -27,8 +29,9 @@ RUN npm run build
 
 # ── uv, for the Python installs in the production stage ─────────────────────
 # A stage of its own so the version is written once. It is only ever a mount
-# source, so nothing from it reaches the shipped image.
-ARG UV_VERSION=0.12.5
+# source, so nothing from it reaches the shipped image. UV_VERSION is declared
+# at the top of the file because an ARG is only visible to a FROM when it sits
+# in the global scope, ahead of every stage.
 FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 
 # ── Stage 2: Production image ───────────────────────────────────────────────
