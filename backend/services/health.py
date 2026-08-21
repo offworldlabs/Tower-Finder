@@ -28,7 +28,18 @@ WARNING = "warning"
 _NODE_DROPOUT_THRESHOLD = float(os.getenv("NODE_DROPOUT_THRESHOLD", "0.8"))
 
 # Critical pipeline tasks and the max age (s) of their last success before stale.
+#
+# coverage_constraints is deliberately absent: it is budgeted, so falling behind
+# is its designed response to a fleet whose coverage moves faster than it can
+# rebuild, not a failure. What must not happen is falling behind *forever*, and
+# that is a backlog question, not a last-success one — see below.
 _CRITICAL_TASKS = {"frame_processor": 20, "analytics_refresh": 120, "aircraft_flush": 15}
+
+# Queued overlap-grid rebuilds tolerated before the budget is judged too small
+# for the fleet. One cycle's budget is a few nodes; a backlog past this has
+# taken more than a handful of cycles to work off, so the constraints the grids
+# follow are drifting faster than the grids track them.
+_COVERAGE_BACKLOG_WARN = int(os.getenv("COVERAGE_BACKLOG_WARN", "12"))
 
 
 def compute_health_issues() -> list[dict]:
@@ -49,6 +60,14 @@ def compute_health_issues() -> list[dict]:
         last = state.task_last_success.get(task)
         if last is not None and (now - last) > max_age_s:
             add(f"stale_task:{task}", CRITICAL, f"Task {task} stale ({now - last:.0f}s since last success)")
+
+    # Overlap-grid rebuilds queued behind the per-cycle budget
+    if state.coverage_rebuild_backlog > _COVERAGE_BACKLOG_WARN:
+        add(
+            "coverage_rebuild_backlog",
+            WARNING,
+            f"Coverage grid rebuilds backlogged ({state.coverage_rebuild_backlog} nodes queued)",
+        )
 
     # Solver queue drops (solver can't keep up)
     if state.solver_queue_drops > 0:

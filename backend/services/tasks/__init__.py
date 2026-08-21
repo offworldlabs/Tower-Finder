@@ -5,7 +5,7 @@ so ``from services.tasks import frame_processor_loop`` works.
 """
 
 from services.tasks.aircraft_flush import aircraft_flush_task
-from services.tasks.analytics_refresh import analytics_refresh_task
+from services.tasks.analytics_refresh import analytics_refresh_task, coverage_constraints_task
 from services.tasks.frame_loop import frame_processor_loop
 from services.tasks.health_monitor import health_monitor_task
 from services.tasks.heartbeat import heartbeat_task
@@ -23,6 +23,7 @@ from services.tasks.users_backup import users_backup_task
 
 __all__ = [
     "analytics_refresh_task",
+    "coverage_constraints_task",
     "start_solver_workers",
     "frame_processor_loop",
     "health_monitor_task",
