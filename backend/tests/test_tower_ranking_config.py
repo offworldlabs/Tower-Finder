@@ -200,6 +200,29 @@ class TestValidateConfig:
         cfg = {"ranking": {"sort_order": [{"field": "callsign", "ascending": False}]}}
         assert tower_ranking.validate_config(cfg) is not None
 
+    def test_band_priority_values_must_be_numbers(self):
+        # _sort_key() sorts on these against a literal 99 fallback, so a string
+        # raises TypeError comparing int with str on any mixed-band search.
+        cfg = {"ranking": {"band_priority": {"FM": "high"}}}
+        assert tower_ranking.validate_config(cfg) is not None
+
+    def test_distance_priority_values_must_be_numbers(self):
+        cfg = {"ranking": {"distance_priority": {"Ideal": "x"}}}
+        assert tower_ranking.validate_config(cfg) is not None
+
+    def test_priority_tables_accept_numbers(self):
+        cfg = {"ranking": {"band_priority": {"FM": 0, "VHF": 1}, "distance_priority": {"Ideal": 0}}}
+        assert tower_ranking.validate_config(cfg) is None
+
+    def test_default_limit_must_be_a_whole_number(self):
+        # A slice bound: towers[:20.5] raises however positive 20.5 is.
+        assert tower_ranking.validate_config({"search": {"default_limit": 20.5}}) is not None
+
+    def test_default_radius_may_be_fractional(self):
+        # Only ever compared against, so unlike the limit it needs no
+        # integrality.
+        assert tower_ranking.validate_config({"search": {"default_radius_km": 80.5}}) is None
+
     def test_sort_order_field_must_be_a_string(self):
         # An unhashable value makes the allowlist membership test raise, which
         # would turn the 400 this function exists to produce into a 500.

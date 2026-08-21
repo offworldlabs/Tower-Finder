@@ -59,9 +59,17 @@ def _is_number(value) -> bool:
     return math.isfinite(value)
 
 
-# Fields a ranking.sort_order rule may name. _sort_key() negates the value when
-# a rule is descending and puts it in a tuple that towers are sorted on, so a
-# field only belongs here if it resolves to a real number for every tower.
+# Everything a search consumes as a number has to be one, and three separate
+# parts of the config feed that: the fields a sort_order rule names, the values
+# in the band_priority and distance_priority tables, and search.default_limit.
+# _sort_key() puts the first two into a tuple it sorts on and negates them for a
+# descending rule, and default_limit ends up as a slice bound. A string, a null
+# or a fractional number in any of those places passes every structural check
+# and then raises TypeError on every search, far from the config that caused it.
+# validate_config() checks all four together, below, for that one reason.
+#
+# Fields a ranking.sort_order rule may name: a field belongs here only if it
+# resolves to a real number for every tower.
 # band_priority and distance_priority are special-cased there and always do; the
 # rest are numeric keys of the tower dict built in process_and_rank(), plus
 # coverage_area_added_km2, which services/tower_coverage.py adds, and
@@ -123,8 +131,17 @@ def validate_config(cfg: dict) -> str | None:
 
     ranking = cfg.get("ranking", {})
     for key in ("band_priority", "distance_priority"):
-        if key in ranking and not isinstance(ranking[key], dict):
-            return f"ranking.{key} must be an object, got {type(ranking[key]).__name__}"
+        table = ranking.get(key)
+        if table is None:
+            continue
+        if not isinstance(table, dict):
+            return f"ranking.{key} must be an object, got {type(table).__name__}"
+        # _sort_key() reads these straight into the sort tuple, alongside the
+        # literal 99 it falls back to, so a non-numeric value here is compared
+        # against an int and raises rather than sorting oddly.
+        for name, priority in table.items():
+            if not _is_number(priority):
+                return f"ranking.{key}[{name!r}] must be a number, got {priority!r}"
 
     classes = ranking.get("distance_classes")
     if classes is not None:
@@ -171,9 +188,16 @@ def validate_config(cfg: dict) -> str | None:
                 return f"ranking.sort_order[{i}].ascending must be true or false, got {rule['ascending']!r}"
 
     search = cfg.get("search", {})
-    for key in ("default_radius_km", "default_limit"):
-        if key in search and (not _is_number(search[key]) or search[key] <= 0):
-            return f"search.{key} must be a positive number, got {search[key]!r}"
+    if "default_radius_km" in search:
+        radius = search["default_radius_km"]
+        if not _is_number(radius) or radius <= 0:
+            return f"search.default_radius_km must be a positive number, got {radius!r}"
+    if "default_limit" in search:
+        limit = search["default_limit"]
+        # Stricter than a radius: this one is used as a slice bound, and
+        # towers[:20.5] raises TypeError however positive 20.5 is.
+        if not _is_number(limit) or isinstance(limit, float) or limit <= 0:
+            return f"search.default_limit must be a positive whole number, got {limit!r}"
 
     return None
 
@@ -605,9 +629,11 @@ def process_and_rank(
         if has_user_freqs:
             parts.append(0 if t.get("frequency_matched") else 1)
         for rule in SORT_ORDER:
-            # Fields are constrained to _SORTABLE_FIELDS both on write and on
-            # load, which is what keeps the negation below from meeting a
-            # string. Loosening either gate reintroduces that crash.
+            # Everything this builds a sort tuple from is constrained to a
+            # number by validate_config, on write and on load: the field named
+            # here, and the BAND_PRIORITY and DISTANCE_PRIORITY values read
+            # below. Loosening any of those gates reintroduces a TypeError on
+            # every search.
             field = rule["field"]
             asc = rule.get("ascending", True)
             if field == "band_priority":
