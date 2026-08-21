@@ -1,3 +1,11 @@
+# syntax=docker/dockerfile:1
+# The pragma pins the Dockerfile frontend rather than leaving it to whatever the
+# building daemon happens to bundle. The uv install below is a BuildKit feature,
+# and the two build paths that matter, CI and `docker compose up -d --build` on
+# the droplets, are both BuildKit-backed but not both the same version. Docker
+# Hub is already a build-time dependency through the base images, so this adds
+# no new one.
+
 # ── Stage 1: Build frontend ──────────────────────────────────────────────────
 FROM node:20-alpine AS frontend-build
 WORKDIR /app/frontend
@@ -17,6 +25,12 @@ RUN npm ci --legacy-peer-deps --no-audit --no-fund
 COPY dashboard/ ./
 RUN npm run build
 
+# ── uv, for the Python installs in the production stage ─────────────────────
+# A stage of its own so the version is written once. It is only ever a mount
+# source, so nothing from it reaches the shipped image.
+ARG UV_VERSION=0.12.5
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
 # ── Stage 2: Production image ───────────────────────────────────────────────
 FROM python:3.12-slim
 WORKDIR /app
@@ -26,17 +40,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         nginx tini libcap2-bin && \
     rm -rf /var/lib/apt/lists/*
 
-# Python deps, installed with uv as CI is. The binary is bind-mounted for the
-# duration of the RUN rather than copied in, so its 54 MiB never lands in a
-# layer of the shipped image, which has no use for uv at runtime. The version is
-# pinned so the build stays reproducible.
+# Python deps, installed with the same uv command CI uses. The version behind it
+# is not the same: CI takes whatever astral-sh/setup-uv gives it, this pins. That
+# is tolerable because every package in requirements.txt is pinned with ==, so
+# the resolver has nothing to decide.
+#
+# uv is bind-mounted for the duration of the RUN rather than copied in, so its
+# 54 MiB never lands in a layer of the shipped image, which has no use for uv at
+# runtime.
 #
 # --no-cache is pip's --no-cache-dir. --compile-bytecode keeps pip's default of
 # shipping .pyc alongside the sources: site-packages is root-owned and the app
 # runs as appuser, so whatever is left uncompiled here can never be written at
 # runtime and is recompiled on every boot.
 COPY backend/requirements.txt ./
-RUN --mount=from=ghcr.io/astral-sh/uv:0.12.5,source=/uv,target=/bin/uv \
+RUN --mount=from=uv,source=/uv,target=/bin/uv \
     uv pip install --system --no-cache --compile-bytecode -r requirements.txt
 
 # Submodule packages (retina_geolocator + retina_tracker)
@@ -45,7 +63,7 @@ COPY libs/retina-tracker/ ./libs/retina-tracker/
 COPY libs/retina-custody/ ./libs/retina-custody/
 COPY libs/retina-simulation/ ./libs/retina-simulation/
 COPY libs/retina-analytics/ ./libs/retina-analytics/
-RUN --mount=from=ghcr.io/astral-sh/uv:0.12.5,source=/uv,target=/bin/uv \
+RUN --mount=from=uv,source=/uv,target=/bin/uv \
     uv pip install --system --no-cache --compile-bytecode ./libs/retina-geolocator ./libs/retina-tracker ./libs/retina-custody ./libs/retina-simulation ./libs/retina-analytics
 
 # Backend code
