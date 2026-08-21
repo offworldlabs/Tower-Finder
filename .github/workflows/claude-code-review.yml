@@ -72,7 +72,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          # The action refuses to run when this file differs from the copy on the
+          # default branch, which stops a pull request rewriting its own reviewer
+          # to reach the secrets. It skips, reports success, and reviews nothing.
+          # Without this, the check below would fail every pull request that edits
+          # this workflow, over a review that was never allowed to happen. Mirror
+          # the action's own condition, comparing blob hashes, rather than reading
+          # its log for a phrase that will change.
+          base=$(gh api "repos/${REPO}/contents/.github/workflows/claude-code-review.yml?ref=${DEFAULT_BRANCH}" --jq .sha 2>/dev/null || true)
+          here=$(git hash-object .github/workflows/claude-code-review.yml)
+          if [ -n "${base}" ] && [ "${base}" != "${here}" ]; then
+            echo "::notice::This pull request edits the review workflow, so the action skipped itself and no review ran. That is its guard against a pull request editing its own reviewer, not a fault in this change. Reviews resume on the pull requests that follow this one onto ${DEFAULT_BRANCH}, and this one needs reviewing by hand."
+            exit 0
+          fi
+
           gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments" \
             --jq '[.[] | {body: .body, url: .html_url}]' > "${RUNNER_TEMP}/comments.json"
           python - <<'PY'
