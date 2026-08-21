@@ -138,14 +138,14 @@ Deploy to staging, sign in with OAuth, and confirm the admin surfaces load. If `
 - [ ] **Step 6: Set the alert webhook on both droplets**
 
 ```bash
-ssh retina-staging 'grep -c ALERT_WEBHOOK_URL /opt/tower-finder/.env || true'
-ssh retina-prod 'grep -c ALERT_WEBHOOK_URL /opt/tower-finder/.env || true'
+ssh retina-staging 'grep -c ALERT_WEBHOOK_URL /opt/retina-server/.env || true'
+ssh retina-prod 'grep -c ALERT_WEBHOOK_URL /opt/retina-server/.env || true'
 ```
 
 Set it on both, restart, then raise one by hand and confirm it arrives somewhere a person sees it:
 
 ```bash
-ssh retina-staging 'cd /opt/tower-finder && docker compose exec api python -c "
+ssh retina-staging 'cd /opt/retina-server && docker compose exec api python -c "
 from services.alerting import send_alert
 send_alert(\"test\", \"phase 1 bring-up: alert path check\")
 "'
@@ -1278,7 +1278,7 @@ curl -fsS --max-time 5 https://<staging-droplet-ip>/healthz \
 Then confirm real client IPs are reaching the application, not Cloudflare's:
 
 ```bash
-ssh retina-staging 'docker compose -f /opt/tower-finder/docker-compose.yml logs --tail=20 nginx | grep -o "^[0-9a-f.:]*"'
+ssh retina-staging 'docker compose -f /opt/retina-server/docker-compose.yml logs --tail=20 nginx | grep -o "^[0-9a-f.:]*"'
 ```
 
 - [ ] **Step 6: Narrow the firewall**

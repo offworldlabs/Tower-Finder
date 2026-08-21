@@ -446,7 +446,7 @@ RUN chmod +x /app/deploy/start.sh
 
 Run:
 ```bash
-docker build -t tower-finder:consolidation-check .
+docker build -t retina-server:consolidation-check .
 ```
 Expected: build succeeds. No error about a missing `tar1090/html` build-context path or a missing `start-test.sh` chmod target.
 
@@ -556,10 +556,10 @@ services:
       - FLEET_MAX_RANGE_KM=0
       - FLEET_CONCURRENCY=10
       - FLEET_CONNECT_RETRIES=10
-      - FLEET_HOST=tower-finder
+      - FLEET_HOST=server
       - FLEET_PORT=3012
       - FLEET_VALIDATE=false
-      - FLEET_VALIDATION_URL=http://tower-finder:8000
+      - FLEET_VALIDATION_URL=http://server:8000
       - FLEET_SEED=42
     deploy:
       resources:

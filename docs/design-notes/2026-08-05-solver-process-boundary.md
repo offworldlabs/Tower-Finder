@@ -955,7 +955,7 @@ docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --build
 Then confirm the solve genuinely left the uvicorn process:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.test.yml exec tower-finder ps -eo pid,ppid,rss,comm
+docker compose -f docker-compose.yml -f docker-compose.test.yml exec server ps -eo pid,ppid,rss,comm
 ```
 
 Expected: `SOLVER_WORKERS` (default 2) child python processes under the uvicorn pid. Then check
