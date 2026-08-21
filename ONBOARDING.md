@@ -160,6 +160,13 @@ Trust pytest's **exit status**, not the tail of its output. The warnings block
 and the coverage footer both print after the summary line, so piping the run
 into `tail` loses the `N passed` and a passing-looking tail proves nothing.
 
+Stronger still: **do not pass `-q` on the command line.** `addopts` in
+`backend/pyproject.toml` already sets it, so an explicit one makes `-qq`, and
+pytest's second `-q` suppresses the summary line entirely. A fully passing run
+then prints no `N passed` anywhere and ends on the warnings `-- Docs:` line,
+which reads as though it did nothing. The line is not lost in transit, it is
+never written, so redirecting to a file does not recover it.
+
 Two suites can now run at once, from two worktrees, without interfering. They
 could not before: `backend/main.py` binds `RADAR_TCP_PORT` (default `3012`) in
 the app lifespan, and `tests/test_storage.py` wrote into the shared
