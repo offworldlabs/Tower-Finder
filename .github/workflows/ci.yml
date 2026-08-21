@@ -218,7 +218,32 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - run: docker build -t retina-server:ci .
+      # buildx rather than the classic builder, for the layer cache below and
+      # because it runs the two independent node stages concurrently instead of
+      # one after the other.
+      - uses: docker/setup-buildx-action@v3
+      # Nothing consumes the image: no registry push, and deploys rebuild on the
+      # droplet with `docker compose up -d --build`. The job only answers "does
+      # the Dockerfile still build", so the result goes nowhere rather than being
+      # exported and loaded into the local daemon.
+      #
+      # mode=max because the work worth skipping happens in stages that never
+      # reach the final image: the frontend and dashboard stages contribute only
+      # their dist/ directories. mode=min exports the final stage alone, so both
+      # `npm install` runs would repeat every time. It buys a bigger entry
+      # against the repo-wide 10GB cache budget, which is shared with the npm
+      # caches above under LRU eviction.
+      #
+      # Cache entries are scoped to the branch that wrote them, with main's
+      # readable by every PR. So a PR run reads main's cache and writes its own,
+      # and the saving only appears once main has been through this job at least
+      # once.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          outputs: type=cacheonly
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   env-parity:
     name: Staging/production parity
