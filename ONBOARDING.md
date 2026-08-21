@@ -59,7 +59,7 @@ reports no checks at all; verify it from this repo's suite instead.
 Clone with submodules, then set up backend and front-ends.
 
 ```bash
-git clone --recursive https://github.com/offworldlabs/Tower-Finder.git
+git clone --recursive https://github.com/offworldlabs/retina-server.git
 cd Tower-Finder
 # already cloned without --recursive?
 git submodule update --init --recursive
