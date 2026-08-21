@@ -569,6 +569,7 @@ async def system_metrics(_user=Depends(require_admin)):
         "solver_queue_depth": state.solver_queue.qsize(),
         "solver_queue_drops": state.solver_queue_drops,
         "solver_stale_drops": state.solver_stale_drops,
+        "solver_resolve_skips": state.solver_resolve_skips,
         "mn_superseded": state.mn_superseded,
         "solver_trimmed": state.solver_trimmed,
         "solver_last_latency_s": round(state.solver_last_latency_s, 3),

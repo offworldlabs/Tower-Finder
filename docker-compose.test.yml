@@ -108,6 +108,11 @@ services:
       # production sits at 0%, and the success rate is 8% against production's 80%.
       # Usable, but not a faithful rehearsal of production's solver.
       #
+      # Those figures predate the solver's re-solve suppression
+      # (SOLVER_RESOLVE_INTERVAL_S, services/tasks/solver.py), which was measured
+      # to cut candidates reaching the LM by about half at this fleet shape.
+      # Re-measure before quoting them.
+      #
       # 200 nodes at 0.5s was tried first and was much worse: 178 of a notional 400
       # fps, latency past 30s and still climbing. If you want that overload again,
       # set it here, watch it, and set it back — do not leave it on, and do not put

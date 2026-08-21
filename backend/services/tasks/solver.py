@@ -449,12 +449,15 @@ _mn_history_last_sweep = 0.0
 
 def _reset_for_tests() -> None:
     """Restore this module's private state to boot values.  Tests only."""
-    global _mn_history_last_sweep
+    global _mn_history_last_sweep, _recent_solves_last_sweep
     with _MN_POS_HISTORY_LOCK:
         _MN_POS_HISTORY.clear()
         _mn_history_last_sweep = 0.0
     with _TRACK_CLAIMS_LOCK:
         _TRACK_CLAIMS.clear()
+    with _RECENT_SOLVES_LOCK:
+        _RECENT_SOLVES.clear()
+        _recent_solves_last_sweep = 0.0
     track_filter.reset()
 
 
@@ -696,6 +699,98 @@ def multinode_key_decision(
 # on them can never produce a visible result.  Raising this number allows a
 # deeper backlog but increases latency; lowering it drops items too aggressively.
 _SOLVER_MAX_QUEUE_AGE_S = 45.0
+
+# ── Re-solve suppression ─────────────────────────────────────────────────────
+# Association is rate-limited per *node*, not per aircraft: every node that can
+# see an aircraft emits its own candidate for it inside one
+# ASSOC_MIN_INTERVAL_S window, and the fleet's rounds are staggered across that
+# window, so one aircraft arrives as several near-identical candidates.
+# Measured on the test deployment's fleet shape (50 nodes, 25-40 aircraft,
+# 30 s association interval): 139 candidates over 240 s carrying 49 distinct
+# (aircraft, window) pairs — 2.84 candidates per aircraft per window, against a
+# solver that drains ~0.7/s.
+#
+# Solving all of them buys nothing.  The extra solves are superseded by the
+# next one for the same aircraft (state.mn_superseded), while the queue ages
+# past _SOLVER_MAX_QUEUE_AGE_S and aircraft with no solve at all wait behind
+# them — the coverage collapse this suppression exists to undo.
+#
+# A candidate is skipped when EVERY single-node track it is built from was
+# already solved within this window at no fewer nodes.  Both halves matter:
+# "every track" means a candidate carrying a track nothing has solved yet
+# always runs, so an aircraft entering coverage is never suppressed; "no fewer
+# nodes" means a wider — better conditioned — view of the same aircraft is
+# never held back by a narrower one that happened to arrive first.
+#
+# "Every" and not "any", which is the rule supersession uses downstream and the
+# obvious way to write this.  Measured over 579 candidates / 600 s of the test
+# fleet's shape, against a baseline that solves every candidate instantly,
+# counting (aircraft, 30 s window) slots that still get at least one solve:
+#
+#     rule    candidates solved   coverage kept
+#     any            21%              58.5%
+#     every          47%              87.8%
+#
+# Duplicates for one aircraft usually carry *overlapping* track sets rather
+# than identical ones — each node's round pairs its own tracks with a rotating
+# slice of its neighbours' — so "any" also swallows the candidate that is the
+# first sighting of a genuinely different aircraft sharing one contaminated
+# track.  Half the extra saving comes out of coverage, which is the thing this
+# is for.
+#
+# Sized against the map, not the association cadence: multinode_tracks expire
+# at 60 s, so refreshing an aircraft every 12 s leaves four solves' worth of
+# margin.  0 disables the suppression entirely.
+_SOLVER_RESOLVE_INTERVAL_S = float(os.getenv("SOLVER_RESOLVE_INTERVAL_S", "12"))
+_RECENT_SOLVES: dict[str, tuple[float, int]] = {}  # track_id → (solved_at, n_nodes)
+_RECENT_SOLVES_LOCK = threading.Lock()
+_recent_solves_last_sweep = 0.0
+
+
+def _sweep_recent_solves(now_s: float) -> None:
+    """Drop track ids whose claim has aged out.  Caller holds the lock."""
+    global _recent_solves_last_sweep
+    if now_s - _recent_solves_last_sweep < _SOLVER_RESOLVE_INTERVAL_S:
+        return
+    _recent_solves_last_sweep = now_s
+    cutoff = now_s - _SOLVER_RESOLVE_INTERVAL_S
+    for tid in [tid for tid, (ts, _) in _RECENT_SOLVES.items() if ts <= cutoff]:
+        del _RECENT_SOLVES[tid]
+
+
+def _claim_resolve_slot(s_in, now_s: float) -> bool:
+    """False when this candidate re-solves tracks another candidate just took.
+
+    Records the claim as a side effect, under one lock with the test, so two
+    workers cannot both admit the same aircraft's duplicates.  An input with no
+    track provenance (detection-level, or an anchored input carrying none) is
+    always admitted — there is nothing to match it against.
+    """
+    if _SOLVER_RESOLVE_INTERVAL_S <= 0 or not isinstance(s_in, dict):
+        return True
+    track_ids = s_in.get("track_ids")
+    if not track_ids:
+        return True
+    n_nodes = int(s_in.get("n_nodes") or 0)
+    cutoff = now_s - _SOLVER_RESOLVE_INTERVAL_S
+    with _RECENT_SOLVES_LOCK:
+        covered = True
+        for tid in track_ids:
+            held = _RECENT_SOLVES.get(tid)
+            if held is None or held[0] <= cutoff or held[1] < n_nodes:
+                covered = False
+                break
+        if covered:
+            return False
+        for tid in track_ids:
+            held = _RECENT_SOLVES.get(tid)
+            # Keep the widest claim of the window: a narrow candidate admitted
+            # after a wide one must not lower the bar the next copy is tested
+            # against.
+            held_nodes = held[1] if held is not None and held[0] > cutoff else 0
+            _RECENT_SOLVES[tid] = (now_s, max(n_nodes, held_nodes))
+        _sweep_recent_solves(now_s)
+    return True
 
 
 # Which single-node track pair currently owns a published n=2 track, and how
@@ -1272,6 +1367,13 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             _SOLVER_MAX_QUEUE_AGE_S,
             s_in.get("n_nodes", 0) if isinstance(s_in, dict) else 0,
         )
+        return None
+    # Duplicate copies of an aircraft already solved this window are dropped
+    # here rather than at enqueue: the frame path must not carry solver state,
+    # and a copy that queued before its twin was solved can only be recognised
+    # once it reaches a worker.
+    if not _claim_resolve_slot(s_in, time.time()):
+        state.bump_counter("solver_resolve_skips")
         return None
     n_nodes = s_in.get("n_nodes", 0) if isinstance(s_in, dict) else 0
     consensus_meta: dict | None = None

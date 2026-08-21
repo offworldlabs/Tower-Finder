@@ -37,6 +37,7 @@ def _reset_state():
     state.solver_last_latency_s = 0.0
     state.n2_unconfirmed = 0
     state.solver_stale_drops = 0
+    state.solver_resolve_skips = 0
     state.multinode_tracks.clear()
     state.task_last_success.clear()
 
@@ -324,6 +325,95 @@ class TestStaleItemSkip:
 
         assert result is not None and result.get("success")
         assert state.solver_successes == 1
+
+
+class TestResolveSuppression:
+    """One aircraft's duplicate candidates must not each pay for a solve.
+
+    Association is rate-limited per node, so every node that sees an aircraft
+    emits its own candidate for it inside one association window.  Solving all
+    of them starves aircraft that have no solve at all — the queue ages out
+    behind work whose result is superseded the moment it lands.
+    """
+
+    def _s_in(self, track_ids, n_nodes=2):
+        return dict(_CONFIRMED_N2, n_nodes=n_nodes, track_ids=list(track_ids))
+
+    def test_a_second_copy_of_the_same_tracks_is_skipped(self):
+        now = time.time()
+        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"]), now) is True
+        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"]), now) is False
+
+    def test_a_candidate_carrying_an_unsolved_track_runs(self):
+        """An aircraft entering coverage must never be suppressed."""
+        now = time.time()
+        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"]), now) is True
+        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b2"]), now) is True
+
+    def test_a_wider_view_of_the_same_tracks_runs(self):
+        now = time.time()
+        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"], n_nodes=2), now) is True
+        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"], n_nodes=5), now) is True
+
+    def test_a_narrower_view_after_a_wider_one_is_skipped(self):
+        now = time.time()
+        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"], n_nodes=5), now) is True
+        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"], n_nodes=2), now) is False
+
+    def test_a_narrow_admission_does_not_lower_the_bar(self):
+        """The window holds the widest claim, not the most recent one."""
+        now = time.time()
+        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"], n_nodes=5), now) is True
+        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b2"], n_nodes=2), now) is True
+        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"], n_nodes=3), now) is False
+
+    def test_claims_expire(self):
+        now = time.time()
+        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"]), now) is True
+        later = now + solver_mod._SOLVER_RESOLVE_INTERVAL_S + 1.0
+        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"]), later) is True
+
+    def test_an_input_without_track_provenance_always_runs(self):
+        """Detection-level inputs carry no track ids — nothing to match on."""
+        now = time.time()
+        assert solver_mod._claim_resolve_slot({"n_nodes": 2}, now) is True
+        assert solver_mod._claim_resolve_slot({"n_nodes": 2}, now) is True
+
+    def test_zero_interval_disables_suppression(self, monkeypatch):
+        monkeypatch.setattr(solver_mod, "_SOLVER_RESOLVE_INTERVAL_S", 0.0)
+        now = time.time()
+        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"]), now) is True
+        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"]), now) is True
+
+    def test_a_skipped_item_never_reaches_the_solver(self, monkeypatch):
+        _reset_state()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+        solve_calls = []
+
+        def solve_fn(s_in, cfgs):
+            solve_calls.append(s_in)
+            return {
+                "success": True,
+                "lat": 37.5,
+                "lon": -122.1,
+                "rms_delay": 0.5,
+                "timestamp_ms": 9000,
+                "contributing_node_ids": ["n1", "n2"],
+                "n_nodes": 2,
+            }
+
+        s_in = self._s_in(["a1", "b1"])
+        solver_mod._process_solver_item((s_in, {}, time.time()), solve_fn)
+        assert len(solve_calls) == 1
+        assert state.solver_successes == 1
+
+        assert solver_mod._process_solver_item((dict(s_in), {}, time.time()), solve_fn) is None
+        assert len(solve_calls) == 1, "the duplicate must not be solved"
+        assert state.solver_resolve_skips == 1
+        # Skipping is not a failure and not a lost item: neither counter moves.
+        assert state.solver_failures == 0
+        assert state.solver_stale_drops == 0
 
 
 class TestSolveBestAltitude:

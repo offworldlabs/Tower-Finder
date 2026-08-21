@@ -62,6 +62,11 @@ oscillating to ~28% where production sits at 0%, and a much lower solve success
 rate. Nothing drops, so it is a usable environment, but a solver measurement taken
 there does not transfer to production.
 
+Those per-solve figures predate the solver's re-solve suppression
+(`SOLVER_RESOLVE_INTERVAL_S`, see `solver_latency_high` below), which was measured
+to halve the candidates reaching the LM at this fleet shape. Re-measure before
+quoting them.
+
 Do not raise the fleet without measuring on the test droplet first: at 200 nodes / 0.5s
 the solver never reached steady state at all. And read `solver_avg_latency_s` over
 minutes rather than seconds — it is a cumulative mean that starts low after a boot
@@ -316,7 +321,25 @@ curl -sk https://localhost/api/admin/metrics | python3 -c \
 **Trigger:** End-to-end time from frame enqueue to solver completion > 30 s.  
 **What it means:** The solver pipeline is severely backed up. The 30 s threshold means the queue is likely saturated and candidates are waiting minutes before being solved.
 
-Same diagnosis as `solver_queue_drops` above.
+Same diagnosis as `solver_queue_drops` above, plus one check of its own. Read
+`resolve_skips` next to `stale_drops` in `/api/test/dashboard`'s solver block (also
+`solver_resolve_skips` in `/api/admin/metrics`). Association is rate-limited per
+*node*, so every node that can see an aircraft emits its own candidate for it and
+most arrivals are copies of a solve already done; `resolve_skips` counts the copies
+recognised as such and dropped without solving.
+
+- Skips high, `stale_drops` near zero — the suppression is doing its job and the
+  latency is transient.
+- Both high — the *distinct* candidates still outrun the workers. That is a real
+  capacity shortfall, not duplication; go back to the causes above.
+- Skips at zero with a deep queue — the candidates carry no track provenance
+  (`track_ids`), so there is nothing to suppress on. Check that the track-level
+  association path is the one running.
+
+`SOLVER_RESOLVE_INTERVAL_S` (default 12 s) is the window an aircraft is not
+re-solved in. Raising it trades map refresh rate for solver headroom — do not go
+past the 60 s `multinode_tracks` expiry, or tracks will lapse between solves. `0`
+turns the suppression off.
 
 ---
 
